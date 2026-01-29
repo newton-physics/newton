@@ -201,6 +201,7 @@ class Example:
         self.simulate_reference = True
         self.simulate_gpu = True
         self.use_cuda_graph = args.use_cuda_graph
+        self.use_parallel_kernels = True  # Toggle between parallel and sequential GPU kernels
         self.use_iterative_refinement = False
         self.iterative_refinement_iters = 2
         self._force_sync_reference = True
@@ -1478,6 +1479,11 @@ class Example:
             changed_graph, self.use_cuda_graph = ui.checkbox("Use CUDA Graph (Warp)", self.use_cuda_graph)
             if changed_graph:
                 self.use_cuda_graph = self.gpu_state.set_use_cuda_graph(self.use_cuda_graph)
+            changed_parallel, self.use_parallel_kernels = ui.checkbox(
+                "Use Parallel Kernels (Warp)", self.use_parallel_kernels
+            )
+            if changed_parallel:
+                self.gpu_state.set_parallel_kernels(self.use_parallel_kernels)
         if changed_ref or changed_gpu:
             self._frame_times.clear()
             self._ref_times.clear()
@@ -1711,7 +1717,9 @@ class Example:
             for idx, rod_info in enumerate(self.rod_infos):
                 solver_name = rod_info.solver_type.value.upper()
                 ui.text(f"  Rod {idx} ({solver_name})")
-                _changed, rod_info.mesh_radius = ui.slider_float(f"  Rod{idx} Mesh Radius", rod_info.mesh_radius, 0.001, 0.1)
+                _changed, rod_info.mesh_radius = ui.slider_float(
+                    f"  Rod{idx} Mesh Radius", rod_info.mesh_radius, 0.001, 0.1
+                )
                 c = rod_info.color
                 ui.text(f"    Color: ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f})")
 

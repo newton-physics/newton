@@ -35,6 +35,7 @@ from newton.examples.cosserat_codex.constants import (
     TILE,
 )
 from newton.examples.cosserat_codex.kernels import (
+    _warp_apply_accumulated_corrections,
     _warp_apply_direct_corrections,
     _warp_apply_floor_collisions,
     _warp_apply_root_translation,
@@ -44,9 +45,11 @@ from newton.examples.cosserat_codex.kernels import (
     _warp_block_thomas_solve,
     _warp_build_rhs,
     _warp_cholesky_solve_tile,
+    _warp_compute_corrections_parallel,
     _warp_compute_inv_inertia_world,
     _warp_compute_jacobians_direct,
     _warp_constraint_max,
+    _warp_constraint_max_sequential,
     _warp_integrate_positions,
     _warp_integrate_rotations,
     _warp_pad_diagonal,
@@ -60,6 +63,7 @@ from newton.examples.cosserat_codex.kernels import (
     _warp_zero_2d,
     _warp_zero_float,
     _warp_zero_root_velocities,
+    _warp_zero_vec3,
 )
 
 from .base import RodStateBase
@@ -67,10 +71,10 @@ from .base import RodStateBase
 
 class WarpResidentRodState(RodStateBase):
     """Warp-resident direct rod state that stays on device.
-    
+
     This implementation keeps all simulation state on the GPU to avoid
     costly host-device transfers during the simulation loop.
-    
+
     Attributes:
         device: Warp device for GPU arrays.
         use_cuda_graph: Whether CUDA graph capture is enabled.
@@ -100,7 +104,7 @@ class WarpResidentRodState(RodStateBase):
         device: wp.Device | None = None,
     ):
         """Initialize the GPU-resident rod state.
-        
+
         Args:
             num_points: Number of particles in the rod.
             segment_length: Rest length of each segment.
@@ -166,6 +170,9 @@ class WarpResidentRodState(RodStateBase):
         self._graph_params = None
         self._graph_capture_active = False
 
+        # Toggle between parallel and sequential kernel implementations
+        self.use_parallel_kernels = True
+
         self._init_warp_state()
         self._sync_from_host_all()
         self._warp_ready = True
@@ -222,6 +229,10 @@ class WarpResidentRodState(RodStateBase):
         self.inv_inertia_wp = wp.zeros(alloc_points * 9, dtype=wp.float32, device=self.device)
         self.inv_inertia_local_diag = np.array([1.0, 1.0, 1.0], dtype=np.float32)
 
+        # Workspace for parallel direct corrections
+        self.pos_corrections_wp = wp.zeros(alloc_points, dtype=wp.vec3, device=self.device)
+        self.rot_corrections_wp = wp.zeros(alloc_points, dtype=wp.vec3, device=self.device)
+
         self._constraint_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._delta_lambda_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._correction_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
@@ -272,10 +283,10 @@ class WarpResidentRodState(RodStateBase):
 
     def set_use_cuda_graph(self, enabled: bool) -> bool:
         """Enable or disable CUDA graph capture.
-        
+
         Args:
             enabled: Whether to enable CUDA graph capture.
-        
+
         Returns:
             Whether CUDA graph is actually enabled.
         """
@@ -296,13 +307,9 @@ class WarpResidentRodState(RodStateBase):
         self.forces_wp.assign(wp.array(self.forces[:, 0:3], dtype=wp.vec3, device=self.device))
 
         self.orientations_wp.assign(wp.array(self.orientations, dtype=wp.quat, device=self.device))
-        self.predicted_orientations_wp.assign(
-            wp.array(self.predicted_orientations, dtype=wp.quat, device=self.device)
-        )
+        self.predicted_orientations_wp.assign(wp.array(self.predicted_orientations, dtype=wp.quat, device=self.device))
         self.prev_orientations_wp.assign(wp.array(self.prev_orientations, dtype=wp.quat, device=self.device))
-        self.angular_velocities_wp.assign(
-            wp.array(self.angular_velocities[:, 0:3], dtype=wp.vec3, device=self.device)
-        )
+        self.angular_velocities_wp.assign(wp.array(self.angular_velocities[:, 0:3], dtype=wp.vec3, device=self.device))
         self.torques_wp.assign(wp.array(self.torques[:, 0:3], dtype=wp.vec3, device=self.device))
 
         self.inv_masses_wp.assign(wp.array(self.inv_masses, dtype=wp.float32, device=self.device))
@@ -310,12 +317,8 @@ class WarpResidentRodState(RodStateBase):
 
         if self.num_edges > 0:
             self.rest_lengths_wp.assign(wp.array(self.rest_lengths, dtype=wp.float32, device=self.device))
-            self.rest_darboux_wp.assign(
-                wp.array(self.rest_darboux[:, 0:3], dtype=wp.vec3, device=self.device)
-            )
-            self.bend_stiffness_wp.assign(
-                wp.array(self.bend_stiffness[:, 0:3], dtype=wp.vec3, device=self.device)
-            )
+            self.rest_darboux_wp.assign(wp.array(self.rest_darboux[:, 0:3], dtype=wp.vec3, device=self.device))
+            self.bend_stiffness_wp.assign(wp.array(self.bend_stiffness[:, 0:3], dtype=wp.vec3, device=self.device))
 
     def set_solver_mode(self, use_banded: bool):
         """Set whether to use banded solver."""
@@ -338,6 +341,18 @@ class WarpResidentRodState(RodStateBase):
         self._graph = None
         self._graph_params = None
 
+    def set_parallel_kernels(self, enabled: bool):
+        """Toggle between parallel and sequential kernel implementations.
+
+        Args:
+            enabled: If True, use parallel GPU kernels. If False, use legacy
+                     sequential single-threaded kernels for comparison.
+        """
+        self.use_parallel_kernels = enabled
+        # Invalidate CUDA graph since kernel selection changed
+        self._graph = None
+        self._graph_params = None
+
     def set_gravity(self, gravity: np.ndarray):
         """Set gravity vector."""
         super().set_gravity(gravity)
@@ -348,9 +363,7 @@ class WarpResidentRodState(RodStateBase):
         if not getattr(self, "_warp_ready", False):
             return
         if self.num_edges > 0:
-            self.bend_stiffness_wp.assign(
-                wp.array(self.bend_stiffness[:, 0:3], dtype=wp.vec3, device=self.device)
-            )
+            self.bend_stiffness_wp.assign(wp.array(self.bend_stiffness[:, 0:3], dtype=wp.vec3, device=self.device))
 
     def set_rest_darboux(self, rest_bend_d1: float, rest_bend_d2: float, rest_twist: float):
         """Set rest Darboux vector."""
@@ -358,9 +371,7 @@ class WarpResidentRodState(RodStateBase):
         if not getattr(self, "_warp_ready", False):
             return
         if self.num_edges > 0:
-            self.rest_darboux_wp.assign(
-                wp.array(self.rest_darboux[:, 0:3], dtype=wp.vec3, device=self.device)
-            )
+            self.rest_darboux_wp.assign(wp.array(self.rest_darboux[:, 0:3], dtype=wp.vec3, device=self.device))
 
     def set_root_locked(self, locked: bool):
         """Lock or unlock root particle."""
@@ -576,12 +587,28 @@ class WarpResidentRodState(RodStateBase):
                 ],
                 device=self.device,
             )
-            wp.launch(
-                _warp_constraint_max,
-                dim=1,
-                inputs=[self.constraint_values_wp, int(self.num_edges), self._constraint_max_wp],
-                device=self.device,
-            )
+            if self.use_parallel_kernels:
+                # Zero the max output before parallel reduction
+                wp.launch(
+                    _warp_zero_float,
+                    dim=1,
+                    inputs=[self._constraint_max_wp],
+                    device=self.device,
+                )
+                wp.launch(
+                    _warp_constraint_max,
+                    dim=self.num_edges,
+                    inputs=[self.constraint_values_wp, int(self.num_edges), self._constraint_max_wp],
+                    device=self.device,
+                )
+            else:
+                # Sequential single-threaded version
+                wp.launch(
+                    _warp_constraint_max_sequential,
+                    dim=1,
+                    inputs=[self.constraint_values_wp, int(self.num_edges), self._constraint_max_wp],
+                    device=self.device,
+                )
 
             wp.launch(
                 _warp_compute_jacobians_direct,
@@ -770,25 +797,90 @@ class WarpResidentRodState(RodStateBase):
 
         start = time.perf_counter()
         with self._timer("final_position_update"):
-            wp.launch(
-                _warp_apply_direct_corrections,
-                dim=1,
-                inputs=[
-                    self.predicted_positions_wp,
-                    self.predicted_orientations_wp,
-                    self.inv_masses_wp,
-                    self.quat_inv_masses_wp,
-                    self.inv_inertia_wp,
-                    self.jacobian_pos_wp,
-                    self.jacobian_rot_wp,
-                    delta_lambda,
-                    self.lambda_sum_wp,
-                    int(self.num_edges),
-                    self._delta_lambda_max_wp,
-                    self._correction_max_wp,
-                ],
-                device=self.device,
-            )
+            if self.use_parallel_kernels:
+                # Parallel version: two-phase correction
+                # Zero workspace arrays for parallel accumulation
+                wp.launch(
+                    _warp_zero_vec3,
+                    dim=self.num_points,
+                    inputs=[self.pos_corrections_wp],
+                    device=self.device,
+                )
+                wp.launch(
+                    _warp_zero_vec3,
+                    dim=self.num_points,
+                    inputs=[self.rot_corrections_wp],
+                    device=self.device,
+                )
+                wp.launch(
+                    _warp_zero_float,
+                    dim=1,
+                    inputs=[self._delta_lambda_max_wp],
+                    device=self.device,
+                )
+                wp.launch(
+                    _warp_zero_float,
+                    dim=1,
+                    inputs=[self._correction_max_wp],
+                    device=self.device,
+                )
+
+                # Phase 1: Compute corrections in parallel (one thread per edge)
+                wp.launch(
+                    _warp_compute_corrections_parallel,
+                    dim=self.num_edges,
+                    inputs=[
+                        self.predicted_positions_wp,
+                        self.inv_masses_wp,
+                        self.quat_inv_masses_wp,
+                        self.inv_inertia_wp,
+                        self.jacobian_pos_wp,
+                        self.jacobian_rot_wp,
+                        delta_lambda,
+                        self.lambda_sum_wp,
+                        int(self.num_edges),
+                        self.pos_corrections_wp,
+                        self.rot_corrections_wp,
+                        self._delta_lambda_max_wp,
+                        self._correction_max_wp,
+                    ],
+                    device=self.device,
+                )
+
+                # Phase 2: Apply accumulated corrections (one thread per particle)
+                wp.launch(
+                    _warp_apply_accumulated_corrections,
+                    dim=self.num_points,
+                    inputs=[
+                        self.predicted_positions_wp,
+                        self.predicted_orientations_wp,
+                        self.pos_corrections_wp,
+                        self.rot_corrections_wp,
+                        int(self.num_points),
+                    ],
+                    device=self.device,
+                )
+            else:
+                # Sequential version: single-threaded correction application
+                wp.launch(
+                    _warp_apply_direct_corrections,
+                    dim=1,
+                    inputs=[
+                        self.predicted_positions_wp,
+                        self.predicted_orientations_wp,
+                        self.inv_masses_wp,
+                        self.quat_inv_masses_wp,
+                        self.inv_inertia_wp,
+                        self.jacobian_pos_wp,
+                        self.jacobian_rot_wp,
+                        delta_lambda,
+                        self.lambda_sum_wp,
+                        int(self.num_edges),
+                        self._delta_lambda_max_wp,
+                        self._correction_max_wp,
+                    ],
+                    device=self.device,
+                )
         self._record_timing("final_position_update", time.perf_counter() - start)
 
         if self._graph_capture_active:

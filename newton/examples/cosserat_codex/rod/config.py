@@ -17,8 +17,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 @dataclass
 class RodConfig:
     """Configuration parameters for a single Cosserat rod.
-    
+
     Attributes:
         num_points: Number of particles in the rod.
         segment_length: Rest length of each segment.
@@ -69,10 +70,10 @@ class RodConfig:
 
 class RodBatch:
     """Metadata and per-rod parameters for a batched rod collection.
-    
+
     This class manages multiple rods with potentially different configurations
     and provides indexing information for batched operations.
-    
+
     Attributes:
         configs: List of rod configurations.
         rod_count: Number of rods in the batch.
@@ -92,10 +93,10 @@ class RodBatch:
 
     def __init__(self, configs: Sequence[RodConfig]):
         """Initialize a batch of rod configurations.
-        
+
         Args:
             configs: Sequence of rod configurations.
-        
+
         Raises:
             ValueError: If no configurations are provided.
         """
@@ -166,14 +167,14 @@ class RodBatch:
         device=None,
         use_banded: bool = False,
         use_cuda_graph: bool = False,
-    ) -> "RodState":
+    ) -> RodState:
         """Create a RodState containing all rods in the batch.
-        
+
         Args:
             device: Warp device for GPU arrays.
             use_banded: Whether to use banded solver.
             use_cuda_graph: Whether to use CUDA graph capture.
-        
+
         Returns:
             RodState containing WarpResidentRodState instances for each rod.
         """
@@ -207,10 +208,10 @@ class RodBatch:
 
 class RodState:
     """Holds per-rod device state for a batched simulation.
-    
+
     This container manages multiple rod state objects and provides
     batch-level operations like reset and parameter updates.
-    
+
     Attributes:
         batch: The RodBatch that describes the rod configurations.
         rods: List of individual rod state objects.
@@ -218,13 +219,13 @@ class RodState:
         total_edges: Total number of edges across all rods.
     """
 
-    def __init__(self, batch: RodBatch, rods: list["RodStateBase"]):
+    def __init__(self, batch: RodBatch, rods: list[RodStateBase]):
         """Initialize a RodState container.
-        
+
         Args:
             batch: The RodBatch configuration.
             rods: List of rod state objects matching the batch configuration.
-        
+
         Raises:
             ValueError: If rod count doesn't match batch configuration.
         """
@@ -247,10 +248,10 @@ class RodState:
 
     def set_use_cuda_graph(self, enabled: bool) -> bool:
         """Enable or disable CUDA graph capture for all rods.
-        
+
         Args:
             enabled: Whether to enable CUDA graph capture.
-        
+
         Returns:
             Whether CUDA graph is active (may be False if not supported).
         """
@@ -261,12 +262,22 @@ class RodState:
                 active = False
         return active
 
+    def set_parallel_kernels(self, enabled: bool) -> None:
+        """Toggle between parallel and sequential kernel implementations.
+
+        Args:
+            enabled: If True, use parallel GPU kernels. If False, use legacy
+                     sequential single-threaded kernels for comparison.
+        """
+        for rod in self.rods:
+            rod.set_parallel_kernels(enabled)
+
     def set_solver_mode(self, use_banded: bool) -> bool:
         """Set solver mode for all rods.
-        
+
         Args:
             use_banded: Whether to use banded solver.
-        
+
         Returns:
             Actual solver mode (may differ if not supported).
         """
@@ -276,7 +287,7 @@ class RodState:
 
     def set_gravity(self, gravity: np.ndarray) -> None:
         """Set gravity for all rods.
-        
+
         Args:
             gravity: 3D gravity vector.
         """
@@ -285,7 +296,7 @@ class RodState:
 
     def set_bend_stiffness(self, bend_stiffness: float, twist_stiffness: float) -> None:
         """Set bend and twist stiffness for all rods.
-        
+
         Args:
             bend_stiffness: Bending stiffness coefficient.
             twist_stiffness: Twist stiffness coefficient.
@@ -295,7 +306,7 @@ class RodState:
 
     def set_rest_darboux(self, rest_bend_d1: float, rest_bend_d2: float, rest_twist: float) -> None:
         """Set rest Darboux vector for all rods.
-        
+
         Args:
             rest_bend_d1: Rest curvature in d1 direction.
             rest_bend_d2: Rest curvature in d2 direction.
@@ -306,7 +317,7 @@ class RodState:
 
     def apply_floor_collisions(self, floor_z: float, restitution: float = 0.0) -> None:
         """Apply floor collision constraints to all rods.
-        
+
         Args:
             floor_z: Z coordinate of the floor plane.
             restitution: Coefficient of restitution for bouncing.

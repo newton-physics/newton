@@ -28,7 +28,6 @@ import warp as wp
 
 from .math import _warp_jacobian_index, _warp_quat_normalize
 
-
 # ==============================================================================
 # Utility operations
 # ==============================================================================
@@ -104,9 +103,9 @@ def _warp_apply_floor_collisions(
     restitution: float,
 ):
     """Apply floor collision constraints.
-    
+
     Clamps particles above the floor and reflects velocity with restitution.
-    
+
     Args:
         positions: Current positions (updated in-place).
         predicted: Predicted positions (updated in-place).
@@ -206,7 +205,47 @@ def _warp_constraint_max(
     n_edges: int,
     out_max: wp.array(dtype=wp.float32),
 ):
-    """Compute maximum constraint violation norm."""
+    """Compute maximum constraint violation norm (parallel version).
+
+    Each thread computes the constraint norm for one edge and atomically
+    updates the global maximum. This provides O(N) parallel work instead
+    of O(N) sequential work on a single thread.
+
+    Args:
+        constraint_values: Constraint values (6 per edge).
+        n_edges: Number of edges.
+        out_max: Output max value (must be zeroed before launch).
+    """
+    edge = wp.tid()
+    if edge >= n_edges:
+        return
+
+    base_idx = edge * 6
+    norm_sq = float(0.0)
+    for j in range(6):
+        val = constraint_values[base_idx + j]
+        norm_sq += val * val
+    norm = wp.sqrt(norm_sq)
+
+    # Atomic max update - all threads race to update the global max
+    wp.atomic_max(out_max, 0, norm)
+
+
+@wp.kernel
+def _warp_constraint_max_sequential(
+    constraint_values: wp.array(dtype=wp.float32),
+    n_edges: int,
+    out_max: wp.array(dtype=wp.float32),
+):
+    """Compute maximum constraint violation norm (sequential version).
+
+    Legacy single-threaded implementation for comparison/debugging.
+
+    Args:
+        constraint_values: Constraint values (6 per edge).
+        n_edges: Number of edges.
+        out_max: Output max value.
+    """
     tid = wp.tid()
     if tid != 0:
         return
@@ -282,10 +321,176 @@ def _inv_inertia_mul_vec_kernels(inv_inertia: wp.array(dtype=wp.float32), partic
 
 
 # ==============================================================================
-# Direct correction application
+# Direct correction application (parallel version)
 # ==============================================================================
 
 
+@wp.kernel
+def _warp_compute_corrections_parallel(
+    predicted_positions: wp.array(dtype=wp.vec3),
+    inv_masses: wp.array(dtype=wp.float32),
+    quat_inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia: wp.array(dtype=wp.float32),
+    jacobian_pos: wp.array(dtype=wp.float32),
+    jacobian_rot: wp.array(dtype=wp.float32),
+    delta_lambda: wp.array(dtype=wp.float32),
+    lambda_sum: wp.array(dtype=wp.float32),
+    n_edges: int,
+    # Outputs: accumulated corrections per particle
+    pos_corrections: wp.array(dtype=wp.vec3),
+    rot_corrections: wp.array(dtype=wp.vec3),
+    max_delta_out: wp.array(dtype=wp.float32),
+    max_corr_out: wp.array(dtype=wp.float32),
+):
+    """Compute position and rotation corrections per edge (parallel).
+
+    Phase 1 of parallel direct corrections. Each thread handles one edge,
+    computing corrections and atomically accumulating them per particle.
+
+    Args:
+        predicted_positions: Predicted positions (read-only in this phase).
+        inv_masses: Inverse masses.
+        quat_inv_masses: Inverse rotational masses.
+        inv_inertia: Inverse inertia tensors.
+        jacobian_pos: Position Jacobians.
+        jacobian_rot: Rotation Jacobians.
+        delta_lambda: Lagrange multiplier increments.
+        lambda_sum: Accumulated Lagrange multipliers (updated in-place).
+        n_edges: Number of edges.
+        pos_corrections: Per-particle position corrections (atomically accumulated).
+        rot_corrections: Per-particle rotation corrections (atomically accumulated).
+        max_delta_out: Output max delta lambda norm (atomic max).
+        max_corr_out: Output max correction magnitude (atomic max).
+    """
+    edge = wp.tid()
+    if edge >= n_edges:
+        return
+
+    base_idx = edge * 6
+    dl0 = delta_lambda[base_idx + 0]
+    dl1 = delta_lambda[base_idx + 1]
+    dl2 = delta_lambda[base_idx + 2]
+    dl3 = delta_lambda[base_idx + 3]
+    dl4 = delta_lambda[base_idx + 4]
+    dl5 = delta_lambda[base_idx + 5]
+
+    # Update lambda_sum (no race - each edge owns its 6 values)
+    lambda_sum[base_idx + 0] = lambda_sum[base_idx + 0] + dl0
+    lambda_sum[base_idx + 1] = lambda_sum[base_idx + 1] + dl1
+    lambda_sum[base_idx + 2] = lambda_sum[base_idx + 2] + dl2
+    lambda_sum[base_idx + 3] = lambda_sum[base_idx + 3] + dl3
+    lambda_sum[base_idx + 4] = lambda_sum[base_idx + 4] + dl4
+    lambda_sum[base_idx + 5] = lambda_sum[base_idx + 5] + dl5
+
+    # Track max delta lambda
+    local_max_delta = wp.max(
+        wp.max(wp.max(wp.abs(dl0), wp.abs(dl1)), wp.max(wp.abs(dl2), wp.abs(dl3))),
+        wp.max(wp.abs(dl4), wp.abs(dl5)),
+    )
+    wp.atomic_max(max_delta_out, 0, local_max_delta)
+
+    local_max_corr = float(0.0)
+
+    # Get inverse masses
+    inv_m0 = inv_masses[edge]
+    inv_m1 = inv_masses[edge + 1]
+
+    # Position correction for particle 0: inv_m0 * J_p0^T * deltaLambda
+    if inv_m0 > 0.0:
+        dp0_x = _warp_jacobian_dot(jacobian_pos, edge, 0, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp0_y = _warp_jacobian_dot(jacobian_pos, edge, 1, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp0_z = _warp_jacobian_dot(jacobian_pos, edge, 2, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp0 = wp.vec3(dp0_x * inv_m0, dp0_y * inv_m0, dp0_z * inv_m0)
+        # Atomic add to position corrections
+        wp.atomic_add(pos_corrections, edge, dp0)
+        corr = wp.length(dp0)
+        if corr > local_max_corr:
+            local_max_corr = corr
+
+    # Position correction for particle 1: inv_m1 * J_p1^T * deltaLambda
+    if inv_m1 > 0.0:
+        dp1_x = _warp_jacobian_dot(jacobian_pos, edge, 3, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp1_y = _warp_jacobian_dot(jacobian_pos, edge, 4, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp1_z = _warp_jacobian_dot(jacobian_pos, edge, 5, dl0, dl1, dl2, dl3, dl4, dl5)
+        dp1 = wp.vec3(dp1_x * inv_m1, dp1_y * inv_m1, dp1_z * inv_m1)
+        # Atomic add to position corrections
+        wp.atomic_add(pos_corrections, edge + 1, dp1)
+        corr = wp.length(dp1)
+        if corr > local_max_corr:
+            local_max_corr = corr
+
+    # Rotation correction for particle 0: inv_I0 * J_t0^T * deltaLambda
+    if quat_inv_masses[edge] > 0.0:
+        j_t0_delta = wp.vec3(
+            _warp_jacobian_dot(jacobian_rot, edge, 0, dl0, dl1, dl2, dl3, dl4, dl5),
+            _warp_jacobian_dot(jacobian_rot, edge, 1, dl0, dl1, dl2, dl3, dl4, dl5),
+            _warp_jacobian_dot(jacobian_rot, edge, 2, dl0, dl1, dl2, dl3, dl4, dl5),
+        )
+        dtheta0 = _inv_inertia_mul_vec_kernels(inv_inertia, edge, j_t0_delta)
+        # Atomic add to rotation corrections
+        wp.atomic_add(rot_corrections, edge, dtheta0)
+        corr = wp.length(dtheta0)
+        if corr > local_max_corr:
+            local_max_corr = corr
+
+    # Rotation correction for particle 1: inv_I1 * J_t1^T * deltaLambda
+    if quat_inv_masses[edge + 1] > 0.0:
+        j_t1_delta = wp.vec3(
+            _warp_jacobian_dot(jacobian_rot, edge, 3, dl0, dl1, dl2, dl3, dl4, dl5),
+            _warp_jacobian_dot(jacobian_rot, edge, 4, dl0, dl1, dl2, dl3, dl4, dl5),
+            _warp_jacobian_dot(jacobian_rot, edge, 5, dl0, dl1, dl2, dl3, dl4, dl5),
+        )
+        dtheta1 = _inv_inertia_mul_vec_kernels(inv_inertia, edge + 1, j_t1_delta)
+        # Atomic add to rotation corrections
+        wp.atomic_add(rot_corrections, edge + 1, dtheta1)
+        corr = wp.length(dtheta1)
+        if corr > local_max_corr:
+            local_max_corr = corr
+
+    wp.atomic_max(max_corr_out, 0, local_max_corr)
+
+
+@wp.kernel
+def _warp_apply_accumulated_corrections(
+    predicted_positions: wp.array(dtype=wp.vec3),
+    predicted_orientations: wp.array(dtype=wp.quat),
+    pos_corrections: wp.array(dtype=wp.vec3),
+    rot_corrections: wp.array(dtype=wp.vec3),
+    n_particles: int,
+):
+    """Apply accumulated corrections to positions and orientations.
+
+    Phase 2 of parallel direct corrections. Each thread handles one particle,
+    applying the accumulated corrections computed in phase 1.
+
+    Args:
+        predicted_positions: Predicted positions (updated in-place).
+        predicted_orientations: Predicted orientations (updated in-place).
+        pos_corrections: Accumulated position corrections per particle.
+        rot_corrections: Accumulated rotation corrections per particle.
+        n_particles: Number of particles.
+    """
+    particle = wp.tid()
+    if particle >= n_particles:
+        return
+
+    # Apply position correction
+    dp = pos_corrections[particle]
+    predicted_positions[particle] = predicted_positions[particle] + dp
+
+    # Apply rotation correction
+    dtheta = rot_corrections[particle]
+    predicted_orientations[particle] = _warp_quat_correction_g(predicted_orientations[particle], dtheta)
+
+
+@wp.kernel
+def _warp_zero_vec3(arr: wp.array(dtype=wp.vec3)):
+    """Zero out a vec3 array."""
+    tid = wp.tid()
+    arr[tid] = wp.vec3(0.0, 0.0, 0.0)
+
+
+# Legacy single-threaded version kept for reference and fallback
 @wp.kernel
 def _warp_apply_direct_corrections(
     predicted_positions: wp.array(dtype=wp.vec3),
@@ -301,13 +506,17 @@ def _warp_apply_direct_corrections(
     max_delta_out: wp.array(dtype=wp.float32),
     max_corr_out: wp.array(dtype=wp.float32),
 ):
-    """Apply position and rotation corrections from deltaLambda.
+    """Apply position and rotation corrections from deltaLambda (legacy single-threaded).
 
     Position correction: inv_mass * J_pos^T * deltaLambda
     Rotation correction: inv_inertia * J_rot^T * deltaLambda
 
     Uses actual inverse masses to correctly handle locked particles (inv_mass=0).
-    
+
+    Note: This is the legacy single-threaded version. For better GPU utilization,
+    use the parallel version (_warp_compute_corrections_parallel followed by
+    _warp_apply_accumulated_corrections).
+
     Args:
         predicted_positions: Predicted positions (updated in-place).
         predicted_orientations: Predicted orientations (updated in-place).
@@ -465,7 +674,7 @@ def _warp_apply_track_sliding(
     For each particle between start_idx and end_idx, project it onto the track
     and apply a correction scaled by stiffness. Only applies correction if the
     particle's projection is interior to the track (0 < t < 1).
-    
+
     Args:
         positions: Current positions (updated in-place).
         predicted_positions: Predicted positions (updated in-place).
@@ -518,7 +727,7 @@ def _warp_set_root_on_track(
 
     The insertion value is clamped to [0, track_length] and the root particle
     is positioned at that distance from track_start along the track direction.
-    
+
     Args:
         positions: Positions (updated in-place).
         predicted_positions: Predicted positions (updated in-place).
@@ -949,13 +1158,13 @@ def _warp_compute_inv_inertia_world(
     inv_inertia_out: wp.array(dtype=wp.float32),
 ):
     """Compute inverse inertia tensor in world frame from local frame diagonal.
-    
+
     For a cylindrical rod segment, the local inertia tensor is diagonal:
     I_local = diag(I_perp, I_perp, I_axial)
-    
+
     The world-frame inverse inertia is: inv_I_world = R * inv_I_local * R^T
     where R is the rotation matrix from the quaternion orientation.
-    
+
     Args:
         orientations: Quaternion orientations per particle.
         quat_inv_masses: Inverse rotational mass mask (0 for locked particles).
@@ -963,18 +1172,18 @@ def _warp_compute_inv_inertia_world(
         inv_inertia_out: Output array of 9 floats per particle (row-major 3x3 matrix).
     """
     i = wp.tid()
-    
+
     # Start of this particle's 3x3 matrix in the flat array
     base = i * 9
-    
+
     if quat_inv_masses[i] <= 0.0:
         # Locked particle - zero inverse inertia (infinite inertia)
         for j in range(9):
             inv_inertia_out[base + j] = 0.0
         return
-    
+
     q = orientations[i]
-    
+
     # Extract rotation matrix from quaternion (column vectors)
     # R = [r0 | r1 | r2] where r0, r1, r2 are column vectors
     xx = q.x * q.x
@@ -986,7 +1195,7 @@ def _warp_compute_inv_inertia_world(
     wx = q.w * q.x
     wy = q.w * q.y
     wz = q.w * q.z
-    
+
     # Rotation matrix (row-major)
     r00 = 1.0 - 2.0 * (yy + zz)
     r01 = 2.0 * (xy - wz)
@@ -997,24 +1206,24 @@ def _warp_compute_inv_inertia_world(
     r20 = 2.0 * (xz - wy)
     r21 = 2.0 * (yz + wx)
     r22 = 1.0 - 2.0 * (xx + yy)
-    
+
     # Compute R * diag(inv_I) * R^T
     # Let d = inv_inertia_local_diag = (d0, d1, d2)
     # Result[i,j] = sum_k R[i,k] * d[k] * R[j,k]
     d0 = inv_inertia_local_diag.x
     d1 = inv_inertia_local_diag.y
     d2 = inv_inertia_local_diag.z
-    
+
     # Row 0
     inv_inertia_out[base + 0] = r00 * d0 * r00 + r01 * d1 * r01 + r02 * d2 * r02  # [0,0]
     inv_inertia_out[base + 1] = r00 * d0 * r10 + r01 * d1 * r11 + r02 * d2 * r12  # [0,1]
     inv_inertia_out[base + 2] = r00 * d0 * r20 + r01 * d1 * r21 + r02 * d2 * r22  # [0,2]
-    
+
     # Row 1
     inv_inertia_out[base + 3] = r10 * d0 * r00 + r11 * d1 * r01 + r12 * d2 * r02  # [1,0]
     inv_inertia_out[base + 4] = r10 * d0 * r10 + r11 * d1 * r11 + r12 * d2 * r12  # [1,1]
     inv_inertia_out[base + 5] = r10 * d0 * r20 + r11 * d1 * r21 + r12 * d2 * r22  # [1,2]
-    
+
     # Row 2
     inv_inertia_out[base + 6] = r20 * d0 * r00 + r21 * d1 * r01 + r22 * d2 * r02  # [2,0]
     inv_inertia_out[base + 7] = r20 * d0 * r10 + r21 * d1 * r11 + r22 * d2 * r12  # [2,1]
@@ -1022,28 +1231,25 @@ def _warp_compute_inv_inertia_world(
 
 
 __all__ = [
-    # Utility operations
-    "_warp_zero_float",
-    "_warp_zero_2d",
-    "_warp_copy_with_offset",
-    "_warp_copy_from_offset",
-    "_warp_build_segment_lines",
-    # Floor collision
+    "_warp_apply_accumulated_corrections",
+    "_warp_apply_concentric_constraint",
+    "_warp_apply_concentric_constraint_v2",
+    "_warp_apply_direct_corrections",
     "_warp_apply_floor_collisions",
-    # Root control
     "_warp_apply_root_translation",
-    "_warp_zero_root_velocities",
+    "_warp_apply_track_sliding",
+    "_warp_build_segment_lines",
+    "_warp_compute_corrections_parallel",
+    "_warp_compute_inv_inertia_world",
+    "_warp_constraint_max",
+    "_warp_constraint_max_sequential",
+    "_warp_copy_from_offset",
+    "_warp_copy_with_offset",
+    "_warp_set_root_on_track",
     "_warp_set_root_orientation",
     "_warp_update_velocities_from_positions",
-    # Constraint diagnostics
-    "_warp_constraint_max",
-    # Direct corrections
-    "_warp_apply_direct_corrections",
-    # Track sliding
-    "_warp_apply_track_sliding",
-    "_warp_set_root_on_track",
-    # Concentric constraint
-    "_warp_apply_concentric_constraint",
-    # Inverse inertia
-    "_warp_compute_inv_inertia_world",
+    "_warp_zero_2d",
+    "_warp_zero_float",
+    "_warp_zero_root_velocities",
+    "_warp_zero_vec3",
 ]
