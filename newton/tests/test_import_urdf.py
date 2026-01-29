@@ -562,6 +562,114 @@ class TestImportUrdf(unittest.TestCase):
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
 
+    def test_floating_true_creates_free_joint(self):
+        """Test that floating=True creates a free joint for the root body."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_floating">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(urdf_content, builder, floating=True, up_axis="Z")
+        model = builder.finalize()
+
+        # Verify the model has a free joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.FREE)
+        self.assertEqual(builder.joint_key[0], "floating_base")
+
+    def test_base_joint_string_creates_d6_joint(self):
+        """Test that base_joint as string creates a D6 joint with specified axes."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_base_joint_string">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(urdf_content, builder, base_joint="px,py,rz", up_axis="Z")
+        model = builder.finalize()
+
+        # Verify the model has a D6 joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.D6)
+        self.assertEqual(builder.joint_key[0], "base_joint")
+
+    def test_base_joint_dict_creates_custom_joint(self):
+        """Test that base_joint as dict creates the specified joint type."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_base_joint_dict">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(
+            urdf_content,
+            builder,
+            base_joint={
+                "joint_type": newton.JointType.REVOLUTE,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0, 0, 1])],
+            },
+            up_axis="Z",
+        )
+        model = builder.finalize()
+
+        # Verify the model has a revolute joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.REVOLUTE)
+        self.assertEqual(builder.joint_key[0], "base_joint")
+
+    def test_base_joint_overrides_floating(self):
+        """Test that base_joint takes precedence over floating parameter."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_base_joint_override">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        # Even with floating=True, base_joint should take precedence
+        builder = newton.ModelBuilder()
+        self.parse_urdf(urdf_content, builder, floating=True, base_joint="px,py", up_axis="Z")
+        model = builder.finalize()
+
+        # Verify the model has a D6 joint (not free)
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.D6)
+
 
 class TestUrdfUriResolution(unittest.TestCase):
     """Tests for URDF URI resolution functionality."""
