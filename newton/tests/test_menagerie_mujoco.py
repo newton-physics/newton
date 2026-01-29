@@ -109,6 +109,11 @@ These are changes/workarounds made to get tests passing that should be revisited
     - Tests override to use MuJoCo defaults for equivalence testing
     - TODO: Consider whether Newton should match MuJoCo defaults or keep its own
 
+13. TIMESTEP FROM MODEL (opt.timestep)
+    - Newton's MJCF parser doesn't extract timestep from <option> tag yet
+    - Tests currently extract timestep from native MuJoCo model after loading
+    - TODO: Parse timestep from MJCF <option timestep="..."/> into Newton model
+
 --------------------------------------------------------------------------------
 """
 
@@ -855,7 +860,7 @@ class TestMenagerieBase(unittest.TestCase):
     Optional overrides:
         - num_worlds: int - number of parallel worlds (default: 2)
         - num_steps: int - simulation steps to run (default: 100)
-        - dt: float - timestep (default: 0.002)
+        - dt: float - timestep fallback (actual dt extracted from native model)
         - control_strategy: ControlStrategy - how to generate controls
         - compare_fields: list[str] - MjData fields to compare
         - tolerances: dict[str, float] - per-field tolerances
@@ -870,7 +875,7 @@ class TestMenagerieBase(unittest.TestCase):
     # Configurable defaults
     num_worlds: int = 16
     num_steps: int = 100
-    dt: float = 0.002
+    dt: float = 0.002  # Fallback; actual dt extracted from native model in test
 
     # Control strategy (can override in subclass)
     control_strategy: ControlStrategy | None = None
@@ -1048,6 +1053,10 @@ class TestMenagerieBase(unittest.TestCase):
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
+        # Extract timestep from native model (Newton doesn't parse <option timestep="..."/> yet)
+        # TODO: Remove this workaround once Newton's MJCF parser supports timestep extraction
+        dt = float(mj_model.opt.timestep)
+
         # Compare mjw_model structures
         compare_mjw_models(newton_solver.mjw_model, native_mjw_model, skip_fields=self.model_skip_fields)
 
@@ -1102,7 +1111,7 @@ class TestMenagerieBase(unittest.TestCase):
 
         # Helper: step both simulations
         def step_both(step_num: int, newton_graph: Any = None, native_graph: Any = None):
-            t = step_num * self.dt
+            t = step_num * dt
             ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)  # type: ignore[union-attr]
             newton_solver.mjw_data.ctrl.assign(ctrl)
             native_mjw_data.ctrl.assign(ctrl)
@@ -1112,7 +1121,7 @@ class TestMenagerieBase(unittest.TestCase):
                 wp.capture_launch(newton_graph)
             else:
                 _mujoco_warp.step(native_mjw_model, native_mjw_data)  # type: ignore[union-attr]
-                newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+                newton_solver.step(newton_state, newton_state, newton_control, None, dt)
 
         # Helper: compare at step (for non-visual mode)
         def compare_at_step(step_num: int):
@@ -1151,7 +1160,7 @@ class TestMenagerieBase(unittest.TestCase):
                 native_mjw_data.ctrl.assign(ctrl)
 
                 with wp.ScopedCapture() as capture:
-                    newton_solver.step(newton_state, newton_state, newton_control, None, self.dt)
+                    newton_solver.step(newton_state, newton_state, newton_control, None, dt)
                 newton_graph = capture.graph
 
                 with wp.ScopedCapture() as capture:
@@ -1164,7 +1173,7 @@ class TestMenagerieBase(unittest.TestCase):
             if viewer:
                 sync_to_viewer()
                 viewer.sync()
-                time.sleep(self.dt)
+                time.sleep(dt)
 
             # Compare or print diff
             if self.debug_visual:
