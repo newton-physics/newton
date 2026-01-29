@@ -327,7 +327,7 @@ class TestSoftBody(unittest.TestCase):
     pass
 
 
-def test_tet_adjacency_single_tet(test, device, solver):
+def test_tet_adjacency_single_tet(test, device):
     tet_indices = np.array([[0, 1, 2, 3]], dtype=np.int32)
     particles = [
         (0.0, 0.0, 0.0),
@@ -337,16 +337,14 @@ def test_tet_adjacency_single_tet(test, device, solver):
     ]
     model = _build_model_with_soft_mesh(particles, tet_indices)
 
-    solver = SolverVBD()
-    solver.model = model
-    solver.device = model.device
+    solver = SolverVBD(model)
 
-    adjacency = solver.compute_force_element_adjacency(model)
+    adjacency = solver.compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(4, tet_indices)
     np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
     np.testing.assert_array_equal(adjacency.v_adj_tets.numpy(), exp_flat)
-    _assert_adjacency_matches_tets(adjacency, tet_indices)
+    _assert_adjacency_matches_tets(test, adjacency, tet_indices)
 
 
 def test_tet_adjacency_complex_pyramid(test, device):
@@ -516,6 +514,7 @@ def test_tet_energy(test, device):
 
 
 devices = get_test_devices(mode="basic")
+add_function_test(TestSoftBody, "test_tet_adjacency_single_tet", test_tet_adjacency_single_tet, devices=devices)
 add_function_test(
     TestSoftBody, "test_tet_adjacency_complex_pyramid", test_tet_adjacency_complex_pyramid, devices=devices
 )
