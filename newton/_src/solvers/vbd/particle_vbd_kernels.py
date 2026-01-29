@@ -33,12 +33,6 @@ from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
 from .tri_mesh_collision import (
     TriMeshCollisionInfo,
-    get_edge_colliding_edges,
-    get_edge_colliding_edges_count,
-    get_triangle_colliding_vertices,
-    get_triangle_colliding_vertices_count,
-    get_vertex_colliding_triangles,
-    get_vertex_colliding_triangles_count,
 )
 
 # TODO: Grab changes from Warp that has fixed the backward pass
@@ -67,8 +61,10 @@ class mat32(wp.types.matrix(shape=(3, 2), dtype=wp.float32)):
 class mat99(wp.types.matrix(shape=(9, 9), dtype=wp.float32)):
     pass
 
+
 class mat93(wp.types.matrix(shape=(9, 3), dtype=wp.float32)):
     pass
+
 
 class mat43(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
     pass
@@ -267,7 +263,7 @@ def damp_force_and_hessian(
 #     damping: float,
 #     dt: float,
 # ) -> tuple[wp.vec3, wp.mat33]:
-    
+
 #     # ============ Get Vertices ============
 #     v0 = pos[tet_indices[tet_id, 0]]
 #     v1 = pos[tet_indices[tet_id, 1]]
@@ -293,7 +289,7 @@ def damp_force_and_hessian(
 #     alpha = 1.0 + mu / lmbd
 #     F_inv = wp.inverse(F)
 #     cof = J * wp.transpose(F_inv)
-    
+
 #     cof_vec = vec9(
 #         cof[0,0], cof[1,0], cof[2,0],
 #         cof[0,1], cof[1,1], cof[2,1],
@@ -304,8 +300,8 @@ def damp_force_and_hessian(
 #     P_vec = rest_volume * (mu * f + lmbd * (J - alpha) * cof_vec)
 
 #     # ============ Hessian ============
-#     H = (mu * wp.identity(n=9, dtype=float) 
-#          + lmbd * wp.outer(cof_vec, cof_vec) 
+#     H = (mu * wp.identity(n=9, dtype=float)
+#          + lmbd * wp.outer(cof_vec, cof_vec)
 #          + compute_cofactor_derivative(F, lmbd * (J - alpha)))
 #     H = rest_volume * H
 
@@ -319,31 +315,32 @@ def damp_force_and_hessian(
 #     # ============ Damping ============
 #     if damping > 0.0:
 #         inv_dt = 1.0 / dt
-        
+
 #         v0_prev = pos_prev[tet_indices[tet_id, 0]]
 #         v1_prev = pos_prev[tet_indices[tet_id, 1]]
 #         v2_prev = pos_prev[tet_indices[tet_id, 2]]
 #         v3_prev = pos_prev[tet_indices[tet_id, 3]]
-        
+
 #         Ds_dot = wp.mat33(
 #             (v1 - v1_prev) - (v0 - v0_prev),
 #             (v2 - v2_prev) - (v0 - v0_prev),
 #             (v3 - v3_prev) - (v0 - v0_prev),
 #         ) * inv_dt
 #         F_dot = Ds_dot * Dm_inv
-        
+
 #         f_dot = vec9(
 #             F_dot[0,0], F_dot[1,0], F_dot[2,0],
 #             F_dot[0,1], F_dot[1,1], F_dot[2,1],
 #             F_dot[0,2], F_dot[1,2], F_dot[2,2],
 #         )
-        
+
 #         P_damp = damping * (H * f_dot)
-        
+
 #         force = force - wp.transpose(G_i) * P_damp
 #         hessian = hessian + (damping * inv_dt) * wp.transpose(G_i) * H * G_i
 
 #     return force, hessian
+
 
 @wp.func
 def evaluate_volumetric_neo_hookean_force_and_hessian(
@@ -358,7 +355,6 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     damping: float,
     dt: float,
 ) -> tuple[wp.vec3, wp.mat33]:
-    
     # ============ Get Vertices ============
     v0 = pos[tet_indices[tet_id, 0]]
     v1 = pos[tet_indices[tet_id, 1]]
@@ -369,14 +365,20 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     rest_volume = 1.0 / (wp.determinant(Dm_inv) * 6.0)
 
     # ============ Deformation Gradient ============
-    Ds = wp.mat33(v1 - v0, v2 - v0, v3 - v0)
+    Ds = wp.matrix_from_cols(v1 - v0, v2 - v0, v3 - v0)
     F = Ds * Dm_inv
 
     # ============ Flatten F to vec9 ============
     f = vec9(
-        F[0,0], F[1,0], F[2,0],
-        F[0,1], F[1,1], F[2,1],
-        F[0,2], F[1,2], F[2,2],
+        F[0, 0],
+        F[1, 0],
+        F[2, 0],
+        F[0, 1],
+        F[1, 1],
+        F[2, 1],
+        F[0, 2],
+        F[1, 2],
+        F[2, 2],
     )
 
     # ============ Useful Quantities ============
@@ -384,125 +386,232 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     alpha = 1.0 + mu / lmbd
     F_inv = wp.inverse(F)
     cof = J * wp.transpose(F_inv)
-    
+
     cof_vec = vec9(
-        cof[0,0], cof[1,0], cof[2,0],
-        cof[0,1], cof[1,1], cof[2,1],
-        cof[0,2], cof[1,2], cof[2,2],
+        cof[0, 0],
+        cof[1, 0],
+        cof[2, 0],
+        cof[0, 1],
+        cof[1, 1],
+        cof[2, 1],
+        cof[0, 2],
+        cof[1, 2],
+        cof[2, 2],
     )
 
     # ============ Stress ============
     P_vec = rest_volume * (mu * f + lmbd * (J - alpha) * cof_vec)
 
     # ============ Hessian ============
-    H = (mu * wp.identity(n=9, dtype=float) 
-         + lmbd * wp.outer(cof_vec, cof_vec) 
-         + compute_cofactor_derivative(F, lmbd * (J - alpha)))
+    H = (
+        mu * wp.identity(n=9, dtype=float)
+        + lmbd * wp.outer(cof_vec, cof_vec)
+        + compute_cofactor_derivative(F, lmbd * (J - alpha))
+    )
     H = rest_volume * H
 
     # ============ Assemble Pointwise Force ============
     if v_order == 0:
         m = wp.vec3(
-            -(Dm_inv[0,0] + Dm_inv[1,0] + Dm_inv[2,0]),
-            -(Dm_inv[0,1] + Dm_inv[1,1] + Dm_inv[2,1]),
-            -(Dm_inv[0,2] + Dm_inv[1,2] + Dm_inv[2,2]),
+            -(Dm_inv[0, 0] + Dm_inv[1, 0] + Dm_inv[2, 0]),
+            -(Dm_inv[0, 1] + Dm_inv[1, 1] + Dm_inv[2, 1]),
+            -(Dm_inv[0, 2] + Dm_inv[1, 2] + Dm_inv[2, 2]),
         )
     elif v_order == 1:
-        m = wp.vec3(Dm_inv[0,0], Dm_inv[0,1], Dm_inv[0,2])
+        m = wp.vec3(Dm_inv[0, 0], Dm_inv[0, 1], Dm_inv[0, 2])
     elif v_order == 2:
-        m = wp.vec3(Dm_inv[1,0], Dm_inv[1,1], Dm_inv[1,2])
+        m = wp.vec3(Dm_inv[1, 0], Dm_inv[1, 1], Dm_inv[1, 2])
     else:
-        m = wp.vec3(Dm_inv[2,0], Dm_inv[2,1], Dm_inv[2,2])
+        m = wp.vec3(Dm_inv[2, 0], Dm_inv[2, 1], Dm_inv[2, 2])
 
     force, hessian = assemble_tet_vertex_force_and_hessian(P_vec, H, m[0], m[1], m[2])
 
     # ============ Damping ============
     if damping > 0.0:
         inv_dt = 1.0 / dt
-        
+
         v0_prev = pos_prev[tet_indices[tet_id, 0]]
         v1_prev = pos_prev[tet_indices[tet_id, 1]]
         v2_prev = pos_prev[tet_indices[tet_id, 2]]
         v3_prev = pos_prev[tet_indices[tet_id, 3]]
-        
-        Ds_dot = wp.mat33(
-            (v1 - v1_prev) - (v0 - v0_prev),
-            (v2 - v2_prev) - (v0 - v0_prev),
-            (v3 - v3_prev) - (v0 - v0_prev),
-        ) * inv_dt
-        F_dot = Ds_dot * Dm_inv
-        
-        f_dot = vec9(
-            F_dot[0,0], F_dot[1,0], F_dot[2,0],
-            F_dot[0,1], F_dot[1,1], F_dot[2,1],
-            F_dot[0,2], F_dot[1,2], F_dot[2,2],
+
+        Ds_dot = (
+            wp.matrix_from_cols(
+                (v1 - v1_prev) - (v0 - v0_prev),
+                (v2 - v2_prev) - (v0 - v0_prev),
+                (v3 - v3_prev) - (v0 - v0_prev),
+            )
+            * inv_dt
         )
-        
+        F_dot = Ds_dot * Dm_inv
+
+        f_dot = vec9(
+            F_dot[0, 0],
+            F_dot[1, 0],
+            F_dot[2, 0],
+            F_dot[0, 1],
+            F_dot[1, 1],
+            F_dot[2, 1],
+            F_dot[0, 2],
+            F_dot[1, 2],
+            F_dot[2, 2],
+        )
+
         P_damp = damping * (H * f_dot)
-        
-        f_damp =  wp.vec3(
+
+        f_damp = wp.vec3(
             -(P_damp[0] * m[0] + P_damp[3] * m[1] + P_damp[6] * m[2]),
             -(P_damp[1] * m[0] + P_damp[4] * m[1] + P_damp[7] * m[2]),
             -(P_damp[2] * m[0] + P_damp[5] * m[1] + P_damp[8] * m[2]),
         )
-        force += f_damp
-        hessian +=  (damping * inv_dt * hessian) 
-
+        force = force + f_damp
+        hessian = hessian * (1.0 + damping * inv_dt)
 
     return force, hessian
 
 
 # ============ Helper Functions ============
 
+
 @wp.func
 def compute_G_matrix(Dm_inv: wp.mat33, v_order: int) -> mat93:
     """G_i = ∂vec(F)/∂x_i"""
-    
+
     if v_order == 0:
         m = wp.vec3(
-            -(Dm_inv[0,0] + Dm_inv[1,0] + Dm_inv[2,0]),
-            -(Dm_inv[0,1] + Dm_inv[1,1] + Dm_inv[2,1]),
-            -(Dm_inv[0,2] + Dm_inv[1,2] + Dm_inv[2,2]),
+            -(Dm_inv[0, 0] + Dm_inv[1, 0] + Dm_inv[2, 0]),
+            -(Dm_inv[0, 1] + Dm_inv[1, 1] + Dm_inv[2, 1]),
+            -(Dm_inv[0, 2] + Dm_inv[1, 2] + Dm_inv[2, 2]),
         )
     elif v_order == 1:
-        m = wp.vec3(Dm_inv[0,0], Dm_inv[0,1], Dm_inv[0,2])
+        m = wp.vec3(Dm_inv[0, 0], Dm_inv[0, 1], Dm_inv[0, 2])
     elif v_order == 2:
-        m = wp.vec3(Dm_inv[1,0], Dm_inv[1,1], Dm_inv[1,2])
+        m = wp.vec3(Dm_inv[1, 0], Dm_inv[1, 1], Dm_inv[1, 2])
     else:
-        m = wp.vec3(Dm_inv[2,0], Dm_inv[2,1], Dm_inv[2,2])
-    
+        m = wp.vec3(Dm_inv[2, 0], Dm_inv[2, 1], Dm_inv[2, 2])
+
     # G = [m[0]*I₃, m[1]*I₃, m[2]*I₃]ᵀ (stacked vertically)
     return mat93(
-        m[0], 0.0,  0.0,
-        0.0,  m[0], 0.0,
-        0.0,  0.0,  m[0],
-        m[1], 0.0,  0.0,
-        0.0,  m[1], 0.0,
-        0.0,  0.0,  m[1],
-        m[2], 0.0,  0.0,
-        0.0,  m[2], 0.0,
-        0.0,  0.0,  m[2],
+        m[0],
+        0.0,
+        0.0,
+        0.0,
+        m[0],
+        0.0,
+        0.0,
+        0.0,
+        m[0],
+        m[1],
+        0.0,
+        0.0,
+        0.0,
+        m[1],
+        0.0,
+        0.0,
+        0.0,
+        m[1],
+        m[2],
+        0.0,
+        0.0,
+        0.0,
+        m[2],
+        0.0,
+        0.0,
+        0.0,
+        m[2],
     )
 
 
 @wp.func
 def compute_cofactor_derivative(F: wp.mat33, scale: float) -> mat99:
     """scale * ∂cof(F)/∂F"""
-    
-    F11, F21, F31 = F[0,0], F[1,0], F[2,0]
-    F12, F22, F32 = F[0,1], F[1,1], F[2,1]
-    F13, F23, F33 = F[0,2], F[1,2], F[2,2]
-    
+
+    F11, F21, F31 = F[0, 0], F[1, 0], F[2, 0]
+    F12, F22, F32 = F[0, 1], F[1, 1], F[2, 1]
+    F13, F23, F33 = F[0, 2], F[1, 2], F[2, 2]
+
     return mat99(
-        0.0,         0.0,         0.0,         0.0,          scale*F33,  -scale*F23, 0.0,         -scale*F32,  scale*F22,
-        0.0,         0.0,         0.0,        -scale*F33,    0.0,         scale*F13,  scale*F32,   0.0,        -scale*F12,
-        0.0,         0.0,         0.0,         scale*F23,   -scale*F13,   0.0,       -scale*F22,   scale*F12,   0.0,
-        0.0,        -scale*F33,   scale*F23,   0.0,          0.0,         0.0,        0.0,          scale*F31, -scale*F21,
-        scale*F33,   0.0,        -scale*F13,   0.0,          0.0,         0.0,       -scale*F31,   0.0,         scale*F11,
-       -scale*F23,   scale*F13,   0.0,         0.0,          0.0,         0.0,        scale*F21,  -scale*F11,   0.0,
-        0.0,         scale*F32,  -scale*F22,   0.0,         -scale*F31,   scale*F21,  0.0,          0.0,         0.0,
-       -scale*F32,   0.0,         scale*F12,   scale*F31,    0.0,        -scale*F11,  0.0,          0.0,         0.0,
-        scale*F22,  -scale*F12,   0.0,        -scale*F21,    scale*F11,   0.0,        0.0,          0.0,         0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        scale * F33,
+        -scale * F23,
+        0.0,
+        -scale * F32,
+        scale * F22,
+        0.0,
+        0.0,
+        0.0,
+        -scale * F33,
+        0.0,
+        scale * F13,
+        scale * F32,
+        0.0,
+        -scale * F12,
+        0.0,
+        0.0,
+        0.0,
+        scale * F23,
+        -scale * F13,
+        0.0,
+        -scale * F22,
+        scale * F12,
+        0.0,
+        0.0,
+        -scale * F33,
+        scale * F23,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        scale * F31,
+        -scale * F21,
+        scale * F33,
+        0.0,
+        -scale * F13,
+        0.0,
+        0.0,
+        0.0,
+        -scale * F31,
+        0.0,
+        scale * F11,
+        -scale * F23,
+        scale * F13,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        scale * F21,
+        -scale * F11,
+        0.0,
+        0.0,
+        scale * F32,
+        -scale * F22,
+        0.0,
+        -scale * F31,
+        scale * F21,
+        0.0,
+        0.0,
+        0.0,
+        -scale * F32,
+        0.0,
+        scale * F12,
+        scale * F31,
+        0.0,
+        -scale * F11,
+        0.0,
+        0.0,
+        0.0,
+        scale * F22,
+        -scale * F12,
+        0.0,
+        -scale * F21,
+        scale * F11,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     )
 
 
@@ -1799,6 +1908,7 @@ def apply_conservative_bound_truncation(
     else:
         return pos_new
 
+
 @wp.kernel
 def update_velocity(
     dt: float, pos_prev: wp.array(dtype=wp.vec3), pos: wp.array(dtype=wp.vec3), vel: wp.array(dtype=wp.vec3)
@@ -1973,7 +2083,6 @@ def accumulate_self_contact_force_and_hessian(
                             wp.atomic_add(particle_forces, tri_c, collision_force_2)
                             wp.atomic_add(particle_hessians, tri_c, collision_hessian_2)
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
-
 
 
 def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
@@ -2364,9 +2473,11 @@ def accumulate_contact_force_and_hessian_no_self_contact(
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
 
+
 # =============================================================================
 # Planar DAT (Divide and Truncate) kernels
 # =============================================================================
+
 
 @wp.func
 def segment_plane_intersects(
@@ -2636,6 +2747,7 @@ def planar_truncation_t(
     t = wp.clamp(wp.min(t * gamma_r, t - gamma_min), 0.0, 1.0)
     return t
 
+
 @wp.kernel
 def apply_planar_truncation_parallel_by_collision(
     # inputs
@@ -2791,6 +2903,7 @@ def apply_truncation_ts(
     if pos_out:
         pos_out[i] = pos[i] + particle_displacement
 
+
 @wp.kernel
 def accumulate_particle_body_contact_force_and_hessian(
     # inputs
@@ -2855,6 +2968,7 @@ def accumulate_particle_body_contact_force_and_hessian(
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
 
+
 @wp.kernel
 def solve_elasticity_tile(
     dt: float,
@@ -2907,7 +3021,9 @@ def solve_elasticity_tile(
             adj_tri_counter = thread_idx + batch_counter
             batch_counter += TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE
             # elastic force and hessian
-            tri_index, vertex_order = get_vertex_adjacent_face_id_order(particle_adjacency, particle_index, adj_tri_counter)
+            tri_index, vertex_order = get_vertex_adjacent_face_id_order(
+                particle_adjacency, particle_index, adj_tri_counter
+            )
 
             # fmt: off
             if wp.static("connectivity" in VBD_DEBUG_PRINTING_OPTIONS):
@@ -3016,6 +3132,7 @@ def solve_elasticity_tile(
                 + particle_forces[particle_index]
             )
             particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
+
 
 @wp.kernel
 def solve_elasticity(
@@ -3156,6 +3273,7 @@ def solve_elasticity(
     if abs(wp.determinant(h)) > 1e-8:
         h_inv = wp.inverse(h)
         particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f
+
 
 @wp.kernel
 def accumulate_contact_force_and_hessian(
