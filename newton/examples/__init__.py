@@ -474,7 +474,20 @@ def main():
 
     # Map short names to full module paths
     example_map = {}
-    modules = ["basic", "cable", "cloth", "contacts", "diffsim", "ik", "mpm", "robot", "selection", "sensors", "Softbody"]
+    modules = [
+        "basic",
+        "cable",
+        "cloth",
+        "contacts",
+        "diffsim",
+        "ik",
+        "mpm",
+        "mutlphysics",
+        "robot",
+        "selection",
+        "sensors",
+        "Softbody",
+    ]
     for module in sorted(modules):
         for example in sorted(os.listdir(os.path.join(get_source_directory(), module))):
             if example.endswith(".py"):
