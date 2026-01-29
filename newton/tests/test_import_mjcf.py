@@ -2037,6 +2037,45 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
         self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
 
+    def test_mjcf_geom_solref_parsing(self):
+        """Test MJCF geom solref parsing for contact stiffness/damping.
+
+        MuJoCo solref format: [timeconst, dampratio]
+        - Standard mode (timeconst > 0): ke = 1/(tc^2 * dr^2), kd = 2/tc
+        - Direct mode (both negative): ke = -tc, kd = -dr
+        """
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="test_body">
+                    <!-- Default solref [0.02, 1.0] -> ke=2500, kd=100 -->
+                    <geom name="geom_default" type="box" size="0.1 0.1 0.1"/>
+                    <!-- Custom solref [0.04, 1.0] -> ke=625, kd=50 -->
+                    <geom name="geom_custom" type="sphere" size="0.1" solref="0.04 1.0"/>
+                    <!-- Direct mode solref [-1000, -50] -> ke=1000, kd=50 -->
+                    <geom name="geom_direct" type="capsule" size="0.1 0.2" solref="-1000 -50"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, up_axis="Z")
+
+        self.assertEqual(builder.shape_count, 3)
+
+        # Default solref [0.02, 1.0]: ke = 1/(0.02^2 * 1^2) = 2500, kd = 2/0.02 = 100
+        self.assertAlmostEqual(builder.shape_material_ke[0], 2500.0, places=1)
+        self.assertAlmostEqual(builder.shape_material_kd[0], 100.0, places=1)
+
+        # Custom solref [0.04, 1.0]: ke = 1/(0.04^2 * 1^2) = 625, kd = 2/0.04 = 50
+        self.assertAlmostEqual(builder.shape_material_ke[1], 625.0, places=1)
+        self.assertAlmostEqual(builder.shape_material_kd[1], 50.0, places=1)
+
+        # Direct mode solref [-1000, -50]: ke = 1000, kd = 50
+        self.assertAlmostEqual(builder.shape_material_ke[2], 1000.0, places=1)
+        self.assertAlmostEqual(builder.shape_material_kd[2], 50.0, places=1)
+
     def test_mjcf_gravcomp(self):
         """Test parsing of gravcomp from MJCF"""
         mjcf_content = """
