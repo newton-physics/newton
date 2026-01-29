@@ -99,7 +99,6 @@ class Example:
         allegro_hand.add_usd(
             asset_file,
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
-            enable_self_collisions=True,
             ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
         )
 

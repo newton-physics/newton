@@ -317,15 +317,32 @@ class ViewerBase:
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
 
-            self.log_instances(
-                shapes.name,
-                shapes.mesh,
-                shapes.world_xforms,
-                shapes.scales,  # Always pass scales - needed for transform matrix calculation
-                shapes.colors if self.model_changed or shapes.colors_changed else None,
-                shapes.materials if self.model_changed else None,
-                hidden=not visible,
-            )
+            colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+            materials = shapes.materials if self.model_changed else None
+
+            # Capsules may be rendered via a specialized path by the concrete viewer/backend
+            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # The base implementation of log_capsules() falls back to log_instances().
+            if shapes.geo_type == newton.GeoType.CAPSULE:
+                self.log_capsules(
+                    shapes.name,
+                    shapes.mesh,
+                    shapes.world_xforms,
+                    shapes.scales,
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
+            else:
+                self.log_instances(
+                    shapes.name,
+                    shapes.mesh,
+                    shapes.world_xforms,
+                    shapes.scales,  # Always pass scales - needed for transform matrix calculation
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
 
             shapes.colors_changed = False
 
@@ -709,6 +726,10 @@ class ViewerBase:
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         pass
 
+    # Optional specialized capsule path. Backends can override.
+    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+        self.log_instances(name, mesh, xforms, scales, colors, materials, hidden=hidden)
+
     @abstractmethod
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         pass
@@ -744,6 +765,9 @@ class ViewerBase:
             self.flags = flags
             self.mesh = mesh
             self.device = device
+            # Optional geometry type for specialized rendering paths (e.g., capsules).
+            # -1 means "unknown / not set".
+            self.geo_type = -1
 
             self.parents = []
             self.xforms = []
@@ -966,6 +990,7 @@ class ViewerBase:
             if shape_hash not in self._shape_instances:
                 shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
                 self._shape_instances[shape_hash] = batch
             else:
                 batch = self._shape_instances[shape_hash]
@@ -1106,6 +1131,7 @@ class ViewerBase:
             if geo_hash not in self._sdf_isomesh_instances:
                 shape_name = f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
                 self._sdf_isomesh_instances[geo_hash] = batch
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]

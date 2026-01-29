@@ -767,6 +767,15 @@ class ModelBuilder:
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
 
+    def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
+        """Add a collision filter pair in canonical order.
+
+        Args:
+            shape_a: First shape index
+            shape_b: Second shape index
+        """
+        self.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
+
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
         Define a custom per-entity attribute to be added to the Model.
@@ -1613,7 +1622,7 @@ class ModelBuilder:
         collider_classes: Sequence[str] = ("collision",),
         no_class_as_colliders: bool = True,
         force_show_colliders: bool = False,
-        enable_self_collisions: bool = False,
+        enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = True,
         ensure_nonstatic_links: bool = True,
         static_link_mass: float = 1e-2,
@@ -2552,11 +2561,7 @@ class ModelBuilder:
                 for parent_shape in self.body_shapes[parent]:
                     if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
                         continue
-                    # Ensure canonical order (smaller, larger) for consistent lookup
-                    a, b = parent_shape, child_shape
-                    if a > b:
-                        a, b = b, a
-                    self.shape_collision_filter_pairs.append((a, b))
+                    self.add_shape_collision_filter_pair(parent_shape, child_shape)
 
         joint_index = self.joint_count - 1
 
@@ -3917,7 +3922,7 @@ class ModelBuilder:
         if cfg.has_shape_collision:
             # no contacts between shapes of the same body
             for same_body_shape in self.body_shapes[body]:
-                self.shape_collision_filter_pairs.append((same_body_shape, shape))
+                self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
         self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(xform)
@@ -3956,7 +3961,7 @@ class ModelBuilder:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
-                        self.shape_collision_filter_pairs.append((parent_shape, shape))
+                        self.add_shape_collision_filter_pair(parent_shape, shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
@@ -6436,7 +6441,9 @@ class ModelBuilder:
             )
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
-            m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
+            m.shape_collision_filter_pairs = {
+                (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
+            }
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
@@ -7103,7 +7110,6 @@ class ModelBuilder:
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
 
-                # Ensure canonical order (smaller_element, larger_element)
                 if s1 > s2:
                     shape_a, shape_b = s2, s1
                 else:
