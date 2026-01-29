@@ -252,7 +252,7 @@ def parse_mjcf(
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-            [ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD]
+            [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
         option_elem = root.find("option")
         if option_elem is not None and builder_custom_attr_option:

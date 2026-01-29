@@ -375,8 +375,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="impratio",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1.0,
                 namespace="mujoco",
