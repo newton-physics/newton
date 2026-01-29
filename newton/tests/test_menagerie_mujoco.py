@@ -1252,8 +1252,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         "actuator_cranklength",
         "actuator_acc0",
         "actuator_lengthrange",
-        # Solver reference params: Newton uses different defaults
-        "geom_solref",
         # Joint actuator force limiting: Newton enables by default
         "jnt_actfrclimited",
         "jnt_actfrcrange",
