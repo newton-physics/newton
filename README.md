@@ -503,6 +503,48 @@ uv sync --extra examples
   </tr>
 </table>
 
+### Multi-Physics Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mutlphysics/example_falling_gift.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_falling_gift.png" alt="Falling Gift">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mutlphysics/example_softbody_dropping_to_cloth.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_softbody_dropping_to_cloth.png" alt="Softbody Dropping to Cloth">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples falling_gift</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples softbody_dropping_to_cloth</code>
+    </td>
+  </tr>
+</table>
+
+### Softbody Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/Softbody/example_softbody_hanging.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_hanging.png" alt="Softbody Hanging">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples softbody_hanging</code>
+    </td>
+  </tr>
+</table>
+
 ### Example Options
 
 The examples support the following command-line arguments:
