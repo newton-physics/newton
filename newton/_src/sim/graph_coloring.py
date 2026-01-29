@@ -118,7 +118,14 @@ def construct_tetmesh_graph_edges(tet_indices: np.array, tet_active_mask):
             tet_np = tet_indices.numpy()
 
         if tet_active_mask is not None:
-            tet_np = tet_indices[np.where(tet_active_mask > 0)]
+            mask_arr = np.asarray(tet_active_mask > 0, dtype=bool)
+            # Handle scalar mask (True means all active, False means none active)
+            if mask_arr.ndim == 0:
+                if not mask_arr:
+                    tet_np = tet_np[:0]  # Empty array
+                # else: all active, no filtering needed
+            else:
+                tet_np = tet_np[mask_arr]
 
         if tet_np.size == 0:
             edges_np = np.empty((0, 2), dtype=np.int32)
@@ -171,8 +178,14 @@ def construct_trimesh_graph_edges(
 
         if tri_indices.size > 0:
             if tri_active_mask is not None:
-                mask = np.atleast_1d(np.asarray(tri_active_mask, dtype=bool))
-                tri_indices = tri_indices[np.where(mask)]
+                mask_arr = np.asarray(tri_active_mask, dtype=bool)
+                # Handle scalar mask (True means all active, False means none active)
+                if mask_arr.ndim == 0:
+                    if not mask_arr:
+                        tri_indices = tri_indices[:0]  # Empty array
+                    # else: all active, no filtering needed
+                else:
+                    tri_indices = tri_indices[mask_arr]
             if tri_indices.size > 0:
                 v0 = tri_indices[:, 0]
                 v1 = tri_indices[:, 1]
