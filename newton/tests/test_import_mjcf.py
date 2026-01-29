@@ -46,8 +46,12 @@ class TestImportMjcf(unittest.TestCase):
         )
         # Filter out sites when checking shape material properties (sites don't have these attributes)
         non_site_indices = [i for i, flags in enumerate(builder.shape_flags) if not (flags & ShapeFlags.SITE)]
-        self.assertTrue(all(np.array(builder.shape_material_ke)[non_site_indices] == 123.0))
-        self.assertTrue(all(np.array(builder.shape_material_kd)[non_site_indices] == 456.0))
+
+        # Check ke/kd from nv_humanoid.xml: solref=".015 1"
+        # ke = 1/(0.015^2 * 1^2) ≈ 4444.4, kd = 2/0.015 ≈ 133.3
+        # MJCF-specified solref overrides user defaults (like friction does)
+        self.assertTrue(np.allclose(np.array(builder.shape_material_ke)[non_site_indices], 4444.4, rtol=0.01))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_kd)[non_site_indices], 133.3, rtol=0.01))
 
         # Check friction values from nv_humanoid.xml: friction="1.0 0.05 0.05"
         # mu = 1.0, torsional = 0.05, rolling = 0.05
@@ -2036,6 +2040,48 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
         self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
         self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
+
+    def test_mjcf_geom_solref_parsing(self):
+        """Test MJCF geom solref parsing for contact stiffness/damping.
+
+        MuJoCo solref format: [timeconst, dampratio]
+        - Standard mode (timeconst > 0): ke = 1/(tc^2 * dr^2), kd = 2/tc
+        - Direct mode (both negative): ke = -tc, kd = -dr
+
+        Note: solref is only parsed when explicitly specified in MJCF.
+        If not specified, Newton's ShapeConfig defaults (ke=1000, kd=100) are used.
+        """
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="test_body">
+                    <!-- No solref -> uses Newton defaults: ke=1000, kd=100 -->
+                    <geom name="geom_default" type="box" size="0.1 0.1 0.1"/>
+                    <!-- Custom solref [0.04, 1.0] -> ke=625, kd=50 -->
+                    <geom name="geom_custom" type="sphere" size="0.1" solref="0.04 1.0"/>
+                    <!-- Direct mode solref [-1000, -50] -> ke=1000, kd=50 -->
+                    <geom name="geom_direct" type="capsule" size="0.1 0.2" solref="-1000 -50"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, up_axis="Z")
+
+        self.assertEqual(builder.shape_count, 3)
+
+        # No solref specified -> Newton defaults: ke=2500 (ShapeConfig.ke), kd=100 (ShapeConfig.kd)
+        self.assertAlmostEqual(builder.shape_material_ke[0], 2500.0, places=1)
+        self.assertAlmostEqual(builder.shape_material_kd[0], 100.0, places=1)
+
+        # Custom solref [0.04, 1.0]: ke = 1/(0.04^2 * 1^2) = 625, kd = 2/0.04 = 50
+        self.assertAlmostEqual(builder.shape_material_ke[1], 625.0, places=1)
+        self.assertAlmostEqual(builder.shape_material_kd[1], 50.0, places=1)
+
+        # Direct mode solref [-1000, -50]: ke = 1000, kd = 50
+        self.assertAlmostEqual(builder.shape_material_ke[2], 1000.0, places=1)
+        self.assertAlmostEqual(builder.shape_material_kd[2], 50.0, places=1)
 
     def test_mjcf_gravcomp(self):
         """Test parsing of gravcomp from MJCF"""

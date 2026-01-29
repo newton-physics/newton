@@ -440,14 +440,15 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.rolling_friction = float(friction_values[2])
 
-            # Parse MJCF solref for contact stiffness/damping
-            # MuJoCo default is [0.02, 1.0] (timeconst, dampratio)
-            solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
-            geom_ke, geom_kd = solref_to_stiffness_damping(solref)
-            if geom_ke is not None:
-                shape_cfg.ke = geom_ke
-            if geom_kd is not None:
-                shape_cfg.kd = geom_kd
+            # Parse MJCF solref for contact stiffness/damping (only if explicitly specified)
+            # Like friction, only override Newton defaults if solref is authored in MJCF
+            if "solref" in geom_attrib:
+                solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
+                geom_ke, geom_kd = solref_to_stiffness_damping(solref)
+                if geom_ke is not None:
+                    shape_cfg.ke = geom_ke
+                if geom_kd is not None:
+                    shape_cfg.kd = geom_kd
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
