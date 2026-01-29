@@ -1535,15 +1535,15 @@ class SolverVBD(SolverBase):
                         color,
                         self.particle_q_prev,
                         state_out.particle_q,
-                        self.model.particle_color_groups[color],
-                        self.particle_adjacency,
+                        self.model.particle_colors,
+                        model.spring_count,
                         self.model.spring_indices,
                         self.model.spring_rest_length,
                         self.model.spring_stiffness,
                         self.model.spring_damping,
                     ],
                     outputs=[self.particle_forces, self.particle_hessians],
-                    dim=self.model.particle_color_groups[color].size,
+                    dim=model.spring_count,
                     device=self.device,
                 )
 
