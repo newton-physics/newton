@@ -71,7 +71,7 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             njmax=100,
-            nconmax=50,
+            nconmax=65,
             use_mujoco_contacts=use_mujoco_contacts,
         )
 
