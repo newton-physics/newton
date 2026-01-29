@@ -111,8 +111,11 @@ def Xform "Root" (
         # Regression test: if all joints are disabled (or filtered out), we still
         # need to create free joints for floating bodies so each body has DOFs.
         def define_body(path):
-            body = UsdGeom.Xform.Define(stage, path)
+            body = UsdGeom.Cube.Define(stage, path)
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            # Adding CollisionAPI triggers mass computation from geometry (density * volume).
+            # Bodies need positive mass to receive base joints from add_base_joints_to_floating_bodies.
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
             return body
 
         body0 = define_body("/World/Body0")

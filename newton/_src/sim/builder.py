@@ -6064,7 +6064,7 @@ class ModelBuilder:
                     child_xform=wp.transform_identity(),
                     parent=-1,
                     child=child,
-                    key=key or f"base_joint_{child}",
+                    key=key,
                 )
             elif isinstance(base_joint, dict):
                 # Use dict directly with add_joint
@@ -6073,8 +6073,8 @@ class ModelBuilder:
                 joint_params["child"] = child
                 joint_params["parent_xform"] = body_xform
                 joint_params["child_xform"] = wp.transform_identity()
-                if "key" not in joint_params:
-                    joint_params["key"] = key or f"base_joint_{child}"
+                if "key" not in joint_params and key is not None:
+                    joint_params["key"] = key
                 joint_id = self.add_joint(**joint_params)
             else:
                 raise ValueError(
@@ -6082,10 +6082,10 @@ class ModelBuilder:
                 )
         elif floating is not None and not floating:
             # floating=False means fixed joints
-            joint_id = self.add_joint_fixed(-1, child, parent_xform=body_xform, key=key or f"fixed_base_{child}")
+            joint_id = self.add_joint_fixed(-1, child, parent_xform=body_xform, key=key)
         else:
             # Default: floating=None or floating=True means free joints
-            joint_id = self.add_joint_free(child, key=key or f"floating_base_{child}")
+            joint_id = self.add_joint_free(child, key=key)
 
         return joint_id
 
@@ -6122,7 +6122,8 @@ class ModelBuilder:
                 continue
 
             joint = self.add_base_joint(body_id, floating=floating, base_joint=base_joint)
-            self.add_articulation([joint])
+            # Use body key as articulation key for single-body articulations
+            self.add_articulation([joint], key=self.body_key[body_id])
 
     def request_state_attributes(self, *attributes: str) -> None:
         """
