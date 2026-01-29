@@ -520,7 +520,7 @@ class ModelBuilder:
                 arr = [self.values.get(i, self.default) for i in range(count)]
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
-    def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
+    def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81, dt: float = 0.001):
         """
         Initializes a new ModelBuilder instance for constructing simulation models.
 
@@ -529,6 +529,8 @@ class ModelBuilder:
                 Defaults to Axis.Z.
             gravity (float, optional): The magnitude of gravity to apply along the up axis.
                 Defaults to -9.81.
+            dt (float, optional): The default time step for the simulation model, in seconds.
+                Defaults to `0.001`.
         """
         self.num_worlds = 0
 
@@ -732,10 +734,14 @@ class ModelBuilder:
 
         self.up_axis: Axis = Axis.from_any(up_axis)
         self.gravity: float = gravity
+        self.dt: float = dt
 
         # Per-world gravity vectors, populated when worlds are created via begin_world()
         # Each entry is a tuple (gx, gy, gz) representing the gravity vector for that world
         self.world_gravity: list[tuple[float, float, float]] = []
+
+        # Per-world time-step values, populated when worlds are created via begin_world()
+        self.world_dt: list[float] = []
 
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
@@ -1711,6 +1717,7 @@ class ModelBuilder:
         key: str | None = None,
         attributes: dict[str, Any] | None = None,
         gravity: Vec3 | None = None,
+        dt: float | np.floating | None = None,
     ):
         """Begin a new world context for adding entities.
 
@@ -1729,6 +1736,8 @@ class ModelBuilder:
             gravity (Vec3 | None): Optional gravity vector for this world. If None,
                 the world will use the builder's default gravity (computed from
                 ``self.gravity`` and ``self.up_vector``).
+            dt (float | np.floating | None): Optional time step for this world. If None, the world's
+                time-step will default to the builder's default time-step (`self.dt`).
 
         Raises:
             RuntimeError: If called when already inside a world context (current_world != -1).
@@ -1771,6 +1780,16 @@ class ModelBuilder:
             self.world_gravity.append(tuple(gravity))
         else:
             self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
+
+        # Initialize this world's time-step
+        if dt is not None:
+            if not isinstance(dt, (float, np.floating)):
+                raise TypeError(f"Time-step of world {self.current_world} 'dt' must be a float, got {type(dt)}")
+            elif float(dt) <= 0.0:
+                raise ValueError(f"Time-step of world {self.current_world} 'dt' must be positive, got {dt}")
+            self.world_dt.append(float(dt))
+        else:
+            self.world_dt.append(self.dt)
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -1871,6 +1890,14 @@ class ModelBuilder:
         elif self.current_world < 0:
             # No world context (add_builder called directly), copy scalar gravity
             self.gravity = builder.gravity
+
+        # Copy time-step from source builder
+        if self.current_world >= 0 and self.current_world < len(self.world_dt):
+            # We're in a world context, update this world's time-step scalar
+            self.world_dt[self.current_world] = builder.dt
+        elif self.current_world < 0:
+            # No world context (add_builder called directly), copy scalar time-step
+            self.dt = builder.dt
 
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
@@ -6296,6 +6323,35 @@ class ModelBuilder:
             )
         return len(shapes_with_bad_margin) == 0
 
+    def _validate_timesteps(self) -> bool:
+        """
+        Validate specified time-steps specified either as single scalar to be applied uniformly
+        across all worlds, or as per-world time-steps, ensuring all time-steps are positive.
+
+        Raises:
+            ValueError: If any time-step is non-positive (<= 0.0).
+
+        Returns:
+            bool: `True` if all time-steps are valid, `False` otherwise.
+        """
+        # NOTE: `dt` must be a positive float value since it will almost always be
+        # less than 1.0, thus checking for integer type is not appropriate here.
+        if self.world_dt:
+            for w, dt in enumerate(self.world_dt):
+                if not isinstance(dt, (float, np.floating)):
+                    raise ValueError(f"Time-step of world {w} must be a float value, got: {dt} (type={type(dt)})")
+                if float(dt) <= 0.0:
+                    raise ValueError(f"Invalid time-step for world {w}: {dt}. Must be a positive float value.")
+        else:
+            if not isinstance(self.dt, (float, np.floating)):
+                raise ValueError(
+                    f"Global time-step must be a float value when per-world time-steps "
+                    f"are not specified, got: {self.dt} (type={type(self.dt)})"
+                )
+            if float(self.dt) <= 0.0:
+                raise ValueError(f"Invalid global time-step: {self.dt}. Must be a positive float value.")
+        return True
+
     def finalize(
         self,
         device: Devicelike | None = None,
@@ -6343,6 +6399,9 @@ class ModelBuilder:
         # validate shapes have valid contact margins
         if not skip_validation_shapes:
             self._validate_shapes()
+
+        # validate timesteps
+        self._validate_timesteps()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -6929,6 +6988,20 @@ class ModelBuilder:
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
+                device=device,
+                requires_grad=requires_grad,
+            )
+
+            # set time-step - create per-world time-step array for multi-world support
+            if self.world_dt:
+                # Use per-world time-step from world_dt list
+                dt_vecs = self.world_dt
+            else:
+                # Fallback: use single scalar time-step uniformly across all worlds
+                dt_vecs = [self.dt] * self.num_worlds
+            m.dt = wp.array(
+                dt_vecs,
+                dtype=wp.float32,
                 device=device,
                 requires_grad=requires_grad,
             )

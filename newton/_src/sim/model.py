@@ -417,6 +417,9 @@ class Model:
         self.gravity = None
         """Gravity vector, shape [1], dtype vec3."""
 
+        self.dt = None
+        """Simulation time step, shape [num_worlds], float."""
+
         self.equality_constraint_type = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
         self.equality_constraint_body1 = None
@@ -685,6 +688,55 @@ class Model:
             if len(gravity_np) != self.num_worlds:
                 raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
             self.gravity.assign(gravity_np)
+
+    def set_timestep(
+        self,
+        dt: float | list | np.ndarray,
+        world: int | None = None,
+    ) -> None:
+        """
+        Set timestep for runtime modification.
+
+        Args:
+            dt: Time-step scalar or per-world array (num_worlds,).
+            world: If provided, set timestep only for this world.
+
+        Note:
+            Call ``solver.notify_model_changed(SolverNotifyFlags.MODEL_PROPERTIES)`` after.
+
+            Global entities (particles/bodies not assigned to a specific world) use
+            time-step from world 0.
+        """
+        dt_array = np.asarray(dt, dtype=np.float32)
+
+        if world is not None:
+            # setting for a specific world
+            if dt_array.shape != ():
+                raise ValueError("Expected single timestep scalar when world is specified")
+            if world < 0 or world >= self.num_worlds:
+                raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
+            dt_value = float(dt_array)
+            if dt_value <= 0.0:
+                raise ValueError("Timestep must be positive")
+            dt_np = self.dt.numpy()
+            dt_np[world] = dt_value
+            self.dt.assign(dt_np)
+        elif dt_array.ndim == 0:
+            # setting uniformly for all worlds
+            dt_value = float(dt_array)
+            if dt_value <= 0.0:
+                raise ValueError("Timestep must be positive")
+            self.dt.fill_(dt_value)
+        else:
+            # setting per-world
+            if len(dt_array) != self.num_worlds:
+                raise ValueError(f"Expected {self.num_worlds} timestep scalars, got {len(dt_array)}")
+            for w in range(self.num_worlds):
+                if dt_array[w] <= 0.0:
+                    raise ValueError(
+                        f"Timestep must be positive, but got non-positive value {dt_array[w]} for world {w}"
+                    )
+            self.dt.assign(dt_array)
 
     def collide(
         self: Model,
