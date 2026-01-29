@@ -941,7 +941,7 @@ class TestMenagerieBase(unittest.TestCase):
             source_type=self.model_source_type,
             floating=self.floating,
             num_worlds=self.num_worlds,
-            add_ground=False,  # Native MJCF doesn't have ground plane
+            add_ground=False,  # scene.xml includes ground plane
         )
 
     def _load_assets(self) -> dict[str, bytes]:
@@ -1395,6 +1395,10 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Joint actuator force limiting: Newton enables by default
         "jnt_actfrclimited",
         "jnt_actfrcrange",
+        # RGBA: Newton uses different default color for floor geom
+        "geom_rgba",
+        # Size: Newton plane geoms don't store thickness (3rd component)
+        "geom_size",
     }
 
 

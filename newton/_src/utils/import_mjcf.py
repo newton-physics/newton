@@ -1433,48 +1433,49 @@ def parse_mjcf(
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
 
-    world = root.find("worldbody")
-    world_class = get_class(world)
-    world_defaults = merge_attrib(class_defaults["__all__"], class_defaults.get(world_class, {}))
+    # Process all worldbody elements (MuJoCo allows multiple, e.g. from includes)
+    for world in root.findall("worldbody"):
+        world_class = get_class(world)
+        world_defaults = merge_attrib(class_defaults["__all__"], class_defaults.get(world_class, {}))
 
-    # -----------------
-    # add bodies
+        # -----------------
+        # add bodies
 
-    for body in world.findall("body"):
-        parse_body(body, -1, world_defaults, incoming_xform=xform)
+        for body in world.findall("body"):
+            parse_body(body, -1, world_defaults, incoming_xform=xform)
 
-    # -----------------
-    # add static geoms
+        # -----------------
+        # add static geoms
 
-    parse_shapes(
-        defaults=world_defaults,
-        body_name="world",
-        link=-1,
-        geoms=world.findall("geom"),
-        density=default_shape_density,
-        incoming_xform=xform,
-    )
-
-    if parse_sites:
-        _parse_sites_impl(
+        parse_shapes(
             defaults=world_defaults,
             body_name="world",
             link=-1,
-            sites=world.findall("site"),
+            geoms=world.findall("geom"),
+            density=default_shape_density,
             incoming_xform=xform,
         )
 
-    # -----------------
-    # process frame elements at worldbody level
+        if parse_sites:
+            _parse_sites_impl(
+                defaults=world_defaults,
+                body_name="world",
+                link=-1,
+                sites=world.findall("site"),
+                incoming_xform=xform,
+            )
 
-    process_frames(
-        world.findall("frame"),
-        parent_body=-1,
-        defaults=world_defaults,
-        childclass=None,
-        world_xform=xform,
-        body_relative_xform=None,  # Static geoms use world coords
-    )
+        # -----------------
+        # process frame elements at worldbody level
+
+        process_frames(
+            world.findall("frame"),
+            parent_body=-1,
+            defaults=world_defaults,
+            childclass=None,
+            world_xform=xform,
+            body_relative_xform=None,  # Static geoms use world coords
+        )
 
     # -----------------
     # add equality constraints
