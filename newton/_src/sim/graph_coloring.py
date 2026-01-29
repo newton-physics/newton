@@ -265,7 +265,8 @@ def construct_particle_graph(
     Args:
         tri_graph_edges: Triangle mesh indices (N_tris x 3) or None.
         tri_active_mask: Boolean mask indicating which triangles are active, or None.
-        bending_edge_indices: Bending edge indices (N_edges x 4) or None.
+        bending_edge_indices: Bending edge indices (N_edges x 4) with structure [o1, o2, v1, v2] per row,
+                              where o1, o2 are opposite vertices and v1, v2 are hinge edge vertices, or None.
         bending_edge_active_mask: Boolean mask indicating which bending edges are active, or None.
         tet_graph_edges_np: Tetrahedral mesh indices (N_tets x 4) or None.
         tet_active_mask: Boolean mask indicating which tetrahedra are active, or None.
