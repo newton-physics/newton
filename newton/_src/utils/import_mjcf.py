@@ -145,7 +145,7 @@ def parse_mjcf(
     collider_classes: Sequence[str] = ("collision",),
     no_class_as_colliders: bool = True,
     force_show_colliders: bool = False,
-    enable_self_collisions: bool = False,
+    enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = True,
     ensure_nonstatic_links: bool = True,
     static_link_mass: float = 1e-2,
@@ -669,6 +669,13 @@ def parse_mjcf(
 
             # Sites are typically hidden by default
             visible = False
+
+            # Expand to 3-element vector if needed
+            if len(site_size) == 2:
+                # Two values (e.g., capsule/cylinder: radius, half-height)
+                radius = site_size[0]
+                half_height = site_size[1]
+                site_size = wp.vec3(radius, half_height, 0.0)
 
             # Add site using builder.add_site()
             s = builder.add_site(
@@ -1535,6 +1542,51 @@ def parse_mjcf(
             if verbose:
                 print(f"Parsed contact pair: {geom1_name} ({geom1_idx}) <-> {geom2_name} ({geom2_idx})")
 
+    # Parse <exclude> elements - body pairs to exclude from collision detection
+    if contact is not None:
+        for exclude in contact.findall("exclude"):
+            body1_name = exclude.attrib.get("body1")
+            body2_name = exclude.attrib.get("body2")
+
+            if not body1_name or not body2_name:
+                if verbose:
+                    print("Warning: <exclude> element missing body1 or body2 attribute, skipping")
+                continue
+
+            # Normalize body names the same way parse_body() does (replace '-' with '_')
+            body1_name = body1_name.replace("-", "_")
+            body2_name = body2_name.replace("-", "_")
+
+            # Look up body indices by body name
+            try:
+                body1_idx = builder.body_key.index(body1_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <exclude> references unknown body '{body1_name}', skipping")
+                continue
+
+            try:
+                body2_idx = builder.body_key.index(body2_name)
+            except ValueError:
+                if verbose:
+                    print(f"Warning: <exclude> references unknown body '{body2_name}', skipping")
+                continue
+
+            # Find all shapes belonging to body1 and body2
+            body1_shapes = [i for i, body in enumerate(builder.shape_body) if body == body1_idx]
+            body2_shapes = [i for i, body in enumerate(builder.shape_body) if body == body2_idx]
+
+            # Add all shape pairs from these bodies to collision filter
+            for shape1_idx in body1_shapes:
+                for shape2_idx in body2_shapes:
+                    builder.add_shape_collision_filter_pair(shape1_idx, shape2_idx)
+
+            if verbose:
+                print(
+                    f"Parsed collision exclude: {body1_name} ({len(body1_shapes)} shapes) <-> "
+                    f"{body2_name} ({len(body2_shapes)} shapes), added {len(body1_shapes) * len(body2_shapes)} filter pairs"
+                )
+
     # -----------------
     # Parse all fixed tendons in a single tendon section.
 
@@ -1684,12 +1736,12 @@ def parse_mjcf(
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:
-            builder.shape_collision_filter_pairs.append((i, j))
+            builder.add_shape_collision_filter_pair(i, j)
 
     if not enable_self_collisions:
         for i in range(start_shape_count, end_shape_count):
             for j in range(i + 1, end_shape_count):
-                builder.shape_collision_filter_pairs.append((i, j))
+                builder.add_shape_collision_filter_pair(i, j)
 
     # Create articulation from all collected joints
     if joint_indices:
