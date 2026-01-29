@@ -164,7 +164,7 @@ class Example:
         self.track_stiffness = 1.0
         self.track_ignore_tip_count = 0
         self.use_gauss_seidel = True
-        self.use_two_sided = False
+        self.use_two_sided = True
 
         # Per-rod insertion values (arclength from track start)
         # Will be initialized after rods are created to have one entry per rod
@@ -188,6 +188,9 @@ class Example:
         self.root_rotate_speed = 3.0
         self.root_rotation = 0.0
 
+        # Keyboard control mode: True = insertion mode (1/2/9/0), False = movement mode (IJKLUO)
+        self.keyboard_insertion_mode = True
+
         self.simulate_reference = True
         self.simulate_gpu = True
         self.use_cuda_graph = args.use_cuda_graph
@@ -207,6 +210,7 @@ class Example:
         self._track_key_was_down = False
         self._tip_bend_key_was_down = False
         self._concentric_key_was_down = False
+        self._mode_key_was_down = False
 
         # Only load DLL if needed (NUMPY or DLL solver types require it)
         self._needs_dll = any(st in (SolverType.NUMPY, SolverType.DLL) for st in self.solver_types)
@@ -1043,6 +1047,12 @@ class Example:
                 self.concentric_enabled = not self.concentric_enabled
         self._concentric_key_was_down = c_down
 
+        # Toggle keyboard control mode (Tab key)
+        tab_down = self.viewer.is_key_down(key.TAB)
+        if tab_down and not self._mode_key_was_down:
+            self.keyboard_insertion_mode = not self.keyboard_insertion_mode
+        self._mode_key_was_down = tab_down
+
         if (
             self.viewer.is_key_down(key.PLUS)
             or self.viewer.is_key_down(key.EQUAL)
@@ -1056,19 +1066,39 @@ class Example:
             self._apply_tip_bend()
 
         # Insertion controls for first two rods (any solver type)
+        # 1/2/9/0 keys only work in insertion mode; PgUp/PgDn/Home/End always work
+        # Insertion moves the root along the track direction
         if len(self.rod_insertions) >= 1:
-            if self.viewer.is_key_down(key.PAGEUP) or self.viewer.is_key_down(key._1):
-                self.rod_insertions[0] += self.insertion_speed * self.frame_dt
-            if self.viewer.is_key_down(key.PAGEDOWN) or self.viewer.is_key_down(key._2):
-                self.rod_insertions[0] -= self.insertion_speed * self.frame_dt
+            rod0_increase = self.viewer.is_key_down(key.PAGEUP)
+            rod0_decrease = self.viewer.is_key_down(key.PAGEDOWN)
+            if self.keyboard_insertion_mode:
+                rod0_increase = rod0_increase or self.viewer.is_key_down(key._2)
+                rod0_decrease = rod0_decrease or self.viewer.is_key_down(key._1)
+            if rod0_increase:
+                distance = self.insertion_speed * self.frame_dt
+                self.rod_insertions[0] += distance
+                self._apply_insertion_along_track(0, distance)
+            if rod0_decrease:
+                distance = self.insertion_speed * self.frame_dt
+                self.rod_insertions[0] -= distance
                 self.rod_insertions[0] = max(0.0, self.rod_insertions[0])
+                self._apply_insertion_along_track(0, -distance)
 
         if len(self.rod_insertions) >= 2:
-            if self.viewer.is_key_down(key.HOME) or self.viewer.is_key_down(key._9):
-                self.rod_insertions[1] += self.insertion_speed * self.frame_dt
-            if self.viewer.is_key_down(key.END) or self.viewer.is_key_down(key._0):
-                self.rod_insertions[1] -= self.insertion_speed * self.frame_dt
+            rod1_increase = self.viewer.is_key_down(key.HOME)
+            rod1_decrease = self.viewer.is_key_down(key.END)
+            if self.keyboard_insertion_mode:
+                rod1_increase = rod1_increase or self.viewer.is_key_down(key._0)
+                rod1_decrease = rod1_decrease or self.viewer.is_key_down(key._9)
+            if rod1_increase:
+                distance = self.insertion_speed * self.frame_dt
+                self.rod_insertions[1] += distance
+                self._apply_insertion_along_track(1, distance)
+            if rod1_decrease:
+                distance = self.insertion_speed * self.frame_dt
+                self.rod_insertions[1] -= distance
                 self.rod_insertions[1] = max(0.0, self.rod_insertions[1])
+                self._apply_insertion_along_track(1, -distance)
 
         r_down = self.viewer.is_key_down(key.R)
         if r_down and not self._reset_key_was_down:
@@ -1105,19 +1135,20 @@ class Example:
         if self.viewer.is_key_down(key.NUM_3):
             dz -= self.root_move_speed * self.frame_dt
 
-        # IJKLUO controls (alternative to numpad)
-        if self.viewer.is_key_down(key.L):
-            dx += self.root_move_speed * self.frame_dt
-        if self.viewer.is_key_down(key.J):
-            dx -= self.root_move_speed * self.frame_dt
-        if self.viewer.is_key_down(key.I):
-            dy += self.root_move_speed * self.frame_dt
-        if self.viewer.is_key_down(key.K):
-            dy -= self.root_move_speed * self.frame_dt
-        if self.viewer.is_key_down(key.U):
-            dz += self.root_move_speed * self.frame_dt
-        if self.viewer.is_key_down(key.O):
-            dz -= self.root_move_speed * self.frame_dt
+        # IJKLUO controls (only in movement mode, not insertion mode)
+        if not self.keyboard_insertion_mode:
+            if self.viewer.is_key_down(key.L):
+                dx += self.root_move_speed * self.frame_dt
+            if self.viewer.is_key_down(key.J):
+                dx -= self.root_move_speed * self.frame_dt
+            if self.viewer.is_key_down(key.I):
+                dy += self.root_move_speed * self.frame_dt
+            if self.viewer.is_key_down(key.K):
+                dy -= self.root_move_speed * self.frame_dt
+            if self.viewer.is_key_down(key.U):
+                dz += self.root_move_speed * self.frame_dt
+            if self.viewer.is_key_down(key.O):
+                dz -= self.root_move_speed * self.frame_dt
 
         rotation_changed = False
         if self.viewer.is_key_down(key.NUM_7) or self.viewer.is_key_down(key.PERIOD):
@@ -1197,6 +1228,43 @@ class Example:
                 rod.velocities[0, 0:3] = 0.0
             elif rod_info.solver_type == SolverType.WARP:
                 rod.apply_root_translation(dx, dy, dz)
+
+        self._force_sync_reference = True
+        self._force_sync_gpu = True
+
+    def _apply_insertion_along_track(self, rod_idx: int, distance: float):
+        """Move the root of a specific rod along its track direction.
+
+        Args:
+            rod_idx: Index of the rod to move.
+            distance: Distance to move along the track (positive = towards track_end).
+        """
+        if rod_idx >= len(self.rod_infos):
+            return
+
+        rod_info = self.rod_infos[rod_idx]
+        rod = rod_info.rod
+
+        # Get track direction for this rod
+        track_start = self._rod_track_starts[rod_idx]
+        track_end = self._rod_track_ends[rod_idx]
+        track_dir = track_end - track_start
+        track_len = np.linalg.norm(track_dir)
+        if track_len < 1e-6:
+            return
+        track_dir = track_dir / track_len
+
+        # Calculate delta in world space
+        delta = track_dir * distance
+
+        if rod_info.solver_type in (SolverType.NUMPY, SolverType.DLL):
+            pos = rod.positions[0, 0:3]
+            new_pos = pos + delta
+            rod.positions[0, 0:3] = new_pos
+            rod.predicted_positions[0, 0:3] = new_pos
+            rod.velocities[0, 0:3] = 0.0
+        elif rod_info.solver_type == SolverType.WARP:
+            rod.apply_root_translation(float(delta[0]), float(delta[1]), float(delta[2]))
 
         self._force_sync_reference = True
         self._force_sync_gpu = True
@@ -1567,11 +1635,20 @@ class Example:
         _changed, self.root_rotate_speed = ui.slider_float("Rotate Speed", self.root_rotate_speed, 0.1, 3.0)
         ui.text(f"  Rotation: {self.root_rotation:.2f} rad")
         ui.text("  Numpad: 4/6 X-, X+  8/2 Y+, Y-  9/3 Z+, Z-")
-        ui.text("  IJKLUO: J/L X-, X+  I/K Y+, Y-  U/O Z+, Z-")
         ui.text("  ,/. or 7/1: Rotate -Z/+Z")
 
         ui.separator()
+        mode_name = "INSERTION" if self.keyboard_insertion_mode else "MOVEMENT"
+        ui.text(f"Keyboard Mode: {mode_name} (Tab to toggle)")
+        if self.keyboard_insertion_mode:
+            ui.text("  2/1: Rod 0 insertion +/-")
+            ui.text("  0/9: Rod 1 insertion +/-")
+        else:
+            ui.text("  IJKLUO: J/L X-, X+  I/K Y+, Y-  U/O Z+, Z-")
+
+        ui.separator()
         ui.text("Controls:")
+        ui.text("  Tab: Toggle keyboard mode (insertion/movement)")
         ui.text("  G: Toggle gravity")
         ui.text("  B: Cycle GPU solver (Thomas/Banded)")
         ui.text("  F: Toggle root lock (position + rotation)")
@@ -1579,8 +1656,8 @@ class Example:
         ui.text("  C: Toggle concentric constraint")
         ui.text("  P: Toggle bendable tip")
         ui.text("  +/- or Numpad +/-: Adjust tip bend angle")
-        ui.text("  1/2 or PgUp/PgDn: Rod 0 insertion +/-")
-        ui.text("  9/0 or Home/End: Rod 1 insertion +/-")
+        ui.text("  PgUp/PgDn: Rod 0 insertion +/-")
+        ui.text("  Home/End: Rod 1 insertion +/-")
         ui.text("  R: Reset")
 
     def test_final(self):
