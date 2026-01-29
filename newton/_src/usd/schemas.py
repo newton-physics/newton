@@ -14,11 +14,12 @@
 # limitations under the License.
 
 """
-USD schema resolvers. Currently not used.
+USD schema resolvers.
 """
 
 from typing import ClassVar
 
+from ..sim.builder import ModelBuilder
 from ..usd.schema_resolver import PrimType, SchemaAttribute, SchemaResolver
 
 
@@ -287,3 +288,12 @@ class SchemaResolverMjc(SchemaResolver):
             "gear": SchemaAttribute("mjc:gear", [1, 0, 0, 0, 0, 0]),
         },
     }
+
+    def register_custom_attributes(self, builder: ModelBuilder) -> None:
+        """
+        Register MuJoCo-specific custom attributes on the builder.
+
+        """
+        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+        SolverMuJoCo.register_custom_attributes(builder)
