@@ -85,10 +85,11 @@ uvx --with virtualenv asv run --launch-method spawn main^^!
 ## Commit and Pull Request Guidelines
 
 Follow conventional commit message practices.
-- **Run pre-commit hooks before committing.** Always run `uvx pre-commit run -a` to check formatting, linting, and other quality checks before creating commits.
+- **Always run pre-commit hooks before committing**: Execute `uvx pre-commit run -a` to check all files for linting, formatting, and other issues. Fix any errors before creating commits. Consider installing the hooks with `uvx pre-commit install` to run them automatically on every commit.
 - Use clear, descriptive commit messages that explain what changed and why.
 - Keep commits focused and atomic—one logical change per commit.
 - Reference related issues in commit messages when applicable.
+- **Do not include AI attribution or co-authorship lines** (e.g., "Co-Authored-By: Claude...") in commit messages. Commits should represent human contributions without explicit AI attribution.
 - **Do not include AI attribution or co-authorship lines** (e.g., "Co-Authored-By: Claude...") in commit messages. Commits should represent human contributions without explicit AI attribution.
 
 For detailed guidance on writing good commit messages and structuring pull requests, see [Apache Airflow's Pull Request Guidelines](https://github.com/apache/airflow/blob/main/AGENTS.md#pull-request-guidelines).
