@@ -20,11 +20,9 @@ from ._src.sim import (
     color_graph,
     plot_graph,
 )
-from ._src.solvers.style3d.cloth import create_trimesh_sew_springs
 
 __all__ = [
     "color_graph",
-    "create_trimesh_sew_springs",
     "plot_graph",
 ]
 
