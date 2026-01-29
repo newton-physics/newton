@@ -166,6 +166,20 @@ def sanitize_xml_content(source: str) -> str:
     return xml_content
 
 
+def sanitize_name(name: str) -> str:
+    """Sanitize a name for use as a key in the ModelBuilder.
+
+    Replaces characters that are invalid in USD paths (e.g., "-") with underscores.
+
+    Args:
+        name: The name string to sanitize.
+
+    Returns:
+        The sanitized name with invalid characters replaced by underscores.
+    """
+    return name.replace("-", "_")
+
+
 def is_xml_content(source: str) -> bool:
     """Check if a string appears to be XML content rather than a file path.
 

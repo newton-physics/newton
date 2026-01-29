@@ -22,6 +22,7 @@ from .contacts import Contacts
 from .control import Control
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
+    ActuatorMode,
     EqType,
     JointType,
     get_joint_constraint_count,
@@ -32,6 +33,7 @@ from .state import State
 from .style3d import Style3DModel, Style3DModelBuilder
 
 __all__ = [
+    "ActuatorMode",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",

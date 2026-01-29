@@ -28,6 +28,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
+from newton import ActuatorMode
 
 
 class Example:
@@ -64,6 +65,7 @@ class Example:
         for i in range(6, g1.joint_dof_count):
             g1.joint_target_ke[i] = 1000.0
             g1.joint_target_kd[i] = 5.0
+            g1.joint_act_mode[i] = int(ActuatorMode.POSITION)
 
         # approximate meshes for faster collision detection
         g1.approximate_meshes("bounding_box")
