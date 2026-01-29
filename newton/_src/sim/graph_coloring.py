@@ -116,6 +116,8 @@ def construct_tetmesh_graph_edges(tet_indices: np.array, tet_active_mask):
     else:
         if isinstance(tet_indices, wp.array):
             tet_np = tet_indices.numpy()
+        else:
+            tet_np = np.asarray(tet_indices, dtype=np.int32)
 
         if tet_active_mask is not None:
             mask_arr = np.asarray(tet_active_mask > 0, dtype=bool)

@@ -112,7 +112,9 @@ def compute_neo_hookean_energy_and_force(
 
     F = Ds * Dm_inv
 
-    a = 1.0 + mu / lmbd
+    # Guard against division by zero in lambda (Lamé's first parameter)
+    lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1e-6)
+    a = 1.0 + mu / lmbd_safe
 
     det_F = wp.determinant(F)
 

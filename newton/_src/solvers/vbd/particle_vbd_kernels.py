@@ -383,7 +383,10 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
 
     # ============ Useful Quantities ============
     J = wp.determinant(F)
-    alpha = 1.0 + mu / lmbd
+    # Guard against division by zero in lambda (Lamé's first parameter)
+    # For numerical stability, ensure lmbd has a reasonable minimum magnitude
+    lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1e-6)
+    alpha = 1.0 + mu / lmbd_safe
     F_inv = wp.inverse(F)
     cof = J * wp.transpose(F_inv)
 
