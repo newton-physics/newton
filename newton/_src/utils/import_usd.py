@@ -1364,8 +1364,12 @@ def parse_usd(
             orphan_joints.append(joint_key)
 
         if len(orphan_joints) > 0:
-            warn_str = f"No articulation was found but {len(orphan_joints)} joints were parsed: [{', '.join(orphan_joints)}]. "
-            warn_str += "Make sure your USD asset includes an articulation root prim with the PhysicsArticulationRootAPI.\n"
+            warn_str = (
+                f"No articulation was found but {len(orphan_joints)} joints were parsed: [{', '.join(orphan_joints)}]. "
+            )
+            warn_str += (
+                "Make sure your USD asset includes an articulation root prim with the PhysicsArticulationRootAPI.\n"
+            )
             warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=False) "
             warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
             warnings.warn(warn_str, stacklevel=2)

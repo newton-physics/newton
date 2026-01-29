@@ -102,7 +102,6 @@ def Xform "Root" (
         self.assertEqual(model.joint_type.list().count(newton.JointType.FREE), 0)
         self.assertTrue(all(art_id == -1 for art_id in model.joint_articulation.numpy()))
 
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_disabled_joints_create_free_joints(self):
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
