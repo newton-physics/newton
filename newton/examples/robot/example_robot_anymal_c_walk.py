@@ -163,6 +163,7 @@ class Example:
             self.model,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
             ls_parallel=True,
+            ls_iterations=50,  # Increased from default 10 for determinism
             njmax=50,
             nconmax=75,
         )

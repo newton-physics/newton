@@ -4135,5 +4135,111 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertIsNone(received_base_dirs[0])
 
 
+class TestMjcfMultipleWorldbody(unittest.TestCase):
+    """Test that multiple worldbody elements are handled correctly.
+
+    MuJoCo allows multiple <worldbody> elements (e.g., from includes),
+    and all should be processed into the world body.
+    """
+
+    def test_multiple_worldbody_elements(self):
+        """Test that geoms and bodies from multiple worldbody elements are parsed."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <geom name="floor1" type="plane" size="1 1 0.1"/>
+                <body name="body1">
+                    <geom name="geom1" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <worldbody>
+                <geom name="floor2" type="box" size="0.5 0.5 0.1"/>
+                <body name="body2">
+                    <geom name="geom2" type="capsule" size="0.1 0.2"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, up_axis="Z")
+
+        # Should have bodies from both worldbodies
+        self.assertIn("body1", builder.body_key)
+        self.assertIn("body2", builder.body_key)
+
+        # Should have geoms from both worldbodies (floor1, floor2, geom1, geom2)
+        self.assertIn("floor1", builder.shape_key)
+        self.assertIn("floor2", builder.shape_key)
+        self.assertIn("geom1", builder.shape_key)
+        self.assertIn("geom2", builder.shape_key)
+
+    def test_multiple_worldbody_with_sites(self):
+        """Test that sites from multiple worldbody elements are parsed."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <site name="site1" pos="0 0 0"/>
+                <body name="body1">
+                    <geom type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <worldbody>
+                <site name="site2" pos="1 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, up_axis="Z", parse_sites=True)
+
+        # Should have sites from both worldbodies
+        self.assertIn("site1", builder.shape_key)
+        self.assertIn("site2", builder.shape_key)
+
+    def test_include_creates_multiple_worldbodies(self):
+        """Test that includes properly create multiple worldbody elements."""
+        # Create a main file that includes another file, both with worldbodies
+        included_xml = """
+        <mujoco>
+            <worldbody>
+                <body name="included_body">
+                    <geom name="included_geom" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        main_xml = """
+        <mujoco>
+            <include file="included.xml"/>
+            <worldbody>
+                <geom name="main_floor" type="plane" size="1 1 0.1"/>
+                <body name="main_body">
+                    <geom name="main_geom" type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+
+        # Custom resolver that returns XML content directly
+        def xml_resolver(base_dir, file_path):
+            if "included.xml" in file_path:
+                return included_xml
+            return file_path
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(main_xml, up_axis="Z", path_resolver=xml_resolver)
+
+        # Should have bodies from both worldbodies
+        self.assertIn("included_body", builder.body_key)
+        self.assertIn("main_body", builder.body_key)
+
+        # Should have geoms from both worldbodies
+        self.assertIn("included_geom", builder.shape_key)
+        self.assertIn("main_floor", builder.shape_key)
+        self.assertIn("main_geom", builder.shape_key)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
