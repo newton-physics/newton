@@ -159,15 +159,9 @@ def add_example_test(
                 except OSError:
                     pass
         else:
-            # new-style example, setup viewer type and output path
-            if USD_AVAILABLE:
-                stage_path = os.path.join(
-                    os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"
-                )
-                command.extend(["--viewer", "usd", "--output-path", stage_path])
-            else:
-                stage_path = "None"
-                command.extend(["--viewer", "null"])
+            # new-style example, use null viewer for tests (no disk I/O needed)
+            stage_path = "None"
+            command.extend(["--viewer", "null"])
 
         command.extend(_build_command_line_options(options))
 
@@ -192,8 +186,8 @@ def add_example_test(
             msg=f"Failed with return code {result.returncode}, command: {' '.join(command)}\n\nOutput:\n{result.stdout}\n{result.stderr}",
         )
 
-        # If the test succeeded, try to clean up the output by default
-        if stage_path and result.returncode == 0:
+        # Clean up output file for old-style examples that may have created one
+        if stage_path and stage_path != "None" and result.returncode == 0:
             try:
                 os.remove(stage_path)
             except OSError:
