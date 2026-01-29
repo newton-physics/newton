@@ -21,7 +21,7 @@ import math
 import os
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import warp as wp
@@ -76,6 +76,12 @@ class RodInfo:
     offset: np.ndarray  # World offset for rendering
     color: list  # RGB color for visualization
     mesh_radius: float  # Radius for tube mesh rendering
+    particle_radius: float = 0.01  # Radius for particle visualization
+    particle_color: list = field(default_factory=list)  # RGB color for particles
+
+    def __post_init__(self):
+        if not self.particle_color:
+            self.particle_color = self.color.copy() if self.color else [0.7, 0.6, 0.4]
 
 
 def _resolve_models_dir() -> str:
@@ -109,6 +115,7 @@ class Example:
         self.sim_time = 0.0
 
         self.substeps = args.substeps
+        self.collision_iterations = 2  # Number of collision iterations per substep
         self.linear_damping = args.linear_damping
         self.angular_damping = args.angular_damping
         self.bend_stiffness = args.bend_stiffness
@@ -560,6 +567,11 @@ class Example:
         self._collision_inv_masses_np = np.zeros(total_particles, dtype=np.float32)
         self._collision_inv_masses_wp = wp.zeros(total_particles, dtype=wp.float32, device=device)
 
+        # Per-particle visualization colors and radii (updated each frame based on rod settings)
+        self._particle_colors_np = np.zeros((total_particles, 3), dtype=np.float32)
+        self._particle_radii_np = np.zeros(total_particles, dtype=np.float32)
+        self._update_particle_visuals()
+
         # Previous positions for collision velocity update
         self._rod_positions_prev = [
             np.zeros((rod_info.rod.num_points, 3), dtype=np.float32) for rod_info in self.rod_infos
@@ -630,6 +642,16 @@ class Example:
             if idx < len(self.rod_infos):
                 offsets.append(self.rod_infos[idx].offset)
         return offsets
+
+    def _update_particle_visuals(self):
+        """Update per-particle colors and radii based on rod settings."""
+        for idx, rod_info in enumerate(self.rod_infos):
+            start = self._rod_point_starts[idx]
+            end = start + rod_info.rod.num_points
+            # Set particle colors for this rod
+            self._particle_colors_np[start:end] = rod_info.particle_color
+            # Set particle radii for this rod
+            self._particle_radii_np[start:end] = rod_info.particle_radius
 
     def _update_gravity(self):
         if self.gravity_enabled:
@@ -1195,7 +1217,8 @@ class Example:
                     self.gpu_state.apply_floor_collisions(self.floor_height, self.floor_restitution)
                 gpu_time += time.perf_counter() - t0
 
-            self._apply_mesh_collisions(sub_dt)
+            for _ in range(self.collision_iterations):
+                self._apply_mesh_collisions(sub_dt)
             self._apply_track_constraint()
             self._apply_concentric_constraint()
 
@@ -1290,7 +1313,26 @@ class Example:
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
+
+        # Disable default particle rendering and use custom per-rod particle colors/radii
+        original_show_particles = self.viewer.show_particles
+        self.viewer.show_particles = False
         self.viewer.log_state(self.state)
+        self.viewer.show_particles = original_show_particles
+
+        # Render particles with per-rod colors and radii
+        if original_show_particles and self.model.particle_count > 0:
+            self._update_particle_visuals()
+            # Convert to warp arrays for GL viewer compatibility
+            radii_wp = wp.array(self._particle_radii_np, dtype=wp.float32, device=self.model.device)
+            colors_wp = wp.array(self._particle_colors_np, dtype=wp.vec3, device=self.model.device)
+            self.viewer.log_points(
+                name="/model/particles",
+                points=self.state.particle_q,
+                radii=radii_wp,
+                colors=colors_wp,
+                hidden=False,
+            )
 
         # Render rod segments for all rods
         if self.show_segments:
@@ -1425,6 +1467,7 @@ class Example:
             self._gpu_times.clear()
 
         _changed, self.substeps = ui.slider_int("Substeps", self.substeps, 1, 16)
+        _changed, self.collision_iterations = ui.slider_int("Collision Iterations", self.collision_iterations, 1, 8)
         _changed, self.linear_damping = ui.slider_float("Linear Damping", self.linear_damping, 0.0, 0.05)
         _changed, self.angular_damping = ui.slider_float("Angular Damping", self.angular_damping, 0.0, 0.05)
 
@@ -1615,6 +1658,28 @@ class Example:
         _changed, self.show_directors = ui.checkbox("Show Directors", self.show_directors)
         _changed, self.director_scale = ui.slider_float("Director Scale", self.director_scale, 0.01, 0.3)
         _changed, self.show_rod_mesh = ui.checkbox("Show Rod Mesh", self.show_rod_mesh)
+        _changed, self.viewer.show_particles = ui.checkbox("Show Particles", self.viewer.show_particles)
+
+        # Per-rod particle settings (always show when particles are visible)
+        if self.viewer.show_particles:
+            ui.separator()
+            ui.text("Particle Settings (per rod)")
+            for idx, rod_info in enumerate(self.rod_infos):
+                solver_name = rod_info.solver_type.value.upper()
+                ui.text(f"  Rod {idx} ({solver_name})")
+                _changed, rod_info.particle_radius = ui.slider_float(
+                    f"  Rod{idx} Particle Radius", rod_info.particle_radius, 0.001, 0.05
+                )
+                # Color sliders for R, G, B
+                _changed_r, rod_info.particle_color[0] = ui.slider_float(
+                    f"  Rod{idx} Particle R", rod_info.particle_color[0], 0.0, 1.0
+                )
+                _changed_g, rod_info.particle_color[1] = ui.slider_float(
+                    f"  Rod{idx} Particle G", rod_info.particle_color[1], 0.0, 1.0
+                )
+                _changed_b, rod_info.particle_color[2] = ui.slider_float(
+                    f"  Rod{idx} Particle B", rod_info.particle_color[2], 0.0, 1.0
+                )
 
         # Per-rod mesh rendering settings (only show when mesh is enabled)
         if self.show_rod_mesh:
@@ -1625,7 +1690,7 @@ class Example:
             for idx, rod_info in enumerate(self.rod_infos):
                 solver_name = rod_info.solver_type.value.upper()
                 ui.text(f"  Rod {idx} ({solver_name})")
-                _changed, rod_info.mesh_radius = ui.slider_float(f"  Rod{idx} Radius", rod_info.mesh_radius, 0.001, 0.1)
+                _changed, rod_info.mesh_radius = ui.slider_float(f"  Rod{idx} Mesh Radius", rod_info.mesh_radius, 0.001, 0.1)
                 c = rod_info.color
                 ui.text(f"    Color: ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f})")
 
