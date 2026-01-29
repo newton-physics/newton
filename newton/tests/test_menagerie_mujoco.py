@@ -545,7 +545,7 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "tendon_solref_lim",
     # RGBA: Newton uses different default color for geoms without explicit rgba
     "geom_rgba",
-    # Size: Newton hardcodes [5,5,5] for planes (visual only, no physics impact)
+    # Size: Compared via compare_geom_sizes() which understands type-specific semantics
     "geom_size",
 }
 
@@ -663,6 +663,100 @@ def compare_solref_physics(
         atol=0,
         err_msg=f"{field_name} kd mismatch (physics-equivalent)",
     )
+
+
+def compare_geom_sizes(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 1e-6,
+) -> None:
+    """Compare geom_size arrays accounting for type-specific semantics.
+
+    MuJoCo geom size interpretation varies by type:
+    - PLANE (0): [visual_x, visual_y, spacing] - purely decorative, skip
+    - SPHERE (2): [radius, -, -] - only first component matters
+    - CAPSULE (3): [radius, half_length, -] - first two components matter
+    - ELLIPSOID (4): [x, y, z radii] - all three matter
+    - CYLINDER (5): [radius, half_length, -] - first two components matter
+    - BOX (6): [x, y, z half-sizes] - all three matter
+    - MESH (7): [scale_x, scale_y, scale_z] - all three matter
+
+    Newton fills zero components with first nonzero value for visualization,
+    but this doesn't affect physics. This function compares only the
+    physics-relevant components for each geom type.
+    """
+    # MuJoCo geom type constants
+    GEOM_PLANE = 0
+    GEOM_SPHERE = 2
+    GEOM_CAPSULE = 3
+    GEOM_ELLIPSOID = 4
+    GEOM_CYLINDER = 5
+    GEOM_BOX = 6
+    GEOM_MESH = 7
+
+    newton_size = newton_mjw.geom_size.numpy()  # (nworld, ngeom, 3)
+    native_size = native_mjw.geom_size.numpy()
+    newton_type = newton_mjw.geom_type.numpy()  # (ngeom,) - shared across worlds
+    native_type = native_mjw.geom_type.numpy()
+
+    assert newton_size.shape == native_size.shape, (
+        f"geom_size shape mismatch: {newton_size.shape} vs {native_size.shape}"
+    )
+    assert newton_type.shape == native_type.shape, (
+        f"geom_type shape mismatch: {newton_type.shape} vs {native_type.shape}"
+    )
+
+    # Geom types must match
+    np.testing.assert_array_equal(newton_type, native_type, err_msg="geom_type mismatch")
+
+    nworld, ngeom, _ = newton_size.shape
+
+    for world in range(nworld):
+        for geom in range(ngeom):
+            gtype = newton_type[geom]  # geom_type is (ngeom,), not (nworld, ngeom)
+            n_size = newton_size[world, geom]
+            nat_size = native_size[world, geom]
+
+            if gtype == GEOM_PLANE:
+                # Plane size is purely visual (Newton hardcodes [5,5,5], native uses MJCF value)
+                # Both are infinite for collision - skip comparison
+                continue
+            elif gtype == GEOM_SPHERE:
+                # Only radius (first component) matters
+                np.testing.assert_allclose(
+                    n_size[0],
+                    nat_size[0],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"geom_size[{world},{geom}] (SPHERE) radius mismatch",
+                )
+            elif gtype in (GEOM_CAPSULE, GEOM_CYLINDER):
+                # Radius and half-length (first two components) matter
+                np.testing.assert_allclose(
+                    n_size[:2],
+                    nat_size[:2],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"geom_size[{world},{geom}] (CAPSULE/CYLINDER) mismatch",
+                )
+            elif gtype in (GEOM_ELLIPSOID, GEOM_BOX, GEOM_MESH):
+                # All three components matter
+                np.testing.assert_allclose(
+                    n_size,
+                    nat_size,
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"geom_size[{world},{geom}] (ELLIPSOID/BOX/MESH) mismatch",
+                )
+            else:
+                # Unknown type - compare all (fail if different)
+                np.testing.assert_allclose(
+                    n_size,
+                    nat_size,
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"geom_size[{world},{geom}] (type={gtype}) mismatch",
+                )
 
 
 def compare_mjdata_field(
@@ -1089,6 +1183,9 @@ class TestMenagerieBase(unittest.TestCase):
                 if newton_arr is not None and native_arr is not None:
                     if hasattr(newton_arr, "shape") and newton_arr.shape[0] > 0:
                         compare_solref_physics(newton_solver.mjw_model, native_mjw_model, solref_field)
+
+        # Compare geom sizes with type-specific semantics
+        compare_geom_sizes(newton_solver.mjw_model, native_mjw_model)
 
         # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
