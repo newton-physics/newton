@@ -6921,6 +6921,9 @@ class ModelBuilder:
             - Each joint is added to its own single-joint articulation.
             - This is useful for ensuring that all floating (unconnected) bodies are properly articulated.
         """
+        if new_bodies is None:
+            return
+
         # set(self.joint_child) is connected_bodies
         floating_bodies = set(new_bodies) - set(self.joint_child)
         for body_id in floating_bodies:

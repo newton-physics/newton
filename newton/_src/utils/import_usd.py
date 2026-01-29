@@ -1290,9 +1290,7 @@ def parse_usd(
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
                         child_body_id = add_body(**body_data[i])
-                        joint_id = builder.add_base_joint(
-                            child_body_id, floating=floating, base_joint=base_joint
-                        )
+                        joint_id = builder.add_base_joint(child_body_id, floating=floating, base_joint=base_joint)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
                         builder.add_articulation(
@@ -1300,9 +1298,7 @@ def parse_usd(
                         )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
-                        joint_id = builder.add_base_joint(
-                            child_body_id, floating=floating, base_joint=base_joint
-                        )
+                        joint_id = builder.add_base_joint(child_body_id, floating=floating, base_joint=base_joint)
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
                         builder.add_articulation(
