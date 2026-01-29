@@ -100,10 +100,11 @@ def parse_usd(
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
         force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
-            are non-zero, joints use POSITION_VELOCITY actuation mode. If False (default), actuator modes
-            are inferred per joint via :func:`newton.infer_actuator_mode`:
-            POSITION if stiffness > 0, VELOCITY if only damping > 0, EFFORT if a drive is present but
-            both gains are zero (direct torque control), or NONE if no drive/actuation is applied.
+            are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
+            If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+            :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
+            damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
+            (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
 
     Returns:
         dict: Dictionary with the following entries:

@@ -192,11 +192,11 @@ def parse_mjcf(
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-        ctrl_direct (bool): If True, all actuators use CTRL_DIRECT mode where control comes directly
-            from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
+        ctrl_direct (bool): If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
+            where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
-            actuators use JOINT_TARGET mode where control comes from :attr:`newton.Control.joint_target_pos`
-            and :attr:`newton.Control.joint_target_vel`.
+            actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
+            from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
     if xform is None:

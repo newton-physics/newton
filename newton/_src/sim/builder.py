@@ -1447,10 +1447,11 @@ class ModelBuilder:
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
-                (damping) gains are non-zero, joints use POSITION_VELOCITY actuation mode. If False (default),
-                actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
-                POSITION if stiffness > 0, VELOCITY if only damping > 0, EFFORT if a drive is present but
-                both gains are zero (direct torque control), or NONE if no drive/actuation is applied.
+                (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
+                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
+                damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
+                (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -1538,10 +1539,11 @@ class ModelBuilder:
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
             force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
-                are non-zero, joints use POSITION_VELOCITY actuation mode. If False (default), actuator modes
-                are inferred per joint via :func:`newton.infer_actuator_mode`:
-                POSITION if stiffness > 0, VELOCITY if only damping > 0, EFFORT if a drive is present but
-                both gains are zero (direct torque control), or NONE if no drive/actuation is applied.
+                are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
+                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
+                damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
+                (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -1676,11 +1678,11 @@ class ModelBuilder:
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
-            ctrl_direct (bool): If True, all actuators use CTRL_DIRECT mode where control comes directly
-                from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
+            ctrl_direct (bool): If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
+                where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
-                actuators use JOINT_TARGET mode where control comes from :attr:`newton.Control.joint_target_pos`
-                and :attr:`newton.Control.joint_target_vel`.
+                actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
+                from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
             path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415

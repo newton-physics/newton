@@ -145,8 +145,8 @@ class SolverMuJoCo(SolverBase):
 
         Determines where an actuator gets its control input from:
 
-        - JOINT_TARGET: Maps from Newton's joint_target_pos/vel arrays
-        - CTRL_DIRECT: Uses control.mujoco.ctrl directly (for MuJoCo-native control)
+        - :attr:`JOINT_TARGET`: Maps from Newton's :attr:`~newton.Control.joint_target_pos`/:attr:`~newton.Control.joint_target_vel` arrays
+        - :attr:`CTRL_DIRECT`: Uses ``control.mujoco.ctrl`` directly (for MuJoCo-native control)
         """
 
         JOINT_TARGET = 0
@@ -155,11 +155,11 @@ class SolverMuJoCo(SolverBase):
     class CtrlType(IntEnum):
         """Control type for MuJoCo actuators.
 
-        For JOINT_TARGET mode, determines which target array to read from:
+        For :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode, determines which target array to read from:
 
-        - POSITION: Maps from joint_target_pos, syncs gains from joint_target_ke
-        - VELOCITY: Maps from joint_target_vel, syncs gains from joint_target_kd
-        - GENERAL: Used with CTRL_DIRECT mode for motor/general actuators
+        - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_pos`, syncs gains from :attr:`~newton.Control.joint_target_ke`
+        - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_vel`, syncs gains from :attr:`~newton.Control.joint_target_kd`
+        - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         """
 
         POSITION = 0
