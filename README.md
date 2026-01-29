@@ -508,12 +508,12 @@ uv sync --extra examples
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mutlphysics/example_falling_gift.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_falling_gift.py">
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_falling_gift.png" alt="Falling Gift">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mutlphysics/example_softbody_dropping_to_cloth.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_softbody_dropping_to_cloth.py">
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_softbody_dropping_to_cloth.png" alt="Softbody Dropping to Cloth">
       </a>
     </td>

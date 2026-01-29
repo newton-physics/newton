@@ -482,7 +482,7 @@ def main():
         "diffsim",
         "ik",
         "mpm",
-        "mutlphysics",
+        "multiphysics",
         "robot",
         "selection",
         "sensors",
