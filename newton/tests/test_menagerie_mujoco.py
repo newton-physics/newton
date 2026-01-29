@@ -131,6 +131,7 @@ import warp as wp
 
 import newton
 from newton._src.utils.download_assets import download_git_folder
+from newton._src.utils.import_mjcf import _load_and_expand_mjcf
 from newton.solvers import SolverMuJoCo
 
 # Check for mujoco availability via SolverMuJoCo's lazy import mechanism
@@ -962,13 +963,16 @@ class TestMenagerieBase(unittest.TestCase):
         return assets
 
     def _get_mjcf_xml(self) -> str:
-        """Get MJCF XML content, optionally with compiler modifications.
+        """Get MJCF XML content with includes expanded and optional compiler modifications.
 
-        If discard_visual is True, inserts <compiler discardvisual="true"/>
-        to make MuJoCo discard visual-only geoms (matching Newton behavior).
+        Uses Newton's include processor to expand <include> elements, then optionally
+        inserts <compiler discardvisual="true"/> to make MuJoCo discard visual-only geoms.
         """
-        with open(self.mjcf_path) as f:
-            xml_content = f.read()
+        import xml.etree.ElementTree as ET  # noqa: PLC0415
+
+        # Use Newton's include processor to expand all includes
+        root, _ = _load_and_expand_mjcf(str(self.mjcf_path))
+        xml_content = ET.tostring(root, encoding="unicode")
 
         if self.discard_visual:
             # Check if there's already a <compiler> tag
