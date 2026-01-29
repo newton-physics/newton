@@ -208,10 +208,16 @@ class Example:
         self._tip_bend_key_was_down = False
         self._concentric_key_was_down = False
 
-        self.lib = DefKitDirectLibrary(args.dll_path, args.calling_convention)
-        self.supports_non_banded = self.lib.ProjectDirectElasticRodConstraints is not None
-        if not self.supports_non_banded:
-            self.use_banded = True
+        # Only load DLL if needed (NUMPY or DLL solver types require it)
+        self._needs_dll = any(st in (SolverType.NUMPY, SolverType.DLL) for st in self.solver_types)
+        if self._needs_dll:
+            self.lib = DefKitDirectLibrary(args.dll_path, args.calling_convention)
+            self.supports_non_banded = self.lib.ProjectDirectElasticRodConstraints is not None
+            if not self.supports_non_banded:
+                self.use_banded = True
+        else:
+            self.lib = None
+            self.supports_non_banded = True  # Warp solver supports both modes
 
         rod_radius = args.rod_radius if args.rod_radius is not None else args.particle_radius
 
@@ -343,8 +349,8 @@ class Example:
         # For backward compatibility, set ref_rod to first rod
         if self.rod_infos:
             self.ref_rod = self.rod_infos[0].rod
-        else:
-            # Fallback: create a default NumPy rod
+        elif self._needs_dll:
+            # Fallback: create a default NumPy rod (only when DLL is available)
             self.ref_rod = NumpyDirectRodState(
                 lib=self.lib,
                 num_points=args.num_points,
@@ -363,6 +369,8 @@ class Example:
                 lock_root_rotation=args.lock_root_rotation,
                 use_banded=self.use_banded,
             )
+        else:
+            raise RuntimeError("No rods configured. Specify at least one solver via --rod-solvers.")
 
         # Initialize per-rod insertion values (all start at 0)
         self.rod_insertions = [0.0] * len(self.rod_infos)
@@ -1016,12 +1024,12 @@ class Example:
                     rod._graph_params = None
         self._banded_key_was_down = b_down
 
-        l_down = self.viewer.is_key_down(key.L)
-        if l_down and not self._lock_key_was_down:
+        f_down = self.viewer.is_key_down(key.F)
+        if f_down and not self._lock_key_was_down:
             # Toggle root lock for all rods
             for rod_info in self.rod_infos:
                 rod_info.rod.toggle_root_lock()
-        self._lock_key_was_down = l_down
+        self._lock_key_was_down = f_down
 
         t_down = self.viewer.is_key_down(key.T)
         if t_down and not self._track_key_was_down:
@@ -1049,16 +1057,16 @@ class Example:
 
         # Insertion controls for first two rods (any solver type)
         if len(self.rod_insertions) >= 1:
-            if self.viewer.is_key_down(key.PAGEUP):
+            if self.viewer.is_key_down(key.PAGEUP) or self.viewer.is_key_down(key._1):
                 self.rod_insertions[0] += self.insertion_speed * self.frame_dt
-            if self.viewer.is_key_down(key.PAGEDOWN):
+            if self.viewer.is_key_down(key.PAGEDOWN) or self.viewer.is_key_down(key._2):
                 self.rod_insertions[0] -= self.insertion_speed * self.frame_dt
                 self.rod_insertions[0] = max(0.0, self.rod_insertions[0])
 
         if len(self.rod_insertions) >= 2:
-            if self.viewer.is_key_down(key.HOME):
+            if self.viewer.is_key_down(key.HOME) or self.viewer.is_key_down(key._9):
                 self.rod_insertions[1] += self.insertion_speed * self.frame_dt
-            if self.viewer.is_key_down(key.END):
+            if self.viewer.is_key_down(key.END) or self.viewer.is_key_down(key._0):
                 self.rod_insertions[1] -= self.insertion_speed * self.frame_dt
                 self.rod_insertions[1] = max(0.0, self.rod_insertions[1])
 
@@ -1083,6 +1091,7 @@ class Example:
         dy = 0.0
         dz = 0.0
 
+        # Numpad controls
         if self.viewer.is_key_down(key.NUM_6):
             dx += self.root_move_speed * self.frame_dt
         if self.viewer.is_key_down(key.NUM_4):
@@ -1096,11 +1105,25 @@ class Example:
         if self.viewer.is_key_down(key.NUM_3):
             dz -= self.root_move_speed * self.frame_dt
 
+        # IJKLUO controls (alternative to numpad)
+        if self.viewer.is_key_down(key.L):
+            dx += self.root_move_speed * self.frame_dt
+        if self.viewer.is_key_down(key.J):
+            dx -= self.root_move_speed * self.frame_dt
+        if self.viewer.is_key_down(key.I):
+            dy += self.root_move_speed * self.frame_dt
+        if self.viewer.is_key_down(key.K):
+            dy -= self.root_move_speed * self.frame_dt
+        if self.viewer.is_key_down(key.U):
+            dz += self.root_move_speed * self.frame_dt
+        if self.viewer.is_key_down(key.O):
+            dz -= self.root_move_speed * self.frame_dt
+
         rotation_changed = False
-        if self.viewer.is_key_down(key.NUM_7):
+        if self.viewer.is_key_down(key.NUM_7) or self.viewer.is_key_down(key.PERIOD):
             self.root_rotation += self.root_rotate_speed * self.frame_dt
             rotation_changed = True
-        if self.viewer.is_key_down(key.NUM_1):
+        if self.viewer.is_key_down(key.NUM_1) or self.viewer.is_key_down(key.COMMA):
             self.root_rotation -= self.root_rotate_speed * self.frame_dt
             rotation_changed = True
 
@@ -1539,24 +1562,25 @@ class Example:
                 ui.text(f"    Color: ({c[0]:.2f}, {c[1]:.2f}, {c[2]:.2f})")
 
         ui.separator()
-        ui.text("Root Control (Numpad, both rods)")
+        ui.text("Root Control (both rods)")
         _changed, self.root_move_speed = ui.slider_float("Move Speed", self.root_move_speed, 0.1, 5.0)
         _changed, self.root_rotate_speed = ui.slider_float("Rotate Speed", self.root_rotate_speed, 0.1, 3.0)
         ui.text(f"  Rotation: {self.root_rotation:.2f} rad")
-        ui.text("  4/6: X-, X+  8/2: Y+, Y-  9/3: Z+, Z-")
-        ui.text("  7/1: Rotate +Z/-Z")
+        ui.text("  Numpad: 4/6 X-, X+  8/2 Y+, Y-  9/3 Z+, Z-")
+        ui.text("  IJKLUO: J/L X-, X+  I/K Y+, Y-  U/O Z+, Z-")
+        ui.text("  ,/. or 7/1: Rotate -Z/+Z")
 
         ui.separator()
         ui.text("Controls:")
         ui.text("  G: Toggle gravity")
         ui.text("  B: Cycle GPU solver (Thomas/Banded)")
-        ui.text("  L: Toggle root lock (position + rotation)")
+        ui.text("  F: Toggle root lock (position + rotation)")
         ui.text("  T: Toggle track sliding constraint")
         ui.text("  C: Toggle concentric constraint")
         ui.text("  P: Toggle bendable tip")
         ui.text("  +/- or Numpad +/-: Adjust tip bend angle")
-        ui.text("  PgUp/PgDn: Rod 0 insertion +/-")
-        ui.text("  Home/End: Rod 1 insertion +/-")
+        ui.text("  1/2 or PgUp/PgDn: Rod 0 insertion +/-")
+        ui.text("  9/0 or Home/End: Rod 1 insertion +/-")
         ui.text("  R: Reset")
 
     def test_final(self):
