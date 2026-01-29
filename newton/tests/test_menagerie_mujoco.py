@@ -522,9 +522,16 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
     "geom_contype",
-    # Joint solref: Newton uses direct mode (-ke, -kd), native uses standard mode (tc, dr)
+    # Solref fields: Newton uses direct mode (-ke, -kd), native uses standard mode (tc, dr)
     # Compare via compare_solref_physics() instead for physics equivalence
+    "dof_solref",
+    "eq_solref",
+    "geom_solref",
     "jnt_solref",
+    "pair_solref",
+    "pair_solreffriction",
+    "tendon_solref_fri",
+    "tendon_solref_lim",
 }
 
 
@@ -1015,8 +1022,24 @@ class TestMenagerieBase(unittest.TestCase):
         # The eig3 determinant fix ensures these match even if iquat orientation differs
         compare_inertia_tensors(newton_solver.mjw_model, native_mjw_model)
 
-        # Compare jnt_solref by physics equivalence (direct mode vs standard mode)
-        compare_solref_physics(newton_solver.mjw_model, native_mjw_model, "jnt_solref")
+        # Compare solref fields by physics equivalence (direct mode vs standard mode)
+        for solref_field in [
+            "dof_solref",
+            "eq_solref",
+            "geom_solref",
+            "jnt_solref",
+            "pair_solref",
+            "pair_solreffriction",
+            "tendon_solref_fri",
+            "tendon_solref_lim",
+        ]:
+            if hasattr(newton_solver.mjw_model, solref_field) and hasattr(native_mjw_model, solref_field):
+                newton_arr = getattr(newton_solver.mjw_model, solref_field)
+                native_arr = getattr(native_mjw_model, solref_field)
+                # Only compare if both have data
+                if newton_arr is not None and native_arr is not None:
+                    if hasattr(newton_arr, "shape") and newton_arr.shape[0] > 0:
+                        compare_solref_physics(newton_solver.mjw_model, native_mjw_model, solref_field)
 
         # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
