@@ -543,6 +543,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "pair_solreffriction",
     "tendon_solref_fri",
     "tendon_solref_lim",
+    # RGBA: Newton uses different default color for geoms without explicit rgba
+    "geom_rgba",
 }
 
 
@@ -1395,8 +1397,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Joint actuator force limiting: Newton enables by default
         "jnt_actfrclimited",
         "jnt_actfrcrange",
-        # RGBA: Newton uses different default color for floor geom
-        "geom_rgba",
         # Size: Newton plane geoms don't store thickness (3rd component)
         "geom_size",
     }
