@@ -29,16 +29,21 @@ from newton.examples.cosserat_codex.constants import BAND_KD, TILE
 
 from .math import (
     _block_column,
+    _block_column_offset,
     _block_mul,
     _block_mul_vec,
     _block_row,
     _block_set_column,
+    _block_set_column_offset,
     _block_solve,
     _block_sub,
     _load_block,
+    _load_block_offset,
     _load_vec,
+    _load_vec_offset,
     _mat33_transpose,
     _store_vec,
+    _store_vec_offset,
 )
 
 
@@ -157,6 +162,128 @@ def _warp_block_thomas_solve(
         xi0 = di0 - cx0
         xi1 = di1 - cx1
         _store_vec(x, i, xi0, xi1)
+
+
+@wp.kernel
+def _warp_block_thomas_solve_batched(
+    diag_blocks: wp.array(dtype=wp.float32),
+    offdiag_blocks: wp.array(dtype=wp.float32),
+    rhs: wp.array(dtype=wp.float32),
+    edge_offsets: wp.array(dtype=wp.int32),
+    n_rods: int,
+    c_blocks: wp.array(dtype=wp.float32),
+    d_prime: wp.array(dtype=wp.float32),
+    x: wp.array(dtype=wp.float32),
+):
+    """Solve block-tridiagonal systems for multiple rods in parallel.
+
+    This batched version launches with dim=n_rods, where each GPU thread
+    independently solves the Thomas algorithm for one rod. Since different
+    rods are completely independent, this enables inter-rod parallelism.
+
+    Solves (D - L - L^T) x = b where:
+    - D is block diagonal (6x6 blocks)
+    - L is block lower triangular
+
+    Args:
+        diag_blocks: Concatenated diagonal blocks for all rods (36 floats per edge).
+        offdiag_blocks: Concatenated off-diagonal blocks for all rods (36 floats per edge).
+        rhs: Concatenated RHS vectors for all rods (6 per edge).
+        edge_offsets: Cumulative edge offsets [n_rods + 1]. Rod i has edges
+                     [edge_offsets[i], edge_offsets[i+1]).
+        n_rods: Number of rods to process.
+        c_blocks: Concatenated workspace for intermediate matrices.
+        d_prime: Concatenated workspace for intermediate RHS.
+        x: Concatenated output solution vector.
+    """
+    rod_id = wp.tid()
+    if rod_id >= n_rods:
+        return
+
+    # Get this rod's edge range
+    edge_start = edge_offsets[rod_id]
+    edge_end = edge_offsets[rod_id + 1]
+    n_edges = edge_end - edge_start
+
+    if n_edges <= 0:
+        return
+
+    # Forward elimination phase
+    # Load first block
+    A0, B0, C0, D0 = _load_block_offset(diag_blocks, edge_start, 0)
+    b0, b1 = _load_vec_offset(rhs, edge_start, 0)
+
+    # Compute c_0 = D_0^{-1} * L_1^T (only if we have more than one block)
+    if n_edges > 1:
+        for col in range(6):
+            u0, u1 = _block_column_offset(offdiag_blocks, edge_start, 1, col)
+            x0, x1 = _block_solve(A0, B0, C0, D0, u0, u1)
+            _block_set_column_offset(c_blocks, edge_start, 0, col, x0, x1)
+    else:
+        zero = wp.vec3(0.0, 0.0, 0.0)
+        for col in range(6):
+            _block_set_column_offset(c_blocks, edge_start, 0, col, zero, zero)
+
+    # Compute d'_0 = D_0^{-1} * b_0
+    d0, d1 = _block_solve(A0, B0, C0, D0, b0, b1)
+    _store_vec_offset(d_prime, edge_start, 0, d0, d1)
+
+    # Forward pass: eliminate lower triangular part
+    for i in range(1, n_edges):
+        # Load D_i (diagonal block)
+        DiA, DiB, DiC, DiD = _load_block_offset(diag_blocks, edge_start, i)
+
+        # Load L_i^T (super-diagonal stored in offdiag_blocks)
+        LtA, LtB, LtC, LtD = _load_block_offset(offdiag_blocks, edge_start, i)
+
+        # Load C_{i-1}
+        CpA, CpB, CpC, CpD = _load_block_offset(c_blocks, edge_start, i - 1)
+
+        # Transpose to get L_i: [A B; C D]^T = [A^T C^T; B^T D^T]
+        LiA = _mat33_transpose(LtA)
+        LiB = _mat33_transpose(LtC)  # Swapped: B position gets C^T
+        LiC = _mat33_transpose(LtB)  # Swapped: C position gets B^T
+        LiD = _mat33_transpose(LtD)
+
+        # Schur complement: T_i = D_i - L_i * C_{i-1}
+        LCA, LCB, LCC, LCD = _block_mul(LiA, LiB, LiC, LiD, CpA, CpB, CpC, CpD)
+        TiA, TiB, TiC, TiD = _block_sub(DiA, DiB, DiC, DiD, LCA, LCB, LCC, LCD)
+
+        # RHS update: b'_i = b_i - L_i * d'_{i-1}
+        bi0, bi1 = _load_vec_offset(rhs, edge_start, i)
+        dp0, dp1 = _load_vec_offset(d_prime, edge_start, i - 1)
+        ld0, ld1 = _block_mul_vec(LiA, LiB, LiC, LiD, dp0, dp1)
+        bi0 = bi0 - ld0
+        bi1 = bi1 - ld1
+
+        # Compute c_i = T_i^{-1} * L_{i+1}^T (if not last block)
+        if i < n_edges - 1:
+            for col in range(6):
+                u0, u1 = _block_column_offset(offdiag_blocks, edge_start, i + 1, col)
+                x0, x1 = _block_solve(TiA, TiB, TiC, TiD, u0, u1)
+                _block_set_column_offset(c_blocks, edge_start, i, col, x0, x1)
+        else:
+            zero = wp.vec3(0.0, 0.0, 0.0)
+            for col in range(6):
+                _block_set_column_offset(c_blocks, edge_start, i, col, zero, zero)
+
+        # Compute d'_i = T_i^{-1} * b'_i
+        di0, di1 = _block_solve(TiA, TiB, TiC, TiD, bi0, bi1)
+        _store_vec_offset(d_prime, edge_start, i, di0, di1)
+
+    # Back substitution: x_{n-1} = d'_{n-1}
+    dn0, dn1 = _load_vec_offset(d_prime, edge_start, n_edges - 1)
+    _store_vec_offset(x, edge_start, n_edges - 1, dn0, dn1)
+
+    # Back substitution: x_i = d'_i - c_i * x_{i+1}
+    for i in range(n_edges - 2, -1, -1):
+        CiA, CiB, CiC, CiD = _load_block_offset(c_blocks, edge_start, i)
+        xn0, xn1 = _load_vec_offset(x, edge_start, i + 1)
+        cx0, cx1 = _block_mul_vec(CiA, CiB, CiC, CiD, xn0, xn1)
+        di0, di1 = _load_vec_offset(d_prime, edge_start, i)
+        xi0 = di0 - cx0
+        xi1 = di1 - cx1
+        _store_vec_offset(x, edge_start, i, xi0, xi1)
 
 
 @wp.kernel
@@ -396,6 +523,7 @@ def _warp_spbsv_u11_1rhs_iter_ref(
 __all__ = [
     "_warp_cholesky_solve_tile",
     "_warp_block_thomas_solve",
+    "_warp_block_thomas_solve_batched",
     "_warp_spbsv_u11_1rhs",
     "_warp_spbsv_u11_1rhs_iter_ref",
 ]

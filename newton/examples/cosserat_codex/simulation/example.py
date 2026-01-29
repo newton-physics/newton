@@ -202,6 +202,7 @@ class Example:
         self.simulate_gpu = True
         self.use_cuda_graph = args.use_cuda_graph
         self.use_parallel_kernels = True  # Toggle between parallel and sequential GPU kernels
+        self.use_batched_step = True  # Toggle batched step for multiple rods
         self.use_iterative_refinement = False
         self.iterative_refinement_iters = 2
         self._force_sync_reference = True
@@ -334,6 +335,7 @@ class Example:
                 use_cuda_graph=self.use_cuda_graph,
             )
             self.use_cuda_graph = self.gpu_state.set_use_cuda_graph(self.use_cuda_graph)
+            self.use_batched_step = self.gpu_state.set_use_batched_step(self.use_batched_step)
             self.gpu_solver = CosseratXPBDSolver(
                 self.gpu_batch,
                 linear_damping=self.linear_damping,
@@ -1484,6 +1486,11 @@ class Example:
             )
             if changed_parallel:
                 self.gpu_state.set_parallel_kernels(self.use_parallel_kernels)
+            changed_batched, self.use_batched_step = ui.checkbox(
+                "Use Batched Step (Warp)", self.use_batched_step
+            )
+            if changed_batched:
+                self.use_batched_step = self.gpu_state.set_use_batched_step(self.use_batched_step)
         if changed_ref or changed_gpu:
             self._frame_times.clear()
             self._ref_times.clear()

@@ -278,6 +278,26 @@ def _load_block(blocks: wp.array(dtype=wp.float32), block: int) -> tuple[wp.mat3
 
 
 @wp.func
+def _load_block_offset(
+    blocks: wp.array(dtype=wp.float32), edge_offset: int, local_block: int
+) -> tuple[wp.mat33, wp.mat33, wp.mat33, wp.mat33]:
+    """Load a 6x6 block as four 3x3 matrices with global offset.
+
+    This is the offset-aware version for batched operations where blocks
+    from multiple rods are concatenated.
+
+    Args:
+        blocks: Concatenated block storage for all rods.
+        edge_offset: Global edge offset for this rod.
+        local_block: Local block index within this rod.
+
+    Returns:
+        Four 3x3 matrices (A, B, C, D) representing the 6x6 block.
+    """
+    return _load_block(blocks, edge_offset + local_block)
+
+
+@wp.func
 def _store_block(
     blocks: wp.array(dtype=wp.float32),
     block: int,
@@ -336,6 +356,25 @@ def _load_vec(values: wp.array(dtype=wp.float32), block: int) -> tuple[wp.vec3, 
 
 
 @wp.func
+def _load_vec_offset(
+    values: wp.array(dtype=wp.float32), edge_offset: int, local_block: int
+) -> tuple[wp.vec3, wp.vec3]:
+    """Load a 6-vector as two 3-vectors with global offset.
+
+    This is the offset-aware version for batched operations.
+
+    Args:
+        values: Concatenated vector storage for all rods.
+        edge_offset: Global edge offset for this rod.
+        local_block: Local block index within this rod.
+
+    Returns:
+        Two 3-vectors (v0, v1) representing the 6-vector.
+    """
+    return _load_vec(values, edge_offset + local_block)
+
+
+@wp.func
 def _store_vec(values: wp.array(dtype=wp.float32), block: int, v0: wp.vec3, v1: wp.vec3):
     """Store two 3-vectors as a 6-vector."""
     base = block * 6
@@ -345,6 +384,28 @@ def _store_vec(values: wp.array(dtype=wp.float32), block: int, v0: wp.vec3, v1: 
     values[base + 3] = v1[0]
     values[base + 4] = v1[1]
     values[base + 5] = v1[2]
+
+
+@wp.func
+def _store_vec_offset(
+    values: wp.array(dtype=wp.float32),
+    edge_offset: int,
+    local_block: int,
+    v0: wp.vec3,
+    v1: wp.vec3,
+):
+    """Store two 3-vectors as a 6-vector with global offset.
+
+    This is the offset-aware version for batched operations.
+
+    Args:
+        values: Concatenated vector storage for all rods.
+        edge_offset: Global edge offset for this rod.
+        local_block: Local block index within this rod.
+        v0: First 3-vector.
+        v1: Second 3-vector.
+    """
+    _store_vec(values, edge_offset + local_block, v0, v1)
 
 
 @wp.func
@@ -367,6 +428,26 @@ def _block_column(
 
 
 @wp.func
+def _block_column_offset(
+    blocks: wp.array(dtype=wp.float32), edge_offset: int, local_block: int, col: int
+) -> tuple[wp.vec3, wp.vec3]:
+    """Load a column from a 6x6 block with global offset.
+
+    This is the offset-aware version for batched operations.
+
+    Args:
+        blocks: Concatenated block storage for all rods.
+        edge_offset: Global edge offset for this rod.
+        local_block: Local block index within this rod.
+        col: Column index (0-5).
+
+    Returns:
+        Two 3-vectors representing the column.
+    """
+    return _block_column(blocks, edge_offset + local_block, col)
+
+
+@wp.func
 def _block_set_column(
     blocks: wp.array(dtype=wp.float32), block: int, col: int, v0: wp.vec3, v1: wp.vec3
 ):
@@ -378,6 +459,30 @@ def _block_set_column(
     blocks[base + 3 * 6 + col] = v1[0]
     blocks[base + 4 * 6 + col] = v1[1]
     blocks[base + 5 * 6 + col] = v1[2]
+
+
+@wp.func
+def _block_set_column_offset(
+    blocks: wp.array(dtype=wp.float32),
+    edge_offset: int,
+    local_block: int,
+    col: int,
+    v0: wp.vec3,
+    v1: wp.vec3,
+):
+    """Store two 3-vectors as a column in a 6x6 block with global offset.
+
+    This is the offset-aware version for batched operations.
+
+    Args:
+        blocks: Concatenated block storage for all rods.
+        edge_offset: Global edge offset for this rod.
+        local_block: Local block index within this rod.
+        col: Column index (0-5).
+        v0: First 3-vector.
+        v1: Second 3-vector.
+    """
+    _block_set_column(blocks, edge_offset + local_block, col, v0, v1)
 
 
 @wp.func
@@ -514,11 +619,16 @@ __all__ = [
     "_block_index",
     "_vec_index",
     "_load_block",
+    "_load_block_offset",
     "_store_block",
     "_load_vec",
+    "_load_vec_offset",
     "_store_vec",
+    "_store_vec_offset",
     "_block_column",
+    "_block_column_offset",
     "_block_set_column",
+    "_block_set_column_offset",
     "_block_row",
     "_block_mul",
     "_block_sub",

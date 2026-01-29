@@ -83,8 +83,7 @@ class CosseratXPBDSolver:
             dt: Time step size in seconds.
         """
         state = state_out or state_in
-        for rod in state.rods:
-            rod.step(dt, self.linear_damping, self.angular_damping)
+        state.step(dt, self.linear_damping, self.angular_damping)
 
     def set_damping(self, linear: float, angular: float) -> None:
         """Set damping coefficients.

@@ -418,9 +418,221 @@ def _warp_pad_diagonal(
         A[i, i] = 1.0
 
 
+@wp.kernel
+def _warp_assemble_jmjt_blocks_batched(
+    jacobian_pos: wp.array(dtype=wp.float32),
+    jacobian_rot: wp.array(dtype=wp.float32),
+    compliance: wp.array(dtype=wp.float32),
+    inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia: wp.array(dtype=wp.float32),
+    rod_offsets: wp.array(dtype=wp.int32),
+    edge_offsets: wp.array(dtype=wp.int32),
+    edge_rod_id: wp.array(dtype=wp.int32),
+    diag_blocks: wp.array(dtype=wp.float32),
+    offdiag_blocks: wp.array(dtype=wp.float32),
+):
+    """Assemble JMJT blocks for all rods in a single launch.
+
+    This batched version processes all edges across all rods, using
+    rod_offsets and edge_offsets to map global indices to local ones.
+
+    Args:
+        jacobian_pos: Concatenated position Jacobians.
+        jacobian_rot: Concatenated rotation Jacobians.
+        compliance: Concatenated compliance values.
+        inv_masses: Concatenated inverse masses.
+        inv_inertia: Concatenated inverse inertia tensors (9 floats per particle).
+        rod_offsets: Cumulative point offsets [n_rods + 1].
+        edge_offsets: Cumulative edge offsets [n_rods + 1].
+        edge_rod_id: Rod index for each edge.
+        diag_blocks: Output diagonal blocks (36 floats per edge).
+        offdiag_blocks: Output off-diagonal blocks (36 floats per edge).
+    """
+    global_edge = wp.tid()
+    rod_id = edge_rod_id[global_edge]
+
+    # Local edge index within this rod
+    local_edge = global_edge - edge_offsets[rod_id]
+
+    # Global particle indices for this edge
+    rod_start = rod_offsets[rod_id]
+    p0_idx = rod_start + local_edge
+    p1_idx = p0_idx + 1
+
+    regularization = 1.0e-6
+    i = global_edge
+
+    # Use actual inverse masses from the array
+    inv_m0 = inv_masses[p0_idx]
+    inv_m1 = inv_masses[p1_idx]
+
+    # Diagonal block
+    for row in range(6):
+        for col in range(6):
+            val = 0.0
+
+            # Position contribution from segment 0 (particle p0_idx)
+            for k in range(3):
+                j_p0_r = jacobian_pos[_warp_jacobian_index(i, row, k)]
+                j_p0_c = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                val += j_p0_r * inv_m0 * j_p0_c
+
+            # Position contribution from segment 1 (particle p1_idx)
+            for k in range(3):
+                j_p1_r = jacobian_pos[_warp_jacobian_index(i, row, k + 3)]
+                j_p1_c = jacobian_pos[_warp_jacobian_index(i, col, k + 3)]
+                val += j_p1_r * inv_m1 * j_p1_c
+
+            # Rotation contribution from segment 0
+            j_t0_r_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, row, 0)],
+                jacobian_rot[_warp_jacobian_index(i, row, 1)],
+                jacobian_rot[_warp_jacobian_index(i, row, 2)],
+            )
+            j_t0_c_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 0)],
+                jacobian_rot[_warp_jacobian_index(i, col, 1)],
+                jacobian_rot[_warp_jacobian_index(i, col, 2)],
+            )
+            inv_I0_j_t0_c = _inv_inertia_mul_vec(inv_inertia, p0_idx, j_t0_c_vec)
+            val += wp.dot(j_t0_r_vec, inv_I0_j_t0_c)
+
+            # Rotation contribution from segment 1
+            j_t1_r_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, row, 3)],
+                jacobian_rot[_warp_jacobian_index(i, row, 4)],
+                jacobian_rot[_warp_jacobian_index(i, row, 5)],
+            )
+            j_t1_c_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 3)],
+                jacobian_rot[_warp_jacobian_index(i, col, 4)],
+                jacobian_rot[_warp_jacobian_index(i, col, 5)],
+            )
+            inv_I1_j_t1_c = _inv_inertia_mul_vec(inv_inertia, p1_idx, j_t1_c_vec)
+            val += wp.dot(j_t1_r_vec, inv_I1_j_t1_c)
+
+            if row == col:
+                val += compliance[i * 6 + row] + regularization
+            diag_blocks[_block_index(i, row, col)] = val
+
+    # Off-diagonal block (coupling with previous edge within same rod)
+    if local_edge == 0:
+        # First edge in rod has no off-diagonal coupling
+        for row in range(6):
+            for col in range(6):
+                offdiag_blocks[_block_index(i, row, col)] = 0.0
+        return
+
+    prev = global_edge - 1
+
+    for row in range(6):
+        for col in range(6):
+            val = 0.0
+
+            # Position contribution using shared particle's inverse mass
+            for k in range(3):
+                j_p1_prev = jacobian_pos[_warp_jacobian_index(prev, row, k + 3)]
+                j_p0_cur = jacobian_pos[_warp_jacobian_index(i, col, k)]
+                val += j_p1_prev * inv_m0 * j_p0_cur
+
+            # Rotation contribution
+            j_t1_prev_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(prev, row, 3)],
+                jacobian_rot[_warp_jacobian_index(prev, row, 4)],
+                jacobian_rot[_warp_jacobian_index(prev, row, 5)],
+            )
+            j_t0_cur_vec = wp.vec3(
+                jacobian_rot[_warp_jacobian_index(i, col, 0)],
+                jacobian_rot[_warp_jacobian_index(i, col, 1)],
+                jacobian_rot[_warp_jacobian_index(i, col, 2)],
+            )
+            inv_I_shared_j_t0_cur = _inv_inertia_mul_vec(inv_inertia, p0_idx, j_t0_cur_vec)
+            val += wp.dot(j_t1_prev_vec, inv_I_shared_j_t0_cur)
+
+            offdiag_blocks[_block_index(i, row, col)] = val
+
+
+@wp.kernel
+def _warp_compute_inv_inertia_world_batched(
+    orientations: wp.array(dtype=wp.quat),
+    quat_inv_masses: wp.array(dtype=wp.float32),
+    inv_inertia_local_diag: wp.array(dtype=wp.vec3),
+    particle_rod_id: wp.array(dtype=wp.int32),
+    inv_inertia_out: wp.array(dtype=wp.float32),
+):
+    """Compute inverse inertia tensors for all rods in a single launch.
+
+    This batched version processes all particles across all rods.
+
+    Args:
+        orientations: Concatenated quaternion orientations.
+        quat_inv_masses: Concatenated inverse rotational mass mask.
+        inv_inertia_local_diag: Per-rod local inverse inertia diagonal [n_rods].
+        particle_rod_id: Rod index for each particle.
+        inv_inertia_out: Output array of 9 floats per particle.
+    """
+    i = wp.tid()
+    base = i * 9
+
+    if quat_inv_masses[i] <= 0.0:
+        # Locked particle - zero inverse inertia (infinite inertia)
+        for j in range(9):
+            inv_inertia_out[base + j] = 0.0
+        return
+
+    rod_id = particle_rod_id[i]
+    inv_inertia_local = inv_inertia_local_diag[rod_id]
+
+    q = orientations[i]
+
+    # Extract rotation matrix from quaternion
+    xx = q.x * q.x
+    yy = q.y * q.y
+    zz = q.z * q.z
+    xy = q.x * q.y
+    xz = q.x * q.z
+    yz = q.y * q.z
+    wx = q.w * q.x
+    wy = q.w * q.y
+    wz = q.w * q.z
+
+    # Rotation matrix (row-major)
+    r00 = 1.0 - 2.0 * (yy + zz)
+    r01 = 2.0 * (xy - wz)
+    r02 = 2.0 * (xz + wy)
+    r10 = 2.0 * (xy + wz)
+    r11 = 1.0 - 2.0 * (xx + zz)
+    r12 = 2.0 * (yz - wx)
+    r20 = 2.0 * (xz - wy)
+    r21 = 2.0 * (yz + wx)
+    r22 = 1.0 - 2.0 * (xx + yy)
+
+    # Compute R * diag(inv_I) * R^T
+    d0 = inv_inertia_local.x
+    d1 = inv_inertia_local.y
+    d2 = inv_inertia_local.z
+
+    # Row 0
+    inv_inertia_out[base + 0] = r00 * d0 * r00 + r01 * d1 * r01 + r02 * d2 * r02
+    inv_inertia_out[base + 1] = r00 * d0 * r10 + r01 * d1 * r11 + r02 * d2 * r12
+    inv_inertia_out[base + 2] = r00 * d0 * r20 + r01 * d1 * r21 + r02 * d2 * r22
+
+    # Row 1
+    inv_inertia_out[base + 3] = r10 * d0 * r00 + r11 * d1 * r01 + r12 * d2 * r02
+    inv_inertia_out[base + 4] = r10 * d0 * r10 + r11 * d1 * r11 + r12 * d2 * r12
+    inv_inertia_out[base + 5] = r10 * d0 * r20 + r11 * d1 * r21 + r12 * d2 * r22
+
+    # Row 2
+    inv_inertia_out[base + 6] = r20 * d0 * r00 + r21 * d1 * r01 + r22 * d2 * r02
+    inv_inertia_out[base + 7] = r20 * d0 * r10 + r21 * d1 * r11 + r22 * d2 * r12
+    inv_inertia_out[base + 8] = r20 * d0 * r20 + r21 * d1 * r21 + r22 * d2 * r22
+
+
 __all__ = [
     "_warp_assemble_jmjt_dense",
     "_warp_assemble_jmjt_banded",
     "_warp_assemble_jmjt_blocks",
+    "_warp_assemble_jmjt_blocks_batched",
+    "_warp_compute_inv_inertia_world_batched",
     "_warp_pad_diagonal",
 ]

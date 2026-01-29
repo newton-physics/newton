@@ -167,9 +167,160 @@ def _warp_integrate_rotations(
         orientations[i] = predicted[i]
 
 
+@wp.kernel
+def _warp_predict_positions_batched(
+    positions: wp.array(dtype=wp.vec3),
+    velocities: wp.array(dtype=wp.vec3),
+    forces: wp.array(dtype=wp.vec3),
+    inv_masses: wp.array(dtype=wp.float32),
+    gravity: wp.array(dtype=wp.vec3),
+    particle_rod_id: wp.array(dtype=wp.int32),
+    dt: float,
+    damping: float,
+    predicted: wp.array(dtype=wp.vec3),
+):
+    """Predict particle positions for multiple rods in a single launch.
+
+    This batched version processes all particles across all rods. Each particle
+    looks up its rod ID to get the appropriate gravity vector.
+
+    Args:
+        positions: Concatenated current positions for all rods.
+        velocities: Concatenated velocities (updated in-place).
+        forces: Concatenated external forces.
+        inv_masses: Concatenated inverse masses (0 for fixed particles).
+        gravity: Per-rod gravity vectors [n_rods].
+        particle_rod_id: Rod index for each particle.
+        dt: Time step size.
+        damping: Linear velocity damping factor.
+        predicted: Output predicted positions.
+    """
+    i = wp.tid()
+    inv_mass = inv_masses[i]
+    if inv_mass > 0.0:
+        rod_id = particle_rod_id[i]
+        grav = gravity[rod_id]
+        v = velocities[i] + (forces[i] * inv_mass + grav) * dt
+        v = v * (1.0 - damping)
+        velocities[i] = v
+        predicted[i] = positions[i] + v * dt
+    else:
+        velocities[i] = wp.vec3(0.0, 0.0, 0.0)
+        predicted[i] = positions[i]
+
+
+@wp.kernel
+def _warp_integrate_positions_batched(
+    positions: wp.array(dtype=wp.vec3),
+    predicted: wp.array(dtype=wp.vec3),
+    velocities: wp.array(dtype=wp.vec3),
+    inv_masses: wp.array(dtype=wp.float32),
+    dt: float,
+):
+    """Integrate positions for multiple rods in a single launch.
+
+    This batched version is identical to the single-rod version since the
+    operation doesn't need rod-specific parameters.
+
+    Args:
+        positions: Concatenated positions (updated in-place).
+        predicted: Concatenated predicted/corrected positions.
+        velocities: Concatenated velocities (updated in-place).
+        inv_masses: Concatenated inverse masses (0 for fixed particles).
+        dt: Time step size.
+    """
+    i = wp.tid()
+    inv_mass = inv_masses[i]
+    if inv_mass > 0.0:
+        v = (predicted[i] - positions[i]) * (1.0 / dt)
+        velocities[i] = v
+        positions[i] = predicted[i]
+
+
+@wp.kernel
+def _warp_predict_rotations_batched(
+    orientations: wp.array(dtype=wp.quat),
+    angular_velocities: wp.array(dtype=wp.vec3),
+    torques: wp.array(dtype=wp.vec3),
+    quat_inv_masses: wp.array(dtype=wp.float32),
+    dt: float,
+    damping: float,
+    predicted: wp.array(dtype=wp.quat),
+):
+    """Predict rotations for multiple rods in a single launch.
+
+    This batched version is identical to the single-rod version since the
+    operation doesn't need rod-specific parameters.
+
+    Args:
+        orientations: Concatenated orientations.
+        angular_velocities: Concatenated angular velocities (updated in-place).
+        torques: Concatenated external torques.
+        quat_inv_masses: Concatenated inverse rotational masses (0 for locked).
+        dt: Time step size.
+        damping: Angular velocity damping factor.
+        predicted: Output predicted orientations.
+    """
+    i = wp.tid()
+    inv_mass = quat_inv_masses[i]
+    if inv_mass > 0.0:
+        half_dt = 0.5 * dt
+        w = angular_velocities[i] + torques[i] * inv_mass * dt
+        w = w * (1.0 - damping)
+        angular_velocities[i] = w
+        q = orientations[i]
+        omega_q = wp.quat(w.x, w.y, w.z, 0.0)
+        qdot = _warp_quat_mul(omega_q, q)
+        q_pred = wp.quat(
+            q.x + qdot.x * half_dt,
+            q.y + qdot.y * half_dt,
+            q.z + qdot.z * half_dt,
+            q.w + qdot.w * half_dt,
+        )
+        predicted[i] = _warp_quat_normalize(q_pred)
+    else:
+        angular_velocities[i] = wp.vec3(0.0, 0.0, 0.0)
+        predicted[i] = orientations[i]
+
+
+@wp.kernel
+def _warp_integrate_rotations_batched(
+    orientations: wp.array(dtype=wp.quat),
+    predicted: wp.array(dtype=wp.quat),
+    prev_orientations: wp.array(dtype=wp.quat),
+    angular_velocities: wp.array(dtype=wp.vec3),
+    quat_inv_masses: wp.array(dtype=wp.float32),
+    dt: float,
+):
+    """Integrate rotations for multiple rods in a single launch.
+
+    This batched version is identical to the single-rod version since the
+    operation doesn't need rod-specific parameters.
+
+    Args:
+        orientations: Concatenated orientations (updated in-place).
+        predicted: Concatenated predicted/corrected orientations.
+        prev_orientations: Concatenated previous orientations (updated in-place).
+        angular_velocities: Concatenated angular velocities (updated in-place).
+        quat_inv_masses: Concatenated inverse rotational masses (0 for locked).
+        dt: Time step size.
+    """
+    i = wp.tid()
+    if quat_inv_masses[i] > 0.0:
+        q = orientations[i]
+        rel = _warp_quat_mul(predicted[i], _warp_quat_conjugate(q))
+        angular_velocities[i] = wp.vec3(rel.x, rel.y, rel.z) * (2.0 / dt)
+        prev_orientations[i] = q
+        orientations[i] = predicted[i]
+
+
 __all__ = [
     "_warp_predict_positions",
     "_warp_integrate_positions",
     "_warp_predict_rotations",
     "_warp_integrate_rotations",
+    "_warp_predict_positions_batched",
+    "_warp_integrate_positions_batched",
+    "_warp_predict_rotations_batched",
+    "_warp_integrate_rotations_batched",
 ]
