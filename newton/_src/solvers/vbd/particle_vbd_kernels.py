@@ -59,18 +59,26 @@ class mat32(wp.types.matrix(shape=(3, 2), dtype=wp.float32)):
 
 
 class mat99(wp.types.matrix(shape=(9, 9), dtype=wp.float32)):
+    """9x9 matrix type used for Hessian of Neo-Hookean energy w.r.t. flattened deformation gradient."""
+
     pass
 
 
 class mat93(wp.types.matrix(shape=(9, 3), dtype=wp.float32)):
+    """9x3 matrix type used in G matrix computations relating deformation gradient to vertex positions."""
+
     pass
 
 
 class mat43(wp.types.matrix(shape=(4, 3), dtype=wp.float32)):
+    """4x3 matrix type for tetrahedral vertex positions (4 vertices x 3 coordinates)."""
+
     pass
 
 
 class vec9(wp.types.vector(length=9, dtype=wp.float32)):
+    """9-element vector type used for flattened 3x3 deformation gradient matrix F."""
+
     pass
 
 
