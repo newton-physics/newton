@@ -583,6 +583,75 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         msg=f"Updated gravcomp mismatch for mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}",
                     )
 
+    def test_body_subtreemass_update(self):
+        """
+        Tests if body_subtreemass is correctly computed and updated after mass changes.
+
+        body_subtreemass is a derived quantity that represents the total mass of a body
+        and all its descendants in the kinematic tree. It is computed by set_const after
+        mass updates.
+        """
+        # Initialize solver first to get the model structure
+        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
+
+        # Get body mapping - iterate over MuJoCo bodies
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+        nworld = mjc_body_to_newton.shape[0]
+        nbody = mjc_body_to_newton.shape[1]
+
+        # Get initial subtreemass values
+        initial_subtreemass = solver.mjw_model.body_subtreemass.numpy().copy()
+
+        # Verify initial subtreemass values are reasonable (should be >= body_mass)
+        for world_idx in range(nworld):
+            for mjc_body in range(nbody):
+                body_mass = solver.mjw_model.body_mass.numpy()[world_idx, mjc_body]
+                subtree_mass = initial_subtreemass[world_idx, mjc_body]
+                self.assertGreaterEqual(
+                    subtree_mass,
+                    body_mass - 1e-6,
+                    msg=f"Initial subtreemass should be >= body_mass for mjc_body {mjc_body} in world {world_idx}",
+                )
+
+        # Update masses - double all masses
+        new_masses = self.model.body_mass.numpy() * 2.0
+        self.model.body_mass.assign(new_masses)
+
+        # Notify solver of mass changes (this should call set_const to update subtreemass)
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        # Get updated subtreemass values
+        updated_subtreemass = solver.mjw_model.body_subtreemass.numpy()
+
+        # Verify subtreemass values are updated (should have roughly doubled for leaf bodies)
+        # For the world body (0), subtreemass should be the sum of all body masses
+        for world_idx in range(nworld):
+            for mjc_body in range(nbody):
+                newton_body = mjc_body_to_newton[world_idx, mjc_body]
+                if newton_body >= 0:
+                    # Subtreemass should have changed after mass update
+                    old_subtree = initial_subtreemass[world_idx, mjc_body]
+                    new_subtree = updated_subtreemass[world_idx, mjc_body]
+
+                    # For leaf bodies (no children), subtreemass == body_mass
+                    # so it should have doubled
+                    new_body_mass = solver.mjw_model.body_mass.numpy()[world_idx, mjc_body]
+                    self.assertGreaterEqual(
+                        new_subtree,
+                        new_body_mass - 1e-6,
+                        msg=f"Updated subtreemass should be >= body_mass for mjc_body {mjc_body} in world {world_idx}",
+                    )
+
+                    # The subtreemass should be different from the initial value
+                    # (unless it was originally 0, which shouldn't happen for real bodies)
+                    if old_subtree > 1e-6:
+                        self.assertNotAlmostEqual(
+                            old_subtree,
+                            new_subtree,
+                            places=4,
+                            msg=f"Subtreemass should have changed for mjc_body {mjc_body} in world {world_idx}",
+                        )
+
 
 class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
     def test_joint_attributes_registration_and_updates(self):

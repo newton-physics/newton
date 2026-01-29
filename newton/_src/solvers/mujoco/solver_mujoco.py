@@ -2915,9 +2915,9 @@ class SolverMuJoCo(SolverBase):
             "body_ipos",
             "body_iquat",
             "body_mass",
-            # "body_subtreemass",
+            "body_subtreemass",  # Derived from body_mass, computed by set_const_fixed
             "body_inertia",
-            # "body_invweight0",
+            "body_invweight0",  # Derived from inertia, computed by set_const_0
             "body_gravcomp",
             "jnt_solref",
             "jnt_solimp",
@@ -2929,7 +2929,7 @@ class SolverMuJoCo(SolverBase):
             "jnt_margin",  # corresponds to newton custom attribute "limit_margin"
             "dof_armature",
             "dof_damping",
-            # "dof_invweight0",
+            "dof_invweight0",  # Derived from inertia, computed by set_const_0
             "dof_frictionloss",
             "dof_solimp",
             "dof_solref",
@@ -2985,8 +2985,8 @@ class SolverMuJoCo(SolverBase):
             "tendon_armature",
             "tendon_frictionloss",
             "tendon_lengthspring",
-            # "tendon_length0",            # Autocomputed and auto-replicated by mujoco
-            # "tendon_invweight0",         # Autocomputed and auto-replicated by mujoco
+            "tendon_length0",  # Derived from tendon config, computed by set_const_0
+            "tendon_invweight0",  # Derived from inertia, computed by set_const_0
             # "mat_rgba",
         }
 
@@ -3107,6 +3107,13 @@ class SolverMuJoCo(SolverBase):
             outputs=[self.mjw_model.body_inertia, self.mjw_model.body_iquat],
             device=self.model.device,
         )
+
+        # Recompute derived quantities after mass/inertia changes.
+        # set_const computes:
+        # - body_subtreemass: mass of body and all descendants (depends on body_mass)
+        # - dof_invweight0, body_invweight0, tendon_invweight0: inverse inertias
+        # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
+        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
 
     def update_joint_dof_properties(self):
         """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, passive stiffness and damping, and joint limit ranges in the MuJoCo model."""
