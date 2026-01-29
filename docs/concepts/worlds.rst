@@ -10,7 +10,7 @@ Each *world*, thus provides an index-based grouping of all primary simulation en
 Overview
 --------
 
-GPU-accelerated operations often involved parallelizing over an entire set of model entities, e.g. bodies, shapes or joints, without needing to consider which specific world they belong to.
+GPU-accelerated operations often involves parallelizing over an entire set of model entities, e.g. bodies, shapes or joints, without needing to consider which specific world they belong to.
 However, some operations such as those part of Collision Detection (CD), can exploit world-based grouping to effectively filter-out potential collisions between shapes that belong to different worlds.
 Moreover, world-based grouping can also facilitate partitioning of thread grids according to both world indices and the number of entities per world.
 Such operations facilitate support for simulating multiple, and potentially heterogeneous, worlds defined within a :class:`~newton.Model` instance.
@@ -58,7 +58,7 @@ Each entity added between these calls is assigned the current world index. The f
    shape11 = builder.add_shape_box(body=body11, ...)
    builder.end_world()
 
-    # Global entity at back (world -1)
+   # Global entity at back (world -1)
    static_box = builder.add_shape_box(...)
 
    # Finalize model
@@ -88,9 +88,9 @@ For the example above, the corresponding world grouping arrays would be as follo
 
 .. code-block::
 
-   print("Body worlds:", model.body_world.numpy())  # Output: Body worlds: [0  0  1  1]
-   print("Shape worlds:", model.shape_world.numpy())  # Output: Shape worlds: [-1  0  0  1  1  -1]
-   print("Joint worlds:", model.joint_world.numpy())  # Output: Joint worlds: [0  0  1  1]
+   print("Body worlds:", model.body_world.numpy())  # Example: Body worlds: [0  0  1  1]
+   print("Shape worlds:", model.shape_world.numpy())  # Example: Shape worlds: [-1  0  0  1  1  -1]
+   print("Joint worlds:", model.joint_world.numpy())  # Example: Joint worlds: [0  0  1  1]
 
 
 .. _World starts:
@@ -165,11 +165,11 @@ For example:
        # Perform operations specific to the world and entity here
        world_start = world_body_start[world_id]
        num_bodies_in_world = world_body_start[world_id + 1] - world_start
-         if body_world_id < num_bodies_in_world:
-              global_body_id = world_start + body_world_id
-              # Access body-specific data using global_body_id
-              twist = body_twist[global_body_id]
-              # ... perform computations on twist ...
+       if body_world_id < num_bodies_in_world:
+          global_body_id = world_start + body_world_id
+          # Access body-specific data using global_body_id
+          twist = body_twist[global_body_id]
+          # ... perform computations on twist ...
 
    # Create model with multiple worlds
    builder = newton.ModelBuilder()
@@ -185,7 +185,7 @@ For example:
 
 This kernel thread partitioning allows each thread to uniquely identify both the world it is operating on (via ``world_id``) and the relative entity index w.r.t that world (via ``entity_id``).
 The world-relative ``entity_id`` index is useful in certain operations such as accessing the body-specific column of constraint Jacobian matrices in maximal-coordinate formulations, which are stored in contiguous blocks per world.
-This relative indexcan then be mapped to the global entity index within the model by adding the corresponding starting index from the :attr:`~newton.Model.world_*_start` arrays.
+This relative index can then be mapped to the global entity index within the model by adding the corresponding starting index from the :attr:`~newton.Model.world_*_start` arrays.
 
 Note that in the simpler case of a homogeneous model consisting of identical worlds, the ``max(num_bodies_per_world)`` reduces to a constant value, and this effectively becomes a *batched* operation.
 For the more general heterogeneous case, the kernel needs to account for the varying number of entities per world, and an important pattern arises w.r.t 2D thread indexing and memory allocations that applies to all per-entity and per-world arrays.
