@@ -29,7 +29,6 @@ from .joints import (
 )
 from .model import Model
 from .state import State
-from .style3d import Style3DModel, Style3DModelBuilder
 
 __all__ = [
     "JOINT_LIMIT_UNLIMITED",
@@ -43,8 +42,6 @@ __all__ = [
     "Model",
     "ModelBuilder",
     "State",
-    "Style3DModel",
-    "Style3DModelBuilder",
     "color_graph",
     "count_rigid_contact_points",
     "eval_fk",

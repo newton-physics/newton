@@ -89,17 +89,6 @@ __all__ += [
 ]
 
 # ==================================================================================
-# Style3D helpers
-# TODO: eliminate these and roll the functionality into Model and ModelBuilder?
-# ==================================================================================
-from ._src.sim.style3d import Style3DModel, Style3DModelBuilder  # noqa: E402
-
-__all__ += [
-    "Style3DModel",
-    "Style3DModelBuilder",
-]
-
-# ==================================================================================
 # submodule APIs
 # ==================================================================================
 from . import geometry, ik, selection, sensors, solvers, utils, viewer  # noqa: E402

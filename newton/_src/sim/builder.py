@@ -389,7 +389,8 @@ class ModelBuilder:
         """For attributes containing entity indices, specifies how values are transformed during add_world/add_builder merging.
 
         Built-in entity types (values are offset by entity count):
-            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``
+            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``,
+              ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
             - ``"world"``: Values are replaced with ``current_world`` (not offset)
@@ -1798,6 +1799,10 @@ class ModelBuilder:
         start_joint_coord_idx = self.joint_coord_count
         start_articulation_idx = self.articulation_count
         start_equality_constraint_idx = len(self.equality_constraint_type)
+        start_edge_idx = self.edge_count
+        start_triangle_idx = self.tri_count
+        start_tetrahedron_idx = self.tet_count
+        start_spring_idx = self.spring_count
 
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
@@ -2029,6 +2034,11 @@ class ModelBuilder:
             "joint_coord": start_joint_coord_idx,
             "articulation": start_articulation_idx,
             "equality_constraint": start_equality_constraint_idx,
+            "particle": start_particle_idx,
+            "edge": start_edge_idx,
+            "triangle": start_triangle_idx,
+            "tetrahedron": start_tetrahedron_idx,
+            "spring": start_spring_idx,
         }
 
         # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
@@ -5064,9 +5074,9 @@ class ModelBuilder:
 
     def add_triangles(
         self,
-        i: list[int],
-        j: list[int],
-        k: list[int],
+        i: list[int] | nparray,
+        j: list[int] | nparray,
+        k: list[int] | nparray,
         tri_ke: list[float] | None = None,
         tri_ka: list[float] | None = None,
         tri_kd: list[float] | None = None,
@@ -5099,9 +5109,10 @@ class ModelBuilder:
 
         """
         # compute basis for 2D rest pose
-        p = np.array(self.particle_q)[i]
-        q = np.array(self.particle_q)[j]
-        r = np.array(self.particle_q)[k]
+        q_ = np.asarray(self.particle_q)
+        p = q_[i]
+        q = q_[j]
+        r = q_[k]
 
         qp = q - p
         rp = r - p
@@ -5129,7 +5140,11 @@ class ModelBuilder:
         D[areas == 0.0] = np.eye(2)[None, ...]
         inv_D = np.linalg.inv(D)
 
-        inds = np.concatenate((i[valid_inds, None], j[valid_inds, None], k[valid_inds, None]), axis=-1)
+        i_ = np.asarray(i)
+        j_ = np.asarray(j)
+        k_ = np.asarray(k)
+
+        inds = np.concatenate((i_[valid_inds, None], j_[valid_inds, None], k_[valid_inds, None]), axis=-1)
 
         tri_start = len(self.tri_indices)
         self.tri_indices.extend(inds.tolist())
@@ -5340,17 +5355,27 @@ class ModelBuilder:
             winding: (i, k, l), (j, l, k).
 
         """
-        x3 = np.array(self.particle_q)[k]
-        x4 = np.array(self.particle_q)[l]
+        # Convert inputs to numpy arrays
+        i_ = np.asarray(i)
+        j_ = np.asarray(j)
+        k_ = np.asarray(k)
+        l_ = np.asarray(l)
+
+        # Cache particle positions as numpy array
+        particle_q_ = np.asarray(self.particle_q)
+        x3 = particle_q_[k_]
+        x4 = particle_q_[l_]
+        x4_minus_x3 = x4 - x3
+
         if rest is None:
-            rest = np.zeros_like(i, dtype=float)
-            valid_mask = (i != -1) & (j != -1)
+            rest = np.zeros_like(i_, dtype=float)
+            valid_mask = (i_ != -1) & (j_ != -1)
 
             # compute rest angle
-            x1_valid = np.array(self.particle_q)[i[valid_mask]]
-            x2_valid = np.array(self.particle_q)[j[valid_mask]]
-            x3_valid = np.array(self.particle_q)[k[valid_mask]]
-            x4_valid = np.array(self.particle_q)[l[valid_mask]]
+            x1_valid = particle_q_[i_[valid_mask]]
+            x2_valid = particle_q_[j_[valid_mask]]
+            x3_valid = particle_q_[k_[valid_mask]]
+            x4_valid = particle_q_[l_[valid_mask]]
 
             def normalized(a):
                 l = np.linalg.norm(a, axis=-1, keepdims=True)
@@ -5369,12 +5394,12 @@ class ModelBuilder:
             rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
             rest = rest.tolist()
 
-        inds = np.concatenate((i[:, None], j[:, None], k[:, None], l[:, None]), axis=-1)
+        inds = np.concatenate((i_[:, None], j_[:, None], k_[:, None], l_[:, None]), axis=-1)
 
         edge_start = len(self.edge_indices)
         self.edge_indices.extend(inds.tolist())
         self.edge_rest_angle.extend(rest)
-        self.edge_rest_length.extend(np.linalg.norm(x4 - x3, axis=1).tolist())
+        self.edge_rest_length.extend(np.linalg.norm(x4_minus_x3, axis=1).tolist())
 
         def init_if_none(arr, defaultValue):
             if arr is None:
@@ -5423,7 +5448,7 @@ class ModelBuilder:
         particle_radius: float | None = None,
         custom_attributes_particles: dict[str, Any] | None = None,
         custom_attributes_edges: dict[str, Any] | None = None,
-        custom_attributes_triangle: dict[str, Any] | None = None,
+        custom_attributes_triangles: dict[str, Any] | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -5480,8 +5505,6 @@ class ModelBuilder:
             vertices=vertices,
             indices=indices,
             density=density,
-            edge_callback=None,
-            face_callback=None,
             tri_ke=tri_ke,
             tri_ka=tri_ka,
             tri_kd=tri_kd,
@@ -5494,7 +5517,7 @@ class ModelBuilder:
             spring_kd=spring_kd,
             particle_radius=particle_radius,
             custom_attributes_particles=custom_attributes_particles,
-            custom_attributes_triangle=custom_attributes_triangle,
+            custom_attributes_triangles=custom_attributes_triangles,
             custom_attributes_edges=custom_attributes_edges,
         )
 
@@ -5526,8 +5549,6 @@ class ModelBuilder:
         vertices: list[Vec3],
         indices: list[int],
         density: float,
-        edge_callback=None,
-        face_callback=None,
         tri_ke: float | None = None,
         tri_ka: float | None = None,
         tri_kd: float | None = None,
@@ -5556,8 +5577,6 @@ class ModelBuilder:
             vertices: A list of vertex positions
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
-            edge_callback: A user callback when an edge is created
-            face_callback: A user callback when a face is created
             particle_radius: The particle_radius which controls particle based collisions.
             custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
             custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
@@ -5680,20 +5699,20 @@ class ModelBuilder:
         by its dimensions along each axis and the spacing between particles.
 
         Args:
-            pos (Vec3): The world-space position of the grid origin.
-            rot (Quat): The rotation to apply to the grid (as a quaternion).
-            vel (Vec3): The initial velocity to assign to each particle.
-            dim_x (int): Number of particles along the X axis.
-            dim_y (int): Number of particles along the Y axis.
-            dim_z (int): Number of particles along the Z axis.
-            cell_x (float): Spacing between particles along the X axis.
-            cell_y (float): Spacing between particles along the Y axis.
-            cell_z (float): Spacing between particles along the Z axis.
-            mass (float): Mass to assign to each particle.
-            jitter (float): Maximum random offset to apply to each particle position.
-            radius_mean (float, optional): Mean radius for particles. If None, uses the builder's default.
-            radius_std (float, optional): Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
-            flags (int, optional): Flags to assign to each particle. If None, uses the builder's default.
+            pos: The world-space position of the grid origin.
+            rot: The rotation to apply to the grid (as a quaternion).
+            vel: The initial velocity to assign to each particle.
+            dim_x: Number of particles along the X axis.
+            dim_y: Number of particles along the Y axis.
+            dim_z: Number of particles along the Z axis.
+            cell_x: Spacing between particles along the X axis.
+            cell_y: Spacing between particles along the Y axis.
+            cell_z: Spacing between particles along the Z axis.
+            mass: Mass to assign to each particle.
+            jitter: Maximum random offset to apply to each particle position.
+            radius_mean: Mean radius for particles. If None, uses the builder's default.
+            radius_std: Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
+            flags: Flags to assign to each particle. If None, uses the builder's default.
             custom_attributes: Dictionary of custom attribute names to values for the particles.
 
         Returns:
@@ -6878,6 +6897,14 @@ class ModelBuilder:
                     count = m.equality_constraint_count
                 elif freq_key == Model.AttributeFrequency.PARTICLE:
                     count = m.particle_count
+                elif freq_key == Model.AttributeFrequency.EDGE:
+                    count = m.edge_count
+                elif freq_key == Model.AttributeFrequency.TRIANGLE:
+                    count = m.tri_count
+                elif freq_key == Model.AttributeFrequency.TETRAHEDRON:
+                    count = m.tet_count
+                elif freq_key == Model.AttributeFrequency.SPRING:
+                    count = m.spring_count
                 else:
                     continue
 

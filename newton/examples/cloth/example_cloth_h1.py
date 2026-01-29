@@ -35,6 +35,7 @@ import newton.examples
 import newton.ik as ik
 import newton.usd
 import newton.utils
+from newton.solvers import style3d
 
 
 class Example:
@@ -55,7 +56,7 @@ class Example:
         # ------------------------------------------------------------------
         # Build a single H1 (fixed base for stability) + ground
         # ------------------------------------------------------------------
-        h1 = newton.Style3DModelBuilder()
+        h1 = newton.ModelBuilder()
         h1.add_mjcf(
             newton.utils.download_asset("unitree_h1") / "mjcf/h1_with_hand.xml",
             floating=False,
@@ -67,7 +68,8 @@ class Example:
         # ------------------------------------------------------------------
         garment_usd_name = "h1_jacket"
         # garment_usd_name = "h1_cake_skirt"
-        cloth_builder = newton.Style3DModelBuilder()
+        cloth_builder = newton.ModelBuilder()
+        newton.solvers.SolverStyle3D.register_custom_attributes(cloth_builder)
         asset_path = newton.utils.download_asset("style3d")
         usd_stage = Usd.Stage.Open(f"{asset_path}/garments/{garment_usd_name}.usd")
         usd_prim_garment = usd_stage.GetPrimAtPath(f"/Root/{garment_usd_name}/Root_Garment")
@@ -81,12 +83,11 @@ class Example:
         garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
         self.garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
 
-        cloth_builder.add_aniso_cloth_mesh(
+        style3d.add_style3d_cloth_mesh(
+            cloth_builder,
             pos=wp.vec3(0, 0, 0),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 0.0, 0.0),
-            tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e2) * 10.0,
-            edge_aniso_ke=wp.vec3(1.0e-6, 1.0e-6, 1.0e-6) * 40.0,
             panel_verts=self.garment_mesh_uv.tolist(),
             panel_indices=self.garment_mesh_uv_indices.tolist(),
             vertices=self.garment_mesh_points.tolist(),
@@ -94,6 +95,8 @@ class Example:
             density=0.5,
             scale=1.0,
             particle_radius=3.0e-3,
+            tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e2) * 10.0,
+            edge_aniso_ke=wp.vec3(1.0e-6, 1.0e-6, 1.0e-6) * 40.0,
         )
         h1.add_world(cloth_builder)
 

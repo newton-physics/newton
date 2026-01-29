@@ -36,8 +36,6 @@ newton
    SDF
    ShapeFlags
    State
-   Style3DModel
-   Style3DModelBuilder
 
 .. rubric:: Functions
 

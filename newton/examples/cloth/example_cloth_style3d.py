@@ -22,6 +22,7 @@ import newton.examples
 import newton.usd
 import newton.utils
 from newton import Mesh, ParticleFlags
+from newton.solvers import style3d
 
 
 class Example:
@@ -38,7 +39,8 @@ class Example:
         self.iterations = 4
 
         self.viewer = viewer
-        builder = newton.Style3DModelBuilder(up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverStyle3D.register_custom_attributes(builder)
 
         use_cloth_mesh = True
         if use_cloth_mesh:
@@ -68,12 +70,11 @@ class Example:
             avatar_mesh_indices = avatar_mesh.indices
             avatar_mesh_points = avatar_mesh.vertices
 
-            builder.add_aniso_cloth_mesh(
+            style3d.add_style3d_cloth_mesh(
+                builder,
                 pos=wp.vec3(0, 0, 0),
                 rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
-                edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
                 panel_verts=garment_mesh_uv.tolist(),
                 panel_indices=garment_mesh_uv_indices.tolist(),
                 vertices=garment_mesh_points.tolist(),
@@ -81,6 +82,8 @@ class Example:
                 density=0.3,
                 scale=1.0,
                 particle_radius=5.0e-3,
+                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
+                edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
             )
             builder.add_shape_mesh(
                 body=builder.add_body(),
@@ -96,7 +99,8 @@ class Example:
             grid_dim = 100
             grid_width = 1.0
             cloth_density = 0.3
-            builder.add_aniso_cloth_grid(
+            style3d.add_style3d_cloth_grid(
+                builder,
                 pos=wp.vec3(-0.5, 0.0, 2.0),
                 rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
                 dim_x=grid_dim,

@@ -27,6 +27,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.solvers import style3d
 
 
 class Example:
@@ -61,7 +62,8 @@ class Example:
         self.viewer = viewer
 
         if self.solver_type == "style3d":
-            builder = newton.Style3DModelBuilder()
+            builder = newton.ModelBuilder()
+            newton.solvers.SolverStyle3D.register_custom_attributes(builder)
         else:
             builder = newton.ModelBuilder()
 
@@ -119,7 +121,7 @@ class Example:
             }
 
         if self.solver_type == "style3d":
-            builder.add_aniso_cloth_grid(**common_params, **solver_params)
+            style3d.add_style3d_cloth_grid(builder, **common_params, **solver_params)
         else:
             builder.add_cloth_grid(**common_params, **solver_params)
 

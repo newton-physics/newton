@@ -13,6 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .cloth import (
+    add_style3d_cloth_grid,
+    add_style3d_cloth_mesh,
+    create_trimesh_sew_springs,
+    sew_close_vertices,
+)
 from .collision import Collision, CollisionHandler
 from .solver_style3d import SolverStyle3D
 
@@ -20,4 +26,8 @@ __all__ = [
     "Collision",
     "CollisionHandler",
     "SolverStyle3D",
+    "add_style3d_cloth_grid",
+    "add_style3d_cloth_mesh",
+    "create_trimesh_sew_springs",
+    "sew_close_vertices",
 ]
