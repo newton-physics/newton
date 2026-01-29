@@ -157,7 +157,12 @@ class Example:
         )
 
         # setup solvers
-        self.solver = newton.solvers.SolverMuJoCo(self.model, ls_parallel=True, njmax=50)
+        self.solver = newton.solvers.SolverMuJoCo(
+            self.model,
+            ls_parallel=True,
+            ls_iterations=50,
+            njmax=50,  # ls_iterations=50 for determinism
+        )
         self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
 
         # simulation state
