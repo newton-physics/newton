@@ -2286,14 +2286,15 @@ def evaluate_spring_force_and_hessian(
     v1 = spring_indices[spring_idx * 2 + 1]
 
     diff = pos[v0] - pos[v1]
-    l = wp.length(diff)
+    spring_length = wp.length(diff)
     l0 = spring_rest_length[spring_idx]
 
     force_sign = 1.0 if particle_idx == v0 else -1.0
 
-    spring_force = force_sign * spring_stiffness[spring_idx] * (l0 - l) / l * diff
+    spring_force = force_sign * spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
     spring_hessian = spring_stiffness[spring_idx] * (
-        wp.identity(3, float) - (l0 / l) * (wp.identity(3, float) - wp.outer(diff, diff) / (l * l))
+        wp.identity(3, float)
+        - (l0 / spring_length) * (wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length))
     )
 
     # compute damping
@@ -2326,15 +2327,16 @@ def evaluate_spring_force_and_hessian_both_vertices(
     v1 = spring_indices[spring_idx * 2 + 1]
 
     diff = pos[v0] - pos[v1]
-    l = wp.length(diff)
+    spring_length = wp.length(diff)
     l0 = spring_rest_length[spring_idx]
 
     # Base spring force for v0 (v1 gets the opposite)
-    base_force = spring_stiffness[spring_idx] * (l0 - l) / l * diff
+    base_force = spring_stiffness[spring_idx] * (l0 - spring_length) / spring_length * diff
 
     # Hessian is the same for both vertices (symmetric)
     spring_hessian = spring_stiffness[spring_idx] * (
-        wp.identity(3, float) - (l0 / l) * (wp.identity(3, float) - wp.outer(diff, diff) / (l * l))
+        wp.identity(3, float)
+        - (l0 / spring_length) * (wp.identity(3, float) - wp.outer(diff, diff) / (spring_length * spring_length))
     )
 
     # Compute damping hessian contribution
