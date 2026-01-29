@@ -3200,6 +3200,13 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
+        # Recompute derived quantities after dof_armature changes.
+        # set_const computes:
+        # - dof_invweight0, body_invweight0, tendon_invweight0: inverse inertias
+        # - body_subtreemass: mass of body and all descendants
+        # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
+        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
+
     def update_joint_properties(self):
         """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
         if self.model.joint_count == 0:
