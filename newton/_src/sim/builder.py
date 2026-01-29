@@ -430,6 +430,9 @@ class ModelBuilder:
         urdf_value_transformer: Callable[[str], Any] | None = None
         """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
 
+        value_converter: Callable[[Any, dict[str, Any]], Any] | None = None
+        """Converter function that transforms the parsed value using a context dict. Called after the value transformer with signature ``value_converter(value, context) -> converted_value``. If None, no conversion is applied."""
+
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
             # ensure dtype is a valid Warp dtype

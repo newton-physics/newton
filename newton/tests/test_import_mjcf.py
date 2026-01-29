@@ -2071,6 +2071,7 @@ class TestImportMjcf(unittest.TestCase):
     def test_joint_stiffness_damping(self):
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="stiffness_damping_comprehensive_test">
+    <compiler angle="radian"/>
     <worldbody>
         <body name="body1" pos="0 0 1">
             <joint name="joint1" type="hinge" axis="0 0 1" stiffness="0.05" damping="0.5" range="-45 45"/>
@@ -2716,14 +2717,15 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 1.0, places=4)
 
     def test_ref_attribute_parsing(self):
-        """Test that 'ref' attribute is parsed"""
+        """Test that 'ref' attribute is parsed."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
+    <compiler angle="radian"/>
     <worldbody>
         <body name="base">
             <geom type="box" size="0.1 0.1 0.1"/>
             <body name="child1" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 1 0" ref="90"/>
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="1.5708"/>
                 <geom type="box" size="0.1 0.1 0.1"/>
                 <body name="child2" pos="0 0 1">
                     <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
@@ -2743,7 +2745,7 @@ class TestImportMjcf(unittest.TestCase):
         dof_ref = model.mujoco.dof_ref.numpy()
 
         hinge_idx = model.joint_key.index("hinge")
-        self.assertAlmostEqual(dof_ref[qd_start[hinge_idx]], 90.0, places=4)
+        self.assertAlmostEqual(dof_ref[qd_start[hinge_idx]], 1.5708, places=4)
 
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
@@ -2752,11 +2754,12 @@ class TestImportMjcf(unittest.TestCase):
         """Test that 'springref' attribute is parsed for hinge and slide joints."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
+    <compiler angle="radian"/>
     <worldbody>
         <body name="base">
             <geom type="box" size="0.1 0.1 0.1"/>
             <body name="child1" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="100" springref="30"/>
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="100" springref="0.5236"/>
                 <geom type="box" size="0.1 0.1 0.1"/>
                 <body name="child2" pos="0 0 1">
                     <joint name="slide" type="slide" axis="0 0 1" stiffness="50" springref="0.25"/>
@@ -2774,7 +2777,7 @@ class TestImportMjcf(unittest.TestCase):
         qd_start = model.joint_qd_start.numpy()
 
         hinge_idx = model.joint_key.index("hinge")
-        self.assertAlmostEqual(springref[qd_start[hinge_idx]], 30.0, places=4)
+        self.assertAlmostEqual(springref[qd_start[hinge_idx]], 0.5236, places=4)
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
 
@@ -3848,6 +3851,98 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         # base_dir should be None for XML string input
         self.assertEqual(len(received_base_dirs), 1)
         self.assertIsNone(received_base_dirs[0])
+
+    def test_dof_angle_conversion_radians(self):
+        """Test DOF attributes pass through unchanged when compiler.angle='radian'."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_radians">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="10" damping="5" springref="0.785" ref="0.524"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        hinge_idx = model.joint_key.index("hinge")
+        dof_idx = qd_start[hinge_idx]
+
+        # No conversion when angle="radian" - values pass through unchanged
+        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.785, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.524, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5.0, places=4)
+
+    def test_dof_angle_conversion_slide_joint(self):
+        """Test DOF attributes for slide joints are not converted regardless of angle setting."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_slide">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="slide" type="slide" axis="0 0 1" stiffness="100" damping="10" springref="0.5" ref="0.1"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        slide_idx = model.joint_key.index("slide")
+        dof_idx = qd_start[slide_idx]
+
+        # Slide joints: values pass through unchanged (linear, not angular)
+        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.5, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.1, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 100.0, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 10.0, places=4)
+
+    def test_dof_angle_conversion_degrees(self):
+        """Test DOF attributes are converted from degrees when compiler.angle='degree' (default)."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_degrees">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="10" damping="5" springref="45" ref="30"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        hinge_idx = model.joint_key.index("hinge")
+        dof_idx = qd_start[hinge_idx]
+
+        # springref/ref: converted from deg to rad (45 deg -> 45 * pi/180 rad)
+        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], np.deg2rad(45), places=4)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], np.deg2rad(30), places=4)
+
+        # stiffness/damping: converted from Nm/deg to Nm/rad (10 Nm/deg -> 10 * 180/pi Nm/rad)
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10 * (180 / np.pi), places=2)
+        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5 * (180 / np.pi), places=2)
 
 
 if __name__ == "__main__":

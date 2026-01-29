@@ -1003,7 +1003,12 @@ def parse_mjcf(
                 else:
                     linear_axes.append(ax)
 
-                dof_attr = parse_custom_attributes(joint_attrib, builder_custom_attr_dof, parsing_mode="mjcf")
+                dof_attr = parse_custom_attributes(
+                    joint_attrib,
+                    builder_custom_attr_dof,
+                    parsing_mode="mjcf",
+                    context={"use_degrees": use_degrees, "joint_type": joint_type_str},
+                )
                 # assemble custom attributes for each DOF (dict mapping DOF index to value)
                 # Only store values that were explicitly specified in the source
                 for key, value in dof_attr.items():

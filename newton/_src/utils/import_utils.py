@@ -107,6 +107,7 @@ def parse_custom_attributes(
     dictlike: dict[str, str],
     custom_attributes: Sequence[ModelBuilder.CustomAttribute],
     parsing_mode: Literal["usd", "mjcf", "urdf"],
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Parse custom attributes from a dictionary.
@@ -115,6 +116,7 @@ def parse_custom_attributes(
         dictlike: The dictionary (or XML element) to parse the custom attributes from. This object behaves like a string-valued dictionary that implements the ``get`` method and returns the value for the given key.
         custom_attributes: The custom attributes to parse. This is a sequence of :class:`ModelBuilder.CustomAttribute` objects.
         parsing_mode: The parsing mode to use. This can be "usd", "mjcf", or "urdf". It determines which attribute name and value transformer to use.
+        context: Optional context dictionary passed to the attribute's ``value_converter`` (if defined). Can contain parsing-time information such as ``use_degrees`` or ``joint_type``.
 
     Returns:
         A dictionary of the parsed custom attributes. The keys are the custom attribute keys :attr:`ModelBuilder.CustomAttribute.key`
@@ -146,6 +148,8 @@ def parse_custom_attributes(
         dict_value = dictlike.get(name)
         if dict_value is not None:
             out[attr.key] = transformer(dict_value)
+            if attr.value_converter is not None and context is not None:
+                out[attr.key] = attr.value_converter(out[attr.key], context)
     return out
 
 
