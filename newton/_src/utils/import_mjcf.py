@@ -135,6 +135,7 @@ def parse_mjcf(
     xform: Transform | None = None,
     floating: bool | None = None,
     base_joint: dict | str | None = None,
+    parent_body: int | None = None,
     armature_scale: float = 1.0,
     scale: float = 1.0,
     hide_visuals: bool = False,
@@ -171,7 +172,8 @@ def parse_mjcf(
         source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform (Transform): The transform to apply to the imported mechanism.
         floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
-        base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+        base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+        parent_body (int or None): The index of an existing body to attach this MJCF's root to. If None (default), the root is connected to the world. When specified, the imported model becomes part of the same kinematic chain as the parent body.
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
@@ -1108,11 +1110,18 @@ def parse_mjcf(
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
-        if joint_type == JointType.FREE and parent == -1 and (base_joint is not None or floating is not None):
+        if (
+            joint_type == JointType.FREE
+            and parent == -1
+            and (base_joint is not None or floating is not None or parent_body is not None)
+        ):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             # Rotate joint_pos by body orientation before adding to body position
             rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
             _xform = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
+
+            # Determine the parent for the base joint (-1 for world, or an existing body index)
+            base_parent = parent_body if parent_body is not None else -1
 
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only
@@ -1126,13 +1135,20 @@ def parse_mjcf(
                         key="base_joint",
                         parent_xform=base_parent_xform,
                         child_xform=base_child_xform,
+                        parent=base_parent,
                     )
                 )
-            elif floating is not None and floating:
-                joint_indices.append(builder.add_base_joint(child=link, floating=True, key="floating_base"))
-            else:
+            elif floating is not None and floating and base_parent == -1:
+                # floating=True only makes sense when connecting to world
                 joint_indices.append(
-                    builder.add_base_joint(child=link, floating=False, key="fixed_base", parent_xform=world_xform)
+                    builder.add_base_joint(child=link, floating=True, key="floating_base", parent=base_parent)
+                )
+            else:
+                # Fixed joint to world or to parent_body
+                joint_indices.append(
+                    builder.add_base_joint(
+                        child=link, floating=False, key="fixed_base", parent_xform=world_xform, parent=base_parent
+                    )
                 )
 
         else:
@@ -1961,10 +1977,33 @@ def parse_mjcf(
             for j in range(i + 1, end_shape_count):
                 builder.add_shape_collision_filter_pair(i, j)
 
-    # Create articulation from all collected joints
+    # Create articulation from all collected joints (only if not attaching to an existing body)
     if joint_indices:
-        articulation_key = root.attrib.get("model")
-        builder.add_articulation(joints=joint_indices, key=articulation_key)
+        if parent_body is not None:
+            # Find the articulation that contains the parent_body
+            parent_articulation = None
+            for joint_idx, child in enumerate(builder.joint_child):
+                if child == parent_body:
+                    parent_articulation = builder.joint_articulation[joint_idx]
+                    break
+            if parent_articulation is None:
+                # Parent body might be the child of a joint
+                for joint_idx, parent in enumerate(builder.joint_parent):
+                    if parent == parent_body:
+                        parent_articulation = builder.joint_articulation[joint_idx]
+                        break
+            if parent_articulation is not None and parent_articulation >= 0:
+                # Mark all new joints as belonging to the parent's articulation
+                for joint_idx in joint_indices:
+                    builder.joint_articulation[joint_idx] = parent_articulation
+            else:
+                # Parent body is not in any articulation, create a new one
+                articulation_key = root.attrib.get("model")
+                builder.add_articulation(joints=joint_indices, key=articulation_key)
+        else:
+            # No parent_body specified, create a new articulation
+            articulation_key = root.attrib.get("model")
+            builder.add_articulation(joints=joint_indices, key=articulation_key)
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

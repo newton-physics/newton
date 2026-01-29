@@ -1425,6 +1425,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         floating: bool = False,
         base_joint: dict | str | None = None,
+        parent_body: int | None = None,
         scale: float = 1.0,
         hide_visuals: bool = False,
         parse_visuals_as_colliders: bool = False,
@@ -1447,7 +1448,8 @@ class ModelBuilder:
             source (str): The filename of the URDF file to parse, or the URDF XML string content.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
             floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
-            base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            parent_body (int or None): The index of an existing body to attach this URDF's root to. If None (default), the root is connected to the world. When specified, the imported model becomes part of the same kinematic chain as the parent body.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes.
             parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
@@ -1476,6 +1478,7 @@ class ModelBuilder:
             xform=xform,
             floating=floating,
             base_joint=base_joint,
+            parent_body=parent_body,
             scale=scale,
             hide_visuals=hide_visuals,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
@@ -1499,6 +1502,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         floating: bool | None = None,
         base_joint: dict | str | None = None,
+        parent_body: int | None = None,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
         joint_drive_gains_scaling: float = 1.0,
@@ -1529,7 +1533,8 @@ class ModelBuilder:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The transform to apply to the entire scene.
             floating (bool): If True, floating bodies (bodies not connected as a child to any joint) receive a free joint. If False, floating bodies receive a fixed joint. If None (default), floating bodies receive a free joint (matching the default behavior).
-            base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
+            base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
+            parent_body (int or None): The index of an existing body to attach this USD's root to. If None (default), the root is connected to the world. When specified, the imported model becomes part of the same kinematic chain as the parent body.
             only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
@@ -1611,6 +1616,7 @@ class ModelBuilder:
             xform=xform,
             floating=floating,
             base_joint=base_joint,
+            parent_body=parent_body,
             only_load_enabled_rigid_bodies=only_load_enabled_rigid_bodies,
             only_load_enabled_joints=only_load_enabled_joints,
             joint_drive_gains_scaling=joint_drive_gains_scaling,
@@ -1639,6 +1645,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         floating: bool | None = None,
         base_joint: dict | str | None = None,
+        parent_body: int | None = None,
         armature_scale: float = 1.0,
         scale: float = 1.0,
         hide_visuals: bool = False,
@@ -1674,7 +1681,8 @@ class ModelBuilder:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform (Transform): The transform to apply to the imported mechanism.
             floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
-            base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            parent_body (int or None): The index of an existing body to attach this MJCF's root to. If None (default), the root is connected to the world. When specified, the imported model becomes part of the same kinematic chain as the parent body.
             armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
@@ -1716,6 +1724,7 @@ class ModelBuilder:
             xform=xform,
             floating=floating,
             base_joint=base_joint,
+            parent_body=parent_body,
             armature_scale=armature_scale,
             scale=scale,
             hide_visuals=hide_visuals,
@@ -6820,15 +6829,16 @@ class ModelBuilder:
         key: str | None = None,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
+        parent: int = -1,
     ) -> int:
         """
-        Adds a base joint connecting a body to the world based on the ``floating`` and ``base_joint`` parameters.
+        Adds a joint connecting a body to a parent body (or the world) based on the ``floating`` and ``base_joint`` parameters.
 
-        This method is used to attach a floating body to the world frame with the appropriate joint type.
+        This method is used to attach a body to a parent body or the world frame with the appropriate joint type.
         By default, the body's current transform is used as the parent transform for the joint.
 
         Args:
-            child (int): The body index to connect to the world.
+            child (int): The body index to connect.
             floating (bool or None, optional): If True or None (default), creates a free joint.
                 If False, creates a fixed joint.
             base_joint (str or dict or None, optional): Specifies the joint type to create.
@@ -6842,20 +6852,27 @@ class ModelBuilder:
                 When specified, this takes precedence over the ``floating`` parameter.
             key (str or None, optional): A unique key for the joint. If not provided, a default
                 key is generated based on the body index.
-            parent_xform (Transform or None, optional): The transform of the joint in the parent (world) frame.
-                If None, defaults to the body's current transform (``body_q[child]``).
+            parent_xform (Transform or None, optional): The transform of the joint in the parent frame.
+                If None, defaults to the body's current transform (``body_q[child]``) when parent is world (-1),
+                or identity transform when parent is another body.
             child_xform (Transform or None, optional): The transform of the joint in the child frame.
                 If None, defaults to identity transform.
+            parent (int, optional): The index of the parent body. Use -1 (default) to connect to the world.
+                When connecting to an existing body, the child body becomes part of the same kinematic chain.
 
         Returns:
             int: The index of the created joint.
 
         Note:
-            When ``parent_xform`` is not provided, the body's current transform (``body_q[child]``)
-            is used as the parent transform, effectively placing the joint at the body's current position.
+            When ``parent_xform`` is not provided:
+            - If parent is -1 (world), the body's current transform (``body_q[child]``) is used.
+            - If parent is another body, identity transform is used (joint at parent body origin).
         """
         if parent_xform is None:
-            parent_xform = self.body_q[child]
+            if parent == -1:
+                parent_xform = self.body_q[child]
+            else:
+                parent_xform = wp.transform_identity()
         if child_xform is None:
             child_xform = wp.transform_identity()
 
@@ -6877,14 +6894,14 @@ class ModelBuilder:
                     angular_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str],
                     parent_xform=parent_xform,
                     child_xform=child_xform,
-                    parent=-1,
+                    parent=parent,
                     child=child,
                     key=key,
                 )
             elif isinstance(base_joint, dict):
                 # Use dict directly with add_joint
                 joint_params = base_joint.copy()
-                joint_params["parent"] = -1
+                joint_params["parent"] = parent
                 joint_params["child"] = child
                 joint_params["parent_xform"] = parent_xform
                 joint_params["child_xform"] = child_xform
@@ -6897,10 +6914,16 @@ class ModelBuilder:
                 )
         elif floating is not None and not floating:
             # floating=False means fixed joints
-            joint_id = self.add_joint_fixed(-1, child, parent_xform=parent_xform, child_xform=child_xform, key=key)
+            joint_id = self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key)
         else:
             # Default: floating=None or floating=True means free joints
-            joint_id = self.add_joint_free(child, key=key)
+            if parent == -1:
+                joint_id = self.add_joint_free(child, key=key)
+            else:
+                # Can't have a free joint when attaching to another body - use fixed instead
+                joint_id = self.add_joint_fixed(
+                    parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key
+                )
 
         return joint_id
 

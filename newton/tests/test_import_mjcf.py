@@ -3563,6 +3563,108 @@ class TestImportMjcf(unittest.TestCase):
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
         np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
 
+    def test_floating_true_creates_free_joint(self):
+        """Test that floating=True creates a free joint for the root body."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_floating">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FREE)
+
+    def test_floating_false_creates_fixed_joint(self):
+        """Test that floating=False creates a fixed joint for the root body."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_fixed">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
+
+    def test_base_joint_string_creates_d6_joint(self):
+        """Test that base_joint as string creates a D6 joint with specified axes."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_string">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="px,py,rz")
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+
+    def test_base_joint_dict_creates_custom_joint(self):
+        """Test that base_joint as dict creates the specified joint type."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_dict">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            mjcf_content,
+            base_joint={
+                "joint_type": newton.JointType.REVOLUTE,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0, 0, 1])],
+            },
+        )
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.REVOLUTE)
+
+    def test_base_joint_overrides_floating(self):
+        """Test that base_joint takes precedence over floating parameter."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_override">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Even with floating=True, base_joint should take precedence
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=True, base_joint="px,py")
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+
     def test_base_joint_respects_import_xform(self):
         """Test that base joints (parent == -1) correctly use the import xform.
 
@@ -3685,6 +3787,97 @@ class TestImportMjcf(unittest.TestCase):
             actual_quat, -expected_quat, atol=1e-5
         )
         self.assertTrue(quat_match, f"Body orientation should include frame rotation. Got {actual_quat}")
+
+    def test_parent_body_attaches_to_existing_body(self):
+        """Test that parent_body attaches the MJCF root to an existing body."""
+        # First MJCF: a simple robot arm
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot_arm">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Second MJCF: a gripper
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.025 0.025 0.01" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # First, load the robot
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        # Get the end effector body index
+        ee_body_idx = builder.body_key.index("end_effector")
+
+        # Remember the body count before adding gripper
+        robot_body_count = builder.body_count
+        robot_joint_count = builder.joint_count
+
+        # Now load the gripper attached to the end effector
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx)
+
+        model = builder.finalize()
+
+        # Verify body counts
+        self.assertEqual(model.body_count, robot_body_count + 1)  # Robot + gripper
+
+        # Verify the gripper's base joint has the end effector as parent
+        gripper_joint_idx = robot_joint_count  # First joint after robot
+        self.assertEqual(model.joint_parent.numpy()[gripper_joint_idx], ee_body_idx)
+
+        # Verify all joints belong to the same articulation
+        joint_articulations = model.joint_articulation.numpy()
+        robot_articulation = joint_articulations[0]
+        gripper_articulation = joint_articulations[gripper_joint_idx]
+        self.assertEqual(robot_articulation, gripper_articulation)
+
+    def test_parent_body_with_base_joint_creates_d6(self):
+        """Test that parent_body with base_joint creates a D6 joint to parent."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot_body_idx = 0
+
+        # Attach gripper with a D6 joint (rotation around Z)
+        builder.add_mjcf(gripper_mjcf, parent_body=robot_body_idx, base_joint="rz")
+
+        model = builder.finalize()
+
+        # The second joint should be a D6 connecting to the robot body
+        self.assertEqual(model.joint_count, 2)  # Fixed base + D6
+        self.assertEqual(model.joint_type.numpy()[1], newton.JointType.D6)
+        self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
 
     def test_exclude_tag(self):
         """Test that <exclude> tags properly filter collisions between specified body pairs."""

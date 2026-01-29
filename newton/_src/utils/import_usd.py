@@ -39,6 +39,25 @@ from ..usd.schemas import SchemaResolverNewton
 AttributeFrequency = Model.AttributeFrequency
 
 
+def _attach_joints_to_parent_articulation(builder: ModelBuilder, joint_indices: list[int], parent_body: int):
+    """Helper function to attach joints to an existing articulation containing parent_body."""
+    parent_articulation = None
+    for joint_idx, child in enumerate(builder.joint_child):
+        if child == parent_body:
+            parent_articulation = builder.joint_articulation[joint_idx]
+            break
+    if parent_articulation is None:
+        # Parent body might be the parent of a joint
+        for joint_idx, parent in enumerate(builder.joint_parent):
+            if parent == parent_body:
+                parent_articulation = builder.joint_articulation[joint_idx]
+                break
+    if parent_articulation is not None and parent_articulation >= 0:
+        # Mark all new joints as belonging to the parent's articulation
+        for joint_idx in joint_indices:
+            builder.joint_articulation[joint_idx] = parent_articulation
+
+
 def parse_usd(
     builder: ModelBuilder,
     source,
@@ -46,6 +65,7 @@ def parse_usd(
     xform: Transform | None = None,
     floating: bool | None = None,
     base_joint: dict | str | None = None,
+    parent_body: int | None = None,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
@@ -1286,24 +1306,37 @@ def parse_usd(
 
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
-                # Use add_base_joint to honor floating and base_joint parameters
+                # Use add_base_joint to honor floating, base_joint, and parent_body parameters
+                base_parent = parent_body if parent_body is not None else -1
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
                         child_body_id = add_body(**body_data[i])
-                        joint_id = builder.add_base_joint(child_body_id, floating=floating, base_joint=base_joint)
+                        joint_id = builder.add_base_joint(
+                            child_body_id, floating=floating, base_joint=base_joint, parent=base_parent
+                        )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        builder.add_articulation(
-                            [joint_id], key=body_data[i]["key"], custom_attributes=articulation_custom_attrs
-                        )
+                        if parent_body is not None:
+                            # Attach to existing articulation
+                            _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
+                        else:
+                            builder.add_articulation(
+                                [joint_id], key=body_data[i]["key"], custom_attributes=articulation_custom_attrs
+                            )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
-                        joint_id = builder.add_base_joint(child_body_id, floating=floating, base_joint=base_joint)
+                        joint_id = builder.add_base_joint(
+                            child_body_id, floating=floating, base_joint=base_joint, parent=base_parent
+                        )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        builder.add_articulation(
-                            [joint_id], key=body_keys[i], custom_attributes=articulation_custom_attrs
-                        )
+                        if parent_body is not None:
+                            # Attach to existing articulation
+                            _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
+                        else:
+                            builder.add_articulation(
+                                [joint_id], key=body_keys[i], custom_attributes=articulation_custom_attrs
+                            )
                 sorted_joints = []
             else:
                 # we have an articulation with joints, we need to sort them topologically
@@ -1346,13 +1379,16 @@ def parse_usd(
                 if first_joint_parent != -1:
                     # the mechanism is floating since there is no joint connecting it to the world
                     # we explicitly add a joint connecting the first body in the articulation to the world
-                    # to make sure generalized-coordinate solvers can simulate it
+                    # (or to parent_body if specified) to make sure generalized-coordinate solvers can simulate it
+                    base_parent = parent_body if parent_body is not None else -1
                     if bodies_follow_joint_ordering:
                         child_body = body_data[first_joint_parent]
                         child_body_id = path_body_map[child_body["key"]]
                     else:
                         child_body_id = art_bodies[first_joint_parent]
-                    base_joint_id = builder.add_base_joint(child_body_id, floating=floating, base_joint=base_joint)
+                    base_joint_id = builder.add_base_joint(
+                        child_body_id, floating=floating, base_joint=base_joint, parent=base_parent
+                    )
                     articulation_joint_indices.append(base_joint_id)
 
                 # insert the remaining joints in topological order
@@ -1381,13 +1417,17 @@ def parse_usd(
                     if joint is not None:
                         processed_joints.add(joint_key)
 
-            # Create the articulation from all collected joints
+            # Create the articulation from all collected joints (only if not attaching to an existing body)
             if articulation_joint_indices:
-                builder.add_articulation(
-                    articulation_joint_indices,
-                    key=articulation_path,
-                    custom_attributes=articulation_custom_attrs,
-                )
+                if parent_body is not None:
+                    # Attach to existing articulation
+                    _attach_joints_to_parent_articulation(builder, articulation_joint_indices, parent_body)
+                else:
+                    builder.add_articulation(
+                        articulation_joint_indices,
+                        key=articulation_path,
+                        custom_attributes=articulation_custom_attrs,
+                    )
 
             articulation_bodies[articulation_id] = art_bodies
             # determine if self-collisions are enabled
@@ -1768,8 +1808,20 @@ def parse_usd(
 
     # add joints to floating bodies (bodies not connected as children to any joint)
     if not (no_articulations and has_joints):
-        new_bodies = path_body_map.values()
-        builder.add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
+        new_bodies = list(path_body_map.values())
+        if parent_body is not None:
+            # When parent_body is specified, manually add joints to floating bodies with correct parent
+            joint_children = set(builder.joint_child)
+            for body_id in new_bodies:
+                if body_id in joint_children:
+                    continue  # Already has a joint
+                if builder.body_mass[body_id] <= 0:
+                    continue  # Skip static bodies
+                joint_id = builder.add_base_joint(body_id, floating=floating, base_joint=base_joint, parent=parent_body)
+                # Attach to parent's articulation
+                _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
+        else:
+            builder.add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
