@@ -522,6 +522,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
     "geom_contype",
+    # Joint solref: Newton uses direct mode (-ke, -kd), native uses standard mode (tc, dr)
+    # Compare via compare_solref_physics() instead for physics equivalence
+    "jnt_solref",
 }
 
 
@@ -571,6 +574,72 @@ def compare_inertia_tensors(
         rtol=0,
         atol=tol,
         err_msg="Inertia tensor mismatch (reconstructed from principal + iquat)",
+    )
+
+
+def solref_to_ke_kd(solref: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Convert MuJoCo solref to (ke, kd) for physics-equivalence comparison.
+
+    Args:
+        solref: Array of shape (..., 2) with [timeconst, dampratio] or [-ke, -kd]
+
+    Returns:
+        (ke, kd) arrays with same leading dimensions
+    """
+    timeconst = solref[..., 0]
+    dampratio = solref[..., 1]
+
+    # Direct mode: both negative -> solref = (-ke, -kd)
+    direct_mode = (timeconst < 0) & (dampratio < 0)
+
+    # Standard mode: ke = 1/(tc^2 * dr^2), kd = 2/tc
+    ke_standard = 1.0 / (timeconst**2 * dampratio**2)
+    kd_standard = 2.0 / timeconst
+
+    # Direct mode: ke = -tc, kd = -dr
+    ke_direct = -timeconst
+    kd_direct = -dampratio
+
+    ke = np.where(direct_mode, ke_direct, ke_standard)
+    kd = np.where(direct_mode, kd_direct, kd_standard)
+
+    return ke, kd
+
+
+def compare_solref_physics(
+    newton_mjw: Any,
+    native_mjw: Any,
+    field_name: str,
+    tol: float = 1e-3,
+) -> None:
+    """Compare solref fields by converting to effective ke/kd values.
+
+    MuJoCo solref can be in standard mode [timeconst, dampratio] or
+    direct mode [-ke, -kd]. This compares the physics-equivalent ke/kd.
+    """
+    newton_solref = getattr(newton_mjw, field_name).numpy()
+    native_solref = getattr(native_mjw, field_name).numpy()
+
+    assert newton_solref.shape == native_solref.shape, (
+        f"{field_name} shape mismatch: {newton_solref.shape} vs {native_solref.shape}"
+    )
+
+    newton_ke, newton_kd = solref_to_ke_kd(newton_solref)
+    native_ke, native_kd = solref_to_ke_kd(native_solref)
+
+    np.testing.assert_allclose(
+        newton_ke,
+        native_ke,
+        rtol=tol,
+        atol=0,
+        err_msg=f"{field_name} ke mismatch (physics-equivalent)",
+    )
+    np.testing.assert_allclose(
+        newton_kd,
+        native_kd,
+        rtol=tol,
+        atol=0,
+        err_msg=f"{field_name} kd mismatch (physics-equivalent)",
     )
 
 
@@ -946,6 +1015,9 @@ class TestMenagerieBase(unittest.TestCase):
         # The eig3 determinant fix ensures these match even if iquat orientation differs
         compare_inertia_tensors(newton_solver.mjw_model, native_mjw_model)
 
+        # Compare jnt_solref by physics equivalence (direct mode vs standard mode)
+        compare_solref_physics(newton_solver.mjw_model, native_mjw_model, "jnt_solref")
+
         # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
 
@@ -1255,9 +1327,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Joint actuator force limiting: Newton enables by default
         "jnt_actfrclimited",
         "jnt_actfrcrange",
-        # Joint solver params: Newton uses different defaults
-        "jnt_solref",
-        "jnt_solimp",
         # Options: solver/iterations differ between Newton defaults and MJCF
         "opt",
     }
