@@ -103,6 +103,12 @@ These are changes/workarounds made to get tests passing that should be revisited
     - This affects control array shapes
     - TODO: Resolve actuator handling in Newton's MJCF parser
 
+12. SOLVER DEFAULTS (opt.solver, opt.iterations, opt.ls_iterations)
+    - Newton's SolverMuJoCo defaults: solver=CG, iterations=20, ls_iterations=10
+    - MuJoCo defaults: solver=Newton, iterations=100, ls_iterations=50
+    - Tests override to use MuJoCo defaults for equivalence testing
+    - TODO: Consider whether Newton should match MuJoCo defaults or keep its own
+
 --------------------------------------------------------------------------------
 """
 
@@ -742,6 +748,26 @@ def compare_mjw_models(
             assert hasattr(newton_val, "meaninertia"), f"{attr}: newton missing meaninertia"
             diff = abs(float(newton_val.meaninertia) - float(native_val.meaninertia))
             assert diff < tol, f"{attr}.meaninertia: diff={diff:.2e} > tol={tol:.0e}"
+        elif attr == "opt":
+            # Special case: Option object - compare each field
+            for opt_attr in dir(native_val):
+                if opt_attr.startswith("_"):
+                    continue
+                opt_newton = getattr(newton_val, opt_attr, None)
+                opt_native = getattr(native_val, opt_attr, None)
+                if opt_newton is None or opt_native is None or callable(opt_native):
+                    continue
+                if hasattr(opt_native, "numpy"):
+                    np.testing.assert_allclose(
+                        opt_newton.numpy(),
+                        opt_native.numpy(),
+                        rtol=tol,
+                        atol=tol,
+                        err_msg=f"{attr}.{opt_attr}",
+                    )
+                elif isinstance(opt_native, (int, float, np.number, bool)):
+                    assert opt_newton == opt_native, f"{attr}.{opt_attr}: {opt_newton} != {opt_native}"
+                # Skip enum comparisons (they compare fine by value)
         else:
             assert newton_val == native_val, f"{attr}: {newton_val} != {native_val}"
 
@@ -1011,7 +1037,14 @@ class TestMenagerieBase(unittest.TestCase):
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-        newton_solver = SolverMuJoCo(newton_model)
+        # Use MuJoCo defaults for solver options to match native behavior
+        # TODO: Newton's SolverMuJoCo defaults differ from MuJoCo (solver=cg/20/10 vs newton/100/50)
+        newton_solver = SolverMuJoCo(
+            newton_model,
+            solver="newton",  # MuJoCo default (vs Newton's "cg")
+            iterations=100,  # MuJoCo default (vs Newton's 20)
+            ls_iterations=50,  # MuJoCo default (vs Newton's 10)
+        )
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
@@ -1350,8 +1383,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
         # Joint actuator force limiting: Newton enables by default
         "jnt_actfrclimited",
         "jnt_actfrcrange",
-        # Options: solver/iterations differ between Newton defaults and MJCF
-        "opt",
     }
 
 
