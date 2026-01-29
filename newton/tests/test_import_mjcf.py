@@ -2071,8 +2071,8 @@ class TestImportMjcf(unittest.TestCase):
 
         self.assertEqual(builder.shape_count, 3)
 
-        # No solref specified -> Newton defaults: ke=1000 (ShapeConfig.ke), kd=100 (ShapeConfig.kd)
-        self.assertAlmostEqual(builder.shape_material_ke[0], 1000.0, places=1)
+        # No solref specified -> Newton defaults: ke=2500 (ShapeConfig.ke), kd=100 (ShapeConfig.kd)
+        self.assertAlmostEqual(builder.shape_material_ke[0], 2500.0, places=1)
         self.assertAlmostEqual(builder.shape_material_kd[0], 100.0, places=1)
 
         # Custom solref [0.04, 1.0]: ke = 1/(0.04^2 * 1^2) = 625, kd = 2/0.04 = 50
