@@ -98,6 +98,11 @@ Supported Features
 
 .. currentmodule:: newton.solvers
 
+.. toctree::
+   :hidden:
+
+   newton_solvers_style3d
+
 .. rubric:: Submodules
 
 - :doc:`newton.solvers.style3d <newton_solvers_style3d>`

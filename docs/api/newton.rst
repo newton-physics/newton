@@ -3,6 +3,17 @@ newton
 
 .. currentmodule:: newton
 
+.. toctree::
+   :hidden:
+
+   newton_geometry
+   newton_ik
+   newton_selection
+   newton_sensors
+   newton_solvers
+   newton_utils
+   newton_viewer
+
 .. rubric:: Submodules
 
 - :doc:`newton.geometry <newton_geometry>`
