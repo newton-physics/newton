@@ -486,7 +486,7 @@ def main():
         "robot",
         "selection",
         "sensors",
-        "Softbody",
+        "softbody",
     ]
     for module in sorted(modules):
         for example in sorted(os.listdir(os.path.join(get_source_directory(), module))):

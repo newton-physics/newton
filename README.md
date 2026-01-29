@@ -533,7 +533,7 @@ uv sync --extra examples
 <table>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/Softbody/example_softbody_hanging.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_hanging.py">
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_hanging.png" alt="Softbody Hanging">
       </a>
     </td>
