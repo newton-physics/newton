@@ -255,6 +255,25 @@ def construct_particle_graph(
     tet_graph_edges_np: np.array,
     tet_active_mask: np.array,
 ):
+    """Construct unified particle graph edges from triangular and tetrahedral meshes.
+
+    Combines triangle mesh edges (including optional bending edges) with tetrahedral
+    mesh edges into a single unified graph for particle coloring. The resulting graph
+    represents all constraints between particles that must be considered during
+    parallel Gauss-Seidel iteration.
+
+    Args:
+        tri_graph_edges: Triangle mesh indices (N_tris x 3) or None.
+        tri_active_mask: Boolean mask indicating which triangles are active, or None.
+        bending_edge_indices: Bending edge indices (N_edges x 4) or None.
+        bending_edge_active_mask: Boolean mask indicating which bending edges are active, or None.
+        tet_graph_edges_np: Tetrahedral mesh indices (N_tets x 4) or None.
+        tet_active_mask: Boolean mask indicating which tetrahedra are active, or None.
+
+    Returns:
+        wp.array: Canonicalized graph edges (N_edges x 2) as a warp array on CPU,
+                  where each row [i, j] represents an edge with i < j.
+    """
     tri_graph_edges = construct_trimesh_graph_edges(
         tri_graph_edges,
         tri_active_mask,
