@@ -16,6 +16,8 @@
 
 import warp as wp
 
+from newton._src.math import safe_div
+
 EPSILON = 1e-6
 MAXVAL = 1e10
 
