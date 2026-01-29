@@ -782,7 +782,7 @@ class ModelBuilder:
                 builder.add_body(custom_attributes={"my_namespace:my_attribute": 30.0})
                 builder.add_body()  # we leave out the custom_attributes, so the attribute will use the default value 20.0
                 model = builder.finalize()
-                # the model has now an AttributeNamespace object with the name "my_namespace"
+                # the model has now a Model.AttributeNamespace object with the name "my_namespace"
                 # and an attribute "my_attribute" that is a wp.array of shape (body_count, 1)
                 # with the default value 20.0
                 assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])

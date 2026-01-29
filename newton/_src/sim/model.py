@@ -784,7 +784,7 @@ class Model:
                     )
                 # Create namespace on destination if it doesn't exist
                 if not hasattr(destination, namespace):
-                    setattr(destination, namespace, AttributeNamespace(namespace))
+                    setattr(destination, namespace, Model.AttributeNamespace(namespace))
                 dest = getattr(destination, namespace)
             else:
                 # Non-namespaced attribute - add directly to destination
@@ -840,7 +840,7 @@ class Model:
         if namespace:
             # Create namespace object if it doesn't exist
             if not hasattr(self, namespace):
-                setattr(self, namespace, AttributeNamespace(namespace))
+                setattr(self, namespace, Model.AttributeNamespace(namespace))
 
             ns_obj = getattr(self, namespace)
             if hasattr(ns_obj, name):
