@@ -27,6 +27,7 @@ from .joints import (
     JointType,
     get_joint_constraint_count,
     get_joint_dof_count,
+    infer_actuator_mode,
 )
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
 from .state import State
@@ -55,5 +56,6 @@ __all__ = [
     "get_joint_constraint_count",
     "get_joint_dof_count",
     "ik",
+    "infer_actuator_mode",
     "plot_graph",
 ]

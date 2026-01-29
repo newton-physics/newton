@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -42,7 +43,6 @@ from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
-from . import CtrlSource
 from .kernels import (
     _create_inverse_shape_mapping_kernel,
     apply_mjc_body_f_kernel,
@@ -139,6 +139,32 @@ class SolverMuJoCo(SolverBase):
 
             solver.render_mujoco_viewer()
     """
+
+    class CtrlSource(IntEnum):
+        """Control source for MuJoCo actuators.
+
+        Determines where an actuator gets its control input from:
+
+        - JOINT_TARGET: Maps from Newton's joint_target_pos/vel arrays
+        - CTRL_DIRECT: Uses control.mujoco.ctrl directly (for MuJoCo-native control)
+        """
+
+        JOINT_TARGET = 0
+        CTRL_DIRECT = 1
+
+    class CtrlType(IntEnum):
+        """Control type for MuJoCo actuators.
+
+        For JOINT_TARGET mode, determines which target array to read from:
+
+        - POSITION: Maps from joint_target_pos, syncs gains from joint_target_ke
+        - VELOCITY: Maps from joint_target_vel, syncs gains from joint_target_kd
+        - GENERAL: Used with CTRL_DIRECT mode for motor/general actuators
+        """
+
+        POSITION = 0
+        VELOCITY = 1
+        GENERAL = 2
 
     # Class variables to cache the imported modules
     _mujoco = None
@@ -513,7 +539,9 @@ class SolverMuJoCo(SolverBase):
             return {"none": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)
 
         def parse_bool_int(s: str) -> int:
-            return 1 if s.lower() == "true" else 0
+            """Parse MJCF boolean values to int (0 or 1)."""
+            s = s.strip().lower()
+            return 1 if s in ("true", "1") else 0
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -747,7 +775,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=ModelAttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=int(CtrlSource.CTRL_DIRECT),
+                default=int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
                 namespace="mujoco",
             )
         )
@@ -1360,7 +1388,7 @@ class SolverMuJoCo(SolverBase):
             # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
             if ctrl_source_arr is not None:
                 ctrl_source = int(ctrl_source_arr[mujoco_act_idx])
-                if ctrl_source == CtrlSource.JOINT_TARGET:
+                if ctrl_source == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     continue  # Already handled in joint iteration
 
             # Only include actuators from the first world (template) or global actuators
@@ -1442,6 +1470,15 @@ class SolverMuJoCo(SolverBase):
                 actdim = mujoco_attrs.actuator_actdim.numpy()[mujoco_act_idx]
                 if actdim >= 0:  # -1 means auto
                     general_args["actdim"] = int(actdim)
+            if hasattr(mujoco_attrs, "actuator_dyntype"):
+                dyntype = int(mujoco_attrs.actuator_dyntype.numpy()[mujoco_act_idx])
+                general_args["dyntype"] = dyntype
+            if hasattr(mujoco_attrs, "actuator_gaintype"):
+                gaintype = int(mujoco_attrs.actuator_gaintype.numpy()[mujoco_act_idx])
+                general_args["gaintype"] = gaintype
+            if hasattr(mujoco_attrs, "actuator_biastype"):
+                biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
+                general_args["biastype"] = biastype
 
             # Map trntype integer to MuJoCo enum and override default in general_args
             trntype_enum = {

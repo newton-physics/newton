@@ -30,7 +30,7 @@ from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
 from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
-from ..solvers.mujoco import CtrlSource
+from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
 
@@ -193,8 +193,10 @@ def parse_mjcf(
         convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         ctrl_direct (bool): If True, all actuators use CTRL_DIRECT mode where control comes directly
-            from control.mujoco.ctrl array (MuJoCo-native behavior). If False (default), position/velocity
-            actuators use JOINT_TARGET mode where control comes from joint_target_pos/vel.
+            from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
+            See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
+            actuators use JOINT_TARGET mode where control comes from :attr:`newton.Control.joint_target_pos`
+            and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
     if xform is None:
@@ -1705,10 +1707,10 @@ def parse_mjcf(
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
                 if trntype != 0 or total_dofs == 0 or ctrl_direct:
-                    ctrl_source_val = CtrlSource.CTRL_DIRECT
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 else:
-                    ctrl_source_val = CtrlSource.JOINT_TARGET
-                if ctrl_source_val == CtrlSource.JOINT_TARGET:
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
                         builder.joint_target_ke[dof_idx] = kp
@@ -1729,10 +1731,10 @@ def parse_mjcf(
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
                 if trntype != 0 or total_dofs == 0 or ctrl_direct:
-                    ctrl_source_val = CtrlSource.CTRL_DIRECT
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 else:
-                    ctrl_source_val = CtrlSource.JOINT_TARGET
-                if ctrl_source_val == CtrlSource.JOINT_TARGET:
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
                         current_mode = builder.joint_act_mode[dof_idx]
@@ -1745,7 +1747,7 @@ def parse_mjcf(
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = CtrlSource.CTRL_DIRECT
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "general":
                 gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
@@ -1758,7 +1760,7 @@ def parse_mjcf(
                     biasprm_vals.append(0.0)
                 gainprm = vec10(*gainprm_vals)
                 biasprm = vec10(*biasprm_vals)
-                ctrl_source_val = CtrlSource.CTRL_DIRECT
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
             else:
                 if verbose:
                     print(f"Warning: Unknown actuator type '{actuator_type}', skipping")
@@ -1792,7 +1794,7 @@ def parse_mjcf(
             builder.add_custom_values(**actuator_values)
 
             if verbose:
-                source_name = "CTRL_DIRECT" if ctrl_source_val == CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
+                source_name = "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
                 trn_name = "body" if trntype == 4 else "joint"
                 print(
                     f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "

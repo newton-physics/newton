@@ -125,12 +125,7 @@ from ._src.solvers import (
 # solver flags
 from ._src.solvers.flags import SolverNotifyFlags
 
-# MuJoCo solver enums
-from ._src.solvers.mujoco import CtrlSource, CtrlType
-
 __all__ = [
-    "CtrlSource",
-    "CtrlType",
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",

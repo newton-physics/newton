@@ -52,7 +52,7 @@ class SolverNotifyFlags(IntEnum):
     """Indicates tendon properties: eg tendon_stiffness."""
 
     ACTUATOR_PROPERTIES = 1 << 8
-    """Indicates MuJoCo actuator property updates: mujoco:actuator_gainprm, mujoco:actuator_biasprm, etc."""
+    """Indicates actuator property updates: gains, biases, limits, etc."""
 
     ALL = (
         JOINT_PROPERTIES
