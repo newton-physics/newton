@@ -13,6 +13,7 @@ Utilities for working with the Universal Scene Description (USD) format.
 
    convert_warp_type
    convert_warp_value
+   from_gfquat
    get_attribute
    get_attributes_in_namespace
    get_custom_attribute_declarations

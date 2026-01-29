@@ -26,43 +26,6 @@ from .types import (
 
 
 @wp.func
-def build_orthonormal_basis(n: wp.vec3):
-    """
-    Builds an orthonormal basis given a normal vector `n`. Return the two axes that are perpendicular to `n`.
-
-    Args:
-        n: A 3D vector representing the normal vector.
-
-    Returns:
-        A tuple of two 3D vectors that are orthogonal to each other and to `n`.
-    """
-    b1 = wp.vec3()
-    b2 = wp.vec3()
-    if n[2] < 0.0:
-        a = 1.0 / (1.0 - n[2])
-        b = n[0] * n[1] * a
-        b1[0] = 1.0 - n[0] * n[0] * a
-        b1[1] = -b
-        b1[2] = n[0]
-
-        b2[0] = b
-        b2[1] = n[1] * n[1] * a - 1.0
-        b2[2] = -n[1]
-    else:
-        a = 1.0 / (1.0 + n[2])
-        b = -n[0] * n[1] * a
-        b1[0] = 1.0 - n[0] * n[0] * a
-        b1[1] = b
-        b1[2] = -n[0]
-
-        b2[0] = b
-        b2[1] = 1.0 - n[1] * n[1] * a
-        b2[2] = -n[1]
-
-    return b1, b2
-
-
-@wp.func
 def triangle_closest_point_barycentric(a: wp.vec3, b: wp.vec3, c: wp.vec3, p: wp.vec3):
     ab = b - a
     ac = c - a

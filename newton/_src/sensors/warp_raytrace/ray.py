@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
 
 import warp as wp
 
@@ -23,11 +22,6 @@ MAXVAL = 1e10
 
 class vec6f(wp.types.vector(length=6, dtype=wp.float32)):
     pass
-
-
-@wp.func
-def safe_div(x: Any, y: Any) -> Any:
-    return x / wp.where(y != 0.0, y, EPSILON)
 
 
 @wp.func
@@ -69,7 +63,7 @@ def ray_compute_quadratic(a: wp.float32, b: wp.float32, c: wp.float32) -> tuple[
     det = wp.sqrt(det)
 
     # compute the two solutions
-    den = safe_div(1.0, a)
+    den = safe_div(1.0, a, EPSILON)
     x0 = (-b - det) * den
     x1 = (-b + det) * den
     x = wp.vec2f(x0, x1)

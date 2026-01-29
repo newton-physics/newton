@@ -7,6 +7,7 @@ newton
 
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
+- :doc:`newton.math <newton_math>`
 - :doc:`newton.selection <newton_selection>`
 - :doc:`newton.sensors <newton_sensors>`
 - :doc:`newton.solvers <newton_solvers>`
@@ -51,8 +52,8 @@ newton
    count_rigid_contact_points
    eval_fk
    eval_ik
-   get_joint_dof_count
    get_joint_constraint_count
+   get_joint_dof_count
 
 .. rubric:: Constants
 

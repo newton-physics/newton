@@ -167,7 +167,7 @@ class Example:
             self.model,
             self.state_0,
             "sphere at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, sphere_q, atol=2e-4),
+            lambda q, qd: newton.math.vec_allclose(q, sphere_q, atol=2e-4),
             [0],
         )
         # Ellipsoid with a=b=0.5, c=0.25 is stable (flat disk), rests at z=0.25
@@ -177,7 +177,7 @@ class Example:
             self.model,
             self.state_0,
             "ellipsoid at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, ellipsoid_q, atol=2e-2),
+            lambda q, qd: newton.math.vec_allclose(q, ellipsoid_q, atol=2e-2),
             [1],
         )
         self.capsule_pos[2] = 1.0
@@ -186,7 +186,7 @@ class Example:
             self.model,
             self.state_0,
             "capsule at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=2e-4),
+            lambda q, qd: newton.math.vec_allclose(q, capsule_q, atol=2e-4),
             [2],
         )
         # Custom test for cylinder: allow 0.01 error for X and Y, strict for Z and rotation
@@ -211,7 +211,7 @@ class Example:
             self.model,
             self.state_0,
             "box at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, box_q, atol=0.1),
+            lambda q, qd: newton.math.vec_allclose(q, box_q, atol=0.1),
             [4],
         )
         # we only test that the bunny didn't fall through the ground and didn't slide too far
