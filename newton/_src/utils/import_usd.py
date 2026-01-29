@@ -1370,7 +1370,7 @@ def parse_usd(
             warn_str += (
                 "Make sure your USD asset includes an articulation root prim with the PhysicsArticulationRootAPI.\n"
             )
-            warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=False) "
+            warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=True) "
             warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
             warnings.warn(warn_str, stacklevel=2)
 
