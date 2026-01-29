@@ -574,7 +574,7 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        def parse_limited(value: str) -> int:
+        def parse_limited(value: str, context: dict[str, Any] | None = None) -> int:
             """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
             v = value.lower().strip()
             if v in ("false", "0"):
