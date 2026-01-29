@@ -45,9 +45,8 @@ Otherwise, use Warp's default sign determination strategy (raycasts).
 """
 
 
-_NULL_COLLIDER_ID = -2
-_GROUND_COLLIDER_ID = -1
-_GROUND_COLLIDER_MATERIAL_INDEX = 0
+_NULL_COLLIDER_ID = -1
+"""Indicator for no collider"""
 
 
 @wp.struct
@@ -86,12 +85,6 @@ class Collider:
 
     query_max_dist: float
     """Maximum distance to query collider sdf"""
-
-    ground_height: float
-    """Y-coordinate of the ground"""
-
-    ground_normal: wp.vec3
-    """Normal of the ground"""
 
 
 @wp.func
@@ -140,18 +133,12 @@ def collision_sdf(
     body_q_prev: wp.array(dtype=wp.transform),
     dt: float,
 ):
-    ground_sdf = (
-        wp.dot(x, collider.ground_normal)
-        - collider.ground_height
-        - collider.material_thickness[_GROUND_COLLIDER_MATERIAL_INDEX]
-    )
-
-    min_sdf = ground_sdf
-    sdf_grad = collider.ground_normal
+    min_sdf = float(_INFINITY)
+    sdf_grad = wp.vec3(0.0)
     sdf_vel = wp.vec3(0.0)
     closest_point = wp.vec3(0.0)
-    collider_id = int(_GROUND_COLLIDER_ID)
-    material_id = int(_GROUND_COLLIDER_MATERIAL_INDEX)
+    collider_id = int(_NULL_COLLIDER_ID)
+    material_id = int(-1)
 
     # Find closest collider
     global_face_id = int(0)
@@ -252,8 +239,6 @@ def collider_volumes_kernel(
 def collider_density(
     collider_id: int, collider: Collider, collider_volumes: wp.array(dtype=float), body_mass: wp.array(dtype=float)
 ):
-    if collider_id == _GROUND_COLLIDER_ID:
-        return _INFINITY
     body_id = collider.collider_body_index[collider_id]
     if body_id < 0:
         return _INFINITY

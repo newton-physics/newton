@@ -26,7 +26,7 @@ import newton.utils
 
 from .rasterized_collisions import Collider
 
-__all__ = ["ImplicitMPMModel", "ImplicitMPMOptions", "MaterialParameters"]
+__all__ = ["ImplicitMPMModel", "ImplicitMPMOptions"]
 
 _INFINITY = wp.constant(1.0e12)
 """Value above which quantities are considered infinite"""
@@ -54,8 +54,6 @@ class ImplicitMPMOptions:
     """Maximum number of iterations for the rheology solver."""
     tolerance: float = 1.0e-5
     """Tolerance for the rheology solver."""
-    voxel_size: float = 0.1
-    """Size of the grid voxels."""
     strain_basis: str = "P0"
     """Strain basis functions. May be one of P0, Q1"""
     solver: str = "gauss-seidel"
@@ -66,6 +64,8 @@ class ImplicitMPMOptions:
     """Collider velocity computation mode. May be one of instantaneous, finite_difference."""
 
     # grid
+    voxel_size: float = 0.1
+    """Size of the grid voxels."""
     grid_type: str = "sparse"
     """Type of grid to use. May be one of sparse, dense, fixed."""
     grid_padding: int = 0
@@ -75,29 +75,15 @@ class ImplicitMPMOptions:
     transfer_scheme: str = "apic"
     """Transfer scheme to use for particle-grid transfers. May be one of apic, pic."""
 
-    # plasticity
-    yield_pressure: float = 1.0e12
-    """Yield pressure for the plasticity model. (Pa)"""
-    tensile_yield_ratio: float = 0.0
-    """Tensile yield ratio for the plasticity model."""
-    yield_stress: float = 0.0
-    """Yield stress for the plasticity model. (Pa)"""
-    hardening: float = 0.0
-    """Hardening factor for the plasticity model (Multiplier for det(Fp))."""
+    # material / background
     critical_fraction: float = 0.0
     """Fraction for particles under which the yield surface collapses."""
-
-    # elasticity (experimental)
-    young_modulus: float = _INFINITY
-    """Young's modulus for the elasticity model. (Pa)"""
-    poisson_ratio: float = 0.3
-    """Poisson's ratio for the elasticity model."""
-    damping: float = 0.0
-    """Damping for the elasticity model."""
-
-    # background
     air_drag: float = 1.0
     """Numerical drag for the background air."""
+    ground_height: float = -1.0e12
+    """Height of the ground plane. Default is effectively disabled."""
+    ground_normal: tuple[float, float, float] | None = None
+    """Normal of the ground plane. Default (None) uses model.up_axis."""
 
     # experimental
     collider_normal_from_sdf_gradient: bool = False
@@ -247,19 +233,6 @@ def _create_body_collider_mesh(
     return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points)), face_material_ids
 
 
-@wp.struct
-class MaterialParameters:
-    young_modulus: wp.array(dtype=float)
-    poisson_ratio: wp.array(dtype=float)
-    damping: wp.array(dtype=float)
-    hardening: wp.array(dtype=float)
-
-    friction: wp.array(dtype=float)
-    yield_pressure: wp.array(dtype=float)
-    tensile_yield_ratio: wp.array(dtype=float)
-    yield_stress: wp.array(dtype=float)
-
-
 class ImplicitMPMModel:
     """Wrapper augmenting a ``newton.Model`` with implicit MPM data and setup.
 
@@ -274,18 +247,26 @@ class ImplicitMPMModel:
 
     def __init__(self, model: newton.Model, options: ImplicitMPMOptions):
         self.model = model
+        self._options = options
+
+        # Global options from ImplicitMPMOptions
+        self.voxel_size = float(options.voxel_size)
+        """Size of the grid voxels"""
 
         self.critical_fraction = float(options.critical_fraction)
         """Maximum fraction of the grid volume that can be occupied by particles"""
 
-        self.voxel_size = float(options.voxel_size)
-        """Size of the grid voxels"""
-
         self.air_drag = float(options.air_drag)
         """Drag for the background air"""
 
-        self.material_parameters = MaterialParameters()
-        """Material parameters struct"""
+        self.ground_height = float(options.ground_height)
+        """Height of the ground plane"""
+
+        if options.ground_normal is not None:
+            self.ground_normal = wp.vec3(options.ground_normal)
+        else:
+            self.ground_normal = None
+        """Normal of the ground plane (None means use model.up_axis)"""
 
         self.collider = Collider()
         """Collider struct"""
@@ -296,7 +277,7 @@ class ImplicitMPMModel:
         self.collider_body_mass = None
         self.collider_body_inv_inertia = None
 
-        self.setup_particle_material(options)
+        self.setup_particle_material()
         self.setup_collider()
 
     def notify_particle_material_changed(self):
@@ -306,8 +287,18 @@ class ImplicitMPMModel:
         particles to quickly toggle code paths (e.g., compliant particles or
         hardening enabled) without recomputing per step.
         """
-        self.min_young_modulus = np.min(self.material_parameters.young_modulus.numpy())
-        self.max_hardening = np.max(self.material_parameters.hardening.numpy())
+        model = self.model
+        mpm_ns = getattr(model, "mpm", None)
+
+        if mpm_ns is not None and hasattr(mpm_ns, "young_modulus"):
+            self.min_young_modulus = float(np.min(mpm_ns.young_modulus.numpy()))
+        else:
+            self.min_young_modulus = _INFINITY
+
+        if mpm_ns is not None and hasattr(mpm_ns, "hardening"):
+            self.max_hardening = float(np.max(mpm_ns.hardening.numpy()))
+        else:
+            self.max_hardening = 0.0
 
     def notify_collider_changed(self):
         """Refresh cached extrema for collider parameters.
@@ -325,17 +316,14 @@ class ImplicitMPMModel:
         self.collider.query_max_dist = self.voxel_size * math.sqrt(3.0)
         self.collider_body_count = int(np.max(body_ids + 1, initial=0))
 
-    def setup_particle_material(self, options: ImplicitMPMOptions):
-        """Initialize per-particle material and derived fields from the model.
+    def setup_particle_material(self):
+        """Initialize derived per-particle fields from the model.
 
-        Computes particle volumes and densities from the model's particle mass
-        and radius, sets up elastic and plasticity parameters with optional
-        hardening, and stores them into ``self.material_parameters``. Also
-        caches extrema used by the solver for fast feature toggles.
+        Computes particle volumes and densities from the model's particle mass and radius.
+        Also caches extrema used by the solver for fast feature toggles.
 
-        Args:
-            options: Solver options used to fill defaults for missing model
-                parameters (e.g., global Young's modulus, damping, Poisson).
+        Per-particle material parameters are read directly from the ``model.mpm.*`` namespace
+        (registered via :meth:`SolverImplicitMPM.register_custom_attributes`).
         """
         model = self.model
 
@@ -348,39 +336,6 @@ class ImplicitMPMModel:
             self.particle_volume = wp.array(8.0 * self.particle_radius.numpy() ** 3)
             self.particle_density = model.particle_mass / self.particle_volume
 
-            # Map newton.Model parameters to MPM material parameters
-            # young_modulus = particle_ke / particle_volume
-            self.material_parameters.young_modulus = _particle_parameter(
-                num_particles, model.particle_ke, options.young_modulus, model_scale=1.0 / self.particle_volume
-            )
-            # damping = particle_kd / particle_ke = particle_kd / (young modulus * particle_volume)
-            self.material_parameters.damping = _particle_parameter(
-                num_particles,
-                model.particle_kd,
-                options.damping,
-                model_scale=1.0 / (self.particle_volume * self.material_parameters.young_modulus),
-            )
-            self.material_parameters.poisson_ratio = wp.full(num_particles, options.poisson_ratio, dtype=float)
-
-            self.material_parameters.hardening = wp.full(num_particles, options.hardening, dtype=float)
-            self.material_parameters.friction = _particle_parameter(num_particles, model.particle_mu)
-            self.material_parameters.yield_pressure = wp.full(num_particles, options.yield_pressure, dtype=float)
-
-            # tensile yield ratio = adhesion * young modulus / yield pressure
-            self.material_parameters.tensile_yield_ratio = _particle_parameter(
-                num_particles,
-                model.particle_adhesion,
-                options.tensile_yield_ratio,
-                model_scale=self.material_parameters.young_modulus / self.material_parameters.yield_pressure,
-            )
-            # deviatoric yield stress = cohesion * young modulus
-            self.material_parameters.yield_stress = _particle_parameter(
-                num_particles,
-                model.particle_cohesion,
-                options.yield_stress,
-                model_scale=self.material_parameters.young_modulus,
-            )
-
         self.notify_particle_material_changed()
 
     def setup_collider(
@@ -391,12 +346,11 @@ class ImplicitMPMModel:
         collider_friction: list[float] | None = None,
         collider_adhesion: list[float] | None = None,
         collider_projection_threshold: list[float] | None = None,
-        ground_height: float = -_INFINITY,
-        ground_normal: wp.vec3 | None = None,
         model: newton.Model | None = None,
         body_com: wp.array | None = None,
         body_mass: wp.array | None = None,
         body_inv_inertia: wp.array | None = None,
+        body_q: wp.array | None = None,
     ):
         """Initialize collider parameters and defaults from inputs.
 
@@ -419,12 +373,11 @@ class ImplicitMPMModel:
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold, i.e. how far below the surface the
               particle may be before it is projected out. (m)
-            ground_height: Height of the ground plane.
-            ground_normal: Normal of the ground plane (default to model.up_axis).
             model: The model to read collider properties from. Default to self.model.
-            body_com: For dynamic colliders, per-mesh body center of mass. Default to model.body_com.
-            body_mass: For dynamic colliders, per-mesh body mass. Default to model.body_mass.
-            body_inv_inertia: For dynamic colliders, per-mesh body inverse inertia. Default to model.body_inv_inertia.
+            body_com: For dynamic colliders, per-body center of mass. Default to model.body_com.
+            body_mass: For dynamic colliders, per-body mass. Default to model.body_mass.
+            body_inv_inertia: For dynamic colliders, per-body inverse inertia. Default to model.body_inv_inertia.
+            body_q: For dynamic colliders, per-body initial transform. Default to model.body_q.
         """
 
         if model is None:
@@ -475,6 +428,8 @@ class ImplicitMPMModel:
             body_mass = model.body_mass
         if body_inv_inertia is None:
             body_inv_inertia = model.body_inv_inertia
+        if body_q is None:
+            body_q = model.body_q
 
         # count materials and shapes
         material_count = 1  # ground material
@@ -581,14 +536,8 @@ class ImplicitMPMModel:
         self.collider.body_com = body_com
         self.collider_body_mass = body_mass
         self.collider_body_inv_inertia = body_inv_inertia
+        self.collider_body_q = body_q
         self._collider_meshes = collider_meshes  # Keep a ref so that meshes are not garbage collected
-
-        self.collider.ground_height = ground_height
-        if ground_normal is None:
-            self.collider.ground_normal = wp.vec3(0.0)
-            self.collider.ground_normal[model.up_axis] = 1.0
-        else:
-            self.collider.ground_normal = wp.vec3(ground_normal)
 
         # Toggle finite-difference collider velocities based on model setting
         self.collider.use_finite_difference_velocity = self.collider_velocity_mode == "finite_difference"
