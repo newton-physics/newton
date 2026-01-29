@@ -41,6 +41,8 @@ def parse_usd(
     source,
     *,
     xform: Transform | None = None,
+    floating: bool | None = None,
+    base_joint: dict | str | None = None,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
@@ -70,6 +72,8 @@ def parse_usd(
         builder (ModelBuilder): The :class:`~newton.ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The transform to apply to the entire scene.
+        floating (bool): If True, floating bodies (bodies not connected as a child to any joint) receive a free joint. If False, floating bodies receive a fixed joint. If None (default), floating bodies receive a free joint (matching the default behavior).
+        base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
@@ -1273,16 +1277,15 @@ def parse_usd(
                 first_joint_parent = joint_edges[sorted_joints[0]][0]
                 if first_joint_parent != -1:
                     # the mechanism is floating since there is no joint connecting it to the world
-                    # we explicitly add a free joint connecting the first body in the articulation to the world
+                    # we explicitly add a joint connecting the first body in the articulation to the world
                     # to make sure generalized-coordinate solvers can simulate it
                     if bodies_follow_joint_ordering:
                         child_body = body_data[first_joint_parent]
                         child_body_id = path_body_map[child_body["key"]]
                     else:
                         child_body_id = art_bodies[first_joint_parent]
-                    # apply the articulation transform to the body
-                    free_joint_id = builder.add_joint_free(child=child_body_id)
-                    articulation_joint_indices.append(free_joint_id)
+                    base_joint_id = builder.add_base_joint(child_body_id, floating=floating, base_joint=base_joint)
+                    articulation_joint_indices.append(base_joint_id)
 
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
@@ -1335,6 +1338,7 @@ def parse_usd(
     )
 
     # insert remaining bodies that were not part of any articulation so far
+    # (joints for these bodies will be added later by add_base_joints_to_floating_bodies)
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
         body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
@@ -1343,10 +1347,6 @@ def parse_usd(
             incoming_xform=incoming_world_xform,
             add_body_to_builder=True,
         )
-        if not (no_articulations and has_joints):
-            # add articulation and free joint for this body
-            joint_id = builder.add_joint_free(child=body_id)
-            builder.add_articulation([joint_id], key=key)
 
     if no_articulations and has_joints:
         # parse external joints that are not part of any articulation
@@ -1655,10 +1655,10 @@ def parse_usd(
                         stacklevel=2,
                     )
 
-    # add free joints to floating bodies that's just been added by import_usd
+    # add joints to floating bodies (bodies not connected as children to any joint)
     if not (no_articulations and has_joints):
         new_bodies = path_body_map.values()
-        builder.add_free_joints_to_floating_bodies(new_bodies)
+        builder.add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None
