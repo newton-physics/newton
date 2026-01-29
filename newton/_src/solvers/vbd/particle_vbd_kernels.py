@@ -3033,7 +3033,7 @@ def solve_elasticity_tile(
                 wp.printf(
                     "particle: %d | num_adj_faces: %d | ",
                     particle_index,
-                    get_vertex_num_adjacent_faces(particle_index, particle_adjacency),
+                    get_vertex_num_adjacent_faces(particle_adjacency, particle_index),
                 )
                 wp.printf("i_face: %d | face id: %d | v_order: %d | ", adj_tri_counter, tri_index, vertex_order)
                 wp.printf(
@@ -3195,7 +3195,7 @@ def solve_elasticity(
                 wp.printf(
                     "particle: %d | num_adj_faces: %d | ",
                     particle_index,
-                    get_vertex_num_adjacent_faces(particle_index, particle_adjacency),
+                    get_vertex_num_adjacent_faces(particle_adjacency, particle_index),
                 )
                 wp.printf("i_face: %d | face id: %d | v_order: %d | ", i_adj_tri, tri_index, vertex_order)
                 wp.printf(
