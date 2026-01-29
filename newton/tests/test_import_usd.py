@@ -3852,6 +3852,87 @@ def Xform "Articulation" (
         self.assertEqual(builder.joint_type.count(newton.JointType.FIXED), 1)
         self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 1)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_articulation_without_joints_floating_parameter(self):
+        """Test that ArticulationRootAPI with bodies but no joints honors floating parameter."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create an articulation with multiple bodies but no joints connecting them
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        # Add bodies with collision so they have mass
+        body1 = UsdGeom.Cube.Define(stage, "/Articulation/Body1")
+        UsdPhysics.RigidBodyAPI.Apply(body1.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body1.GetPrim())
+
+        body2 = UsdGeom.Cube.Define(stage, "/Articulation/Body2")
+        body2.AddTranslateOp().Set((2.0, 0.0, 0.0))
+        UsdPhysics.RigidBodyAPI.Apply(body2.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body2.GetPrim())
+
+        # No joints defined - each body should become its own articulation
+
+        # Test with floating=True - should create free joints for each body
+        builder0 = newton.ModelBuilder()
+        builder0.add_usd(stage, floating=True)
+
+        self.assertEqual(builder0.body_count, 2)
+        self.assertEqual(builder0.joint_count, 2)
+        self.assertEqual(builder0.joint_type.count(newton.JointType.FREE), 2)
+        self.assertEqual(builder0.articulation_count, 2)
+
+        # Test with floating=False - should create fixed joints for each body
+        builder1 = newton.ModelBuilder()
+        builder1.add_usd(stage, floating=False)
+
+        self.assertEqual(builder1.body_count, 2)
+        self.assertEqual(builder1.joint_count, 2)
+        self.assertEqual(builder1.joint_type.count(newton.JointType.FIXED), 2)
+        self.assertEqual(builder1.articulation_count, 2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_articulation_without_joints_base_joint_string(self):
+        """Test that ArticulationRootAPI with bodies but no joints honors base_joint parameter."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create an articulation with multiple bodies but no joints connecting them
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        # Add bodies with collision so they have mass
+        body1 = UsdGeom.Cube.Define(stage, "/Articulation/Body1")
+        UsdPhysics.RigidBodyAPI.Apply(body1.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body1.GetPrim())
+
+        body2 = UsdGeom.Cube.Define(stage, "/Articulation/Body2")
+        body2.AddTranslateOp().Set((2.0, 0.0, 0.0))
+        UsdPhysics.RigidBodyAPI.Apply(body2.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body2.GetPrim())
+
+        # No joints defined - each body should become its own articulation
+
+        # Test with base_joint="px,py,rz" - should create D6 joints for each body
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, base_joint="px,py,rz")
+
+        self.assertEqual(builder.body_count, 2)
+        self.assertEqual(builder.joint_count, 2)
+        # Both should be D6 joints
+        self.assertEqual(builder.joint_type.count(newton.JointType.D6), 2)
+        # Each body becomes its own single-body articulation
+        self.assertEqual(builder.articulation_count, 2)
+        # Each D6 joint should have 3 DOFs (px, py, rz)
+        self.assertEqual(builder.joint_dof_count, 6)  # 3 DOFs * 2 bodies
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
