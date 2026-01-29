@@ -13,6 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Style3D solver module.
+
+This module provides the SolverStyle3D cloth simulation solver along with
+helper functions for setting up cloth assets. It includes utilities for
+creating cloth meshes and grids, handling collisions, and sewing cloth
+vertices together.
+"""
+
 from .cloth import (
     add_style3d_cloth_grid,
     add_style3d_cloth_mesh,
