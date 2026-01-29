@@ -970,6 +970,33 @@ class TestModel(unittest.TestCase):
         self.assertIn("box1", warning_msg)
         self.assertNotIn("good_capsule", warning_msg)
 
+    def test_collision_filter_pairs_canonical_order(self):
+        """Test that collision filter pairs are stored in canonical order (s1 < s2)."""
+        builder = ModelBuilder()
+
+        # Create a body with multiple shapes
+        body = builder.add_body()
+        shape0 = builder.add_shape_sphere(body=body, radius=0.5)
+        shape1 = builder.add_shape_box(body=body, hx=1.0, hy=1.0, hz=1.0)
+        shape2 = builder.add_shape_capsule(body=body, radius=0.3, half_height=1.0)
+
+        # Add collision filter pairs in non-canonical order to test normalization
+        builder.shape_collision_filter_pairs.append((shape1, shape0))  # reversed order
+        builder.shape_collision_filter_pairs.append((shape0, shape2))  # correct order
+        builder.shape_collision_filter_pairs.append((shape2, shape1))  # reversed order
+
+        # Finalize the model
+        model = builder.finalize()
+
+        # Verify all collision filter pairs are in canonical order (s1 < s2)
+        for s1, s2 in model.shape_collision_filter_pairs:
+            self.assertLess(s1, s2, f"Collision filter pair ({s1}, {s2}) is not in canonical order")
+
+        # Verify we have the expected pairs (should be normalized to canonical order)
+        self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
+        self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
+        self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

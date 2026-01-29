@@ -22,13 +22,15 @@ When using uv, the `lockfile <https://docs.astral.sh/uv/concepts/projects/layout
 We maintain a lockfile in the root of the repository that pins exact versions of all dependencies and their transitive dependencies.
 
 Sometimes, a dependency in the lockfile needs to be updated to a newer version.
-This can be done by running ``uv lock --upgrade-package <package-name>``:
+This can be done by running ``uv lock -P <package-name>``:
 
 .. code-block:: console
 
-    uv lock --upgrade-package warp-lang
+    uv lock -P warp-lang --prerelease allow
 
-    uv lock --upgrade-package mujoco-warp
+    uv lock -P mujoco-warp --prerelease allow
+
+The ``--prerelease allow`` flag is used to allow updating to pre-release versions of dependencies.
 
 uv also provides a command to update all dependencies in the lockfile:
 

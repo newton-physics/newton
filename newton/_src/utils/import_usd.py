@@ -1576,13 +1576,13 @@ def parse_usd(
     for path1, path2 in path_collision_filters:
         shape1 = path_shape_map[path1]
         shape2 = path_shape_map[path2]
-        builder.shape_collision_filter_pairs.append((shape1, shape2))
+        builder.add_shape_collision_filter_pair(shape1, shape2)
 
     # apply collision filters to all shapes that have no collision
     for shape_id in no_collision_shapes:
         for other_shape_id in range(builder.shape_count):
             if other_shape_id != shape_id:
-                builder.shape_collision_filter_pairs.append((shape_id, other_shape_id))
+                builder.add_shape_collision_filter_pair(shape_id, other_shape_id)
 
     # apply collision filters from articulations that have self collisions disabled
     for art_id, bodies in articulation_bodies.items():
@@ -1590,7 +1590,7 @@ def parse_usd(
             for body1, body2 in itertools.combinations(bodies, 2):
                 for shape1 in builder.body_shapes[body1]:
                     for shape2 in builder.body_shapes[body2]:
-                        builder.shape_collision_filter_pairs.append((shape1, shape2))
+                        builder.add_shape_collision_filter_pair(shape1, shape2)
 
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
