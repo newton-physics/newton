@@ -18,6 +18,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
+from ..core.types import MAXVAL
 from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
 from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
 from .types import GeoType, Mesh
@@ -52,9 +53,9 @@ class SDFData:
 
 
 # Default background value for unallocated voxels in sparse SDF.
-# Using inf ensures any trilinear interpolation with unallocated voxels produces inf or NaN,
-# allowing detection of unallocated voxels.
-SDF_BACKGROUND_VALUE = wp.inf
+# Using MAXVAL ensures trilinear interpolation with unallocated voxels produces values >= MAXVAL * 0.99,
+# allowing detection of unallocated voxels without triggering verify_fp false positives.
+SDF_BACKGROUND_VALUE = MAXVAL
 
 
 def create_empty_sdf_data() -> SDFData:
@@ -570,7 +571,7 @@ def count_isomesh_faces_kernel(
         y = y_id + corner_offset.y
         z = z_id + corner_offset.z
         v = wp.volume_lookup_f(sdf, x, y, z)
-        if wp.isnan(v) or wp.isinf(v):
+        if v >= wp.static(MAXVAL * 0.99):
             return
         if v < isovalue:
             cube_idx |= 1 << i
@@ -616,7 +617,7 @@ def generate_isomesh_kernel(
         y = y_id + corner_offset.y
         z = z_id + corner_offset.z
         v = wp.volume_lookup_f(sdf, x, y, z)
-        if wp.isnan(v) or wp.isinf(v):
+        if v >= wp.static(MAXVAL * 0.99):
             return
         corner_vals[i] = v
 

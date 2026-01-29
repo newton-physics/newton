@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
+import sys
 import tempfile
 import unittest
 
@@ -3162,6 +3164,60 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(site_xform[1], 2.5, places=5)
         self.assertAlmostEqual(site_xform[2], 3.5, places=5)
 
+    def test_site_size_defaults(self):
+        """Test that site size matches MuJoCo behavior for partial values.
+
+        MuJoCo fills unspecified components with its default (0.005), NOT by
+        replicating the first value. This ensures MJCF compatibility.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_site_size">
+    <worldbody>
+        <body name="body1">
+            <!-- Site with single size value - should fill with MuJoCo defaults -->
+            <site name="site_single" size="0.001"/>
+            <!-- Site with two size values - should fill third with default -->
+            <site name="site_two" size="0.002 0.003"/>
+            <!-- Site with all three size values -->
+            <site name="site_three" size="0.004 0.005 0.006"/>
+            <!-- Site with no size - should use MuJoCo default [0.005, 0.005, 0.005] -->
+            <site name="site_default"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True)
+
+        # Helper to get site scale by name
+        def get_site_scale(name):
+            idx = builder.shape_key.index(name)
+            return builder.shape_scale[idx]
+
+        # Single value: [0.001, 0.005, 0.005] (matches MuJoCo behavior)
+        scale_single = get_site_scale("site_single")
+        self.assertAlmostEqual(scale_single[0], 0.001, places=6)
+        self.assertAlmostEqual(scale_single[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_single[2], 0.005, places=6)
+
+        # Two values: [0.002, 0.003, 0.005]
+        scale_two = get_site_scale("site_two")
+        self.assertAlmostEqual(scale_two[0], 0.002, places=6)
+        self.assertAlmostEqual(scale_two[1], 0.003, places=6)
+        self.assertAlmostEqual(scale_two[2], 0.005, places=6)
+
+        # Three values: [0.004, 0.005, 0.006]
+        scale_three = get_site_scale("site_three")
+        self.assertAlmostEqual(scale_three[0], 0.004, places=6)
+        self.assertAlmostEqual(scale_three[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_three[2], 0.006, places=6)
+
+        # No size: should use MuJoCo default [0.005, 0.005, 0.005]
+        scale_default = get_site_scale("site_default")
+        self.assertAlmostEqual(scale_default[0], 0.005, places=6)
+        self.assertAlmostEqual(scale_default[1], 0.005, places=6)
+        self.assertAlmostEqual(scale_default[2], 0.005, places=6)
+
     def test_frame_childclass_propagation(self):
         """Test that frames correctly propagate childclass and merged defaults to geoms, sites, and nested frames."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -3520,6 +3576,635 @@ class TestImportMjcf(unittest.TestCase):
             actual_quat, -expected_quat, atol=1e-5
         )
         self.assertTrue(quat_match, f"Body orientation should include frame rotation. Got {actual_quat}")
+
+    def test_exclude_tag(self):
+        """Test that <exclude> tags properly filter collisions between specified body pairs."""
+        builder = newton.ModelBuilder()
+        mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_test.xml")
+        builder.add_mjcf(
+            mjcf_filename,
+            enable_self_collisions=True,  # Enable self-collisions so we can test exclude filtering
+        )
+
+        model = builder.finalize()
+
+        # Get shape indices for each body's geoms
+        body1_geom1_idx = builder.shape_key.index("body1_geom1")
+        body1_geom2_idx = builder.shape_key.index("body1_geom2")
+        body2_geom1_idx = builder.shape_key.index("body2_geom1")
+        body2_geom2_idx = builder.shape_key.index("body2_geom2")
+
+        # Convert filter pairs to a set for easier checking
+        filter_pairs = set(model.shape_collision_filter_pairs)
+
+        # Check that all pairs between body1 and body2 are filtered (in both directions)
+        body1_shapes = [body1_geom1_idx, body1_geom2_idx]
+        body2_shapes = [body2_geom1_idx, body2_geom2_idx]
+
+        for shape1 in body1_shapes:
+            for shape2 in body2_shapes:
+                # Check both orderings since the filter pairs can be added in either order
+                pair_filtered = (shape1, shape2) in filter_pairs or (shape2, shape1) in filter_pairs
+                self.assertTrue(
+                    pair_filtered,
+                    f"Shape pair ({shape1}, {shape2}) should be filtered due to <exclude body1='body1' body2='body2'/>",
+                )
+
+        # The test above verifies that body1-body2 pairs are correctly filtered.
+        # We don't need to verify body3 interactions as that would require running
+        # a full simulation to observe collision behavior.
+
+    def test_exclude_tag_with_verbose(self):
+        """Test that <exclude> tag parsing produces verbose output when requested."""
+        builder = newton.ModelBuilder()
+        mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_test.xml")
+
+        # Capture verbose output
+        captured_output = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            builder.add_mjcf(
+                mjcf_filename,
+                enable_self_collisions=True,
+                verbose=True,
+            )
+        finally:
+            sys.stdout = old_stdout
+
+        output = captured_output.getvalue()
+
+        # Check that the verbose output includes information about the exclude
+        self.assertIn("Parsed collision exclude", output)
+        self.assertIn("body1", output)
+        self.assertIn("body2", output)
+
+    def test_exclude_tag_missing_bodies(self):
+        """Test that <exclude> tags with missing body references are handled gracefully."""
+        mjcf_content = """
+<mujoco>
+  <worldbody>
+    <body name="body1" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <contact>
+    <!-- Reference to non-existent body -->
+    <exclude body1="body1" body2="nonexistent_body"/>
+  </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        # Should not raise an error, just skip the invalid exclude and continue parsing
+        builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=False)
+
+        # Verify the model can still be finalized successfully
+        model = builder.finalize()
+        self.assertIsNotNone(model)
+
+    def test_exclude_tag_with_hyphens(self):
+        """Test that <exclude> tags work with hyphenated body names (normalized to underscores)."""
+        builder = newton.ModelBuilder()
+        mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_hyphen_test.xml")
+        builder.add_mjcf(
+            mjcf_filename,
+            enable_self_collisions=True,  # Enable self-collisions so we can test exclude filtering
+        )
+
+        model = builder.finalize()
+
+        # Body names with hyphens should be normalized to underscores in builder.body_key
+        self.assertIn("body_with_hyphens", builder.body_key)
+        self.assertIn("another_hyphen_body", builder.body_key)
+
+        # Get shape indices for each body's geoms
+        hyphen_geom1_idx = builder.shape_key.index("hyphen_geom1")
+        hyphen_geom2_idx = builder.shape_key.index("hyphen_geom2")
+        another_geom1_idx = builder.shape_key.index("another_geom1")
+        another_geom2_idx = builder.shape_key.index("another_geom2")
+
+        # Convert filter pairs to a set for easier checking
+        filter_pairs = set(model.shape_collision_filter_pairs)
+
+        # Check that all pairs between the two hyphenated bodies are filtered
+        hyphen_shapes = [hyphen_geom1_idx, hyphen_geom2_idx]
+        another_shapes = [another_geom1_idx, another_geom2_idx]
+
+        for shape1 in hyphen_shapes:
+            for shape2 in another_shapes:
+                # Check both orderings since the filter pairs can be added in either order
+                pair_filtered = (shape1, shape2) in filter_pairs or (shape2, shape1) in filter_pairs
+                self.assertTrue(
+                    pair_filtered,
+                    f"Shape pair ({shape1}, {shape2}) should be filtered due to <exclude body1='body-with-hyphens' body2='another-hyphen-body'/>",
+                )
+
+    def test_exclude_tag_missing_attributes(self):
+        """Test that <exclude> tags with missing attributes are handled gracefully."""
+        mjcf_content = """
+<mujoco>
+  <worldbody>
+    <body name="body1" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <contact>
+    <!-- Missing body2 attribute -->
+    <exclude body1="body1"/>
+  </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        # Should not raise an error, just skip the invalid exclude and continue parsing
+        builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=False)
+
+        # Verify the model can still be finalized successfully
+        model = builder.finalize()
+        self.assertIsNotNone(model)
+
+        # Verify body1 was still parsed correctly
+        self.assertIn("body1", builder.body_key)
+
+    def test_exclude_tag_warnings_verbose(self):
+        """Test that warnings are printed for invalid exclude tags when verbose=True."""
+        mjcf_content = """
+<mujoco>
+  <worldbody>
+    <body name="body1" pos="0 0 1">
+      <freejoint/>
+      <geom type="box" size="0.1 0.1 0.1"/>
+    </body>
+  </worldbody>
+  <contact>
+    <!-- Multiple invalid excludes to test different error cases -->
+    <exclude body1="body1" body2="nonexistent"/>
+    <exclude body1="body1"/>
+    <exclude/>
+  </contact>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+
+        # Capture verbose output
+        captured_output = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = captured_output
+
+        try:
+            builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=True)
+        finally:
+            sys.stdout = old_stdout
+
+        output = captured_output.getvalue()
+
+        # Check that warnings were printed for invalid exclude entries
+        self.assertIn("Warning", output)
+        self.assertIn("<exclude>", output)
+
+
+class TestMjcfInclude(unittest.TestCase):
+    """Tests for MJCF <include> tag support."""
+
+    def test_basic_include_same_directory(self):
+        """Test including a file from the same directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the included file
+            included_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="included_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(tmpdir, "included.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            # Create the main file that includes it
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="included.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_include_subdirectory(self):
+        """Test including a file from a subdirectory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create subdirectory
+            subdir = os.path.join(tmpdir, "models")
+            os.makedirs(subdir)
+
+            # Create the included file in subdirectory
+            included_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="subdir_body">
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(subdir, "robot.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            # Create the main file
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="models/robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "scene.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_include_absolute_path(self):
+        """Test including a file using absolute path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the included file
+            included_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="absolute_body">
+            <geom type="capsule" size="0.05 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            included_path = os.path.join(tmpdir, "absolute.xml")
+            with open(included_path, "w") as f:
+                f.write(included_content)
+
+            # Create the main file with absolute path
+            main_content = f"""<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="{included_path}"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_include_multiple_sections(self):
+        """Test including content that goes into different sections (asset, default, worldbody)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create included file with defaults
+            defaults_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <default>
+        <geom rgba="1 0 0 1"/>
+    </default>
+</mujoco>"""
+            defaults_path = os.path.join(tmpdir, "defaults.xml")
+            with open(defaults_path, "w") as f:
+                f.write(defaults_content)
+
+            # Create included file with worldbody
+            body_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="red_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            body_path = os.path.join(tmpdir, "body.xml")
+            with open(body_path, "w") as f:
+                f.write(body_content)
+
+            # Create main file that includes both
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="defaults.xml"/>
+    <include file="body.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_include_resolves_asset_paths(self):
+        """Test that asset paths in included files are resolved relative to the included file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create robot subdirectory with mesh subdirectory
+            robot_dir = os.path.join(tmpdir, "robot")
+            mesh_dir = os.path.join(robot_dir, "meshes")
+            os.makedirs(mesh_dir)
+
+            # Create a simple OBJ mesh file
+            mesh_content = """# Simple cube
+v -0.5 -0.5 -0.5
+v  0.5 -0.5 -0.5
+v  0.5  0.5 -0.5
+v -0.5  0.5 -0.5
+v -0.5 -0.5  0.5
+v  0.5 -0.5  0.5
+v  0.5  0.5  0.5
+v -0.5  0.5  0.5
+f 1 2 3 4
+f 5 6 7 8
+f 1 2 6 5
+f 2 3 7 6
+f 3 4 8 7
+f 4 1 5 8
+"""
+            mesh_path = os.path.join(mesh_dir, "cube.obj")
+            with open(mesh_path, "w") as f:
+                f.write(mesh_content)
+
+            # Create robot.xml that references mesh relative to its location
+            robot_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <asset>
+        <mesh name="cube_mesh" file="meshes/cube.obj"/>
+    </asset>
+    <worldbody>
+        <body name="robot_body">
+            <geom type="mesh" mesh="cube_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            robot_path = os.path.join(robot_dir, "robot.xml")
+            with open(robot_path, "w") as f:
+                f.write(robot_content)
+
+            # Create main scene.xml that includes robot/robot.xml
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <include file="robot/robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "scene.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse - this should work because mesh path is resolved relative to robot.xml
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+            self.assertEqual(builder.shape_count, 1)  # Verify mesh shape was created
+
+            # Verify mesh vertices were actually loaded (cube has 8 vertices)
+            model = builder.finalize()
+            mesh = model.shape_source[0]
+            self.assertEqual(len(mesh.vertices), 8)
+
+
+class TestMjcfIncludeNested(unittest.TestCase):
+    """Tests for nested includes and cycle detection."""
+
+    def test_nested_includes(self):
+        """Test that nested includes work correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the deepest included file
+            deep_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="deep_body">
+            <geom type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            deep_path = os.path.join(tmpdir, "deep.xml")
+            with open(deep_path, "w") as f:
+                f.write(deep_content)
+
+            # Create middle file that includes deep file
+            middle_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <include file="deep.xml"/>
+</mujoco>"""
+            middle_path = os.path.join(tmpdir, "middle.xml")
+            with open(middle_path, "w") as f:
+                f.write(middle_content)
+
+            # Create main file that includes middle file
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="middle.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Parse and verify
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_circular_include_detection(self):
+        """Test that circular includes are detected and raise an error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create file A that includes file B
+            file_a_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <include file="b.xml"/>
+</mujoco>"""
+            file_a_path = os.path.join(tmpdir, "a.xml")
+            with open(file_a_path, "w") as f:
+                f.write(file_a_content)
+
+            # Create file B that includes file A (circular)
+            file_b_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <include file="a.xml"/>
+</mujoco>"""
+            file_b_path = os.path.join(tmpdir, "b.xml")
+            with open(file_b_path, "w") as f:
+                f.write(file_b_content)
+
+            # Attempt to parse should raise ValueError
+            builder = newton.ModelBuilder()
+            with self.assertRaises(ValueError) as context:
+                builder.add_mjcf(file_a_path)
+            self.assertIn("Circular include", str(context.exception))
+
+    def test_include_without_file_attribute(self):
+        """Test that include elements without file attribute are skipped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create main file with an include that has no file attribute
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include/>
+    <worldbody>
+        <body name="body1">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Should parse successfully, ignoring the empty include
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 1)
+
+    def test_self_include_detection(self):
+        """Test that a file including itself is detected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a file that includes itself
+            self_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <include file="self.xml"/>
+</mujoco>"""
+            self_path = os.path.join(tmpdir, "self.xml")
+            with open(self_path, "w") as f:
+                f.write(self_content)
+
+            # Attempt to parse should raise ValueError
+            builder = newton.ModelBuilder()
+            with self.assertRaises(ValueError) as context:
+                builder.add_mjcf(self_path)
+            self.assertIn("Circular include", str(context.exception))
+
+    def test_missing_include_file(self):
+        """Test that missing include files raise FileNotFoundError."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create main file that includes a non-existent file
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="does_not_exist.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            builder = newton.ModelBuilder()
+            with self.assertRaises(FileNotFoundError):
+                builder.add_mjcf(main_path)
+
+    def test_relative_include_without_base_dir(self):
+        """Test that relative includes from XML string input raise ValueError with default resolver."""
+        # XML string with relative include - default resolver can't resolve without base_dir
+        main_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="relative.xml"/>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as context:
+            builder.add_mjcf(main_xml)
+        self.assertIn("Cannot resolve relative path", str(context.exception))
+        self.assertIn("without base directory", str(context.exception))
+
+    def test_invalid_source_not_file_not_xml(self):
+        """Test that invalid source (not a file path, not XML) raises FileNotFoundError."""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(FileNotFoundError):
+            builder.add_mjcf("this_is_not_a_file_and_not_xml")
+
+
+class TestMjcfIncludeCallback(unittest.TestCase):
+    """Tests for custom path_resolver callback."""
+
+    def test_custom_path_resolver_returns_xml(self):
+        """Test custom callback that returns XML content directly for includes."""
+        # XML content to be "included"
+        included_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="virtual_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        def custom_resolver(_base_dir, file_path):
+            if file_path == "virtual.xml":
+                return included_xml
+            raise ValueError(f"Unknown file: {file_path}")
+
+        # Main MJCF as string
+        main_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="virtual.xml"/>
+</mujoco>"""
+
+        # Parse with custom resolver
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(main_xml, path_resolver=custom_resolver)
+        self.assertEqual(builder.body_count, 1)
+
+    def test_custom_path_resolver_with_base_dir(self):
+        """Test that custom callback receives correct base_dir."""
+        received_args = []
+
+        def tracking_resolver(base_dir, file_path):
+            received_args.append((base_dir, file_path))
+            return """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="tracked_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="test.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path, path_resolver=tracking_resolver)
+
+            # Verify callback received correct arguments
+            self.assertEqual(len(received_args), 1)
+            self.assertEqual(received_args[0][0], tmpdir)
+            self.assertEqual(received_args[0][1], "test.xml")
+
+    def test_xml_string_input_with_custom_resolver(self):
+        """Test that XML string input works with custom resolver (base_dir is None)."""
+        received_base_dirs = []
+
+        def tracking_resolver(base_dir, _file_path):
+            received_base_dirs.append(base_dir)
+            return """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="string_body">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        main_xml = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <include file="any.xml"/>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(main_xml, path_resolver=tracking_resolver)
+
+        # base_dir should be None for XML string input
+        self.assertEqual(len(received_base_dirs), 1)
+        self.assertIsNone(received_base_dirs[0])
 
 
 if __name__ == "__main__":

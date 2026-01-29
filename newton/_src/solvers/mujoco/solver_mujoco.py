@@ -45,6 +45,7 @@ from .kernels import (
     _create_inverse_shape_mapping_kernel,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
+    apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
     convert_body_xforms_to_warp_kernel,
     convert_mj_coords_to_warp_kernel,
@@ -93,6 +94,8 @@ class SolverMuJoCo(SolverBase):
 
         - This solver requires `mujoco_warp`_ and its dependencies to be installed.
         - For installation instructions, see the `mujoco_warp`_ repository.
+        - ``shape_collision_radius`` from Newton models is not used by MuJoCo. Instead, MuJoCo computes
+          bounding sphere radii (``geom_rbound``) internally based on the geometry definition.
 
     Example
     -------
@@ -1407,6 +1410,8 @@ class SolverMuJoCo(SolverBase):
         """Mapping from MuJoCo [world, tendon] to Newton tendon index.
 
         Shape [nworld, ntendon], dtype int32."""
+        self.body_free_qd_start: wp.array(dtype=wp.int32) | None = None
+        """Per-body mapping to the free-joint qd_start index (or -1 if not free)."""
 
         # --- Conditional/lazy mappings ---
         self.newton_shape_to_mjc_geom: wp.array(dtype=wp.int32) | None = None
@@ -1642,7 +1647,6 @@ class SolverMuJoCo(SolverBase):
             xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
             nworld = 1
         joints_per_world = model.joint_count // nworld
-        bodies_per_world = model.body_count // nworld
         if control is not None:
             # Launch over MuJoCo actuators
             nu = self.mjc_actuator_to_newton_axis.shape[1]
@@ -1663,16 +1667,11 @@ class SolverMuJoCo(SolverBase):
                 apply_mjc_qfrc_kernel,
                 dim=(nworld, joints_per_world),
                 inputs=[
-                    state.body_q,
                     control.joint_f,
                     model.joint_type,
-                    model.body_com,
-                    model.joint_child,
-                    model.joint_q_start,
                     model.joint_qd_start,
                     model.joint_dof_dim,
                     joints_per_world,
-                    bodies_per_world,
                 ],
                 outputs=[
                     qfrc,
@@ -1689,6 +1688,22 @@ class SolverMuJoCo(SolverBase):
                 inputs=[
                     self.mjc_body_to_newton,
                     state.body_f,
+                ],
+                outputs=[
+                    xfrc,
+                ],
+                device=model.device,
+            )
+        if control is not None and control.joint_f is not None:
+            # Free/DISTANCE joint forces are applied via xfrc_applied to preserve COM-wrench semantics.
+            nbody = self.mjc_body_to_newton.shape[1]
+            wp.launch(
+                apply_mjc_free_joint_f_to_body_f_kernel,
+                dim=(nworld, nbody),
+                inputs=[
+                    self.mjc_body_to_newton,
+                    self.body_free_qd_start,
+                    control.joint_f,
                 ],
                 outputs=[
                     xfrc,
@@ -1726,11 +1741,12 @@ class SolverMuJoCo(SolverBase):
                 joint_q,
                 joint_qd,
                 joints_per_world,
-                model.up_axis,
                 model.joint_type,
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
+                model.joint_child,
+                model.body_com,
             ],
             outputs=[qpos, qvel],
             device=model.device,
@@ -1771,11 +1787,12 @@ class SolverMuJoCo(SolverBase):
                 qpos,
                 qvel,
                 joints_per_world,
-                int(model.up_axis),
                 model.joint_type,
                 model.joint_q_start,
                 model.joint_qd_start,
                 model.joint_dof_dim,
+                model.joint_child,
+                model.body_com,
             ],
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
@@ -1914,7 +1931,8 @@ class SolverMuJoCo(SolverBase):
             (i, j)
             for i, j in zip(shape_a, shape_b, strict=True)
             if (
-                (selected_shapes[i], selected_shapes[j]) not in model.shape_collision_filter_pairs
+                (min(selected_shapes[i], selected_shapes[j]), max(selected_shapes[i], selected_shapes[j]))
+                not in model.shape_collision_filter_pairs
                 and (cgroup[i] == cgroup[j] or cgroup[i] == -1 or cgroup[j] == -1)
             )
         ]
@@ -3068,6 +3086,28 @@ class SolverMuJoCo(SolverBase):
             joints_per_world = model.joint_count // model.num_worlds
             dofs_per_world = model.joint_dof_count // model.num_worlds
 
+            # Map each Newton body to the qd_start of its free/DISTANCE joint (or -1).
+            # Use selected_joints as the template and tile offsets across worlds.
+            joint_type_np = model.joint_type.numpy()
+            joint_child_np = model.joint_child.numpy()
+            joint_qd_start_np = model.joint_qd_start.numpy()
+
+            template_joint_types = joint_type_np[selected_joints]
+            free_mask = np.isin(template_joint_types, (JointType.FREE, JointType.DISTANCE))
+            body_free_qd_start_np = np.full(model.body_count, -1, dtype=np.int32)
+            if np.any(free_mask):
+                template_children = joint_child_np[selected_joints] % bodies_per_world
+                template_qd_start = joint_qd_start_np[selected_joints] % dofs_per_world
+                child_free = template_children[free_mask]
+                qd_start_free = template_qd_start[free_mask]
+                world_body_offsets = (np.arange(model.num_worlds, dtype=np.int32) * bodies_per_world)[:, None]
+                world_qd_offsets = (np.arange(model.num_worlds, dtype=np.int32) * dofs_per_world)[:, None]
+                body_indices = (child_free[None, :] + world_body_offsets).ravel()
+                qd_starts = (qd_start_free[None, :] + world_qd_offsets).ravel()
+                body_free_qd_start_np[body_indices] = qd_starts
+
+            self.body_free_qd_start = wp.array(body_free_qd_start_np, dtype=wp.int32)
+
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index
             # Mocap bodies are created from fixed-base articulations (FIXED joint to world)
             # In MuJoCo, they have body_mocapid >= 0 and no joint
@@ -3641,7 +3681,6 @@ class SolverMuJoCo(SolverBase):
             update_geom_properties_kernel,
             dim=(num_worlds, num_geoms),
             inputs=[
-                self.model.shape_collision_radius,
                 self.model.shape_material_mu,
                 self.model.shape_material_ke,
                 self.model.shape_material_kd,
@@ -3660,7 +3699,6 @@ class SolverMuJoCo(SolverBase):
                 shape_geom_gap,
             ],
             outputs=[
-                self.mjw_model.geom_rbound,
                 self.mjw_model.geom_friction,
                 self.mjw_model.geom_solref,
                 self.mjw_model.geom_size,

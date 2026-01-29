@@ -764,6 +764,15 @@ class ModelBuilder:
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
 
+    def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
+        """Add a collision filter pair in canonical order.
+
+        Args:
+            shape_a: First shape index
+            shape_b: Second shape index
+        """
+        self.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
+
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
         Define a custom per-entity attribute to be added to the Model.
@@ -1472,7 +1481,6 @@ class ModelBuilder:
         joint_drive_gains_scaling: float = 1.0,
         verbose: bool = False,
         ignore_paths: list[str] | None = None,
-        cloned_world: str | None = None,
         collapse_fixed_joints: bool = False,
         enable_self_collisions: bool = True,
         apply_up_axis_from_stage: bool = False,
@@ -1501,7 +1509,6 @@ class ModelBuilder:
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
             verbose (bool): If True, print additional information about the parsed USD file. Default is False.
             ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
-            cloned_world (str): The prim path of a world which is cloned within this USD file. Siblings of this world prim will not be parsed but instead be replicated via `ModelBuilder.add_world(builder, xform)` to speed up the loading of many instantiated worlds.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
             apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
@@ -1575,7 +1582,6 @@ class ModelBuilder:
             joint_drive_gains_scaling=joint_drive_gains_scaling,
             verbose=verbose,
             ignore_paths=ignore_paths,
-            cloned_world=cloned_world,
             collapse_fixed_joints=collapse_fixed_joints,
             enable_self_collisions=enable_self_collisions,
             apply_up_axis_from_stage=apply_up_axis_from_stage,
@@ -1613,7 +1619,7 @@ class ModelBuilder:
         collider_classes: Sequence[str] = ("collision",),
         no_class_as_colliders: bool = True,
         force_show_colliders: bool = False,
-        enable_self_collisions: bool = False,
+        enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = True,
         ensure_nonstatic_links: bool = True,
         static_link_mass: float = 1e-2,
@@ -1622,6 +1628,7 @@ class ModelBuilder:
         skip_equality_constraints: bool = False,
         convert_3d_hinge_to_ball_joints: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        path_resolver: Callable[[str | None, str], str] | None = None,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -1656,6 +1663,7 @@ class ModelBuilder:
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+            path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
@@ -1691,6 +1699,7 @@ class ModelBuilder:
             skip_equality_constraints=skip_equality_constraints,
             convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
             mesh_maxhullvert=mesh_maxhullvert,
+            path_resolver=path_resolver,
         )
 
     # endregion
@@ -2549,11 +2558,7 @@ class ModelBuilder:
                 for parent_shape in self.body_shapes[parent]:
                     if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
                         continue
-                    # Ensure canonical order (smaller, larger) for consistent lookup
-                    a, b = parent_shape, child_shape
-                    if a > b:
-                        a, b = b, a
-                    self.shape_collision_filter_pairs.append((a, b))
+                    self.add_shape_collision_filter_pair(parent_shape, child_shape)
 
         joint_index = self.joint_count - 1
 
@@ -3914,7 +3919,7 @@ class ModelBuilder:
         if cfg.has_shape_collision:
             # no contacts between shapes of the same body
             for same_body_shape in self.body_shapes[body]:
-                self.shape_collision_filter_pairs.append((same_body_shape, shape))
+                self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
         self.shape_key.append(key or f"shape_{shape}")
         self.shape_transform.append(xform)
@@ -3953,7 +3958,7 @@ class ModelBuilder:
             for parent_body in self.joint_parents[body]:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
-                        self.shape_collision_filter_pairs.append((parent_shape, shape))
+                        self.add_shape_collision_filter_pair(parent_shape, shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
@@ -6433,8 +6438,82 @@ class ModelBuilder:
             )
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
-            m.shape_collision_filter_pairs = set(self.shape_collision_filter_pairs)
+            m.shape_collision_filter_pairs = {
+                (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
+            }
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
+
+            # ---------------------
+            # Compute local AABBs and voxel resolutions for contact reduction
+            local_aabb_lower = []
+            local_aabb_upper = []
+            voxel_resolution = []
+            voxel_budget = 100  # Maximum voxels per shape for contact reduction
+
+            # Cache per unique (mesh_id, scale) to avoid redundant AABB computation
+            # for instanced meshes (e.g., 256 robots sharing the same mesh sources)
+            mesh_aabb_cache = {}
+
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, self.shape_scale, strict=True
+            ):
+                if shape_type == GeoType.MESH and shape_src is not None:
+                    # Use mesh id and scale as cache key
+                    cache_key = (id(shape_src), tuple(shape_scale))
+
+                    if cache_key in mesh_aabb_cache:
+                        # Reuse cached result
+                        aabb_lower, aabb_upper, nx, ny, nz = mesh_aabb_cache[cache_key]
+                    else:
+                        # Compute local AABB from mesh vertices
+                        vertices = shape_src.vertices
+                        aabb_lower = vertices.min(axis=0)
+                        aabb_upper = vertices.max(axis=0)
+
+                        # Apply scale to get the actual local-space bounds
+                        aabb_lower = aabb_lower * np.array(shape_scale)
+                        aabb_upper = aabb_upper * np.array(shape_scale)
+
+                        # Compute voxel resolution
+                        size = aabb_upper - aabb_lower
+                        size = np.maximum(size, 1e-6)  # Avoid division by zero
+
+                        # Target voxel size for approximately cubic voxels
+                        volume = size[0] * size[1] * size[2]
+                        v = (volume / voxel_budget) ** (1.0 / 3.0)
+                        v = max(v, 1e-6)
+
+                        # Initial resolution
+                        nx = max(1, round(size[0] / v))
+                        ny = max(1, round(size[1] / v))
+                        nz = max(1, round(size[2] / v))
+
+                        # Reduce until under budget (reduce largest axis first for more cubic voxels)
+                        while nx * ny * nz > voxel_budget:
+                            if nx >= ny and nx >= nz and nx > 1:
+                                nx -= 1
+                            elif ny >= nz and ny > 1:
+                                ny -= 1
+                            elif nz > 1:
+                                nz -= 1
+                            else:
+                                break
+
+                        # Cache the result
+                        mesh_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                else:
+                    # Non-mesh shapes: use a default 1x1x1 voxel grid (effectively no voxel binning)
+                    aabb_lower = np.array([-1.0, -1.0, -1.0])
+                    aabb_upper = np.array([1.0, 1.0, 1.0])
+                    nx, ny, nz = 1, 1, 1
+
+                local_aabb_lower.append(aabb_lower)
+                local_aabb_upper.append(aabb_upper)
+                voxel_resolution.append([nx, ny, nz])
+
+            m.shape_local_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
+            m.shape_local_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m.shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
@@ -7028,7 +7107,6 @@ class ModelBuilder:
                 if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
                     continue
 
-                # Ensure canonical order (smaller_element, larger_element)
                 if s1 > s2:
                     shape_a, shape_b = s2, s1
                 else:
