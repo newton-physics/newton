@@ -84,7 +84,9 @@ def Xform "Root" (
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("boxes_fourbar.usda")
-        builder.add_usd(asset_path)
+        with self.assertWarns(UserWarning) as cm:
+            builder.add_usd(asset_path)
+        self.assertIn("No articulation was found but 4 joints were parsed", str(cm.warning))
 
         self.assertEqual(builder.body_count, 4)
         self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 4)
