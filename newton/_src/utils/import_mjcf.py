@@ -1096,7 +1096,6 @@ def parse_mjcf(
                         parent_xform=base_parent_xform,
                         child_xform=base_child_xform,
                         parent=base_parent,
-                        allow_expensive_reordering=allow_expensive_reordering,
                     )
                 )
             elif floating is not None and floating and base_parent == -1:
@@ -1107,7 +1106,6 @@ def parse_mjcf(
                         floating=True,
                         key="floating_base",
                         parent=base_parent,
-                        allow_expensive_reordering=allow_expensive_reordering,
                     )
                 )
             else:
@@ -1119,7 +1117,6 @@ def parse_mjcf(
                         key="fixed_base",
                         parent_xform=world_xform,
                         parent=base_parent,
-                        allow_expensive_reordering=allow_expensive_reordering,
                     )
                 )
 

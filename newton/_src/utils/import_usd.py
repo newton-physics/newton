@@ -1292,7 +1292,6 @@ def parse_usd(
                             floating=floating,
                             base_joint=base_joint,
                             parent=base_parent,
-                            allow_expensive_reordering=allow_expensive_reordering,
                         )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -1312,7 +1311,6 @@ def parse_usd(
                             floating=floating,
                             base_joint=base_joint,
                             parent=base_parent,
-                            allow_expensive_reordering=allow_expensive_reordering,
                         )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -1379,7 +1377,6 @@ def parse_usd(
                         floating=floating,
                         base_joint=base_joint,
                         parent=base_parent,
-                        allow_expensive_reordering=allow_expensive_reordering,
                     )
                     articulation_joint_indices.append(base_joint_id)
 
@@ -1786,7 +1783,6 @@ def parse_usd(
                     floating=floating,
                     base_joint=base_joint,
                     parent=parent_body,
-                    allow_expensive_reordering=allow_expensive_reordering,
                 )
                 # Attach to parent's articulation
                 _attach_joints_to_parent_articulation(builder, [joint_id], parent_body, allow_expensive_reordering)
