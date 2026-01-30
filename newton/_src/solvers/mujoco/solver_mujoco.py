@@ -157,7 +157,10 @@ class SolverMuJoCo(SolverBase):
 
         For :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode, determines which target array to read from:
 
-        - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_pos`, syncs gains from :attr:`~newton.Control.joint_target_ke`
+        - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_pos`, syncs gains from
+          :attr:`~newton.Control.joint_target_ke`. For :attr:`~newton.ActuatorMode.POSITION`-only actuators,
+          also syncs damping from :attr:`~newton.Control.joint_target_kd`. For
+          :attr:`~newton.ActuatorMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
         - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_vel`, syncs gains from :attr:`~newton.Control.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         """
@@ -3701,6 +3704,7 @@ class SolverMuJoCo(SolverBase):
                     self.mjc_actuator_to_newton_idx,
                     self.model.joint_target_ke,
                     self.model.joint_target_kd,
+                    self.model.joint_act_mode,
                     dofs_per_world,
                 ],
                 outputs=[
