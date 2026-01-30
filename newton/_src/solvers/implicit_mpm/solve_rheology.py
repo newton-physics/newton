@@ -38,7 +38,11 @@ wp.set_module_options({"enable_backward": False})
 
 class YieldParamVec(wp.vec4):
     """Compact yield surface definition in an interpolation-friendly format:
-    [p_max, -p_min, s_max, mu p_max] in scaled units."""
+    [p_max sqrt_3_2, -p_min sqrt_3_2, s_max, mu p_max] in scaled units.
+
+    The scaling by sqrt(3/2) is related to the orthogonal mapping from spherical/deviatoric
+    tensors to vectors in R^6.
+    """
 
     @wp.func
     def from_values(friction_coeff: float, yield_pressure: float, tensile_yield_ratio: float, yield_stress: float):

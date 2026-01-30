@@ -89,7 +89,6 @@ class Example:
         builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
 
         self.model = builder.finalize()
-        self.model.particle_mu = options.friction_coeff
         self.model.set_gravity(options.gravity)
 
         # Copy all remaining CLI arguments to MPM options or per-particle material custom attributes
@@ -255,7 +254,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--young-modulus", "-ym", type=float, default=1.0e15)
     parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
-    parser.add_argument("--friction-coeff", "-mu", type=float, default=0.68)
+    parser.add_argument("--friction", "-mu", type=float, default=0.68)
     parser.add_argument("--damping", type=float, default=0.0)
     parser.add_argument("--yield-pressure", "-yp", type=float, default=1.0e12)
     parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.0)

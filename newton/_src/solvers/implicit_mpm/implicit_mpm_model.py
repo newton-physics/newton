@@ -432,7 +432,7 @@ class ImplicitMPMModel:
             body_q = model.body_q
 
         # count materials and shapes
-        material_count = 1  # ground material
+        material_count = 1  # default material
         body_shapes = {}
         collider_material_ids = []
         for body_id in collider_body_ids:
