@@ -4066,6 +4066,115 @@ class TestImportMjcf(unittest.TestCase):
         self.assertIn("Warning", output)
         self.assertIn("<exclude>", output)
 
+    def test_base_joint_on_fixed_root(self):
+        """Test that base_joint works on MJCF with fixed root (no freejoint)."""
+        fixed_root_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="fixed_root_robot">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link1" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(fixed_root_mjcf, base_joint="px,py,rz")
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 2)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+        self.assertEqual(model.joint_dof_count, 4)
+
+    def test_xform_relative_to_parent_body(self):
+        """Test that xform is interpreted relative to parent_body when attaching."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="0 1 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False)
+
+        ee_body_idx = builder.body_key.index("end_effector")
+        ee_world_pos = builder.body_q[ee_body_idx].p
+
+        builder.add_mjcf(
+            gripper_mjcf, parent_body=ee_body_idx, xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity())
+        )
+
+        gripper_body_idx = builder.body_key.index("gripper_base")
+        gripper_world_pos = builder.body_q[gripper_body_idx].p
+
+        self.assertAlmostEqual(gripper_world_pos[0], ee_world_pos[0], places=5)
+        self.assertAlmostEqual(gripper_world_pos[1], ee_world_pos[1], places=5)
+        self.assertAlmostEqual(gripper_world_pos[2], ee_world_pos[2] + 0.1, places=5)
+
+    def test_non_sequential_articulation_attachment(self):
+        """Test attaching to an earlier articulation with allow_expensive_reordering."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot1_link_idx = builder.body_key.index("robot_link")
+
+        builder.add_mjcf(robot_mjcf, floating=False)
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        builder.add_mjcf(gripper_mjcf, parent_body=robot1_link_idx, allow_expensive_reordering=True)
+
+        model = builder.finalize()
+        articulation_start = model.articulation_start.numpy()
+        joint_articulation = model.joint_articulation.numpy()
+
+        for art_idx in range(len(articulation_start)):
+            start = articulation_start[art_idx]
+            end = articulation_start[art_idx + 1] if art_idx + 1 < len(articulation_start) else model.joint_count
+            for joint_idx in range(start, end):
+                self.assertEqual(joint_articulation[joint_idx], art_idx)
+
 
 class TestMjcfInclude(unittest.TestCase):
     """Tests for MJCF <include> tag support."""

@@ -4399,6 +4399,90 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_type.numpy()[1], newton.JointType.D6)
         self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_parent_body_creates_joint_to_parent(self):
+        """Test that parent_body creates a joint connecting to the parent body."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        robot_stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(robot_stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(robot_stage, "/physicsScene")
+
+        robot_art = UsdGeom.Xform.Define(robot_stage, "/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(robot_art.GetPrim())
+
+        base_body = UsdGeom.Cube.Define(robot_stage, "/Robot/Base")
+        base_body.GetSizeAttr().Set(0.2)
+        UsdPhysics.RigidBodyAPI.Apply(base_body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(base_body.GetPrim())
+        UsdPhysics.MassAPI.Apply(base_body.GetPrim()).GetMassAttr().Set(1.0)
+
+        gripper_stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(gripper_stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(gripper_stage, "/physicsScene")
+
+        gripper_art = UsdGeom.Xform.Define(gripper_stage, "/Gripper")
+        UsdPhysics.ArticulationRootAPI.Apply(gripper_art.GetPrim())
+
+        gripper_body = UsdGeom.Cube.Define(gripper_stage, "/Gripper/GripperBase")
+        gripper_body.GetSizeAttr().Set(0.05)
+        UsdPhysics.RigidBodyAPI.Apply(gripper_body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(gripper_body.GetPrim())
+        UsdPhysics.MassAPI.Apply(gripper_body.GetPrim()).GetMassAttr().Set(0.2)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(robot_stage, floating=False)
+
+        base_body_idx = 0
+        initial_joint_count = builder.joint_count
+
+        builder.add_usd(gripper_stage, parent_body=base_body_idx)
+
+        self.assertEqual(builder.joint_count, initial_joint_count + 1)
+        self.assertEqual(builder.joint_parent[initial_joint_count], base_body_idx)
+
+        model = builder.finalize()
+        joint_articulation = model.joint_articulation.numpy()
+        self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_sequential_articulation_attachment(self):
+        """Test attaching to an earlier articulation with allow_expensive_reordering."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        def create_robot_stage():
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+            art = UsdGeom.Xform.Define(stage, "/Robot")
+            UsdPhysics.ArticulationRootAPI.Apply(art.GetPrim())
+            body = UsdGeom.Cube.Define(stage, "/Robot/Base")
+            body.GetSizeAttr().Set(0.2)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).GetMassAttr().Set(1.0)
+            return stage
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(create_robot_stage(), floating=False)
+        robot1_body_idx = 0
+
+        builder.add_usd(create_robot_stage(), floating=False)
+        builder.add_usd(create_robot_stage(), floating=False)
+
+        gripper_stage = create_robot_stage()
+        builder.add_usd(gripper_stage, parent_body=robot1_body_idx, allow_expensive_reordering=True)
+
+        model = builder.finalize()
+        articulation_start = model.articulation_start.numpy()
+        joint_articulation = model.joint_articulation.numpy()
+
+        for art_idx in range(len(articulation_start)):
+            start = articulation_start[art_idx]
+            end = articulation_start[art_idx + 1] if art_idx + 1 < len(articulation_start) else model.joint_count
+            for joint_idx in range(start, end):
+                self.assertEqual(joint_articulation[joint_idx], art_idx)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)

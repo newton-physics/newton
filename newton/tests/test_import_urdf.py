@@ -798,6 +798,102 @@ class TestImportUrdf(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[1], newton.JointType.D6)
         self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
 
+    def test_parent_body_creates_joint_to_parent(self):
+        """Test that parent_body creates a joint connecting to the parent body."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base_link">
+        <inertial><mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+    <link name="end_effector">
+        <inertial><mass value="0.5"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.05"/></geometry></visual>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="base_link"/><child link="end_effector"/>
+        <origin xyz="0 1 0"/><axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    </joint>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+        <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False)
+
+        ee_body_idx = builder.body_key.index("end_effector")
+        initial_joint_count = builder.joint_count
+
+        self.parse_urdf(gripper_urdf, builder, parent_body=ee_body_idx)
+
+        # Verify a new joint was created connecting to the parent
+        self.assertEqual(builder.joint_count, initial_joint_count + 1)
+        self.assertEqual(builder.joint_parent[initial_joint_count], ee_body_idx)
+
+        # Both should be in the same articulation
+        model = builder.finalize()
+        joint_articulation = model.joint_articulation.numpy()
+        self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
+
+    def test_non_sequential_articulation_attachment(self):
+        """Test attaching to an earlier articulation with allow_expensive_reordering."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base_link">
+        <inertial><mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+    <link name="link1">
+        <inertial><mass value="0.5"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.05"/></geometry></visual>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="base_link"/><child link="link1"/>
+        <origin xyz="1 0 0"/><axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    </joint>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+        <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False)
+        robot1_link_idx = builder.body_key.index("link1")
+
+        self.parse_urdf(robot_urdf, builder, floating=False)
+        self.parse_urdf(robot_urdf, builder, floating=False)
+
+        self.parse_urdf(gripper_urdf, builder, parent_body=robot1_link_idx, allow_expensive_reordering=True)
+
+        model = builder.finalize()
+        articulation_start = model.articulation_start.numpy()
+        joint_articulation = model.joint_articulation.numpy()
+
+        for art_idx in range(len(articulation_start)):
+            start = articulation_start[art_idx]
+            end = articulation_start[art_idx + 1] if art_idx + 1 < len(articulation_start) else model.joint_count
+            for joint_idx in range(start, end):
+                self.assertEqual(joint_articulation[joint_idx], art_idx)
+
 
 class TestUrdfUriResolution(unittest.TestCase):
     """Tests for URDF URI resolution functionality."""

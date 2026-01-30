@@ -7060,8 +7060,6 @@ class ModelBuilder:
         self._reorder_list_by_mapping(self.joint_X_c, old_to_new, "joint_X_c")
         self._reorder_list_by_mapping(self.joint_twist_lower, old_to_new, "joint_twist_lower")
         self._reorder_list_by_mapping(self.joint_twist_upper, old_to_new, "joint_twist_upper")
-        self._reorder_list_by_mapping(self.joint_linear_compliance, old_to_new, "joint_linear_compliance")
-        self._reorder_list_by_mapping(self.joint_angular_compliance, old_to_new, "joint_angular_compliance")
         self._reorder_list_by_mapping(self.joint_articulation, old_to_new, "joint_articulation")
         self._reorder_list_by_mapping(self.joint_key, old_to_new, "joint_key")
         self._reorder_list_by_mapping(self.joint_world, old_to_new, "joint_world")
