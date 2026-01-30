@@ -5143,12 +5143,21 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         self.assertEqual(npair, pairs_per_world)
 
         # --- Step 1: Verify initial conversion ---
-        mjw_pair_solref = solver.mjw_model.pair_solref.numpy()
-        mjw_pair_solreffriction = solver.mjw_model.pair_solreffriction.numpy()
-        mjw_pair_solimp = solver.mjw_model.pair_solimp.numpy()
-        mjw_pair_margin = solver.mjw_model.pair_margin.numpy()
-        mjw_pair_gap = solver.mjw_model.pair_gap.numpy()
-        mjw_pair_friction = solver.mjw_model.pair_friction.numpy()
+        # Use .copy() to ensure we capture the values, not a view (important for CPU mode)
+        mjw_pair_solref = solver.mjw_model.pair_solref.numpy().copy()
+        mjw_pair_solreffriction = solver.mjw_model.pair_solreffriction.numpy().copy()
+        mjw_pair_solimp = solver.mjw_model.pair_solimp.numpy().copy()
+        mjw_pair_margin = solver.mjw_model.pair_margin.numpy().copy()
+        mjw_pair_gap = solver.mjw_model.pair_gap.numpy().copy()
+        mjw_pair_friction = solver.mjw_model.pair_friction.numpy().copy()
+
+        # Get expected values from Newton custom attributes (outside loop for performance)
+        expected_solref_all = model.mujoco.pair_solref.numpy()
+        expected_solreffriction_all = model.mujoco.pair_solreffriction.numpy()
+        expected_solimp_all = model.mujoco.pair_solimp.numpy()
+        expected_margin_all = model.mujoco.pair_margin.numpy()
+        expected_gap_all = model.mujoco.pair_gap.numpy()
+        expected_friction_all = model.mujoco.pair_friction.numpy()
 
         # Check values for each world and pair
         for w in range(num_worlds):
@@ -5156,47 +5165,39 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             for p in range(pairs_per_world):
                 newton_pair = newton_pair_base + p
 
-                # Get expected values from Newton custom attributes
-                expected_solref = model.mujoco.pair_solref.numpy()[newton_pair]
-                expected_solreffriction = model.mujoco.pair_solreffriction.numpy()[newton_pair]
-                expected_solimp = model.mujoco.pair_solimp.numpy()[newton_pair]
-                expected_margin = model.mujoco.pair_margin.numpy()[newton_pair]
-                expected_gap = model.mujoco.pair_gap.numpy()[newton_pair]
-                expected_friction = model.mujoco.pair_friction.numpy()[newton_pair]
-
                 np.testing.assert_allclose(
                     mjw_pair_solref[w, p],
-                    expected_solref,
+                    expected_solref_all[newton_pair],
                     rtol=1e-5,
                     err_msg=f"pair_solref mismatch at world {w}, pair {p}",
                 )
                 np.testing.assert_allclose(
                     mjw_pair_solreffriction[w, p],
-                    expected_solreffriction,
+                    expected_solreffriction_all[newton_pair],
                     rtol=1e-5,
                     err_msg=f"pair_solreffriction mismatch at world {w}, pair {p}",
                 )
                 np.testing.assert_allclose(
                     mjw_pair_solimp[w, p],
-                    expected_solimp,
+                    expected_solimp_all[newton_pair],
                     rtol=1e-5,
                     err_msg=f"pair_solimp mismatch at world {w}, pair {p}",
                 )
                 np.testing.assert_allclose(
                     mjw_pair_margin[w, p],
-                    expected_margin,
+                    expected_margin_all[newton_pair],
                     rtol=1e-5,
                     err_msg=f"pair_margin mismatch at world {w}, pair {p}",
                 )
                 np.testing.assert_allclose(
                     mjw_pair_gap[w, p],
-                    expected_gap,
+                    expected_gap_all[newton_pair],
                     rtol=1e-5,
                     err_msg=f"pair_gap mismatch at world {w}, pair {p}",
                 )
                 np.testing.assert_allclose(
                     mjw_pair_friction[w, p],
-                    expected_friction,
+                    expected_friction_all[newton_pair],
                     rtol=1e-5,
                     err_msg=f"pair_friction mismatch at world {w}, pair {p}",
                 )
