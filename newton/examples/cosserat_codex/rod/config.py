@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -244,8 +245,19 @@ class RodState:
         # Batched execution support
         self.batched_arrays: BatchedGPUArrays | None = None
         self.use_batched_step = False
+        self.sync_batched_arrays = True  # Sync between batched arrays and individual rods
+
+        # CUDA graph support for batched step
+        self.use_batched_cuda_graph = False
         self._batched_graph = None
         self._batched_graph_params = None
+        self._batched_graph_capture_active = False
+
+        # Timing instrumentation for batched step
+        self._enable_batched_timers = False
+        self._batched_timing_accum: dict[str, float] = {}
+        self._batched_timing_count = 0
+        self._batched_timing_last_report = 0.0
 
     def destroy(self) -> None:
         """Destroy all rod state objects and free resources."""
@@ -362,6 +374,103 @@ class RodState:
         self._batched_graph_params = None
         return enabled
 
+    def set_batched_cuda_graph(self, enabled: bool) -> bool:
+        """Enable or disable CUDA graph capture for batched step.
+
+        Args:
+            enabled: Whether to enable CUDA graph capture.
+
+        Returns:
+            Whether CUDA graph is actually enabled.
+        """
+        if enabled and self.batched_arrays is not None:
+            device = self.batched_arrays.device
+            if not device.is_cuda:
+                enabled = False
+        self.use_batched_cuda_graph = enabled
+        self._batched_graph = None
+        self._batched_graph_params = None
+        return enabled
+
+    def set_batched_timers(self, enabled: bool) -> None:
+        """Enable or disable timing instrumentation for batched step.
+
+        When enabled, timing information is collected and periodically printed.
+
+        Args:
+            enabled: Whether to enable timing.
+        """
+        self._enable_batched_timers = enabled
+        if enabled:
+            self._batched_timing_accum = {}
+            self._batched_timing_count = 0
+            self._batched_timing_last_report = time.perf_counter()
+
+    def _record_batched_timing(self, name: str, elapsed: float) -> None:
+        """Record elapsed time for a named operation."""
+        if not self._enable_batched_timers:
+            return
+        self._batched_timing_accum[name] = self._batched_timing_accum.get(name, 0.0) + elapsed
+
+    def _maybe_report_batched_timings(self) -> None:
+        """Periodically report average timings."""
+        if not self._enable_batched_timers:
+            return
+        now = time.perf_counter()
+        if now - self._batched_timing_last_report < 5.0:
+            return
+        if self._batched_timing_count == 0:
+            self._batched_timing_last_report = now
+            return
+
+        scale = 1000.0 / float(self._batched_timing_count)
+        parts = []
+        total_ms = 0.0
+        for name in sorted(self._batched_timing_accum.keys()):
+            avg_ms = self._batched_timing_accum[name] * scale
+            total_ms += avg_ms
+            parts.append(f"{name}={avg_ms:.3f}")
+
+        # Calculate FPS based on substep time (assuming 1 substep = 1 frame for this metric)
+        substep_fps = 1000.0 / total_ms if total_ms > 0 else 0.0
+        parts.append(f"total={total_ms:.2f}")
+        parts.append(f"substep_fps={substep_fps:.1f}")
+
+        print(f"Batched step avg timings (ms): {', '.join(parts)}", flush=True)
+
+        self._batched_timing_accum = {}
+        self._batched_timing_count = 0
+        self._batched_timing_last_report = now
+
+    def _ensure_batched_cuda_graph(
+        self, dt: float, linear_damping: float, angular_damping: float
+    ) -> None:
+        """Ensure CUDA graph is captured with current parameters."""
+        params = (
+            float(dt),
+            float(linear_damping),
+            float(angular_damping),
+            bool(self.sync_batched_arrays),
+        )
+        if self._batched_graph is not None and self._batched_graph_params == params:
+            return
+
+        if self.batched_arrays is None:
+            return
+
+        device = self.batched_arrays.device
+        was_timers = self._enable_batched_timers
+        self._enable_batched_timers = False
+        self._batched_graph_capture_active = True
+        try:
+            with wp.ScopedCapture(device=device, force_module_load=True) as capture:
+                self._step_batched_impl_inner(dt, linear_damping, angular_damping, do_timing=False)
+        finally:
+            self._batched_graph_capture_active = False
+        self._enable_batched_timers = was_timers
+        self._batched_graph = capture.graph
+        self._batched_graph_params = params
+
     def step(self, dt: float, linear_damping: float, angular_damping: float) -> None:
         """Advance simulation by one time step for all rods.
 
@@ -374,20 +483,68 @@ class RodState:
             angular_damping: Angular velocity damping factor.
         """
         if self.use_batched_step and self.batched_arrays is not None:
-            self._step_batched_impl(dt, linear_damping, angular_damping)
+            if self.use_batched_cuda_graph and self.batched_arrays.device.is_cuda:
+                self._ensure_batched_cuda_graph(dt, linear_damping, angular_damping)
+                wp.capture_launch(self._batched_graph)
+            else:
+                self._step_batched_impl(dt, linear_damping, angular_damping)
         else:
             for rod in self.rods:
                 rod.step(dt, linear_damping, angular_damping)
 
     def _step_batched_impl(self, dt: float, linear_damping: float, angular_damping: float) -> None:
-        """Internal batched step implementation.
+        """Internal batched step implementation with timing.
 
-        Uses ~12 kernel launches total regardless of rod count.
+        Uses ~18 kernel launches total regardless of rod count, plus optional
+        sync operations before/after for interoperability with individual rods.
 
         Args:
             dt: Time step size.
             linear_damping: Linear velocity damping factor.
             angular_damping: Angular velocity damping factor.
+        """
+        b = self.batched_arrays
+        if b is None:
+            return
+
+        if b.total_edges == 0:
+            return
+
+        do_timing = self._enable_batched_timers
+
+        # Sync from individual rods to batched arrays (not graphable)
+        if self.sync_batched_arrays:
+            t0 = time.perf_counter()
+            b.sync_from_rods(self.rods)
+            if do_timing:
+                wp.synchronize_device(b.device)
+                self._record_batched_timing("1_sync_from", time.perf_counter() - t0)
+
+        # Main kernel work with per-phase timing
+        self._step_batched_impl_inner(dt, linear_damping, angular_damping, do_timing)
+
+        # Sync results back to individual rods (not graphable)
+        if self.sync_batched_arrays:
+            t0 = time.perf_counter()
+            b.sync_to_rods(self.rods)
+            if do_timing:
+                wp.synchronize_device(b.device)
+                self._record_batched_timing("9_sync_to", time.perf_counter() - t0)
+
+        if do_timing:
+            self._batched_timing_count += 1
+            self._maybe_report_batched_timings()
+
+    def _step_batched_impl_inner(
+        self, dt: float, linear_damping: float, angular_damping: float, do_timing: bool = False
+    ) -> None:
+        """Inner batched step - pure kernel work, suitable for CUDA graph capture.
+
+        Args:
+            dt: Time step size.
+            linear_damping: Linear velocity damping factor.
+            angular_damping: Angular velocity damping factor.
+            do_timing: Whether to record per-phase timing (requires GPU sync).
         """
         from newton.examples.cosserat_codex.kernels import (
             _warp_apply_accumulated_corrections,
@@ -420,11 +577,17 @@ class RodState:
         if total_edges == 0:
             return
 
-        # Sync from individual rods to batched arrays (picks up keyboard/parameter changes)
-        b.sync_from_rods(self.rods)
+        # Helper for conditional timing
+        def _sync_and_record(name: str, t0: float) -> float:
+            if do_timing:
+                wp.synchronize_device(device)
+                self._record_batched_timing(name, time.perf_counter() - t0)
+            return time.perf_counter()
+
+        t0 = time.perf_counter()
 
         # ====================================================================
-        # 1. Predict positions (1 kernel)
+        # Phase 2: Predict positions and rotations
         # ====================================================================
         wp.launch(
             _warp_predict_positions_batched,
@@ -442,10 +605,6 @@ class RodState:
             ],
             device=device,
         )
-
-        # ====================================================================
-        # 2. Predict rotations (1 kernel)
-        # ====================================================================
         wp.launch(
             _warp_predict_rotations_batched,
             dim=total_points,
@@ -460,9 +619,10 @@ class RodState:
             ],
             device=device,
         )
+        t0 = _sync_and_record("2_predict", t0)
 
         # ====================================================================
-        # 3. Prepare compliance (1 kernel)
+        # Phase 3: Prepare compliance + update constraints + jacobians
         # ====================================================================
         wp.launch(
             _warp_zero_float,
@@ -484,10 +644,6 @@ class RodState:
             ],
             device=device,
         )
-
-        # ====================================================================
-        # 4. Update constraints (1 kernel)
-        # ====================================================================
         wp.launch(
             _warp_update_constraints_batched_v2,
             dim=total_edges,
@@ -503,10 +659,6 @@ class RodState:
             ],
             device=device,
         )
-
-        # ====================================================================
-        # 5. Compute Jacobians (1 kernel)
-        # ====================================================================
         wp.launch(
             _warp_compute_jacobians_batched,
             dim=total_edges,
@@ -521,9 +673,10 @@ class RodState:
             ],
             device=device,
         )
+        t0 = _sync_and_record("3_constraints", t0)
 
         # ====================================================================
-        # 6. Compute inverse inertia in world frame (1 kernel)
+        # Phase 4: Assemble system (inv_inertia, JMJT, RHS)
         # ====================================================================
         wp.launch(
             _warp_compute_inv_inertia_world_batched,
@@ -538,9 +691,6 @@ class RodState:
             device=device,
         )
 
-        # ====================================================================
-        # 7. Assemble JMJT blocks (1 kernel)
-        # ====================================================================
         wp.launch(
             _warp_assemble_jmjt_blocks_batched,
             dim=total_edges,
@@ -558,10 +708,6 @@ class RodState:
             ],
             device=device,
         )
-
-        # ====================================================================
-        # 8. Build RHS (1 kernel)
-        # ====================================================================
         wp.launch(
             _warp_build_rhs,
             dim=n_dofs,
@@ -574,9 +720,10 @@ class RodState:
             ],
             device=device,
         )
+        t0 = _sync_and_record("4_assembly", t0)
 
         # ====================================================================
-        # 9. Batched Thomas solve (1 kernel with n_rods threads)
+        # Phase 5: Thomas solve (the key sequential bottleneck)
         # ====================================================================
         wp.launch(
             _warp_block_thomas_solve_batched,
@@ -593,9 +740,10 @@ class RodState:
             ],
             device=device,
         )
+        t0 = _sync_and_record("5_solve", t0)
 
         # ====================================================================
-        # 10. Compute corrections (1 kernel)
+        # Phase 6: Compute and apply corrections
         # ====================================================================
         wp.launch(
             _warp_zero_vec3,
@@ -643,10 +791,6 @@ class RodState:
             ],
             device=device,
         )
-
-        # ====================================================================
-        # 11. Apply accumulated corrections (1 kernel)
-        # ====================================================================
         wp.launch(
             _warp_apply_accumulated_corrections,
             dim=total_points,
@@ -659,9 +803,10 @@ class RodState:
             ],
             device=device,
         )
+        t0 = _sync_and_record("6_corrections", t0)
 
         # ====================================================================
-        # 12. Integrate positions (1 kernel)
+        # Phase 7: Integrate positions and rotations
         # ====================================================================
         wp.launch(
             _warp_integrate_positions_batched,
@@ -675,10 +820,6 @@ class RodState:
             ],
             device=device,
         )
-
-        # ====================================================================
-        # 13. Integrate rotations (1 kernel)
-        # ====================================================================
         wp.launch(
             _warp_integrate_rotations_batched,
             dim=total_points,
@@ -692,9 +833,7 @@ class RodState:
             ],
             device=device,
         )
-
-        # Sync results back to individual rods (for rendering and external access)
-        b.sync_to_rods(self.rods)
+        _sync_and_record("7_integrate", t0)
 
     def sync_batched_to_rods(self) -> None:
         """Synchronize batched arrays back to individual rod states.
@@ -825,94 +964,126 @@ class BatchedGPUArrays:
     def sync_from_rods(self, rods: list) -> None:
         """Synchronize batched arrays from individual rod states.
 
-        Copies data from each rod's GPU arrays into the concatenated batched arrays.
-        Uses numpy as an intermediate format for reliable cross-array copying.
+        Copies data from each rod's GPU arrays into the concatenated batched arrays
+        using direct GPU-to-GPU kernel launches (no CPU roundtrip).
 
         Args:
             rods: List of WarpResidentRodState objects.
         """
-        # Collect all data into numpy arrays first
-        all_positions = []
-        all_predicted_positions = []
-        all_velocities = []
-        all_forces = []
-        all_orientations = []
-        all_predicted_orientations = []
-        all_prev_orientations = []
-        all_angular_velocities = []
-        all_torques = []
-        all_inv_masses = []
-        all_quat_inv_masses = []
-
-        all_rest_lengths = []
-        all_rest_darboux = []
-        all_bend_stiffness = []
-
-        for rod in rods:
-            all_positions.append(rod.positions_wp.numpy())
-            all_predicted_positions.append(rod.predicted_positions_wp.numpy())
-            all_velocities.append(rod.velocities_wp.numpy())
-            all_forces.append(rod.forces_wp.numpy())
-            all_orientations.append(rod.orientations_wp.numpy())
-            all_predicted_orientations.append(rod.predicted_orientations_wp.numpy())
-            all_prev_orientations.append(rod.prev_orientations_wp.numpy())
-            all_angular_velocities.append(rod.angular_velocities_wp.numpy())
-            all_torques.append(rod.torques_wp.numpy())
-            all_inv_masses.append(rod.inv_masses_wp.numpy())
-            all_quat_inv_masses.append(rod.quat_inv_masses_wp.numpy())
-
-            if rod.num_edges > 0:
-                all_rest_lengths.append(rod.rest_lengths_wp.numpy())
-                all_rest_darboux.append(rod.rest_darboux_wp.numpy())
-                all_bend_stiffness.append(rod.bend_stiffness_wp.numpy())
-
-        # Concatenate and assign to batched arrays
-        self.positions_wp.assign(
-            wp.array(np.concatenate(all_positions), dtype=wp.vec3, device=self.device)
-        )
-        self.predicted_positions_wp.assign(
-            wp.array(np.concatenate(all_predicted_positions), dtype=wp.vec3, device=self.device)
-        )
-        self.velocities_wp.assign(
-            wp.array(np.concatenate(all_velocities), dtype=wp.vec3, device=self.device)
-        )
-        self.forces_wp.assign(
-            wp.array(np.concatenate(all_forces), dtype=wp.vec3, device=self.device)
-        )
-        self.orientations_wp.assign(
-            wp.array(np.concatenate(all_orientations), dtype=wp.quat, device=self.device)
-        )
-        self.predicted_orientations_wp.assign(
-            wp.array(np.concatenate(all_predicted_orientations), dtype=wp.quat, device=self.device)
-        )
-        self.prev_orientations_wp.assign(
-            wp.array(np.concatenate(all_prev_orientations), dtype=wp.quat, device=self.device)
-        )
-        self.angular_velocities_wp.assign(
-            wp.array(np.concatenate(all_angular_velocities), dtype=wp.vec3, device=self.device)
-        )
-        self.torques_wp.assign(
-            wp.array(np.concatenate(all_torques), dtype=wp.vec3, device=self.device)
-        )
-        self.inv_masses_wp.assign(
-            wp.array(np.concatenate(all_inv_masses), dtype=wp.float32, device=self.device)
-        )
-        self.quat_inv_masses_wp.assign(
-            wp.array(np.concatenate(all_quat_inv_masses), dtype=wp.float32, device=self.device)
+        from newton.examples.cosserat_codex.kernels import (
+            _warp_copy_float_to_batched,
+            _warp_copy_quat_to_batched,
+            _warp_copy_vec3_to_batched,
         )
 
-        if all_rest_lengths:
-            self.rest_lengths_wp.assign(
-                wp.array(np.concatenate(all_rest_lengths), dtype=wp.float32, device=self.device)
+        # Copy per-particle arrays from each rod to batched arrays
+        for i, rod in enumerate(rods):
+            point_offset = self.batch.rod_offsets[i]
+            n_points = rod.num_points
+
+            if n_points == 0:
+                continue
+
+            # vec3 arrays
+            wp.launch(
+                _warp_copy_vec3_to_batched,
+                dim=n_points,
+                inputs=[rod.positions_wp, self.positions_wp, int(point_offset)],
+                device=self.device,
             )
-            self.rest_darboux_wp.assign(
-                wp.array(np.concatenate(all_rest_darboux), dtype=wp.vec3, device=self.device)
+            wp.launch(
+                _warp_copy_vec3_to_batched,
+                dim=n_points,
+                inputs=[rod.predicted_positions_wp, self.predicted_positions_wp, int(point_offset)],
+                device=self.device,
             )
-            self.bend_stiffness_wp.assign(
-                wp.array(np.concatenate(all_bend_stiffness), dtype=wp.vec3, device=self.device)
+            wp.launch(
+                _warp_copy_vec3_to_batched,
+                dim=n_points,
+                inputs=[rod.velocities_wp, self.velocities_wp, int(point_offset)],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_copy_vec3_to_batched,
+                dim=n_points,
+                inputs=[rod.forces_wp, self.forces_wp, int(point_offset)],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_copy_vec3_to_batched,
+                dim=n_points,
+                inputs=[rod.angular_velocities_wp, self.angular_velocities_wp, int(point_offset)],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_copy_vec3_to_batched,
+                dim=n_points,
+                inputs=[rod.torques_wp, self.torques_wp, int(point_offset)],
+                device=self.device,
             )
 
-        # Copy per-rod parameters
+            # quat arrays
+            wp.launch(
+                _warp_copy_quat_to_batched,
+                dim=n_points,
+                inputs=[rod.orientations_wp, self.orientations_wp, int(point_offset)],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_copy_quat_to_batched,
+                dim=n_points,
+                inputs=[rod.predicted_orientations_wp, self.predicted_orientations_wp, int(point_offset)],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_copy_quat_to_batched,
+                dim=n_points,
+                inputs=[rod.prev_orientations_wp, self.prev_orientations_wp, int(point_offset)],
+                device=self.device,
+            )
+
+            # float arrays
+            wp.launch(
+                _warp_copy_float_to_batched,
+                dim=n_points,
+                inputs=[rod.inv_masses_wp, self.inv_masses_wp, int(point_offset)],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_copy_float_to_batched,
+                dim=n_points,
+                inputs=[rod.quat_inv_masses_wp, self.quat_inv_masses_wp, int(point_offset)],
+                device=self.device,
+            )
+
+        # Copy per-edge arrays
+        for i, rod in enumerate(rods):
+            edge_offset = self.batch.edge_offsets[i]
+            n_edges = rod.num_edges
+
+            if n_edges == 0:
+                continue
+
+            wp.launch(
+                _warp_copy_float_to_batched,
+                dim=n_edges,
+                inputs=[rod.rest_lengths_wp, self.rest_lengths_wp, int(edge_offset)],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_copy_vec3_to_batched,
+                dim=n_edges,
+                inputs=[rod.rest_darboux_wp, self.rest_darboux_wp, int(edge_offset)],
+                device=self.device,
+            )
+            wp.launch(
+                _warp_copy_vec3_to_batched,
+                dim=n_edges,
+                inputs=[rod.bend_stiffness_wp, self.bend_stiffness_wp, int(edge_offset)],
+                device=self.device,
+            )
+
+        # Copy per-rod parameters (these are small, numpy is acceptable)
         gravity_np = np.array([
             [rod.gravity[0, 0], rod.gravity[0, 1], rod.gravity[0, 2]]
             for rod in rods
@@ -935,45 +1106,68 @@ class BatchedGPUArrays:
     def sync_to_rods(self, rods: list) -> None:
         """Synchronize individual rod states from batched arrays.
 
-        Copies data from concatenated batched arrays back to each rod's GPU arrays.
-        Uses numpy as an intermediate format for reliable cross-array copying.
+        Copies data from concatenated batched arrays back to each rod's GPU arrays
+        using direct GPU-to-GPU kernel launches (no CPU roundtrip).
 
         Args:
             rods: List of WarpResidentRodState objects.
         """
-        # Get all data from batched arrays
-        all_positions = self.positions_wp.numpy()
-        all_predicted_positions = self.predicted_positions_wp.numpy()
-        all_velocities = self.velocities_wp.numpy()
-        all_orientations = self.orientations_wp.numpy()
-        all_predicted_orientations = self.predicted_orientations_wp.numpy()
-        all_prev_orientations = self.prev_orientations_wp.numpy()
-        all_angular_velocities = self.angular_velocities_wp.numpy()
+        from newton.examples.cosserat_codex.kernels import (
+            _warp_copy_quat_from_batched,
+            _warp_copy_vec3_from_batched,
+        )
 
         for i, rod in enumerate(rods):
-            rod_start = self.batch.rod_offsets[i]
-            rod_end = self.batch.rod_offsets[i + 1]
+            point_offset = self.batch.rod_offsets[i]
+            n_points = rod.num_points
 
-            rod.positions_wp.assign(
-                wp.array(all_positions[rod_start:rod_end], dtype=wp.vec3, device=rod.device)
+            if n_points == 0:
+                continue
+
+            # vec3 arrays (positions, velocities, angular velocities)
+            wp.launch(
+                _warp_copy_vec3_from_batched,
+                dim=n_points,
+                inputs=[self.positions_wp, rod.positions_wp, int(point_offset)],
+                device=self.device,
             )
-            rod.predicted_positions_wp.assign(
-                wp.array(all_predicted_positions[rod_start:rod_end], dtype=wp.vec3, device=rod.device)
+            wp.launch(
+                _warp_copy_vec3_from_batched,
+                dim=n_points,
+                inputs=[self.predicted_positions_wp, rod.predicted_positions_wp, int(point_offset)],
+                device=self.device,
             )
-            rod.velocities_wp.assign(
-                wp.array(all_velocities[rod_start:rod_end], dtype=wp.vec3, device=rod.device)
+            wp.launch(
+                _warp_copy_vec3_from_batched,
+                dim=n_points,
+                inputs=[self.velocities_wp, rod.velocities_wp, int(point_offset)],
+                device=self.device,
             )
-            rod.orientations_wp.assign(
-                wp.array(all_orientations[rod_start:rod_end], dtype=wp.quat, device=rod.device)
+            wp.launch(
+                _warp_copy_vec3_from_batched,
+                dim=n_points,
+                inputs=[self.angular_velocities_wp, rod.angular_velocities_wp, int(point_offset)],
+                device=self.device,
             )
-            rod.predicted_orientations_wp.assign(
-                wp.array(all_predicted_orientations[rod_start:rod_end], dtype=wp.quat, device=rod.device)
+
+            # quat arrays
+            wp.launch(
+                _warp_copy_quat_from_batched,
+                dim=n_points,
+                inputs=[self.orientations_wp, rod.orientations_wp, int(point_offset)],
+                device=self.device,
             )
-            rod.prev_orientations_wp.assign(
-                wp.array(all_prev_orientations[rod_start:rod_end], dtype=wp.quat, device=rod.device)
+            wp.launch(
+                _warp_copy_quat_from_batched,
+                dim=n_points,
+                inputs=[self.predicted_orientations_wp, rod.predicted_orientations_wp, int(point_offset)],
+                device=self.device,
             )
-            rod.angular_velocities_wp.assign(
-                wp.array(all_angular_velocities[rod_start:rod_end], dtype=wp.vec3, device=rod.device)
+            wp.launch(
+                _warp_copy_quat_from_batched,
+                dim=n_points,
+                inputs=[self.prev_orientations_wp, rod.prev_orientations_wp, int(point_offset)],
+                device=self.device,
             )
 
 

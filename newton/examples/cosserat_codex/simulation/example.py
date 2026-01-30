@@ -203,6 +203,16 @@ class Example:
         self.use_cuda_graph = args.use_cuda_graph
         self.use_parallel_kernels = True  # Toggle between parallel and sequential GPU kernels
         self.use_batched_step = True  # Toggle batched step for multiple rods
+        self.sync_batched_arrays = True  # Sync between batched arrays and individual rods
+        self.use_batched_cuda_graph = False  # CUDA graph for batched step (per substep)
+        self.use_frame_cuda_graph = False  # CUDA graph for entire frame (all substeps)
+        self.enable_batched_timers = False  # Timing instrumentation for batched step
+        self._frame_graph = None
+        self._frame_graph_params = None
+        # Warp profiling
+        self.enable_warp_profiling = False  # Enable wp.ScopedTimer profiling
+        self.warp_profile_cuda = False  # Include CUDA kernel timing (cuda_filter)
+        self._warp_profile_frame_count = 0  # Count frames for periodic reporting
         self.use_iterative_refinement = False
         self.iterative_refinement_iters = 2
         self._force_sync_reference = True
@@ -336,6 +346,10 @@ class Example:
             )
             self.use_cuda_graph = self.gpu_state.set_use_cuda_graph(self.use_cuda_graph)
             self.use_batched_step = self.gpu_state.set_use_batched_step(self.use_batched_step)
+            self.use_batched_cuda_graph = self.gpu_state.set_batched_cuda_graph(
+                self.use_batched_cuda_graph
+            )
+            self.gpu_state.set_batched_timers(self.enable_batched_timers)
             self.gpu_solver = CosseratXPBDSolver(
                 self.gpu_batch,
                 linear_damping=self.linear_damping,
@@ -1205,6 +1219,52 @@ class Example:
         if rotation_changed:
             self._apply_root_rotation()
 
+    def _step_gpu_frame_inner(self, sub_dt: float) -> None:
+        """Inner GPU frame step - all substeps, suitable for CUDA graph capture.
+
+        This contains only GPU operations that can be captured in a CUDA graph.
+        Track/concentric constraints and CPU operations are excluded.
+        """
+        for _ in range(self.substeps):
+            self.gpu_state.step(sub_dt, self.linear_damping, self.angular_damping)
+            if self.floor_collision_enabled:
+                self.gpu_state.apply_floor_collisions(self.floor_height, self.floor_restitution)
+
+    def _ensure_frame_cuda_graph(self, sub_dt: float) -> None:
+        """Ensure frame-level CUDA graph is captured with current parameters."""
+        params = (
+            float(sub_dt),
+            float(self.linear_damping),
+            float(self.angular_damping),
+            int(self.substeps),
+            bool(self.floor_collision_enabled),
+            float(self.floor_height),
+            float(self.floor_restitution),
+            bool(self.gpu_state.sync_batched_arrays) if self.gpu_state else False,
+        )
+        if self._frame_graph is not None and self._frame_graph_params == params:
+            return
+
+        if self.gpu_state is None:
+            return
+
+        device = wp.get_device()
+        if not device.is_cuda:
+            return
+
+        # Temporarily disable per-substep timing during capture
+        was_timers = self.gpu_state._enable_batched_timers
+        self.gpu_state._enable_batched_timers = False
+
+        try:
+            with wp.ScopedCapture(device=device, force_module_load=True) as capture:
+                self._step_gpu_frame_inner(sub_dt)
+        finally:
+            self.gpu_state._enable_batched_timers = was_timers
+
+        self._frame_graph = capture.graph
+        self._frame_graph_params = params
+
     def step(self):
         self._handle_keyboard_input()
 
@@ -1218,31 +1278,68 @@ class Example:
             self.gpu_solver.linear_damping = self.linear_damping
             self.gpu_solver.angular_damping = self.angular_damping
 
-        for _ in range(self.substeps):
-            # Step NumPy and DLL rods individually
-            if self.simulate_reference:
-                t0 = time.perf_counter()
-                for rod_info in self.rod_infos:
-                    if rod_info.solver_type in (SolverType.NUMPY, SolverType.DLL):
-                        rod_info.rod.step(sub_dt, self.linear_damping, self.angular_damping)
-                        if self.floor_collision_enabled:
-                            rod_info.rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
-                numpy_dll_time += time.perf_counter() - t0
+        # Check if we can use frame-level CUDA graph (requires no CPU operations in loop)
+        use_frame_graph = (
+            self.use_frame_cuda_graph
+            and self.simulate_gpu
+            and self.gpu_state is not None
+            and self.gpu_state.use_batched_step
+            and not self.simulate_reference  # No CPU rod simulation
+            and self.collision_iterations == 0  # No mesh collisions
+            and not self.track_enabled  # No track constraint
+            and not self.concentric_enabled  # No concentric constraint
+        )
 
-            # Step Warp GPU rods together
-            if self.simulate_gpu and self.gpu_solver is not None and self.gpu_state is not None:
-                t0 = time.perf_counter()
-                self.gpu_solver.step(self.gpu_state, self.gpu_state, None, None, sub_dt)
-                if self.floor_collision_enabled:
-                    self.gpu_state.apply_floor_collisions(self.floor_height, self.floor_restitution)
-                gpu_time += time.perf_counter() - t0
+        # Warp profiling setup
+        do_warp_profile = self.enable_warp_profiling
+        cuda_filter = wp.TIMING_ALL if (do_warp_profile and self.warp_profile_cuda) else None
 
-            for _ in range(self.collision_iterations):
-                self._apply_mesh_collisions(sub_dt)
-            self._apply_track_constraint()
-            self._apply_concentric_constraint()
+        with wp.ScopedTimer("frame", active=do_warp_profile, synchronize=do_warp_profile, cuda_filter=cuda_filter):
+            if use_frame_graph:
+                # Use frame-level CUDA graph for all substeps
+                with wp.ScopedTimer("gpu_graph", active=do_warp_profile, synchronize=do_warp_profile):
+                    t0 = time.perf_counter()
+                    self._ensure_frame_cuda_graph(sub_dt)
+                    wp.capture_launch(self._frame_graph)
+                    gpu_time = time.perf_counter() - t0
+            else:
+                # Standard per-substep execution
+                for substep_idx in range(self.substeps):
+                    # Step NumPy and DLL rods individually
+                    if self.simulate_reference:
+                        with wp.ScopedTimer("ref_step", active=do_warp_profile):
+                            t0 = time.perf_counter()
+                            for rod_info in self.rod_infos:
+                                if rod_info.solver_type in (SolverType.NUMPY, SolverType.DLL):
+                                    rod_info.rod.step(sub_dt, self.linear_damping, self.angular_damping)
+                                    if self.floor_collision_enabled:
+                                        rod_info.rod.apply_floor_collisions(self.floor_height, self.floor_restitution)
+                            numpy_dll_time += time.perf_counter() - t0
 
-        self._sync_state_from_rods()
+                    # Step Warp GPU rods together
+                    if self.simulate_gpu and self.gpu_solver is not None and self.gpu_state is not None:
+                        with wp.ScopedTimer("gpu_step", active=do_warp_profile, synchronize=do_warp_profile):
+                            t0 = time.perf_counter()
+                            self.gpu_solver.step(self.gpu_state, self.gpu_state, None, None, sub_dt)
+                            if self.floor_collision_enabled:
+                                self.gpu_state.apply_floor_collisions(self.floor_height, self.floor_restitution)
+                            gpu_time += time.perf_counter() - t0
+
+                    with wp.ScopedTimer("collisions", active=do_warp_profile, synchronize=do_warp_profile):
+                        for _ in range(self.collision_iterations):
+                            self._apply_mesh_collisions(sub_dt)
+                        self._apply_track_constraint()
+                        self._apply_concentric_constraint()
+
+            with wp.ScopedTimer("sync", active=do_warp_profile, synchronize=do_warp_profile):
+                self._sync_state_from_rods()
+
+        # Print CUDA activity report periodically when profiling
+        if do_warp_profile and self.warp_profile_cuda:
+            self._warp_profile_frame_count += 1
+            if self._warp_profile_frame_count >= 60:  # Every ~1 second at 60fps
+                self._warp_profile_frame_count = 0
+
         self.sim_time += self.frame_dt
         frame_end = time.perf_counter()
         self._frame_times.append(frame_end - frame_start)
@@ -1491,6 +1588,40 @@ class Example:
             )
             if changed_batched:
                 self.use_batched_step = self.gpu_state.set_use_batched_step(self.use_batched_step)
+            changed_sync, self.sync_batched_arrays = ui.checkbox(
+                "Sync Batched Arrays", self.sync_batched_arrays
+            )
+            if changed_sync:
+                self.gpu_state.sync_batched_arrays = self.sync_batched_arrays
+            changed_batched_graph, self.use_batched_cuda_graph = ui.checkbox(
+                "Batched CUDA Graph", self.use_batched_cuda_graph
+            )
+            if changed_batched_graph:
+                self.use_batched_cuda_graph = self.gpu_state.set_batched_cuda_graph(
+                    self.use_batched_cuda_graph
+                )
+            changed_batched_timers, self.enable_batched_timers = ui.checkbox(
+                "Batched Timers", self.enable_batched_timers
+            )
+            if changed_batched_timers:
+                self.gpu_state.set_batched_timers(self.enable_batched_timers)
+            changed_frame_graph, self.use_frame_cuda_graph = ui.checkbox(
+                "Frame CUDA Graph (all substeps)", self.use_frame_cuda_graph
+            )
+            if changed_frame_graph and self.use_frame_cuda_graph:
+                # Invalidate the graph when enabled so it gets recaptured
+                self._frame_graph = None
+                self._frame_graph_params = None
+        # Warp profiling options (always visible)
+        ui.separator()
+        ui.text("Warp Profiling")
+        _changed, self.enable_warp_profiling = ui.checkbox(
+            "Enable Warp Profiling", self.enable_warp_profiling
+        )
+        if self.enable_warp_profiling:
+            _changed, self.warp_profile_cuda = ui.checkbox(
+                "Profile CUDA Activities", self.warp_profile_cuda
+            )
         if changed_ref or changed_gpu:
             self._frame_times.clear()
             self._ref_times.clear()

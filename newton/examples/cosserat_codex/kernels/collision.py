@@ -490,6 +490,77 @@ def _warp_zero_vec3(arr: wp.array(dtype=wp.vec3)):
     arr[tid] = wp.vec3(0.0, 0.0, 0.0)
 
 
+# ==============================================================================
+# GPU-to-GPU batched array copy kernels (for efficient sync without CPU roundtrip)
+# ==============================================================================
+
+
+@wp.kernel
+def _warp_copy_vec3_to_batched(
+    src: wp.array(dtype=wp.vec3),
+    dst: wp.array(dtype=wp.vec3),
+    dst_offset: int,
+):
+    """Copy vec3 array from rod to batched array at offset."""
+    i = wp.tid()
+    dst[dst_offset + i] = src[i]
+
+
+@wp.kernel
+def _warp_copy_vec3_from_batched(
+    src: wp.array(dtype=wp.vec3),
+    dst: wp.array(dtype=wp.vec3),
+    src_offset: int,
+):
+    """Copy vec3 array from batched array at offset to rod."""
+    i = wp.tid()
+    dst[i] = src[src_offset + i]
+
+
+@wp.kernel
+def _warp_copy_quat_to_batched(
+    src: wp.array(dtype=wp.quat),
+    dst: wp.array(dtype=wp.quat),
+    dst_offset: int,
+):
+    """Copy quat array from rod to batched array at offset."""
+    i = wp.tid()
+    dst[dst_offset + i] = src[i]
+
+
+@wp.kernel
+def _warp_copy_quat_from_batched(
+    src: wp.array(dtype=wp.quat),
+    dst: wp.array(dtype=wp.quat),
+    src_offset: int,
+):
+    """Copy quat array from batched array at offset to rod."""
+    i = wp.tid()
+    dst[i] = src[src_offset + i]
+
+
+@wp.kernel
+def _warp_copy_float_to_batched(
+    src: wp.array(dtype=wp.float32),
+    dst: wp.array(dtype=wp.float32),
+    dst_offset: int,
+):
+    """Copy float array from rod to batched array at offset."""
+    i = wp.tid()
+    dst[dst_offset + i] = src[i]
+
+
+@wp.kernel
+def _warp_copy_float_from_batched(
+    src: wp.array(dtype=wp.float32),
+    dst: wp.array(dtype=wp.float32),
+    src_offset: int,
+):
+    """Copy float array from batched array at offset to rod."""
+    i = wp.tid()
+    dst[i] = src[src_offset + i]
+
+
 # Legacy single-threaded version kept for reference and fallback
 @wp.kernel
 def _warp_apply_direct_corrections(
@@ -1376,7 +1447,13 @@ __all__ = [
     "_warp_compute_inv_inertia_world",
     "_warp_constraint_max",
     "_warp_constraint_max_sequential",
+    "_warp_copy_float_from_batched",
+    "_warp_copy_float_to_batched",
     "_warp_copy_from_offset",
+    "_warp_copy_quat_from_batched",
+    "_warp_copy_quat_to_batched",
+    "_warp_copy_vec3_from_batched",
+    "_warp_copy_vec3_to_batched",
     "_warp_copy_with_offset",
     "_warp_set_root_on_track",
     "_warp_set_root_orientation",
