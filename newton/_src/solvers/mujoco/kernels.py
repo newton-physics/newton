@@ -22,7 +22,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import EqType, JointType
+from ...sim import ActuatorMode, EqType, JointType
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
@@ -609,13 +609,6 @@ def convert_mjw_contact_to_warp_kernel(
 CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
 CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
 
-# ActuatorMode constants (from newton._src.sim.joints.ActuatorMode)
-ACTUATOR_MODE_NONE = wp.constant(0)
-ACTUATOR_MODE_POSITION = wp.constant(1)
-ACTUATOR_MODE_VELOCITY = wp.constant(2)
-ACTUATOR_MODE_POSITION_VELOCITY = wp.constant(3)
-ACTUATOR_MODE_EFFORT = wp.constant(4)
-
 
 @wp.kernel
 def apply_mjc_control_kernel(
@@ -1093,7 +1086,7 @@ def update_axis_properties_kernel(
     - Value of -1: unmapped/skip
     - Negative value (<=-2): velocity actuator, newton_axis = -(value + 2)
 
-    For POSITION-only actuators (joint_act_mode == ACTUATOR_MODE_POSITION), both
+    For POSITION-only actuators (joint_act_mode == ActuatorMode.POSITION), both
     kp and kd are synced since the position actuator includes damping. For
     POSITION_VELOCITY mode, only kp is synced to the position actuator (kd goes
     to the separate velocity actuator).
@@ -1124,7 +1117,7 @@ def update_axis_properties_kernel(
         # For POSITION-only mode, also sync kd (damping) to the position actuator
         # For POSITION_VELOCITY mode, kd is handled by the separate velocity actuator
         mode = joint_act_mode[idx]  # Use template DOF index (idx) not world_dof
-        if mode == ACTUATOR_MODE_POSITION:
+        if mode == ActuatorMode.POSITION:
             kd = joint_target_kd[world_dof]
             actuator_bias[world, actuator][2] = -kd
     elif idx == -1:
