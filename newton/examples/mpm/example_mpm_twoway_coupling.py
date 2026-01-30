@@ -118,16 +118,16 @@ class Example:
 
         # setup sand model builder
         sand_builder = newton.ModelBuilder()
+
+        # Register MPM custom attributes before adding particles
+        SolverImplicitMPM.register_custom_attributes(sand_builder)
+
         voxel_size = 0.05  # 5 cm
         self._emit_particles(sand_builder, voxel_size)
 
         # finalize models
         self.model = builder.finalize()
         self.sand_model = sand_builder.finalize()
-
-        # basic particle material params
-        self.sand_model.particle_mu = 0.48
-        self.sand_model.particle_ke = 1.0e15
 
         # setup mpm solver
         mpm_options = SolverImplicitMPM.Options()
@@ -141,11 +141,9 @@ class Example:
         mpm_options.max_iterations = 50
         mpm_options.critical_fraction = 0.0
 
-        mpm_model = SolverImplicitMPM.Model(self.sand_model, mpm_options)
+        self.mpm_solver = SolverImplicitMPM(self.sand_model, mpm_options)
         # read colliders from the RB model rather than the sand model
-        mpm_model.setup_collider(model=self.model)
-
-        self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
+        self.mpm_solver.setup_collider(model=self.model)
 
         # setup rigid-body solver
         self.solver = newton.solvers.SolverXPBD(self.model)
@@ -155,7 +153,9 @@ class Example:
         self.state_1 = self.model.state()
 
         self.sand_state_0 = self.sand_model.state()
-        self.mpm_solver.enrich_state(self.sand_state_0)
+        self.sand_state_0.body_q = wp.empty_like(self.state_0.body_q)
+        self.sand_state_0.body_qd = wp.empty_like(self.state_0.body_qd)
+        self.sand_state_0.body_f = wp.empty_like(self.state_0.body_f)
 
         self.control = self.model.control()
 
@@ -181,7 +181,7 @@ class Example:
         self.collect_collider_impulses()
 
         # map from collider index to body index
-        self.collider_body_id = mpm_model.collider.collider_body_index
+        self.collider_body_id = self.mpm_solver.collider_body_index
 
         # per-body forces and torques applied by sand to rigid bodies
         self.body_sand_forces = wp.zeros_like(self.state_0.body_f)
@@ -281,7 +281,7 @@ class Example:
             "all bodies are above the sand",
             lambda q, qd: q[2] > 0.45,
         )
-        voxel_size = self.mpm_solver.mpm_model.voxel_size
+        voxel_size = self.mpm_solver.voxel_size
         newton.examples.test_particle_state(
             self.sand_state_0,
             "all particles are above the ground",
@@ -393,6 +393,7 @@ class Example:
             mass=mass,
             jitter=2.0 * radius,
             radius_mean=radius,
+            custom_attributes={"mpm:friction": 0.75},
         )
 
 

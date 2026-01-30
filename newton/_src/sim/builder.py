@@ -2156,6 +2156,7 @@ class ModelBuilder:
             "joint_coord": start_joint_coord_idx,
             "articulation": start_articulation_idx,
             "equality_constraint": start_equality_constraint_idx,
+            "particle": start_particle_idx,
         }
 
         # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
@@ -5054,6 +5055,7 @@ class ModelBuilder:
         mass: float,
         radius: float | None = None,
         flags: int = ParticleFlags.ACTIVE,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a single particle to the model.
 
@@ -5063,6 +5065,8 @@ class ModelBuilder:
             mass: The mass of the particle.
             radius: The radius of the particle used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
             flags: The flags that control the dynamical behavior of the particle, see PARTICLE_FLAG_* constants.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values.
+                Custom attributes must have frequency :attr:`ModelAttributeFrequency.PARTICLE`.
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
@@ -5081,6 +5085,13 @@ class ModelBuilder:
 
         particle_id = self.particle_count - 1
 
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=particle_id,
+                custom_attrs=custom_attributes,
+                expected_frequency=ModelAttributeFrequency.PARTICLE,
+            )
+
         return particle_id
 
     def add_particles(
@@ -5090,30 +5101,49 @@ class ModelBuilder:
         mass: list[float],
         radius: list[float] | None = None,
         flags: list[wp.uint32] | None = None,
+        custom_attributes: dict[str, list[Any]] | None = None,
     ):
-        """Adds a group particles to the model.
+        """Adds a group of particles to the model.
 
         Args:
-            pos: The initial positions of the particle.
-            vel: The initial velocities of the particle.
+            pos: The initial positions of the particles.
+            vel: The initial velocities of the particles.
             mass: The mass of the particles.
             radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
             flags: The flags that control the dynamical behavior of the particles, see PARTICLE_FLAG_* constants.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to lists of values.
+                Each list must have the same length as `pos`. Custom attributes must have frequency :attr:`ModelAttributeFrequency.PARTICLE`.
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
         """
+        start_particle_id = self.particle_count
+        num_particles = len(pos)
+
         self.particle_q.extend(pos)
         self.particle_qd.extend(vel)
         self.particle_mass.extend(mass)
         if radius is None:
-            radius = [self.default_particle_radius] * len(pos)
+            radius = [self.default_particle_radius] * num_particles
         if flags is None:
-            flags = [ParticleFlags.ACTIVE] * len(pos)
+            flags = [ParticleFlags.ACTIVE] * num_particles
         self.particle_radius.extend(radius)
         self.particle_flags.extend(flags)
         # Maintain world assignment for bulk particle creation
-        self.particle_world.extend([self.current_world] * len(pos))
+        self.particle_world.extend([self.current_world] * num_particles)
+
+        if custom_attributes:
+            for attr_key, values in custom_attributes.items():
+                if len(values) != num_particles:
+                    raise ValueError(
+                        f"Custom attribute '{attr_key}' has {len(values)} values but {num_particles} particles were added"
+                    )
+                for i, value in enumerate(values):
+                    self._process_custom_attributes(
+                        entity_index=start_particle_id + i,
+                        custom_attrs={attr_key: value},
+                        expected_frequency=ModelAttributeFrequency.PARTICLE,
+                    )
 
     def add_spring(self, i: int, j, ke: float, kd: float, control: float):
         """Adds a spring between two particles in the system
@@ -5737,6 +5767,7 @@ class ModelBuilder:
         radius_mean: float | None = None,
         radius_std: float = 0.0,
         flags: int | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ):
         """
         Adds a regular 3D grid of particles to the model.
@@ -5760,6 +5791,9 @@ class ModelBuilder:
             radius_mean (float, optional): Mean radius for particles. If None, uses the builder's default.
             radius_std (float, optional): Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
             flags (int, optional): Flags to assign to each particle. If None, uses the builder's default.
+            custom_attributes (dict, optional): Dictionary of custom attribute keys to scalar values.
+                The scalar value is broadcast to all particles in the grid.
+                Custom attributes must have frequency :attr:`ModelAttributeFrequency.PARTICLE`.
 
         Returns:
             None
@@ -5791,12 +5825,19 @@ class ModelBuilder:
         if flags is not None:
             flags = [flags] * points.shape[0]
 
+        # Broadcast scalar custom attribute values to all particles
+        num_particles = points.shape[0]
+        broadcast_custom_attrs = None
+        if custom_attributes:
+            broadcast_custom_attrs = {key: [value] * num_particles for key, value in custom_attributes.items()}
+
         self.add_particles(
             pos=points.tolist(),
             vel=velocity.tolist(),
             mass=masses,
             radius=radii.tolist(),
             flags=flags,
+            custom_attributes=broadcast_custom_attrs,
         )
 
     def add_soft_grid(
@@ -7061,6 +7102,8 @@ class ModelBuilder:
                     count = m.num_worlds
                 elif freq_key == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
+                elif freq_key == ModelAttributeFrequency.PARTICLE:
+                    count = m.particle_count
                 else:
                     continue
 

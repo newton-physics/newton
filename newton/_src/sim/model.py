@@ -74,6 +74,8 @@ class ModelAttributeFrequency(IntEnum):
     """Attribute frequency follows the number of joint constraints (see :attr:`~newton.Model.joint_constraint_count`)."""
     EQUALITY_CONSTRAINT = 9
     """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
+    PARTICLE = 10
+    """Attribute frequency follows the number of particles (see :attr:`~newton.Model.particle_count`)."""
 
 
 class AttributeNamespace:
