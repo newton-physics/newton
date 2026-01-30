@@ -1637,15 +1637,17 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        # Actuator limits: Newton doesn't auto-enable *limited flags from *range presence yet
-        # TODO: Fix MJCF parsing to auto-enable ctrllimited/forcelimited/actlimited when ranges are set
-        "actuator_ctrllimited",
-        "actuator_forcelimited",
-        "actuator_actlimited",
-        # Joint actuator force limiting: Newton enables by default, native doesn't
+        # Actuator limits: MuJoCo auto-enables *limited when *range is specified in MJCF
+        # Newton parses *range but doesn't infer *limited=True automatically
+        # TODO: Implement auto-inference of ctrllimited/forcelimited/actlimited from range presence
+        "actuator_ctrllimited",  # Newton: False, Native: True (inferred from ctrlrange)
+        "actuator_forcelimited",  # Newton: False, Native: True (inferred from forcerange)
+        "actuator_actlimited",  # Newton: False, Native: False (no actrange specified)
+        # Joint actuator force limiting: Newton enables by default when effort_limit is set,
+        # native MuJoCo defaults to disabled
         # TODO: Match MuJoCo's default behavior for jnt_actfrclimited
-        "jnt_actfrclimited",
-        "jnt_actfrcrange",
+        "jnt_actfrclimited",  # Newton: True (from effort_limit), Native: False
+        "jnt_actfrcrange",  # Values differ due to different jnt_actfrclimited defaults
     }
 
 
