@@ -64,6 +64,7 @@ nparray = np.ndarray[Any, np.dtype[Any]]
 
 # Warp vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
+vec10 = wp.types.vector(length=10, dtype=wp.float32)
 
 # Large finite value used as sentinel (matches MuJoCo's mjMAXVAL)
 MAXVAL = 1e10
@@ -204,4 +205,5 @@ __all__ = [
     "flag_to_int",
     "override",
     "vec5",
+    "vec10",
 ]

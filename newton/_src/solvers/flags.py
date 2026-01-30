@@ -51,6 +51,9 @@ class SolverNotifyFlags(IntEnum):
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
 
+    ACTUATOR_PROPERTIES = 1 << 8
+    """Indicates actuator property updates: gains, biases, limits, etc."""
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -60,6 +63,7 @@ class SolverNotifyFlags(IntEnum):
         | MODEL_PROPERTIES
         | EQUALITY_CONSTRAINT_PROPERTIES
         | TENDON_PROPERTIES
+        | ACTUATOR_PROPERTIES
     )
     """Indicates all property updates."""
 
