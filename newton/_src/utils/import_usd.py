@@ -1442,6 +1442,33 @@ def parse_usd(
                     if joint_id == 0 and first_joint_parent == -1:
                         # the articulation root joint receives the articulation transform as parent transform
                         # except if we already inserted a floating-base joint
+                        # If base_joint or floating is specified, override the USD's root joint
+                        if base_joint is not None or floating is not None:
+                            # Get the child body of the root joint
+                            root_joint_child = joint_edges[sorted_joints[0]][1]
+                            if bodies_follow_joint_ordering:
+                                child_body = body_data[root_joint_child]
+                                child_body_id = path_body_map[child_body["key"]]
+                            else:
+                                child_body_id = art_bodies[root_joint_child]
+                            base_parent = parent_body if parent_body is not None else -1
+                            # Compute parent_xform to preserve imported pose
+                            parent_xform = None
+                            if base_parent != -1:
+                                parent_xform = (
+                                    wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
+                                )
+                            else:
+                                parent_xform = articulation_incoming_xform * builder.body_q[child_body_id]
+                            base_joint_id = builder.add_base_joint(
+                                child_body_id,
+                                floating=floating,
+                                base_joint=base_joint,
+                                parent=base_parent,
+                                parent_xform=parent_xform,
+                            )
+                            articulation_joint_indices.append(base_joint_id)
+                            continue  # Skip parsing the USD's root joint
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             incoming_xform=articulation_incoming_xform,
