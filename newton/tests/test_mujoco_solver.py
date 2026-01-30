@@ -5058,8 +5058,8 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         # Create a simple model with geoms that we can create pairs between
         template_builder = newton.ModelBuilder()
 
-        # Add ground plane and a body with two shapes for creating pairs
-        body_idx = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        # Add a body with three shapes for creating pairs
+        body_idx = template_builder.add_body()
         shape1_idx = template_builder.add_shape_sphere(
             body=body_idx,
             xform=wp.transform(wp.vec3(-0.5, 0.0, 0.5), wp.quat_identity()),
