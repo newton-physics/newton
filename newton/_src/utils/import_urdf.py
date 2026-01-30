@@ -531,7 +531,6 @@ def parse_urdf(
             parent_xform=base_parent_xform,
             child_xform=base_child_xform,
             parent=base_parent,
-            allow_expensive_reordering=allow_expensive_reordering,
         )
         joint_indices.append(base_joint_id)
     elif floating and base_parent == -1:
@@ -542,7 +541,6 @@ def parse_urdf(
             key="floating_base",
             parent_xform=xform,
             parent=base_parent,
-            allow_expensive_reordering=allow_expensive_reordering,
         )
         joint_indices.append(floating_joint_id)
 
@@ -566,7 +564,6 @@ def parse_urdf(
                 key="fixed_base",
                 parent_xform=xform,
                 parent=base_parent,
-                allow_expensive_reordering=allow_expensive_reordering,
             )
         )
 
