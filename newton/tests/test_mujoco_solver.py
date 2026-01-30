@@ -5222,8 +5222,6 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.5, 0.5), wp.quat_identity()),
             radius=0.1,
         )
-        joint = template_builder.add_joint_free(child=body_idx)
-        template_builder.add_articulation([joint])
 
         # Build multi-world model
         builder = newton.ModelBuilder()
