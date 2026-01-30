@@ -73,6 +73,7 @@ def parse_urdf(
     floating: bool = False,
     base_joint: dict | str | None = None,
     parent_body: int | None = None,
+    allow_expensive_reordering: bool = False,
     scale: float = 1.0,
     hide_visuals: bool = False,
     parse_visuals_as_colliders: bool = False,
@@ -95,9 +96,10 @@ def parse_urdf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the URDF file to parse, or the URDF XML string content.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-        floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
-        base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
-        parent_body (int or None): The index of an existing body to attach this URDF's root to. If None (default), the root is connected to the world. When specified, the imported model becomes part of the same kinematic chain as the parent body.
+        floating (bool): If True, the root body receives a free joint. If False, the root body receives a fixed joint to the world. When a ``base_joint`` is specified, it takes precedence over this parameter.
+        base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
+        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic chain as the parent body. If None (default), the root is connected to the world.
+        allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes.
         parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
@@ -613,12 +615,18 @@ def parse_urdf(
             parent_xform=base_parent_xform,
             child_xform=base_child_xform,
             parent=base_parent,
+            allow_expensive_reordering=allow_expensive_reordering,
         )
         joint_indices.append(base_joint_id)
     elif floating and base_parent == -1:
         # floating=True only makes sense when connecting to world
         floating_joint_id = builder.add_base_joint(
-            child=root, floating=True, key="floating_base", parent_xform=xform, parent=base_parent
+            child=root,
+            floating=True,
+            key="floating_base",
+            parent_xform=xform,
+            parent=base_parent,
+            allow_expensive_reordering=allow_expensive_reordering,
         )
         joint_indices.append(floating_joint_id)
 
@@ -636,7 +644,14 @@ def parse_urdf(
     else:
         # Fixed joint to world or to parent_body
         joint_indices.append(
-            builder.add_base_joint(child=root, floating=False, key="fixed_base", parent_xform=xform, parent=base_parent)
+            builder.add_base_joint(
+                child=root,
+                floating=False,
+                key="fixed_base",
+                parent_xform=xform,
+                parent=base_parent,
+                allow_expensive_reordering=allow_expensive_reordering,
+            )
         )
 
     # add joints, in the desired order starting from root body
@@ -761,22 +776,20 @@ def parse_urdf(
     # Create articulation from all collected joints
     if joint_indices:
         if parent_body is not None:
-            # Find the articulation that contains the parent_body
-            parent_articulation = None
-            for joint_idx, child in enumerate(builder.joint_child):
-                if child == parent_body:
-                    parent_articulation = builder.joint_articulation[joint_idx]
-                    break
-            if parent_articulation is None:
-                # Parent body might be the child of a joint
-                for joint_idx, parent in enumerate(builder.joint_parent):
-                    if parent == parent_body:
-                        parent_articulation = builder.joint_articulation[joint_idx]
-                        break
+            # Check if attachment requires reordering
+            parent_articulation, needs_reordering = builder._check_sequential_composition(
+                parent_body=parent_body,
+                allow_expensive_reordering=allow_expensive_reordering,
+            )
+
             if parent_articulation is not None and parent_articulation >= 0:
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     builder.joint_articulation[joint_idx] = parent_articulation
+
+                # Perform reordering if needed
+                if needs_reordering:
+                    builder._reorder_joints_by_articulation()
             else:
                 # Parent body is not in any articulation, create a new one
                 articulation_key = urdf_root.attrib.get("name")

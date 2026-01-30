@@ -1426,6 +1426,7 @@ class ModelBuilder:
         floating: bool = False,
         base_joint: dict | str | None = None,
         parent_body: int | None = None,
+        allow_expensive_reordering: bool = False,
         scale: float = 1.0,
         hide_visuals: bool = False,
         parse_visuals_as_colliders: bool = False,
@@ -1450,6 +1451,7 @@ class ModelBuilder:
             floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
             parent_body (int or None): The index of an existing body to attach this URDF's root to. If None (default), the root is connected to the world. When specified, the imported model becomes part of the same kinematic chain as the parent body.
+            allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes.
             parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
@@ -1479,6 +1481,7 @@ class ModelBuilder:
             floating=floating,
             base_joint=base_joint,
             parent_body=parent_body,
+            allow_expensive_reordering=allow_expensive_reordering,
             scale=scale,
             hide_visuals=hide_visuals,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
@@ -1503,6 +1506,7 @@ class ModelBuilder:
         floating: bool | None = None,
         base_joint: dict | str | None = None,
         parent_body: int | None = None,
+        allow_expensive_reordering: bool = False,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
         joint_drive_gains_scaling: float = 1.0,
@@ -1535,6 +1539,7 @@ class ModelBuilder:
             floating (bool): If True, floating bodies (bodies not connected as a child to any joint) receive a free joint. If False, floating bodies receive a fixed joint. If None (default), floating bodies receive a free joint (matching the default behavior).
             base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
             parent_body (int or None): The index of an existing body to attach this USD's root to. If None (default), the root is connected to the world. When specified, the imported model becomes part of the same kinematic chain as the parent body.
+            allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
             only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
@@ -1617,6 +1622,7 @@ class ModelBuilder:
             floating=floating,
             base_joint=base_joint,
             parent_body=parent_body,
+            allow_expensive_reordering=allow_expensive_reordering,
             only_load_enabled_rigid_bodies=only_load_enabled_rigid_bodies,
             only_load_enabled_joints=only_load_enabled_joints,
             joint_drive_gains_scaling=joint_drive_gains_scaling,
@@ -1646,6 +1652,7 @@ class ModelBuilder:
         floating: bool | None = None,
         base_joint: dict | str | None = None,
         parent_body: int | None = None,
+        allow_expensive_reordering: bool = False,
         armature_scale: float = 1.0,
         scale: float = 1.0,
         hide_visuals: bool = False,
@@ -1683,6 +1690,7 @@ class ModelBuilder:
             floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
             parent_body (int or None): The index of an existing body to attach this MJCF's root to. If None (default), the root is connected to the world. When specified, the imported model becomes part of the same kinematic chain as the parent body.
+            allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
             armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
@@ -1725,6 +1733,7 @@ class ModelBuilder:
             floating=floating,
             base_joint=base_joint,
             parent_body=parent_body,
+            allow_expensive_reordering=allow_expensive_reordering,
             armature_scale=armature_scale,
             scale=scale,
             hide_visuals=hide_visuals,
@@ -6821,6 +6830,260 @@ class ModelBuilder:
         else:
             self.body_inv_inertia[i] = new_inertia
 
+    def _validate_parent_body(self, parent_body: int | None, child: int) -> None:
+        """
+        Validate that parent_body is a valid body index.
+
+        Args:
+            parent_body: The parent body index to validate (-1 for world is OK).
+            child: The child body index (to check for self-reference).
+
+        Raises:
+            ValueError: If validation fails.
+        """
+        if parent_body is None:
+            return  # None is valid (means world)
+
+        if parent_body == -1:
+            return  # -1 is valid (world reference)
+
+        # Check bounds
+        if parent_body < -1:
+            raise ValueError(
+                f"Invalid parent_body index: {parent_body}. " f"Must be >= -1 (use -1 for world)."
+            )
+
+        if parent_body >= len(self.body_mass):
+            raise ValueError(
+                f"Invalid parent_body index: {parent_body}. "
+                f"Body index out of bounds (model has {len(self.body_mass)} bodies)."
+            )
+
+        # Check self-reference
+        if parent_body == child:
+            raise ValueError(f"Cannot attach body {child} to itself (parent_body == child).")
+
+        # Validate body has positive mass (optional warning)
+        if self.body_mass[parent_body] <= 0.0:
+            warnings.warn(
+                f"parent_body {parent_body} has zero or negative mass ({self.body_mass[parent_body]}). "
+                f"This may cause unexpected behavior.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    def _find_articulation_for_body(self, body_id: int) -> int | None:
+        """
+        Find which articulation (if any) contains the given body.
+
+        Args:
+            body_id: The body index to search for.
+
+        Returns:
+            int: Articulation index if found, or None if body is not in any articulation.
+        """
+        # Check if body is a child in any joint
+        for joint_idx in range(len(self.joint_child)):
+            if self.joint_child[joint_idx] == body_id:
+                art_id = self.joint_articulation[joint_idx]
+                if art_id >= 0:  # -1 means no articulation
+                    return art_id
+
+        # Check if body is a parent in any joint
+        for joint_idx in range(len(self.joint_parent)):
+            if self.joint_parent[joint_idx] == body_id:
+                art_id = self.joint_articulation[joint_idx]
+                if art_id >= 0:
+                    return art_id
+
+        # Body not found in any articulation
+        return None
+
+    def _check_sequential_composition(
+        self, parent_body: int, allow_expensive_reordering: bool
+    ) -> tuple[int | None, bool]:
+        """
+        Check if attaching to parent_body requires expensive reordering.
+
+        Args:
+            parent_body: The parent body index to check.
+            allow_expensive_reordering: Whether expensive operations are allowed.
+
+        Returns:
+            tuple: (parent_articulation_id, needs_reordering)
+
+        Raises:
+            ValueError: If non-sequential composition attempted without flag.
+        """
+        if parent_body == -1:
+            return (None, False)
+
+        parent_articulation = self._find_articulation_for_body(parent_body)
+        if parent_articulation is None:
+            return (None, False)
+
+        num_articulations = len(self.articulation_start)
+        is_sequential = parent_articulation == num_articulations - 1
+
+        if is_sequential:
+            return (parent_articulation, False)
+        else:
+            if not allow_expensive_reordering:
+                body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
+                raise ValueError(
+                    f"Cannot attach to parent_body {body_name} in articulation #{parent_articulation} "
+                    f"(most recent is #{num_articulations - 1}). Requires O(n²) reordering. "
+                    f"Use allow_expensive_reordering=True to proceed."
+                )
+
+            warnings.warn(
+                f"O(n²) reordering {len(self.joint_type)} joints "
+                f"(articulation #{parent_articulation} is not most recent)",
+                UserWarning,
+                stacklevel=3,
+            )
+            return (parent_articulation, True)
+
+    def _reorder_list_by_mapping(self, lst: list, old_to_new: dict[int, int], list_name: str) -> None:
+        """
+        Reorder a list according to old->new index mapping with validation.
+
+        Args:
+            lst: The list to reorder in-place.
+            old_to_new: Mapping from old indices to new indices.
+            list_name: Name of list for error messages.
+        """
+        if not lst:
+            return
+
+        if len(lst) != len(old_to_new):
+            raise RuntimeError(
+                f"Joint list '{list_name}' length mismatch: expected {len(old_to_new)}, got {len(lst)}"
+            )
+
+        new_lst = [None] * len(lst)
+        for old_idx, new_idx in old_to_new.items():
+            new_lst[new_idx] = lst[old_idx]
+
+        if None in new_lst:
+            raise RuntimeError(f"Reordering '{list_name}' left unmapped indices")
+
+        lst[:] = new_lst
+
+    def _reorder_joints_by_articulation(self) -> None:
+        """
+        Reorder all joint arrays so joints within each articulation are contiguous.
+        """
+        num_articulations = len(self.articulation_start)
+        if num_articulations == 0:
+            return
+
+        # Build mapping from old joint index to new joint index
+        old_to_new = {}
+        new_idx = 0
+
+        # Process joints in articulation order
+        for art_idx in range(num_articulations):
+            for joint_idx in range(len(self.joint_articulation)):
+                if self.joint_articulation[joint_idx] == art_idx:
+                    old_to_new[joint_idx] = new_idx
+                    new_idx += 1
+
+        # Handle joints not in any articulation
+        for joint_idx in range(len(self.joint_articulation)):
+            if self.joint_articulation[joint_idx] < 0 and joint_idx not in old_to_new:
+                old_to_new[joint_idx] = new_idx
+                new_idx += 1
+
+        if len(old_to_new) != len(self.joint_articulation):
+            raise RuntimeError(f"Reordering mapped {len(old_to_new)} joints but model has {len(self.joint_articulation)} joints")
+
+        # Reorder all joint-related lists
+        self._reorder_list_by_mapping(self.joint_type, old_to_new, "joint_type")
+        self._reorder_list_by_mapping(self.joint_enabled, old_to_new, "joint_enabled")
+        self._reorder_list_by_mapping(self.joint_parent, old_to_new, "joint_parent")
+        self._reorder_list_by_mapping(self.joint_child, old_to_new, "joint_child")
+        self._reorder_list_by_mapping(self.joint_X_p, old_to_new, "joint_X_p")
+        self._reorder_list_by_mapping(self.joint_X_c, old_to_new, "joint_X_c")
+        self._reorder_list_by_mapping(self.joint_axis, old_to_new, "joint_axis")
+        self._reorder_list_by_mapping(self.joint_armature, old_to_new, "joint_armature")
+        self._reorder_list_by_mapping(self.joint_target_ke, old_to_new, "joint_target_ke")
+        self._reorder_list_by_mapping(self.joint_target_kd, old_to_new, "joint_target_kd")
+        self._reorder_list_by_mapping(self.joint_limit_lower, old_to_new, "joint_limit_lower")
+        self._reorder_list_by_mapping(self.joint_limit_upper, old_to_new, "joint_limit_upper")
+        self._reorder_list_by_mapping(self.joint_limit_ke, old_to_new, "joint_limit_ke")
+        self._reorder_list_by_mapping(self.joint_limit_kd, old_to_new, "joint_limit_kd")
+        self._reorder_list_by_mapping(self.joint_twist_lower, old_to_new, "joint_twist_lower")
+        self._reorder_list_by_mapping(self.joint_twist_upper, old_to_new, "joint_twist_upper")
+        self._reorder_list_by_mapping(self.joint_linear_compliance, old_to_new, "joint_linear_compliance")
+        self._reorder_list_by_mapping(self.joint_angular_compliance, old_to_new, "joint_angular_compliance")
+        self._reorder_list_by_mapping(self.joint_articulation, old_to_new, "joint_articulation")
+        self._reorder_list_by_mapping(self.joint_key, old_to_new, "joint_key")
+        self._reorder_list_by_mapping(self.joint_world, old_to_new, "joint_world")
+        self._reorder_list_by_mapping(self.joint_q_start, old_to_new, "joint_q_start")
+        self._reorder_list_by_mapping(self.joint_qd_start, old_to_new, "joint_qd_start")
+        self._reorder_list_by_mapping(self.joint_dof_dim, old_to_new, "joint_dof_dim")
+        self._reorder_list_by_mapping(self.joint_effort_limit, old_to_new, "joint_effort_limit")
+        self._reorder_list_by_mapping(self.joint_velocity_limit, old_to_new, "joint_velocity_limit")
+        self._reorder_list_by_mapping(self.joint_friction, old_to_new, "joint_friction")
+
+        if hasattr(self, "joint_cts_start"):
+            self._reorder_list_by_mapping(self.joint_cts_start, old_to_new, "joint_cts_start")
+        if hasattr(self, "joint_axis_start"):
+            self._reorder_list_by_mapping(self.joint_axis_start, old_to_new, "joint_axis_start")
+        if hasattr(self, "joint_axis_dim"):
+            self._reorder_list_by_mapping(self.joint_axis_dim, old_to_new, "joint_axis_dim")
+
+        # Rebuild articulation_start with new contiguous ranges
+        self.articulation_start.clear()
+        for art_idx in range(num_articulations):
+            for new_idx in range(len(self.joint_articulation)):
+                if self.joint_articulation[new_idx] == art_idx:
+                    self.articulation_start.append(new_idx)
+                    break
+
+    def _create_joint_from_base_joint_spec(
+        self,
+        base_joint: str | dict,
+        parent: int,
+        child: int,
+        parent_xform: Transform,
+        child_xform: Transform,
+        key: str | None,
+    ) -> int:
+        """Create joint from base_joint specification (string or dict)."""
+        if isinstance(base_joint, str):
+            # Parse string like "px,py,rz"
+            axes_spec = base_joint.lower().split(",")
+            axes_spec = [ax.strip() for ax in axes_spec]
+            linear_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"l", "p"}]
+            angular_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"a", "r"}]
+            axes_vec = {
+                "x": [1.0, 0.0, 0.0],
+                "y": [0.0, 1.0, 0.0],
+                "z": [0.0, 0.0, 1.0],
+            }
+            return self.add_joint_d6(
+                linear_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str],
+                angular_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str],
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                parent=parent,
+                child=child,
+                key=key,
+            )
+        elif isinstance(base_joint, dict):
+            joint_params = base_joint.copy()
+            joint_params["parent"] = parent
+            joint_params["child"] = child
+            joint_params["parent_xform"] = parent_xform
+            joint_params["child_xform"] = child_xform
+            if "key" not in joint_params and key is not None:
+                joint_params["key"] = key
+            return self.add_joint(**joint_params)
+        else:
+            raise ValueError(f"base_joint must be a string or dict, got {type(base_joint).__name__}")
+
     def add_base_joint(
         self,
         child: int,
@@ -6830,6 +7093,7 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         parent: int = -1,
+        allow_expensive_reordering: bool = False,
     ) -> int:
         """
         Adds a joint connecting a body to a parent body (or the world) based on the ``floating`` and ``base_joint`` parameters.
@@ -6839,8 +7103,10 @@ class ModelBuilder:
 
         Args:
             child (int): The body index to connect.
-            floating (bool or None, optional): If True or None (default), creates a free joint.
-                If False, creates a fixed joint.
+            floating (bool or None, optional): If True or None (default), creates a free joint when
+                ``parent == -1`` (connecting to world). When ``parent != -1`` (connecting to another body),
+                falls back to a fixed joint since free joints cannot be relative to a parent body.
+                If False, always creates a fixed joint.
             base_joint (str or dict or None, optional): Specifies the joint type to create.
                 This can be either:
 
@@ -6859,15 +7125,26 @@ class ModelBuilder:
                 If None, defaults to identity transform.
             parent (int, optional): The index of the parent body. Use -1 (default) to connect to the world.
                 When connecting to an existing body, the child body becomes part of the same kinematic chain.
+            allow_expensive_reordering (bool, optional): If True, allow O(n²) joint reordering when attaching
+                to non-sequential articulations. If False (default), raises ValueError when attempting to attach
+                to any articulation other than the most recently added one. Sequential composition (parent in
+                most recent articulation) is O(1). Non-sequential composition (parent in older articulation) is O(n²).
 
         Returns:
             int: The index of the created joint.
+
+        Raises:
+            ValueError: If parent is invalid or non-sequential composition attempted without flag.
 
         Note:
             When ``parent_xform`` is not provided:
             - If parent is -1 (world), the body's current transform (``body_q[child]``) is used.
             - If parent is another body, identity transform is used (joint at parent body origin).
         """
+        # Validation
+        self._validate_parent_body(parent, child)
+
+        # Determine transforms
         if parent_xform is None:
             if parent == -1:
                 parent_xform = self.body_q[child]
@@ -6876,53 +7153,36 @@ class ModelBuilder:
         if child_xform is None:
             child_xform = wp.transform_identity()
 
+        # Create joint based on parameters
         if base_joint is not None:
-            # Handle base_joint parameter
-            if isinstance(base_joint, str):
-                # Parse string like "px,py,rz" into linear and angular axes
-                axes_spec = base_joint.lower().split(",")
-                axes_spec = [ax.strip() for ax in axes_spec]
-                linear_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"l", "p"}]
-                angular_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"a", "r"}]
-                axes_vec = {
-                    "x": [1.0, 0.0, 0.0],
-                    "y": [0.0, 1.0, 0.0],
-                    "z": [0.0, 0.0, 1.0],
-                }
-                joint_id = self.add_joint_d6(
-                    linear_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str],
-                    angular_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str],
-                    parent_xform=parent_xform,
-                    child_xform=child_xform,
-                    parent=parent,
-                    child=child,
-                    key=key,
-                )
-            elif isinstance(base_joint, dict):
-                # Use dict directly with add_joint
-                joint_params = base_joint.copy()
-                joint_params["parent"] = parent
-                joint_params["child"] = child
-                joint_params["parent_xform"] = parent_xform
-                joint_params["child_xform"] = child_xform
-                if "key" not in joint_params and key is not None:
-                    joint_params["key"] = key
-                joint_id = self.add_joint(**joint_params)
-            else:
-                raise ValueError(
-                    "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
-                )
+            # Handle base_joint parameter (string or dict)
+            joint_id = self._create_joint_from_base_joint_spec(
+                base_joint=base_joint,
+                parent=parent,
+                child=child,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                key=key,
+            )
         elif floating is not None and not floating:
             # floating=False means fixed joints
             joint_id = self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key)
         else:
-            # Default: floating=None or floating=True means free joints
+            # Default: floating=None or floating=True
+            # Creates free joint only when parent == -1 (world frame).
+            # When parent != -1, falls back to fixed joint since free joints cannot be relative to a parent body.
             if parent == -1:
                 joint_id = self.add_joint_free(child, key=key)
             else:
                 # Can't have a free joint when attaching to another body - use fixed instead
                 joint_id = self.add_joint_fixed(
                     parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key
+                )
+                warnings.warn(
+                    f"Requested floating/free joint for body {child} with parent {parent}, "
+                    f"but free joints can only connect to world (parent=-1). Using fixed joint instead.",
+                    UserWarning,
+                    stacklevel=2,
                 )
 
         return joint_id
