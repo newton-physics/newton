@@ -998,5 +998,18 @@ class TestModel(unittest.TestCase):
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
 
+    def test_add_base_joint_fixed_to_parent(self):
+        """Test that add_base_joint with parent creates fixed joint."""
+        builder = ModelBuilder()
+        parent_body = builder.add_body(wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        builder.add_joint_fixed(parent=-1, child=parent_body)
+
+        child_body = builder.add_body(wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        joint_id = builder.add_base_joint(child_body, parent=parent_body, floating=False)
+
+        self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_parent[joint_id], parent_body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
