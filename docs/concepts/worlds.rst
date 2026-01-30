@@ -96,7 +96,7 @@ For the example above, the corresponding world grouping arrays would be as follo
 .. _World starts:
 
 World Start Indices & Dimensions
------------------
+----------------------------
 
 In addition to the world grouping arrays, the :class:`~newton.Model` object will also contain Warp arrays that store the per-world starting indices for each entity type.
 
@@ -144,7 +144,7 @@ For the previous example, we can compute the per-world shape counts as follows:
 .. _World-entity partitioning:
 
 World-Entity GPU Thread Partitioning
------------------
+----------------------------
 
 Another important use of world grouping is to facilitate partitioning of GPU thread grids according to both world indices and the number of entities per world, i.e. into 2D world-entity grids.
 
