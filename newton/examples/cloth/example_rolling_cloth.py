@@ -305,7 +305,7 @@ class Example:
 
         # Finalize model
         self.model = builder.finalize()
-        self.model.gravity = 0.0  # No gravity in this simulation
+        self.model.gravity = wp.vec3(0.0, 0.0, 0.0)  # No gravity in this simulation
         self.model.soft_contact_ke = 2.0e5
         self.model.soft_contact_kd = 1.0e-5
         self.model.soft_contact_mu = 0.1
