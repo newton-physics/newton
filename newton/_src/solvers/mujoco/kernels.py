@@ -1627,3 +1627,47 @@ def convert_rigid_forces_from_mj_kernel(
     if body_parent_f:
         # TODO: implement link incoming forces
         pass
+
+
+@wp.kernel
+def update_pair_properties_kernel(
+    pairs_per_world: int,
+    pair_solref_in: wp.array(dtype=wp.vec2),
+    pair_solreffriction_in: wp.array(dtype=wp.vec2),
+    pair_solimp_in: wp.array(dtype=vec5),
+    pair_margin_in: wp.array(dtype=float),
+    pair_gap_in: wp.array(dtype=float),
+    pair_friction_in: wp.array(dtype=vec5),
+    # outputs
+    pair_solref_out: wp.array2d(dtype=wp.vec2),
+    pair_solreffriction_out: wp.array2d(dtype=wp.vec2),
+    pair_solimp_out: wp.array2d(dtype=vec5),
+    pair_margin_out: wp.array2d(dtype=float),
+    pair_gap_out: wp.array2d(dtype=float),
+    pair_friction_out: wp.array2d(dtype=vec5),
+):
+    """Update MuJoCo contact pair properties from Newton custom attributes.
+
+    Iterates over MuJoCo pairs [world, pair] and copies solver properties
+    (solref, solimp, margin, gap, friction) from Newton custom attributes.
+    """
+    world, mjc_pair = wp.tid()
+    newton_pair = world * pairs_per_world + mjc_pair
+
+    if pair_solref_in:
+        pair_solref_out[world, mjc_pair] = pair_solref_in[newton_pair]
+
+    if pair_solreffriction_in:
+        pair_solreffriction_out[world, mjc_pair] = pair_solreffriction_in[newton_pair]
+
+    if pair_solimp_in:
+        pair_solimp_out[world, mjc_pair] = pair_solimp_in[newton_pair]
+
+    if pair_margin_in:
+        pair_margin_out[world, mjc_pair] = pair_margin_in[newton_pair]
+
+    if pair_gap_in:
+        pair_gap_out[world, mjc_pair] = pair_gap_in[newton_pair]
+
+    if pair_friction_in:
+        pair_friction_out[world, mjc_pair] = pair_friction_in[newton_pair]

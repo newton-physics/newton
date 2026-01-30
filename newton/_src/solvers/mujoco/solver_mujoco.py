@@ -67,6 +67,7 @@ from .kernels import (
     update_joint_transforms_kernel,
     update_mocap_transforms_kernel,
     update_model_properties_kernel,
+    update_pair_properties_kernel,
     update_shape_mappings_kernel,
     update_solver_options_kernel,
     update_tendon_properties_kernel,
@@ -1326,6 +1327,7 @@ class SolverMuJoCo(SolverBase):
             self.update_joint_dof_properties()
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
             self.update_geom_properties()
+            self.update_pair_properties()
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self.update_model_properties()
         if flags & SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES:
@@ -2967,12 +2969,12 @@ class SolverMuJoCo(SolverBase):
             # "actuator_forcerange",  # No longer used - force clamping via jnt_actfrcrange
             # "actuator_actrange",
             # "actuator_gear",
-            # "pair_solref",
-            # "pair_solreffriction",
-            # "pair_solimp",
-            # "pair_margin",
-            # "pair_gap",
-            # "pair_friction",
+            "pair_solref",
+            "pair_solreffriction",
+            "pair_solimp",
+            "pair_margin",
+            "pair_gap",
+            "pair_friction",
             "tendon_world",
             "tendon_solref_lim",
             "tendon_solimp_lim",
@@ -3295,6 +3297,69 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
+
+    def update_pair_properties(self):
+        """Update MuJoCo contact pair properties from Newton custom attributes.
+
+        Updates the randomizable pair properties (solref, solreffriction, solimp,
+        margin, gap, friction) for explicit contact pairs defined in the model.
+        """
+        if self.use_mujoco_cpu:
+            return  # CPU mode not supported for pair runtime updates
+
+        npair = self.mj_model.npair
+        if npair == 0:
+            return
+
+        # Get custom attributes for pair properties
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        if mujoco_attrs is None:
+            return
+
+        pair_solref = getattr(mujoco_attrs, "pair_solref", None)
+        pair_solreffriction = getattr(mujoco_attrs, "pair_solreffriction", None)
+        pair_solimp = getattr(mujoco_attrs, "pair_solimp", None)
+        pair_margin = getattr(mujoco_attrs, "pair_margin", None)
+        pair_gap = getattr(mujoco_attrs, "pair_gap", None)
+        pair_friction = getattr(mujoco_attrs, "pair_friction", None)
+
+        # Only launch kernel if at least one attribute is defined
+        if any(
+            attr is not None
+            for attr in [pair_solref, pair_solreffriction, pair_solimp, pair_margin, pair_gap, pair_friction]
+        ):
+            # Compute pairs_per_world from Newton custom attributes
+            pair_world_attr = getattr(mujoco_attrs, "pair_world", None)
+            if pair_world_attr is not None:
+                total_pairs = len(pair_world_attr)
+                pairs_per_world = total_pairs // self.model.num_worlds if self.model.num_worlds > 0 else total_pairs
+            else:
+                pairs_per_world = npair
+
+            num_worlds = self.mjw_data.nworld
+
+            wp.launch(
+                update_pair_properties_kernel,
+                dim=(num_worlds, npair),
+                inputs=[
+                    pairs_per_world,
+                    pair_solref,
+                    pair_solreffriction,
+                    pair_solimp,
+                    pair_margin,
+                    pair_gap,
+                    pair_friction,
+                ],
+                outputs=[
+                    self.mjw_model.pair_solref,
+                    self.mjw_model.pair_solreffriction,
+                    self.mjw_model.pair_solimp,
+                    self.mjw_model.pair_margin,
+                    self.mjw_model.pair_gap,
+                    self.mjw_model.pair_friction,
+                ],
+                device=self.model.device,
+            )
 
     def update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
