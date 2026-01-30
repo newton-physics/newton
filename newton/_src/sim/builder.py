@@ -979,7 +979,10 @@ class ModelBuilder:
 
             # Fill in the value(s)
             if isinstance(entity_index, list):
-                if isinstance(value, (list, tuple)):
+                value_is_sequence = isinstance(value, (list, tuple))
+                if isinstance(value, np.ndarray):
+                    value_is_sequence = value.ndim != 0
+                if value_is_sequence:
                     if len(value) != len(entity_index):
                         raise ValueError(f"Expected {len(entity_index)} values, got {len(value)}")
                     custom_attr.values.update(zip(entity_index, value, strict=False))
