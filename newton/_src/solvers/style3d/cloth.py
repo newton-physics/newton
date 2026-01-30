@@ -226,7 +226,7 @@ def add_style3d_cloth_mesh(
     rot_mat = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
     verts_3d = np.dot(vertices_np, rot_mat.T) + np.array(pos, dtype=float)
 
-    panel_verts_np = np.array(panel_verts, dtype=float) if panel_verts is not None else vertices_np[:, :2]
+    panel_verts_np = np.array(panel_verts, dtype=float) * scale if panel_verts is not None else vertices_np[:, :2]
     panel_indices_np = np.array(panel_indices if panel_indices is not None else indices, dtype=int).reshape(-1, 3)
 
     tri_indices_np = np.array(indices, dtype=int).reshape(-1, 3)
