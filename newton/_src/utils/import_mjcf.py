@@ -1879,6 +1879,21 @@ def parse_mjcf(
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
 
+            # Resolve MuJoCo limited flags based on range values
+            # MuJoCo behavior: if *limited is not explicitly set and range[0]<range[1], then limited=True
+            for limited_attr, range_attr, limited_key in [
+                ("ctrllimited", "ctrlrange", "mujoco:actuator_ctrllimited"),
+                ("forcelimited", "forcerange", "mujoco:actuator_forcelimited"),
+                ("actlimited", "actrange", "mujoco:actuator_actlimited"),
+            ]:
+                # Only auto-resolve if *limited was not explicitly specified in MJCF
+                if limited_attr not in merged_attrib:
+                    range_str = merged_attrib.get(range_attr, "")
+                    if range_str:
+                        range_vals = [float(x) for x in range_str.split()[:2]]
+                        if len(range_vals) == 2 and range_vals[0] < range_vals[1]:
+                            parsed_attrs[limited_key] = 1
+
             # Build full values dict
             actuator_values: dict[str, Any] = {}
             for attr in builder_custom_attr_actuator:

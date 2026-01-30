@@ -623,7 +623,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=ModelAttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,
+                default=0,  # MJCF parser auto-enables if ctrlrange is specified
                 namespace="mujoco",
                 mjcf_attribute_name="ctrllimited",
                 mjcf_value_transformer=parse_bool_int,
@@ -635,7 +635,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=ModelAttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,
+                default=0,  # MJCF parser auto-enables if forcerange is specified
                 namespace="mujoco",
                 mjcf_attribute_name="forcelimited",
                 mjcf_value_transformer=parse_bool_int,
@@ -717,7 +717,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=ModelAttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,
+                default=0,  # MJCF parser auto-enables if actrange is specified
                 namespace="mujoco",
                 mjcf_attribute_name="actlimited",
                 mjcf_value_transformer=parse_bool_int,
@@ -1464,6 +1464,7 @@ class SolverMuJoCo(SolverBase):
             if hasattr(mujoco_attrs, "actuator_gear"):
                 gear_arr = mujoco_attrs.actuator_gear.numpy()[mujoco_act_idx]
                 general_args["gear"] = list(gear_arr)
+
             if hasattr(mujoco_attrs, "actuator_ctrlrange"):
                 ctrlrange = mujoco_attrs.actuator_ctrlrange.numpy()[mujoco_act_idx]
                 general_args["ctrlrange"] = (ctrlrange[0], ctrlrange[1])
