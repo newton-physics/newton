@@ -105,11 +105,15 @@ def solver_submodule_pages() -> list[str]:
     for info in pkgutil.iter_modules(solvers_pkg.__path__):
         if not info.ispkg:
             continue
-        internal_name = f"{solvers_pkg.__name__}.{info.name}"
-        mod = importlib.import_module(internal_name)
-        if _is_solver_only_module(mod):
-            continue
         if not hasattr(public_solvers, info.name):
+            continue
+        internal_name = f"{solvers_pkg.__name__}.{info.name}"
+        try:
+            mod = importlib.import_module(internal_name)
+        except Exception:
+            # Optional dependency missing; skip doc generation for this solver.
+            continue
+        if _is_solver_only_module(mod):
             continue
 
         public_name = f"newton.solvers.{info.name}"
