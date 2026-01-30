@@ -59,6 +59,7 @@ class Example:
         h1.add_mjcf(
             newton.utils.download_asset("unitree_h1") / "mjcf/h1_with_hand.xml",
             floating=False,
+            enable_self_collisions=False,
         )
         h1.add_ground_plane()
 
