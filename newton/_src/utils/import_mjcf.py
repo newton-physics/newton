@@ -1115,10 +1115,7 @@ def parse_mjcf(
         # Handle FREE joints when base_joint or parent_body is specified
         # This can happen when: (1) root body (parent==-1) with override params, or
         # (2) non-root body with freejoint in MJCF when parent_body is specified
-        if (
-            joint_type == JointType.FREE
-            and (base_joint is not None or floating is not None or parent_body is not None)
-        ):
+        if joint_type == JointType.FREE and (base_joint is not None or floating is not None or parent_body is not None):
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             # Rotate joint_pos by body orientation before adding to body position
             rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)

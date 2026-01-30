@@ -6849,9 +6849,7 @@ class ModelBuilder:
 
         # Check bounds
         if parent_body < -1:
-            raise ValueError(
-                f"Invalid parent_body index: {parent_body}. " f"Must be >= -1 (use -1 for world)."
-            )
+            raise ValueError(f"Invalid parent_body index: {parent_body}. Must be >= -1 (use -1 for world).")
 
         if parent_body >= len(self.body_mass):
             raise ValueError(
@@ -6957,9 +6955,7 @@ class ModelBuilder:
             return
 
         if len(lst) != len(old_to_new):
-            raise RuntimeError(
-                f"Joint list '{list_name}' length mismatch: expected {len(old_to_new)}, got {len(lst)}"
-            )
+            raise RuntimeError(f"Joint list '{list_name}' length mismatch: expected {len(old_to_new)}, got {len(lst)}")
 
         new_lst = [None] * len(lst)
         for old_idx, new_idx in old_to_new.items():
@@ -6996,7 +6992,9 @@ class ModelBuilder:
                 new_idx += 1
 
         if len(old_to_new) != len(self.joint_articulation):
-            raise RuntimeError(f"Reordering mapped {len(old_to_new)} joints but model has {len(self.joint_articulation)} joints")
+            raise RuntimeError(
+                f"Reordering mapped {len(old_to_new)} joints but model has {len(self.joint_articulation)} joints"
+            )
 
         # Reorder all joint-related lists
         self._reorder_list_by_mapping(self.joint_type, old_to_new, "joint_type")
