@@ -352,6 +352,9 @@ class CollisionPipelineUnified:
         - Contact matching support for warm-starting solvers
     """
 
+    _contacts: Contacts | None
+    # Cached contacts buffer created by this pipeline
+
     def __init__(
         self,
         shape_count: int,
@@ -504,6 +507,8 @@ class CollisionPipelineUnified:
         self.requires_grad = requires_grad
         self.edge_sdf_iter = edge_sdf_iter
 
+        self._contacts = None
+
     @classmethod
     def from_model(
         cls,
@@ -594,33 +599,44 @@ class CollisionPipelineUnified:
 
     def contacts(self, model: Model) -> Contacts:
         """
-        Allocate and return a Contacts object for the model.
+        Allocate and return a new Contacts object for the model.
 
         Args:
             model: The simulation model
 
         Returns:
-            Contacts: The initialized contacts object for the model.
+            Contacts: A newly allocated contacts object for the model.
         """
-        contacts = Contacts(
+        return Contacts(
             self.rigid_contact_max,
             self.soft_contact_max,
             requires_grad=self.requires_grad,
             device=self.device,
             per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
         )
-        return contacts
 
-    def collide(self, model: Model, state: State, contacts: Contacts):
+    def collide(self, model: Model, state: State, contacts: Contacts | None = None) -> Contacts:
         """
         Run the collision pipeline using NarrowPhase.
 
         Args:
             model: The simulation model
             state: The current simulation state
-            contacts: The contacts object to populate
+            contacts: The contacts object to populate. If None, uses the pipeline's cached contacts.
+
+        Returns:
+            Contacts: The populated contacts buffer.
         """
-        contacts.clear()
+        if contacts is None:
+            # Use cached contacts, or allocate if needed
+            if self._contacts is None or self.requires_grad:
+                self._contacts = self.contacts(model)
+            else:
+                self._contacts.clear()
+            contacts = self._contacts
+        else:
+            contacts.clear()
+            # TODO: validate contacts dimensions & compatibility
 
         # Clear counters
         self.broad_phase_pair_count.zero_()
@@ -777,6 +793,8 @@ class CollisionPipelineUnified:
                 ],
                 device=self.device,
             )
+
+        return contacts
 
     def get_hydro_contact_surface(self):
         """Get hydroelastic contact surface data for visualization, if available.

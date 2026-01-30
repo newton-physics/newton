@@ -500,6 +500,7 @@ class Model:
 
         self._requested_state_attributes: set[str] = set()
         self._collision_pipeline: CollisionPipeline | None = None
+        # cached collision pipeline; initialized by self.collision_pipeline()
 
         # attributes per body
         self.attribute_frequency["body_q"] = ModelAttributeFrequency.BODY
@@ -703,9 +704,8 @@ class Model:
         """
         Create and return a :class:`CollisionPipeline` for this model.
 
-        This method creates a collision pipeline suitable for detecting contacts between
-        shapes in the model. The pipeline is cached on the model for subsequent use by
-        :meth:`contacts` and :meth:`collide`.
+        This method creates a collision pipeline for the model. The pipeline is cached on
+        the model for subsequent use by :meth:`contacts` and :meth:`collide`.
 
         Args:
             collision_pipeline_type (CollisionPipelineType, optional): Type of collision pipeline to create.
@@ -759,6 +759,10 @@ class Model:
                 edge_sdf_iter=edge_sdf_iter,
                 requires_grad=requires_grad,
             )
+            if rigid_contact_max_per_pair is not None:
+                raise ValueError(
+                    "rigid_contact_max_per_pair is not supported in combination with the unified collision pipeline"
+                )
         else:  # CollisionPipelineType.STANDARD
             self._collision_pipeline = CollisionPipeline.from_model(
                 model=self,
@@ -807,49 +811,78 @@ class Model:
             it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
             :meth:`ModelBuilder.finalize`.
         """
-        from ..solvers import SolverBase  # noqa: PLC0415
-
         if requires_grad is None:
             requires_grad = self.requires_grad
 
-        if isinstance(collision_pipeline, SolverBase):
-            contacts = collision_pipeline.contacts()
-        else:
-            if collision_pipeline is not None:
-                self._collision_pipeline = collision_pipeline
-                # update any additional parameters
-                self._collision_pipeline.soft_contact_margin = soft_contact_margin
-                self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
-            elif self._collision_pipeline is None:
-                # Create a default collision pipeline if none exists
-                self.collision_pipeline(
-                    soft_contact_max=soft_contact_max,
-                    soft_contact_margin=soft_contact_margin,
-                    edge_sdf_iter=edge_sdf_iter,
-                    requires_grad=requires_grad,
-                )
+        if collision_pipeline is not None:
+            self._collision_pipeline = collision_pipeline
+            self._collision_pipeline.soft_contact_margin = soft_contact_margin
+            self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
+        elif self._collision_pipeline is None:
+            # Create a default collision pipeline if none exists
+            self.collision_pipeline(
+                soft_contact_max=soft_contact_max,
+                soft_contact_margin=soft_contact_margin,
+                edge_sdf_iter=edge_sdf_iter,
+                requires_grad=requires_grad,
+            )
 
-            collision_pipeline = self._collision_pipeline
-            contacts = collision_pipeline.contacts(self)
+        contacts = self._collision_pipeline.contacts(self)
         # attach custom attributes with assignment==CONTACT
         self._add_custom_attributes(contacts, ModelAttributeAssignment.CONTACT, requires_grad=requires_grad)
         return contacts
 
-    def collide(self, state: State, contacts: Contacts, collision_pipeline: CollisionPipeline | None = None):
+    def collide(
+        self,
+        state: State,
+        contacts: Contacts | None = None,
+        collision_pipeline: CollisionPipeline | None = None,
+        rigid_contact_max_per_pair: int | None = None,
+        soft_contact_max: int | None = None,
+        soft_contact_margin: float = 0.01,
+        edge_sdf_iter: int = 10,
+        requires_grad: bool | None = None,
+    ) -> Contacts:
         """
         Run collision detection and populate the contacts buffer.
+        If no Contacts object is passed, allocate and return one.
 
         Args:
             state (State): The current simulation state.
-            contacts (Contacts): The contacts buffer to populate (will be cleared first).
+            contacts (Contacts, optional): The contacts buffer to populate (will be cleared first).
+                If None, a contacts buffer will be allocated automatically using :meth:`contacts`.
             collision_pipeline (CollisionPipeline, optional): Collision pipeline to use.
                 If not provided, uses the pipeline cached from :meth:`contacts`.
+            rigid_contact_max_per_pair (int, optional): Maximum number of rigid contacts per shape pair.
+                Only used when allocating contacts. If None, a kernel is launched to count the number of possible contacts.
+            soft_contact_max (int, optional): Maximum number of soft contacts.
+                Only used when allocating contacts. If None, a kernel is launched to count the number of possible contacts.
+            soft_contact_margin (float, optional): Margin for soft contact generation. Default is 0.01.
+            edge_sdf_iter (int, optional): Number of search iterations for finding closest contact points
+                between edges and SDF. Default is 10.
+            requires_grad (bool, optional): Whether to enable gradient computation for contact arrays.
+                If None, uses :attr:`Model.requires_grad`.
+
+        Returns:
+            Contacts: The contact object containing collision information.
         """
+        # Get or create collision pipeline
         collision_pipeline = collision_pipeline or self._collision_pipeline
         if collision_pipeline is None:
-            raise ValueError("Require a collision pipeline. Call model.contacts() first, or pass one.")
+            # Create a default collision pipeline if none exists
+            collision_pipeline = self.collision_pipeline(
+                rigid_contact_max_per_pair=rigid_contact_max_per_pair,
+                soft_contact_max=soft_contact_max,
+                soft_contact_margin=soft_contact_margin,
+                edge_sdf_iter=edge_sdf_iter,
+                requires_grad=requires_grad,
+            )
 
-        collision_pipeline.collide(self, state, contacts)
+        # Update runtime-configurable parameters on the collision pipeline
+        collision_pipeline.soft_contact_margin = soft_contact_margin
+        collision_pipeline.edge_sdf_iter = edge_sdf_iter
+
+        return collision_pipeline.collide(self, state, contacts)
 
     def request_state_attributes(self, *attributes: str) -> None:
         """

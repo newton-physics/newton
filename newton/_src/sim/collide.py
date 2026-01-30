@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from enum import IntEnum
+from enum import Enum
 
 import warp as wp
 
@@ -32,7 +32,7 @@ from .model import Model
 from .state import State
 
 
-class CollisionPipelineType(IntEnum):
+class CollisionPipelineType(Enum):
     """
     Selects which collision pipeline implementation to use.
 
@@ -104,6 +104,9 @@ class CollisionPipeline:
     for running the collision pipeline on a given simulation state.
     """
 
+    _contacts: Contacts | None
+    # Cached contacts buffer created by this pipeline
+
     def __init__(
         self,
         shape_count: int,
@@ -138,6 +141,7 @@ class CollisionPipeline:
         Note:
             Contact margins for rigid contacts are now controlled per-shape via ``model.shape_contact_margin``.
         """
+        self._contacts = None
 
         self.shape_count = shape_count
         self.shape_pairs_filtered = shape_pairs_filtered
@@ -218,7 +222,7 @@ class CollisionPipeline:
 
     def contacts(self, model: Model) -> Contacts:
         """
-        Allocate and return a :class:`Contacts` object for the given model.
+        Allocate and return a new :class:`Contacts` object for the given model.
 
         Args:
             model (Model): The simulation model.
@@ -226,28 +230,36 @@ class CollisionPipeline:
         Returns:
             Contacts: A newly allocated contacts buffer sized for this pipeline.
         """
-        # Allocate new contact memory for contacts if needed (e.g., for gradients)
-        contacts = Contacts(
+        return Contacts(
             self.rigid_contact_max,
             self.soft_contact_max,
             requires_grad=self.requires_grad,
             device=model.device,
         )
 
-        return contacts
-
-    def collide(self, model: Model, state: State, contacts: Contacts):
+    def collide(self, model: Model, state: State, contacts: Contacts | None = None) -> Contacts:
         """
         Run collision detection and populate the contacts buffer.
 
         Args:
             model (Model): The simulation model.
             state (State): The current simulation state.
-            contacts (Contacts): The contacts buffer to populate (will be cleared first).
-        """
-        contacts.clear()
+            contacts (Contacts, optional): The contacts buffer to populate (will be cleared first).
+                If None, uses the pipeline's cached contacts.
 
-        # TODO: validate contacts dimensions & compatibility
+        Returns:
+            Contacts: The populated contacts buffer.
+        """
+        if contacts is None:
+            # Use cached contacts, or allocate if needed
+            if self._contacts is None or self.requires_grad:
+                self._contacts = self.contacts(model)
+            else:
+                self._contacts.clear()
+            contacts = self._contacts
+        else:
+            contacts.clear()
+            # TODO: validate contacts dimensions & compatibility
 
         shape_count = self.shape_count
         particle_count = len(state.particle_q) if state.particle_q else 0
@@ -359,6 +371,8 @@ class CollisionPipeline:
                 ],
                 device=contacts.device,
             )
+
+        return contacts
 
     @property
     def device(self):
