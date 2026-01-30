@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from newton import Contacts, Model, State
+from newton import Contact, Model, State
 from newton._src.solvers.style3d.collision.bvh import BvhEdge, BvhTri
 from newton._src.solvers.style3d.collision.kernels import (
     eval_body_contact_kernel,
@@ -132,7 +132,7 @@ class Collision:
         _iter: int,
         state_in: State,
         state_out: State,
-        contacts: Contacts,
+        contacts: Contact,
         particle_forces: wp.array(dtype=wp.vec3),
         particle_q_prev: wp.array(dtype=wp.vec3),
         particle_stiff: wp.array(dtype=wp.vec3) = None,
@@ -147,7 +147,7 @@ class Collision:
             dt (float): Time step.
             state_in (State): Current simulation state (input).
             state_out (State): Next simulation state (output).
-            contacts (Contacts): Contact data structure containing contact information.
+            contacts (Contact): Contact data structure containing contact information.
             particle_forces (wp.array): Output array for computed contact forces.
             particle_q_prev (wp.array): Previous positions (optional, for velocity-based damping).
             particle_stiff (wp.array): Optional stiffness array for particles.

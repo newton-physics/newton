@@ -16,7 +16,7 @@
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
+from ...sim import Contact, Control, Model, State
 from ..solver import SolverBase
 from .kernels import (
     apply_body_delta_velocities,
@@ -208,7 +208,7 @@ class SolverXPBD(SolverBase):
         return new_body_q, new_body_qd
 
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         requires_grad = state_in.requires_grad
         self._particle_delta_counter = 0
         self._body_delta_counter = 0

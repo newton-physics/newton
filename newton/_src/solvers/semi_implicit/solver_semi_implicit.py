@@ -16,7 +16,7 @@
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
+from ...sim import Contact, Control, Model, State
 from ..solver import SolverBase
 from .kernels_body import (
     eval_body_joint_forces,
@@ -95,7 +95,7 @@ class SolverSemiImplicit(SolverBase):
         state_in: State,
         state_out: State,
         control: Control | None,
-        contacts: Contacts | None,
+        contacts: Contact | None,
         dt: float,
     ):
         """

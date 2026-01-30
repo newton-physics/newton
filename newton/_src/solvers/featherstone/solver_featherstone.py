@@ -16,7 +16,7 @@
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
+from ...sim import Contact, Control, Model, State
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
     eval_particle_body_contact_forces,
@@ -288,7 +288,7 @@ class SolverFeatherstone(SolverBase):
         state_in: State,
         state_out: State,
         control: Control,
-        contacts: Contacts,
+        contacts: Contact,
         dt: float,
     ):
         requires_grad = state_in.requires_grad

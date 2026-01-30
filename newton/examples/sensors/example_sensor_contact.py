@@ -33,7 +33,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import Contacts
+from newton import Contact
 from newton.sensors import SensorContact, populate_contacts
 from newton.tests.unittest_utils import find_nonfinite_members
 
@@ -60,7 +60,7 @@ class Example:
 
         builder.add_ground_plane()
         # used for storing contact info required by contact sensors
-        self.contacts = Contacts(0, 0)
+        self.contacts = Contact(0, 0)
 
         # finalize model
         self.model = builder.finalize()

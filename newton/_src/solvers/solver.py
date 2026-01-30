@@ -16,7 +16,7 @@
 import warp as wp
 
 from ..geometry import ParticleFlags
-from ..sim import Contacts, Control, Model, ModelBuilder, State
+from ..sim import Contact, Control, Model, ModelBuilder, State
 
 
 @wp.kernel
@@ -257,7 +257,7 @@ class SolverBase:
                 device=model.device,
             )
 
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         """
         Simulate the model for a given time step using the given control input.
 
@@ -267,7 +267,7 @@ class SolverBase:
             control (Control): The control input.
                 Defaults to `None` which means the control values from the
                 :class:`Model` are used.
-            contacts (Contacts): The contact information.
+            contacts (Contact): The contact information.
             dt (float): The time step (typically in seconds).
         """
         raise NotImplementedError()
@@ -301,13 +301,13 @@ class SolverBase:
         """
         pass
 
-    def update_contacts(self, contacts: Contacts) -> None:
+    def update_contacts(self, contacts: Contact) -> None:
         """
-        Update a Contacts object with forces from the solver state. Where the solver state contains
-        other contact data, convert that data to the Contacts format.
+        Update a Contact object with forces from the solver state. Where the solver state contains
+        other contact data, convert that data to the Contact format.
 
         Args:
-            contacts (Contacts): The object to update from the solver state.
+            contacts (Contact): The object to update from the solver state.
         """
         raise NotImplementedError()
 

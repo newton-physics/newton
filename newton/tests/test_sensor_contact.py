@@ -31,8 +31,8 @@ class MockModel:
 
 
 def create_contacts(device, pairs, naconmax, positions=None, normals=None, separations=None, forces=None):
-    """Helper to create Contacts with specified contacts"""
-    contacts = newton.Contacts(0, 0)
+    """Helper to create Contact with specified contacts"""
+    contacts = newton.Contact(0, 0)
 
     n_contacts = len(pairs)
 
@@ -231,7 +231,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             self.skipTest(f"MuJoCo not available: {e}")
 
         sensor = SensorContact(model, sensing_obj_bodies=["a", "b"])
-        contacts = newton.Contacts(0, 0)
+        contacts = newton.Contact(0, 0)
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
@@ -271,7 +271,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         sensor_abc = SensorContact(model, sensing_obj_bodies=["a", "b", "c"])
         sensor_base = SensorContact(model, sensing_obj_shapes=["base"])
-        contacts = newton.Contacts(0, 0)
+        contacts = newton.Contact(0, 0)
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()

@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 import warp as wp
 
 from ..core.types import Devicelike
@@ -25,9 +27,36 @@ from ..geometry.kernels import (
     create_soft_contacts,
     generate_handle_contact_pairs_kernel,
 )
-from .contacts import Contacts
+from .contacts import Contact
 from .model import Model
 from .state import State
+
+
+class CollisionPipelineType(Enum):
+    """
+    Selects which collision pipeline implementation to use.
+
+    The collision pipeline determines how collision detection is performed between
+    shapes in the simulation. Different pipelines offer different trade-offs between
+    features, performance, and flexibility.
+    """
+
+    UNIFIED = 0
+    """
+    Uses :class:`CollisionPipelineUnified` with GJK/MPR-based narrow phase.
+
+    Features pluggable broad phase modes (:class:`BroadPhaseMode`), mesh-mesh collision
+    via SDF with contact reduction, and optional hydroelastic contact model.
+    This is the default and recommended pipeline for most use cases.
+    """
+
+    STANDARD = 1
+    """
+    Uses :class:`CollisionPipeline` with precomputed explicit shape pairs.
+
+    A simpler pipeline that uses the shape contact pairs defined on the model.
+    May be preferred when collision pairs are known ahead of time and don't change.
+    """
 
 
 def count_rigid_contact_points(model: Model, rigid_contact_max_per_pair: int | None = None) -> int:
@@ -75,6 +104,9 @@ class CollisionPipeline:
     for running the collision pipeline on a given simulation state.
     """
 
+    _contacts: Contact | None
+    # Cached contacts buffer created by this pipeline
+
     def __init__(
         self,
         shape_count: int,
@@ -109,8 +141,7 @@ class CollisionPipeline:
         Note:
             Contact margins for rigid contacts are now controlled per-shape via ``model.shape_contact_margin``.
         """
-        # will be allocated during collide
-        self.contacts = None
+        self._contacts = None
 
         self.shape_count = shape_count
         self.shape_pairs_filtered = shape_pairs_filtered
@@ -189,33 +220,46 @@ class CollisionPipeline:
             model.device,
         )
 
-    def collide(self, model: Model, state: State) -> Contacts:
+    def contacts(self, model: Model) -> Contact:
         """
-        Run the collision pipeline for the given model and state, generating contacts.
+        Allocate and return a new :class:`Contact` object for the given model.
 
-        This method allocates or clears the contact buffer as needed, then generates
-        soft and rigid contacts using the current simulation state.
+        Args:
+            model (Model): The simulation model.
+
+        Returns:
+            Contact: A newly allocated contacts buffer sized for this pipeline.
+        """
+        return Contact(
+            self.rigid_contact_max,
+            self.soft_contact_max,
+            requires_grad=self.requires_grad,
+            device=model.device,
+        )
+
+    def collide(self, model: Model, state: State, contacts: Contact | None = None) -> Contact:
+        """
+        Run collision detection and populate the contacts buffer.
 
         Args:
             model (Model): The simulation model.
             state (State): The current simulation state.
+            contacts (Contact, optional): The contacts buffer to populate (will be cleared first).
+                If None, uses the pipeline's cached contacts.
 
         Returns:
-            Contacts: The generated contacts for the current state.
+            Contact: The populated contacts buffer.
         """
-        # Allocate new contact memory for contacts if needed (e.g., for gradients)
-        if self.contacts is None or self.requires_grad:
-            self.contacts = Contacts(
-                self.rigid_contact_max,
-                self.soft_contact_max,
-                requires_grad=self.requires_grad,
-                device=model.device,
-            )
+        if contacts is None:
+            # Use cached contacts, or allocate if needed
+            if self._contacts is None or self.requires_grad:
+                self._contacts = self.contacts(model)
+            else:
+                self._contacts.clear()
+            contacts = self._contacts
         else:
-            self.contacts.clear()
-
-        # output contacts buffer
-        contacts = self.contacts
+            contacts.clear()
+            # TODO: validate contacts dimensions & compatibility
 
         shape_count = self.shape_count
         particle_count = len(state.particle_q) if state.particle_q else 0

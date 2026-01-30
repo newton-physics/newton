@@ -26,7 +26,7 @@ via the :meth:`~newton.solvers.SolverBase.step` method:
           M[newton.Model]
           S[newton.State]
           C[newton.Control]
-          K[newton.Contacts]
+          K[newton.Contact]
           DT[Time step dt]
       end
 

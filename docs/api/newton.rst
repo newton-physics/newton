@@ -24,7 +24,7 @@ newton
    BroadPhaseMode
    CollisionPipeline
    CollisionPipelineUnified
-   Contacts
+   Contact
    Control
    EqType
    GeoType

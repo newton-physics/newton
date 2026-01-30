@@ -34,7 +34,7 @@ from ..geometry.support_function import (
     pack_mesh_ptr,
 )
 from ..geometry.types import GeoType
-from ..sim.contacts import Contacts
+from ..sim.contacts import Contact
 from ..sim.model import Model
 from ..sim.state import State
 
@@ -68,16 +68,40 @@ class UnifiedContactWriterData:
 
 
 class BroadPhaseMode(IntEnum):
-    """Broad phase collision detection mode."""
+    """
+    Selects the broad phase algorithm for :class:`CollisionPipelineUnified`.
+
+    The broad phase quickly identifies potentially colliding shape pairs before
+    the more expensive narrow phase tests. Different algorithms offer different
+    trade-offs between setup cost, per-frame cost, and scalability.
+    """
 
     NXN = 0
-    """All-pairs broad phase with AABB checks (simple, O(N²) but good for small scenes)"""
+    """
+    All-pairs broad phase with AABB overlap checks.
+
+    Tests all shape pairs against each other using axis-aligned bounding boxes.
+    Simple implementation with O(N²) complexity. Best suited for small scenes
+    with few shapes where the quadratic cost is acceptable.
+    """
 
     SAP = 1
-    """Sweep and Prune broad phase with AABB sorting (faster for larger scenes, O(N log N))"""
+    """
+    Sweep and Prune broad phase with AABB sorting.
+
+    Sorts shapes along axes and sweeps to find overlapping pairs.
+    O(N log N) complexity makes it more efficient for larger scenes.
+    Recommended for simulations with many shapes.
+    """
 
     EXPLICIT = 2
-    """Use precomputed shape pairs (most efficient when pairs are known ahead of time)"""
+    """
+    Uses precomputed shape pairs from the model.
+
+    Skips broad phase entirely and uses ``model.shape_contact_pairs`` directly.
+    Most efficient when collision pairs are known ahead of time and static.
+    Requires shape pairs to be defined on the model.
+    """
 
 
 @wp.func
@@ -328,6 +352,9 @@ class CollisionPipelineUnified:
         - Contact matching support for warm-starting solvers
     """
 
+    _contacts: Contact | None
+    # Cached contacts buffer created by this pipeline
+
     def __init__(
         self,
         shape_count: int,
@@ -391,7 +418,6 @@ class CollisionPipelineUnified:
                 When False, mesh-related kernel launches in the narrow phase are skipped, improving performance
                 for scenes with only primitive shapes. Defaults to True for safety.
         """
-        self.contacts = None
         self.shape_count = shape_count
         self.broad_phase_mode = broad_phase_mode
         self.device = device
@@ -455,7 +481,7 @@ class CollisionPipelineUnified:
         # Initialize narrow phase with pre-allocated buffers
         # Pass AABB arrays so narrow phase can use them instead of computing AABBs internally
         # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
-        # Pass write_contact as custom writer to write directly to final Contacts format
+        # Pass write_contact as custom writer to write directly to final Contact format
         self.narrow_phase = NarrowPhase(
             max_candidate_pairs=self.shape_pairs_max,
             max_triangle_pairs=1000000,
@@ -480,6 +506,8 @@ class CollisionPipelineUnified:
         self.soft_contact_max = soft_contact_max
         self.requires_grad = requires_grad
         self.edge_sdf_iter = edge_sdf_iter
+
+        self._contacts = None
 
     @classmethod
     def from_model(
@@ -569,31 +597,46 @@ class CollisionPipelineUnified:
 
         return pipeline
 
-    def collide(self, model: Model, state: State) -> Contacts:
+    def contacts(self, model: Model) -> Contact:
+        """
+        Allocate and return a new Contact object for the model.
+
+        Args:
+            model: The simulation model
+
+        Returns:
+            Contact: A newly allocated contacts object for the model.
+        """
+        return Contact(
+            self.rigid_contact_max,
+            self.soft_contact_max,
+            requires_grad=self.requires_grad,
+            device=self.device,
+            per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
+        )
+
+    def collide(self, model: Model, state: State, contacts: Contact | None = None) -> Contact:
         """
         Run the collision pipeline using NarrowPhase.
 
         Args:
             model: The simulation model
             state: The current simulation state
+            contacts: The contacts object to populate. If None, uses the pipeline's cached contacts.
 
         Returns:
-            Contacts: The generated contacts
+            Contact: The populated contacts buffer.
         """
-
-        # Allocate or clear contacts
-        if self.contacts is None or self.requires_grad:
-            self.contacts = Contacts(
-                self.rigid_contact_max,
-                self.soft_contact_max,
-                requires_grad=self.requires_grad,
-                device=self.device,
-                per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
-            )
+        if contacts is None:
+            # Use cached contacts, or allocate if needed
+            if self._contacts is None or self.requires_grad:
+                self._contacts = self.contacts(model)
+            else:
+                self._contacts.clear()
+            contacts = self._contacts
         else:
-            self.contacts.clear()
-
-        contacts = self.contacts
+            contacts.clear()
+            # TODO: validate contacts dimensions & compatibility
 
         # Clear counters
         self.broad_phase_pair_count.zero_()
@@ -697,7 +740,7 @@ class CollisionPipelineUnified:
         writer_data.out_damping = contacts.rigid_contact_damping
         writer_data.out_friction = contacts.rigid_contact_friction
 
-        # Run narrow phase with custom contact writer (writes directly to Contacts format)
+        # Run narrow phase with custom contact writer (writes directly to Contact format)
         self.narrow_phase.launch_custom_write(
             candidate_pair=self.broad_phase_shape_pairs,
             num_candidate_pair=self.broad_phase_pair_count,

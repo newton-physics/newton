@@ -17,7 +17,7 @@ import warnings
 
 import warp as wp
 
-from newton import Contacts, Model, State
+from newton import Contact, Model, State
 from newton._src.solvers.vbd.solver_vbd import NUM_THREADS_PER_COLLISION_PRIMITIVE, accumulate_contact_force_and_hessian
 from newton._src.solvers.vbd.tri_mesh_collision import TriMeshCollisionDetector, TriMeshCollisionInfo
 
@@ -169,7 +169,7 @@ class CollisionHandler:
         _iter: int,
         state_in: State,
         state_out: State,
-        contacts: Contacts,
+        contacts: Contact,
         particle_forces: wp.array(dtype=wp.vec3),
         particle_q_prev: wp.array(dtype=wp.vec3) = None,
         particle_stiff: wp.array(dtype=wp.vec3) = None,
@@ -186,7 +186,7 @@ class CollisionHandler:
             dt (float): Time step.
             state_in (State): Current simulation state (input).
             state_out (State): Next simulation state (output).
-            contacts (Contacts): Contact data structure containing contact information.
+            contacts (Contact): Contact data structure containing contact information.
             particle_forces (wp.array): Output array for computed contact forces.
             particle_q_prev (wp.array): Previous positions (optional, for velocity-based damping).
             particle_stiff (wp.array): Optional stiffness array for particles.
