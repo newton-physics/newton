@@ -19,8 +19,6 @@ Tests for parent forces (body_parent_f) extended state attribute.
 This module tests the `body_parent_f` attribute which stores incoming joint
 wrenches (forces from the parent body through the joint) in world frame,
 referenced to the body's center of mass.
-
-Note: Only the MuJoCo solver computes this attribute.
 """
 
 import unittest
@@ -36,97 +34,112 @@ class TestParentForce(unittest.TestCase):
     pass
 
 
-def setup_pendulum(device, solver_fn, xform: wp.transform):
-    """Setup a simple pendulum with everything transformed by xform.
+def _setup_pendulum(
+    device,
+    joint_axis: wp.vec3,
+    child_offset: wp.vec3,
+    parent_xform: wp.transform = None,
+):
+    if parent_xform is None:
+        parent_xform = wp.transform_identity()
 
-    Args:
-        device: Compute device
-        solver_fn: Function that creates a solver given a model
-        xform: Transform to apply to the entire setup (joint anchor, body position)
-
-    Returns:
-        Tuple of (model, solver, state_0, state_1, expected_force_dir_world)
-    """
     builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
     builder.request_state_attributes("body_parent_f")
 
-    # Transform the pendulum anchor position by xform
-    anchor_pos = wp.transform_point(xform, wp.vec3(0, 0, 0))
-    body_rot = xform[1]
-
-    # Use add_link() to create the pendulum body (this is recommended for articulations)
     link = builder.add_link()
     builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
 
-    # Add revolute joint: child_xform defines where the joint attaches to the link
-    # The link's COM will be 1 unit below the anchor (in -Z direction in local frame)
     joint = builder.add_joint_revolute(
         -1,
         link,
-        parent_xform=wp.transform(anchor_pos, body_rot),
-        child_xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()),  # Joint attaches 1 unit above link COM
-        axis=wp.vec3(0, 1, 0),
+        parent_xform=parent_xform,
+        child_xform=wp.transform(child_offset, wp.quat_identity()),
+        axis=joint_axis,
     )
-
-    # Register as articulation (required for MuJoCo solver)
     builder.add_articulation([joint])
 
-    model = builder.finalize(device=device)
-    solver = solver_fn(model)
-    state_0, state_1 = model.state(), model.state()
-
-    # Expected force direction in world frame: opposite to gravity (+Z)
-    expected_dir_world = wp.vec3(0, 0, 1)
-
-    return model, solver, state_0, state_1, expected_dir_world
+    return builder.finalize(device=device)
 
 
 def test_parent_force_static_pendulum(test, device, solver_fn):
     """Test that parent force equals weight for a static pendulum with various transforms."""
 
     xforms = [
-        wp.transform_identity(),  # No transform
-        wp.transform(wp.vec3(5, 3, -2), wp.quat_identity()),  # Translation only
-        wp.transform(
-            wp.vec3(1, 2, 3), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), wp.pi * 0.5)
-        ),  # Rotation + translation
+        wp.transform_identity(),
+        wp.transform(wp.vec3(5, 3, -2), wp.quat_identity()),
+        wp.transform(wp.vec3(1, 2, 3), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), wp.pi * 0.5)),
     ]
+
+    dt = 5e-3
 
     for i, xform in enumerate(xforms):
         with test.subTest(xform_index=i):
-            model, solver, state_0, state_1, expected_dir = setup_pendulum(device, solver_fn, xform)
+            # Pendulum hanging down: joint 1 unit above COM, rotating about Y
+            model = _setup_pendulum(
+                device,
+                joint_axis=wp.vec3(0, 1, 0),
+                child_offset=wp.vec3(0, 0, 1),
+                parent_xform=xform,
+            )
+            solver = solver_fn(model)
+            state_0, state_1 = model.state(), model.state()
 
-            # Verify body_parent_f is allocated
             test.assertIsNotNone(state_0.body_parent_f)
 
-            # Evaluate FK and step once
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-            solver.step(state_0, state_1, None, None, 1.0 / 60.0)
+            solver.step(state_0, state_1, None, None, dt)
 
-            # Verify parent force (in world frame)
             parent_f = state_1.body_parent_f.numpy()[0]
-            expected_magnitude = model.body_mass.numpy()[0] * 9.81  # m*g
+            weight = model.body_mass.numpy()[0] * 9.81
 
-            # Linear force should point opposite to gravity (+Z) with magnitude = weight
-            linear_force = parent_f[:3]
-            np.testing.assert_allclose(
-                linear_force,
-                np.array([expected_dir[0], expected_dir[1], expected_dir[2]]) * expected_magnitude,
-                rtol=1e-4,
-            )
-
-            # Angular component should be ~0 (no torque at equilibrium)
+            np.testing.assert_allclose(parent_f[:3], [0, 0, weight], rtol=1e-4)
             np.testing.assert_allclose(parent_f[3:6], [0, 0, 0], atol=1e-2)
 
 
-# Register tests for MuJoCo warp solver only (mujoco_cpu does not support body_parent_f)
+def test_parent_force_centrifugal(test, device, solver_fn):
+    """Test centrifugal force contribution when pendulum is spinning about Z axis."""
+    # Horizontal pendulum: joint at origin, COM at +X, rotating about Z
+    dt = 5e-3
+    r = 1.0
+    model = _setup_pendulum(
+        device,
+        joint_axis=wp.vec3(0, 0, 1),
+        child_offset=wp.vec3(-r, 0, 0),
+    )
+    solver = solver_fn(model)
+    state_0, state_1 = model.state(), model.state()
+
+    omega = 5.0
+    state_0.joint_qd[:1].assign([omega])
+
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    solver.step(state_0, state_1, None, None, dt)
+
+    parent_f = state_1.body_parent_f.numpy()[0]
+    mass = model.body_mass.numpy()[0]
+
+    # Weight (m*g in +Z) + Centripetal (m*omega^2*r toward -X)
+    expected_fx = -mass * omega**2 * r
+    expected_fz = mass * 9.81
+
+    np.testing.assert_allclose(parent_f[:3], [expected_fx, 0.0, expected_fz], rtol=1e-4)
+    np.testing.assert_allclose(parent_f[3:6], [0, 0, 0], atol=1e-2)
+
+
 devices = get_test_devices()
 
 for device in devices:
     add_function_test(
         TestParentForce,
-        "test_parent_force_static_pendulum_mujoco_warp",
+        "test_parent_force_static_pendulum_mjwarp",
         test_parent_force_static_pendulum,
+        devices=[device],
+        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+    )
+    add_function_test(
+        TestParentForce,
+        "test_parent_force_centrifugal_mjwarp",
+        test_parent_force_centrifugal,
         devices=[device],
         solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     )

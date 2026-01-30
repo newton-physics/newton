@@ -1530,28 +1530,6 @@ def update_eq_properties_kernel(
         eq_solimp_out[world, mjc_eq] = eq_solimp[newton_eq]
 
 
-@wp.func
-def mj_body_acceleration(
-    body_rootid: wp.array(dtype=int),
-    xipos_in: wp.array2d(dtype=wp.vec3),
-    subtree_com_in: wp.array2d(dtype=wp.vec3),
-    cvel_in: wp.array2d(dtype=wp.spatial_vector),
-    cacc_in: wp.array2d(dtype=wp.spatial_vector),
-    worldid: int,
-    bodyid: int,
-) -> wp.vec3:
-    """Compute accelerations for bodies from mjwarp data."""
-    cacc = cacc_in[worldid, bodyid]
-    cvel = cvel_in[worldid, bodyid]
-    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
-    ang = wp.spatial_top(cvel)
-    lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
-    acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
-    correction = wp.cross(ang, lin)
-
-    return acc + correction
-
-
 @wp.kernel
 def update_tendon_properties_kernel(
     mjc_tendon_to_newton_tendon: wp.array2d(dtype=wp.int32),
@@ -1690,6 +1668,28 @@ def update_eq_data_and_active_kernel(
 
     eq_data_out[world, mjc_eq] = data
     eq_active_out[world, mjc_eq] = eq_constraint_enabled[newton_eq]
+
+
+@wp.func
+def mj_body_acceleration(
+    body_rootid: wp.array(dtype=int),
+    xipos_in: wp.array2d(dtype=wp.vec3),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cvel_in: wp.array2d(dtype=wp.spatial_vector),
+    cacc_in: wp.array2d(dtype=wp.spatial_vector),
+    worldid: int,
+    bodyid: int,
+) -> wp.vec3:
+    """Compute accelerations for bodies from mjwarp data."""
+    cacc = cacc_in[worldid, bodyid]
+    cvel = cvel_in[worldid, bodyid]
+    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    ang = wp.spatial_top(cvel)
+    lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
+    acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
+    correction = wp.cross(ang, lin)
+
+    return acc + correction
 
 
 @wp.kernel
