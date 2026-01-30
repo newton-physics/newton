@@ -126,9 +126,80 @@ class EqType(IntEnum):
     """Constrains the position or angle of one joint to be a quartic polynomial of another joint (like a prismatic or revolute joint)."""
 
 
+class ActuatorMode(IntEnum):
+    """
+    Enumeration of actuator modes for joint degrees of freedom.
+
+    This enum manages UsdPhysics compliance by specifying whether joint_target_pos/vel
+    inputs are active for a given DOF. It determines which actuators are installed when
+    using solvers that require explicit actuator definitions (e.g., MuJoCo solver).
+
+    Note:
+        MuJoCo general actuators (motor, general, etc.) are handled separately via
+        custom attributes with "mujoco:actuator" frequency and control.mujoco.ctrl,
+        not through this enum.
+    """
+
+    NONE = 0
+    """No actuators are installed for this DOF. The joint is passive/unactuated."""
+
+    POSITION = 1
+    """Only a position actuator is installed for this DOF. Tracks joint_target_pos."""
+
+    VELOCITY = 2
+    """Only a velocity actuator is installed for this DOF. Tracks joint_target_vel."""
+
+    POSITION_VELOCITY = 3
+    """Both position and velocity actuators are installed. Tracks both joint_target_pos and joint_target_vel."""
+
+    EFFORT = 4
+    """A drive is applied but no gains are configured. No MuJoCo actuator is created for this DOF.
+    The user is expected to supply force via joint_f."""
+
+
+def infer_actuator_mode(
+    target_ke: float,
+    target_kd: float,
+    force_position_velocity: bool = False,
+    has_drive: bool = False,
+) -> ActuatorMode:
+    """Infer actuator mode from position and velocity gains.
+
+    Args:
+        target_ke: Position gain (stiffness).
+        target_kd: Velocity gain (damping).
+        force_position_velocity: If True and both gains are non-zero,
+            forces POSITION_VELOCITY mode instead of just POSITION.
+        has_drive: If True, a drive/actuator is applied to the joint.
+            When True but both gains are 0, returns EFFORT mode.
+            When False, returns NONE regardless of gains.
+
+    Returns:
+        The inferred ActuatorMode based on which gains are non-zero:
+        - NONE: No drive applied
+        - EFFORT: Drive applied but both gains are 0 (direct torque control)
+        - POSITION: Only position gain is non-zero
+        - VELOCITY: Only velocity gain is non-zero
+        - POSITION_VELOCITY: Both gains non-zero (or forced)
+    """
+    if not has_drive:
+        return ActuatorMode.NONE
+
+    if force_position_velocity and (target_ke != 0.0 and target_kd != 0.0):
+        return ActuatorMode.POSITION_VELOCITY
+    elif target_ke != 0.0:
+        return ActuatorMode.POSITION
+    elif target_kd != 0.0:
+        return ActuatorMode.VELOCITY
+    else:
+        return ActuatorMode.EFFORT
+
+
 __all__ = [
+    "ActuatorMode",
     "EqType",
     "JointType",
     "get_joint_constraint_count",
     "get_joint_dof_count",
+    "infer_actuator_mode",
 ]
