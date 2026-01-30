@@ -99,7 +99,7 @@ def rolled_cloth_mesh(
         r = inner_radius + (thickness / (2.0 * np.pi)) * theta
 
         for j in range(nv):
-            v = width * j / (nv - 1)
+            v = width * (j / (nv - 1) - 0.5)  # Center around z=0 for XZ plane symmetry
             x = r * np.cos(theta)
             y = r * np.sin(theta)
             z = v
@@ -127,7 +127,7 @@ def rolled_cloth_mesh(
                 ext_y = outer_y + t * dy
 
                 for j in range(nv):
-                    v = width * j / (nv - 1)
+                    v = width * (j / (nv - 1) - 0.5)  # Center around z=0 for XZ plane symmetry
                     verts.append([ext_x, ext_y, v])
 
     total_rows = nu + ext_rows
@@ -253,8 +253,8 @@ class Example:
 
         # Add cloth mesh
         builder.add_cloth_mesh(
-            pos=wp.vec3(-27.2, 100.0, 7.4),
-            rot=wp.quat_from_axis_angle(wp.vec3(1, 0, 0), np.pi / 2),
+            pos=wp.vec3(-27.2, 50.0, 7.4),
+            rot=wp.quat_from_axis_angle(wp.vec3(1, 0, 0), -np.pi / 2),
             scale=1.0,
             vertices=self.cloth_verts,
             indices=self.cloth_faces_flat,
@@ -360,8 +360,8 @@ class Example:
         # v = omega * r, so for same v: omega2 = omega1 * r1 / r2
         self.angular_speed = angular_speed  # rad/sec
         linear_velocity = abs(self.angular_speed) * self.cyl1_radius
-        self.angular_speed_cyl1 = -linear_velocity / self.cyl1_radius  # = angular_speed
-        self.angular_speed_cyl2 = -linear_velocity / self.cyl2_radius  # slower due to larger radius
+        self.angular_speed_cyl1 = linear_velocity / self.cyl1_radius  # = angular_speed
+        self.angular_speed_cyl2 = linear_velocity / self.cyl2_radius  # slower due to larger radius
         self.spin_duration = spin_duration  # seconds
 
         # Create solver
@@ -396,6 +396,11 @@ class Example:
         self.contacts = None
 
         self.viewer.set_model(self.model)
+
+        # Set up camera
+        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+            self.viewer.set_camera(pos=wp.vec3(-0.02, -2.33, 0.69), pitch=-15.9, yaw=-264.8)
+            self.viewer.camera.fov = 67.0
 
         self.capture()
 
@@ -484,7 +489,6 @@ class Example:
         # Scale positions from cm to meters for visualization and flip Z axis
         positions = self.state_0.particle_q.numpy()
         scaled_positions = positions * self.viz_scale
-        scaled_positions[:, 2] *= -1.0  # Flip Z axis
         self.viz_state.particle_q = wp.array(scaled_positions, dtype=wp.vec3)
 
         self.viewer.begin_frame(self.sim_time)
