@@ -269,6 +269,11 @@ uv sync --extra examples
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_rolling_cloth.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_rolling_cloth.png" alt="Rolling Cloth">
+      </a>
+    </td>
   </tr>
  <tr>
     <td align="center">
@@ -276,6 +281,9 @@ uv sync --extra examples
     </td>
     <td align="center">
       <code>uv run -m newton.examples cloth_twist</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples rolling_cloth</code>
     </td>
  </tr>
 </table>
