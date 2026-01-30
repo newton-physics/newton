@@ -5219,11 +5219,11 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             new_friction[i] = [1.5 + i * 0.05, 1.2, 0.007, 0.0003, 0.0003]
 
         # Update Newton model attributes
-        model.mujoco.pair_solref.assign(new_solref)
-        model.mujoco.pair_solreffriction.assign(new_solreffriction)
+        model.mujoco.pair_solref.assign(wp.array(new_solref, dtype=wp.vec2, device=model.device))
+        model.mujoco.pair_solreffriction.assign(wp.array(new_solreffriction, dtype=wp.vec2, device=model.device))
         model.mujoco.pair_solimp.assign(wp.array(new_solimp, dtype=vec5, device=model.device))
-        model.mujoco.pair_margin.assign(new_margin)
-        model.mujoco.pair_gap.assign(new_gap)
+        model.mujoco.pair_margin.assign(wp.array(new_margin, dtype=wp.float32, device=model.device))
+        model.mujoco.pair_gap.assign(wp.array(new_gap, dtype=wp.float32, device=model.device))
         model.mujoco.pair_friction.assign(wp.array(new_friction, dtype=vec5, device=model.device))
 
         # Notify solver of property change (pair properties are under SHAPE_PROPERTIES)
