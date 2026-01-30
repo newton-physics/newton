@@ -192,6 +192,9 @@ class Example:
         self.viewer = viewer
         self.sim_time = 0.0
 
+        # Visualization scale: simulation is in cm, visualization in meters
+        self.viz_scale = 0.01
+
         # Simulation parameters
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -298,7 +301,7 @@ class Example:
         )
 
         # Add ground plane
-        builder.add_ground_plane()
+        builder.add_ground_plane(-1.0)
 
         # Color for VBD solver
         builder.color(include_bending=False)
@@ -368,8 +371,8 @@ class Example:
             particle_enable_self_contact=True,
             particle_self_contact_radius=0.40,
             particle_self_contact_margin=0.6,
-            particle_vertex_contact_buffer_size=64,
-            particle_edge_contact_buffer_size=128,
+            particle_vertex_contact_buffer_size=48,
+            particle_edge_contact_buffer_size=64,
             particle_collision_detection_interval=5,
             particle_topological_contact_filter_threshold=2,
         )
@@ -379,7 +382,10 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Also update state_0 positions
+        # Create a state for visualization (will be scaled at render time)
+        self.viz_state = self.model.state()
+
+        # Also update state_0 positions (will be scaled later in _scale_model_for_visualization)
         state_positions = self.state_0.particle_q.numpy()
         for idx in range(len(self.fixed_point_indices.numpy())):
             state_positions[self.fixed_point_indices.numpy()[idx]][0] = left_x
@@ -475,8 +481,14 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
+        # Scale positions from cm to meters for visualization and flip Z axis
+        positions = self.state_0.particle_q.numpy()
+        scaled_positions = positions * self.viz_scale
+        scaled_positions[:, 2] *= -1.0  # Flip Z axis
+        self.viz_state.particle_q = wp.array(scaled_positions, dtype=wp.vec3)
+
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
+        self.viewer.log_state(self.viz_state)
         self.viewer.end_frame()
 
 
