@@ -3332,7 +3332,7 @@ class SolverMuJoCo(SolverBase):
             pair_world_attr = getattr(mujoco_attrs, "pair_world", None)
             if pair_world_attr is not None:
                 total_pairs = len(pair_world_attr)
-                pairs_per_world = total_pairs // self.model.num_worlds if self.model.num_worlds > 0 else total_pairs
+                pairs_per_world = total_pairs // self.model.num_worlds
             else:
                 pairs_per_world = npair
 
