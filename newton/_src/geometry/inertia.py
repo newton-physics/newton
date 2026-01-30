@@ -764,7 +764,7 @@ def validate_and_correct_inertia_kernel(
 
     # For zero mass, inertia should be zero
     if mass == 0.0:
-        was_corrected = wp.ddot(inertia, inertia) > 0.0
+        was_corrected = was_corrected or (wp.ddot(inertia, inertia) > 0.0)
         inertia = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     else:
         # Use eigendecomposition for proper validation
