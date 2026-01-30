@@ -150,6 +150,7 @@ class Example:
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(0.0, -1.7, 1.4), 0.0, -270.0)
 
         self.capture()
 
