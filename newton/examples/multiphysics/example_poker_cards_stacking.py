@@ -85,9 +85,9 @@ class Example:
         )
         cube_cfg = newton.ModelBuilder.ShapeConfig()
         cube_cfg.density = 0.0  # Static body (infinite mass)
-        cube_cfg.ke = 1.0e6  # Contact stiffness
+        cube_cfg.ke = 5.0e6  # Contact stiffness
         cube_cfg.kd = 1.0e-4  # Contact damping
-        cube_cfg.mu = 0.3  # Friction
+        cube_cfg.mu = 0.1  # Friction
         builder.add_shape_box(
             body_cube,
             hx=self.cube_size,
@@ -142,7 +142,7 @@ class Example:
         edge_kd = 1.0e-2  # Bending damping
 
         # Particle radius for collision (in meters)
-        particle_radius = 0.0015  # m (0.15 cm)
+        particle_radius = 0.003  # m (0.15 cm)
 
         # Add 52 cards
         for i in range(self.num_cards):
@@ -204,7 +204,7 @@ class Example:
             particle_self_contact_radius=0.001,  # m (0.1 cm)
             particle_self_contact_margin=0.0015,  # m (0.15 cm)
             particle_topological_contact_filter_threshold=2,
-            particle_rest_shape_contact_exclusion_radius=0.005,  # m (0.5 cm)
+            particle_rest_shape_contact_exclusion_radius=0.0,  # m (0.5 cm)
         )
 
         # Create states
