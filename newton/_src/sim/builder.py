@@ -6969,48 +6969,95 @@ class ModelBuilder:
     def _reorder_joints_by_articulation(self) -> None:
         """
         Reorder all joint arrays so joints within each articulation are contiguous.
+
+        This method correctly handles three types of joint arrays:
+        1. Per-joint arrays (length = number of joints): reordered using index mapping
+        2. Per-DOF arrays (length = total DOF count): rebuilt by concatenating per-joint slices
+        3. Per-coord arrays (length = total coord count): rebuilt by concatenating per-joint slices
         """
         num_articulations = len(self.articulation_start)
         if num_articulations == 0:
             return
 
-        # Build mapping from old joint index to new joint index
-        old_to_new = {}
-        new_idx = 0
+        num_joints = len(self.joint_articulation)
 
-        # Process joints in articulation order
+        # Build the new joint order: process joints in articulation order
+        new_order = []  # new_order[new_idx] = old_idx
         for art_idx in range(num_articulations):
-            for joint_idx in range(len(self.joint_articulation)):
+            for joint_idx in range(num_joints):
                 if self.joint_articulation[joint_idx] == art_idx:
-                    old_to_new[joint_idx] = new_idx
-                    new_idx += 1
+                    new_order.append(joint_idx)
 
         # Handle joints not in any articulation
-        for joint_idx in range(len(self.joint_articulation)):
-            if self.joint_articulation[joint_idx] < 0 and joint_idx not in old_to_new:
-                old_to_new[joint_idx] = new_idx
-                new_idx += 1
+        for joint_idx in range(num_joints):
+            if self.joint_articulation[joint_idx] < 0 and joint_idx not in new_order:
+                new_order.append(joint_idx)
 
-        if len(old_to_new) != len(self.joint_articulation):
-            raise RuntimeError(
-                f"Reordering mapped {len(old_to_new)} joints but model has {len(self.joint_articulation)} joints"
-            )
+        if len(new_order) != num_joints:
+            raise RuntimeError(f"Reordering mapped {len(new_order)} joints but model has {num_joints} joints")
 
-        # Reorder all joint-related lists
+        # Build old_to_new mapping for per-joint arrays
+        old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(new_order)}
+
+        # Helper function to get DOF slice for a joint
+        def get_dof_slice(joint_idx: int) -> tuple[int, int]:
+            start = self.joint_qd_start[joint_idx]
+            if joint_idx + 1 < num_joints:
+                end = self.joint_qd_start[joint_idx + 1]
+            else:
+                end = self.joint_dof_count
+            return start, end
+
+        # Helper function to get coord slice for a joint
+        def get_coord_slice(joint_idx: int) -> tuple[int, int]:
+            start = self.joint_q_start[joint_idx]
+            if joint_idx + 1 < num_joints:
+                end = self.joint_q_start[joint_idx + 1]
+            else:
+                end = self.joint_coord_count
+            return start, end
+
+        # Helper function to get constraint slice for a joint
+        def get_cts_slice(joint_idx: int) -> tuple[int, int]:
+            start = self.joint_cts_start[joint_idx]
+            if joint_idx + 1 < num_joints:
+                end = self.joint_cts_start[joint_idx + 1]
+            else:
+                end = self.joint_constraint_count
+            return start, end
+
+        # Rebuild per-DOF arrays by concatenating slices in new joint order
+        def rebuild_per_dof_array(arr: list) -> list:
+            if not arr:
+                return arr
+            new_arr = []
+            for old_idx in new_order:
+                start, end = get_dof_slice(old_idx)
+                new_arr.extend(arr[start:end])
+            return new_arr
+
+        # Rebuild per-coord arrays by concatenating slices in new joint order
+        def rebuild_per_coord_array(arr: list) -> list:
+            if not arr:
+                return arr
+            new_arr = []
+            for old_idx in new_order:
+                start, end = get_coord_slice(old_idx)
+                new_arr.extend(arr[start:end])
+            return new_arr
+
+        # Store original start indices before reordering (needed for slice computation)
+        orig_joint_q_start = self.joint_q_start.copy()
+        orig_joint_qd_start = self.joint_qd_start.copy()
+        orig_joint_cts_start = self.joint_cts_start.copy() if hasattr(self, "joint_cts_start") else []
+
+        # Reorder per-joint arrays (length = number of joints)
         self._reorder_list_by_mapping(self.joint_type, old_to_new, "joint_type")
         self._reorder_list_by_mapping(self.joint_enabled, old_to_new, "joint_enabled")
         self._reorder_list_by_mapping(self.joint_parent, old_to_new, "joint_parent")
         self._reorder_list_by_mapping(self.joint_child, old_to_new, "joint_child")
         self._reorder_list_by_mapping(self.joint_X_p, old_to_new, "joint_X_p")
         self._reorder_list_by_mapping(self.joint_X_c, old_to_new, "joint_X_c")
-        self._reorder_list_by_mapping(self.joint_axis, old_to_new, "joint_axis")
-        self._reorder_list_by_mapping(self.joint_armature, old_to_new, "joint_armature")
-        self._reorder_list_by_mapping(self.joint_target_ke, old_to_new, "joint_target_ke")
-        self._reorder_list_by_mapping(self.joint_target_kd, old_to_new, "joint_target_kd")
-        self._reorder_list_by_mapping(self.joint_limit_lower, old_to_new, "joint_limit_lower")
-        self._reorder_list_by_mapping(self.joint_limit_upper, old_to_new, "joint_limit_upper")
-        self._reorder_list_by_mapping(self.joint_limit_ke, old_to_new, "joint_limit_ke")
-        self._reorder_list_by_mapping(self.joint_limit_kd, old_to_new, "joint_limit_kd")
         self._reorder_list_by_mapping(self.joint_twist_lower, old_to_new, "joint_twist_lower")
         self._reorder_list_by_mapping(self.joint_twist_upper, old_to_new, "joint_twist_upper")
         self._reorder_list_by_mapping(self.joint_linear_compliance, old_to_new, "joint_linear_compliance")
@@ -7018,19 +7065,113 @@ class ModelBuilder:
         self._reorder_list_by_mapping(self.joint_articulation, old_to_new, "joint_articulation")
         self._reorder_list_by_mapping(self.joint_key, old_to_new, "joint_key")
         self._reorder_list_by_mapping(self.joint_world, old_to_new, "joint_world")
-        self._reorder_list_by_mapping(self.joint_q_start, old_to_new, "joint_q_start")
-        self._reorder_list_by_mapping(self.joint_qd_start, old_to_new, "joint_qd_start")
         self._reorder_list_by_mapping(self.joint_dof_dim, old_to_new, "joint_dof_dim")
-        self._reorder_list_by_mapping(self.joint_effort_limit, old_to_new, "joint_effort_limit")
-        self._reorder_list_by_mapping(self.joint_velocity_limit, old_to_new, "joint_velocity_limit")
-        self._reorder_list_by_mapping(self.joint_friction, old_to_new, "joint_friction")
-
-        if hasattr(self, "joint_cts_start"):
-            self._reorder_list_by_mapping(self.joint_cts_start, old_to_new, "joint_cts_start")
-        if hasattr(self, "joint_axis_start"):
-            self._reorder_list_by_mapping(self.joint_axis_start, old_to_new, "joint_axis_start")
-        if hasattr(self, "joint_axis_dim"):
+        if hasattr(self, "joint_axis_dim") and self.joint_axis_dim:
             self._reorder_list_by_mapping(self.joint_axis_dim, old_to_new, "joint_axis_dim")
+
+        # Rebuild per-DOF arrays (length = total DOF count)
+        # Use original start indices for slice computation
+        def get_dof_slice_orig(joint_idx: int) -> tuple[int, int]:
+            start = orig_joint_qd_start[joint_idx]
+            if joint_idx + 1 < num_joints:
+                end = orig_joint_qd_start[joint_idx + 1]
+            else:
+                end = self.joint_dof_count
+            return start, end
+
+        def rebuild_per_dof_array_orig(arr: list) -> list:
+            if not arr:
+                return arr
+            new_arr = []
+            for old_idx in new_order:
+                start, end = get_dof_slice_orig(old_idx)
+                new_arr.extend(arr[start:end])
+            return new_arr
+
+        self.joint_axis[:] = rebuild_per_dof_array_orig(self.joint_axis)
+        self.joint_armature[:] = rebuild_per_dof_array_orig(self.joint_armature)
+        self.joint_target_ke[:] = rebuild_per_dof_array_orig(self.joint_target_ke)
+        self.joint_target_kd[:] = rebuild_per_dof_array_orig(self.joint_target_kd)
+        self.joint_limit_lower[:] = rebuild_per_dof_array_orig(self.joint_limit_lower)
+        self.joint_limit_upper[:] = rebuild_per_dof_array_orig(self.joint_limit_upper)
+        self.joint_limit_ke[:] = rebuild_per_dof_array_orig(self.joint_limit_ke)
+        self.joint_limit_kd[:] = rebuild_per_dof_array_orig(self.joint_limit_kd)
+        self.joint_effort_limit[:] = rebuild_per_dof_array_orig(self.joint_effort_limit)
+        self.joint_velocity_limit[:] = rebuild_per_dof_array_orig(self.joint_velocity_limit)
+        self.joint_friction[:] = rebuild_per_dof_array_orig(self.joint_friction)
+        self.joint_act_mode[:] = rebuild_per_dof_array_orig(self.joint_act_mode)
+        self.joint_target_pos[:] = rebuild_per_dof_array_orig(self.joint_target_pos)
+        self.joint_target_vel[:] = rebuild_per_dof_array_orig(self.joint_target_vel)
+        self.joint_qd[:] = rebuild_per_dof_array_orig(self.joint_qd)
+        self.joint_f[:] = rebuild_per_dof_array_orig(self.joint_f)
+
+        # Rebuild per-coord arrays (length = total coord count)
+        def get_coord_slice_orig(joint_idx: int) -> tuple[int, int]:
+            start = orig_joint_q_start[joint_idx]
+            if joint_idx + 1 < num_joints:
+                end = orig_joint_q_start[joint_idx + 1]
+            else:
+                end = self.joint_coord_count
+            return start, end
+
+        def rebuild_per_coord_array_orig(arr: list) -> list:
+            if not arr:
+                return arr
+            new_arr = []
+            for old_idx in new_order:
+                start, end = get_coord_slice_orig(old_idx)
+                new_arr.extend(arr[start:end])
+            return new_arr
+
+        self.joint_q[:] = rebuild_per_coord_array_orig(self.joint_q)
+
+        # Recompute joint_q_start, joint_qd_start, joint_cts_start based on new order
+        new_q_start = []
+        new_qd_start = []
+        new_cts_start = []
+        q_offset = 0
+        qd_offset = 0
+        cts_offset = 0
+
+        for old_idx in new_order:
+            # Get DOF and coord counts for this joint from original data
+            q_start_orig, q_end_orig = get_coord_slice_orig(old_idx)
+            qd_start_orig, qd_end_orig = get_dof_slice_orig(old_idx)
+            coord_count = q_end_orig - q_start_orig
+            dof_count = qd_end_orig - qd_start_orig
+
+            new_q_start.append(q_offset)
+            new_qd_start.append(qd_offset)
+
+            q_offset += coord_count
+            qd_offset += dof_count
+
+            if orig_joint_cts_start:
+                cts_start_orig = orig_joint_cts_start[old_idx]
+                if old_idx + 1 < num_joints:
+                    cts_end_orig = orig_joint_cts_start[old_idx + 1]
+                else:
+                    cts_end_orig = self.joint_constraint_count
+                cts_count = cts_end_orig - cts_start_orig
+                new_cts_start.append(cts_offset)
+                cts_offset += cts_count
+
+        self.joint_q_start[:] = new_q_start
+        self.joint_qd_start[:] = new_qd_start
+        if hasattr(self, "joint_cts_start") and self.joint_cts_start:
+            self.joint_cts_start[:] = new_cts_start
+
+        # Handle joint_axis_start if present (similar to joint_q_start but for axes)
+        if hasattr(self, "joint_axis_start") and self.joint_axis_start:
+            # Recompute based on joint_dof_dim (which was already reordered)
+            new_axis_start = []
+            axis_offset = 0
+            for joint_idx in range(num_joints):
+                new_axis_start.append(axis_offset)
+                if joint_idx < len(self.joint_dof_dim):
+                    lin_axes, ang_axes = self.joint_dof_dim[joint_idx]
+                    axis_offset += lin_axes + ang_axes
+            self.joint_axis_start[:] = new_axis_start
 
         # Rebuild articulation_start with new contiguous ranges
         self.articulation_start.clear()

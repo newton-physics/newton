@@ -1325,11 +1325,18 @@ def parse_usd(
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
                         child_body_id = add_body(**body_data[i])
+                        # Compute parent_xform to preserve imported pose when attaching to parent_body
+                        parent_xform = None
+                        if base_parent != -1:
+                            parent_xform = (
+                                wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
+                            )
                         joint_id = builder.add_base_joint(
                             child_body_id,
                             floating=floating,
                             base_joint=base_joint,
                             parent=base_parent,
+                            parent_xform=parent_xform,
                         )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -1344,11 +1351,18 @@ def parse_usd(
                             )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
+                        # Compute parent_xform to preserve imported pose when attaching to parent_body
+                        parent_xform = None
+                        if base_parent != -1:
+                            parent_xform = (
+                                wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
+                            )
                         joint_id = builder.add_base_joint(
                             child_body_id,
                             floating=floating,
                             base_joint=base_joint,
                             parent=base_parent,
+                            parent_xform=parent_xform,
                         )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
@@ -1410,11 +1424,16 @@ def parse_usd(
                         child_body_id = path_body_map[child_body["key"]]
                     else:
                         child_body_id = art_bodies[first_joint_parent]
+                    # Compute parent_xform to preserve imported pose when attaching to parent_body
+                    parent_xform = None
+                    if base_parent != -1:
+                        parent_xform = wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
                     base_joint_id = builder.add_base_joint(
                         child_body_id,
                         floating=floating,
                         base_joint=base_joint,
                         parent=base_parent,
+                        parent_xform=parent_xform,
                     )
                     articulation_joint_indices.append(base_joint_id)
 
@@ -1846,11 +1865,14 @@ def parse_usd(
                     continue  # Already has a joint
                 if builder.body_mass[body_id] <= 0:
                     continue  # Skip static bodies
+                # Compute parent_xform to preserve imported pose when attaching to parent_body
+                parent_xform = wp.transform_inverse(builder.body_q[parent_body]) * builder.body_q[body_id]
                 joint_id = builder.add_base_joint(
                     body_id,
                     floating=floating,
                     base_joint=base_joint,
                     parent=parent_body,
+                    parent_xform=parent_xform,
                 )
                 # Attach to parent's articulation
                 _attach_joints_to_parent_articulation(builder, [joint_id], parent_body, allow_expensive_reordering)
