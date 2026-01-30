@@ -547,15 +547,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_sizes() which understands type-specific semantics
     "geom_size",
-    # Actuator limits: Newton doesn't auto-enable *limited flags from *range presence yet
-    # TODO: Fix MJCF parsing to auto-enable ctrllimited/forcelimited/actlimited when ranges are set
-    "actuator_ctrllimited",
-    "actuator_forcelimited",
-    "actuator_actlimited",
-    # Joint actuator force limiting: Newton enables by default, native doesn't
-    # TODO: Match MuJoCo's default behavior for jnt_actfrclimited
-    "jnt_actfrclimited",
-    "jnt_actfrcrange",
 }
 
 
@@ -1645,7 +1636,17 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     num_worlds = 16
     debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
-    # No custom model_skip_fields - test with proper actuator parsing from main
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
+        # Actuator limits: Newton doesn't auto-enable *limited flags from *range presence yet
+        # TODO: Fix MJCF parsing to auto-enable ctrllimited/forcelimited/actlimited when ranges are set
+        "actuator_ctrllimited",
+        "actuator_forcelimited",
+        "actuator_actlimited",
+        # Joint actuator force limiting: Newton enables by default, native doesn't
+        # TODO: Match MuJoCo's default behavior for jnt_actfrclimited
+        "jnt_actfrclimited",
+        "jnt_actfrcrange",
+    }
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
