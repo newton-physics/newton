@@ -37,7 +37,7 @@ def _normalize_edge_aniso_values(edge_aniso_ke: Sequence[Vec3] | Vec3 | None, ed
     """Normalize edge anisotropy values to a per-edge list."""
     if edge_aniso_ke is None:
         return [wp.vec3(0.0, 0.0, 0.0)] * edge_count
-    if isinstance(edge_aniso_ke, (list, tuple, np.ndarray)):
+    if isinstance(edge_aniso_ke, (list, np.ndarray)):
         values = list(edge_aniso_ke)
         if len(values) == 1 and edge_count != 1:
             return [values[0]] * edge_count
@@ -428,7 +428,7 @@ def add_style3d_cloth_grid(
                     indices.extend([v0, v1, v3])
                     indices.extend([v1, v2, v3])
 
-    total_mass = mass * (dim_x + 1) * (dim_x + 1)
+    total_mass = mass * (dim_x + 1) * (dim_y + 1)
     total_area = cell_x * cell_y * dim_x * dim_y
     density = total_mass / total_area
 
