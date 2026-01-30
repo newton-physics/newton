@@ -369,6 +369,10 @@ class Example:
             particle_enable_self_contact=True,
             particle_self_contact_radius=0.40,
             particle_self_contact_margin=0.6,
+            particle_vertex_contact_buffer_size=64,
+            particle_edge_contact_buffer_size=128,
+            particle_collision_detection_interval=5,
+            particle_topological_contact_filter_threshold=1,
         )
 
         # Create states
