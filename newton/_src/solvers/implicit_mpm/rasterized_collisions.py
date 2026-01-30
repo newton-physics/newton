@@ -138,7 +138,7 @@ def collision_sdf(
     sdf_vel = wp.vec3(0.0)
     closest_point = wp.vec3(0.0)
     collider_id = int(_NULL_COLLIDER_ID)
-    material_id = int(-1)
+    material_id = int(0)  # default material, always valid
 
     # Find closest collider
     global_face_id = int(0)

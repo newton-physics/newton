@@ -1193,11 +1193,6 @@ class SolverImplicitMPM(SolverBase):
             - ``mpm:tensile_yield_ratio``: Tensile yield ratio
             - ``mpm:yield_stress``: Deviatoric yield stress in Pa
 
-        Attributes registered on Model (global):
-            - ``mpm:voxel_size``: Grid voxel size
-            - ``mpm:critical_fraction``: Critical volume fraction
-            - ``mpm:air_drag``: Background air drag
-
         Attributes registered on State (per-particle):
             - ``mpm:particle_qd_grad``: Velocity gradient for APIC transfer
             - ``mpm:particle_elastic_strain``: Elastic deformation gradient
@@ -1496,7 +1491,7 @@ class SolverImplicitMPM(SolverBase):
             - Collider id, that can be mapped back to the model's body ids using the ``collider_body_index`` property.
         """
 
-        # Not stepped yet, read from preallocated scrtachpad
+        # Not stepped yet, read from preallocated scratchpad
         if not hasattr(state, "impulse_field"):
             state = self._scratchpad
 
