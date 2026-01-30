@@ -84,7 +84,7 @@ class Example:
         garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
         self.garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
 
-        style3d.add_style3d_cloth_mesh(
+        style3d.add_cloth_mesh(
             cloth_builder,
             pos=wp.vec3(0, 0, 0),
             rot=wp.quat_identity(),

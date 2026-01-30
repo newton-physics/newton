@@ -14,7 +14,7 @@
 # limitations under the License.
 
 
-"""Style3D cloth helpers built on ModelBuilder custom attributes."""
+"""Style3D cloth helpers built on :class:`newton.ModelBuilder` custom attributes."""
 
 from __future__ import annotations
 
@@ -34,7 +34,20 @@ if TYPE_CHECKING:
 
 
 def _normalize_edge_aniso_values(edge_aniso_ke: Sequence[Vec3] | Vec3 | None, edge_count: int) -> list[Vec3]:
-    """Normalize edge anisotropy values to a per-edge list."""
+    """Expand anisotropic bending values to a per-edge list.
+
+    Args:
+        edge_aniso_ke: Optional anisotropic stiffness. A single value is
+            broadcast, a sequence must match ``edge_count``, and ``None`` yields
+            zeros.
+        edge_count: Number of edges to generate values for.
+
+    Returns:
+        Per-edge anisotropic stiffness values.
+
+    Raises:
+        ValueError: If a sequence length does not match ``edge_count``.
+    """
     if edge_aniso_ke is None:
         return [wp.vec3(0.0, 0.0, 0.0)] * edge_count
     if isinstance(edge_aniso_ke, (list, np.ndarray)):
@@ -48,7 +61,17 @@ def _normalize_edge_aniso_values(edge_aniso_ke: Sequence[Vec3] | Vec3 | None, ed
 
 
 def _compute_panel_triangles(panel_verts: np.ndarray, panel_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return per-triangle inverse rest matrices and areas from panel UVs."""
+    """Compute panel-space rest data for triangles.
+
+    Args:
+        panel_verts: 2D panel-space coordinates per vertex.
+        panel_indices: Triangle indices into ``panel_verts``.
+
+    Returns:
+        Tuple of ``(inv_D, areas)`` where ``inv_D`` is the per-triangle inverse
+        rest matrix and ``areas`` is the signed panel area (degenerate triangles
+        are clamped to zero).
+    """
     p = panel_verts[panel_indices[:, 0]]
     q = panel_verts[panel_indices[:, 1]]
     r = panel_verts[panel_indices[:, 2]]
@@ -77,7 +100,19 @@ def _compute_edge_bending_data(
     list[tuple[float, float, float, float]],
     list[Vec3] | None,
 ]:
-    """Compute edge indices and bending data from panel-space geometry."""
+    """Compute edge indices and bending data from panel-space geometry.
+
+    Args:
+        panel_verts: 2D panel-space coordinates per vertex.
+        panel_indices: Triangle indices into ``panel_verts``.
+        tri_indices: Triangle indices into the 3D vertex list.
+        edge_aniso_ke: Optional anisotropic bending stiffness values.
+
+    Returns:
+        Tuple of ``(edge_indices, edge_ke_values, edge_rest_area,
+        edge_bending_cot, edge_aniso_values)`` suitable for Style3D edge
+        attributes.
+    """
     adjacency = MeshAdjacency(tri_indices.tolist(), len(tri_indices))
     edge_indices = np.fromiter(
         (x for e in adjacency.edges.values() for x in (e.o0, e.o1, e.v0, e.v1, e.f0, e.f1)),
@@ -153,7 +188,7 @@ def _compute_edge_bending_data(
     return edge_indices[:, :4], edge_ke_values, edge_area.tolist(), edge_bending_cot, edge_aniso_values
 
 
-def add_style3d_cloth_mesh(
+def add_cloth_mesh(
     builder: ModelBuilder,
     *,
     pos: Vec3,
@@ -179,23 +214,26 @@ def add_style3d_cloth_mesh(
     custom_attributes_particles: dict[str, Any] | None = None,
     custom_attributes_springs: dict[str, Any] | None = None,
 ) -> None:
-    """Add a Style3D cloth mesh using ModelBuilder and custom attributes.
+    """Add a Style3D cloth mesh using :class:`newton.ModelBuilder` custom attributes.
 
-    This helper uses the standard ``ModelBuilder.add_particles``, ``add_triangles``,
-    and ``add_edges`` APIs. It computes panel-space rest data for anisotropic
-    stretch and bending, then injects the Style3D custom attributes:
+    This helper uses :meth:`newton.ModelBuilder.add_particles`,
+    :meth:`newton.ModelBuilder.add_triangles`, and
+    :meth:`newton.ModelBuilder.add_edges`. It computes panel-space rest data for
+    anisotropic stretch and
+    bending, then injects the Style3D custom attributes:
 
-    - ``style3d:tri_aniso_ke`` (triangle frequency)
-    - ``style3d:edge_rest_area`` (edge frequency)
-    - ``style3d:edge_bending_cot`` (edge frequency)
-    - ``style3d:aniso_ke`` (edge frequency)
+    - ``style3d:tri_aniso_ke``
+    - ``style3d:edge_rest_area``
+    - ``style3d:edge_bending_cot``
+    - ``style3d:aniso_ke``
 
-    It also overwrites ``builder.tri_poses`` and ``builder.tri_areas`` with
-    panel-based rest data. Make sure to call
-    ``SolverStyle3D.register_custom_attributes(builder)`` before invoking this.
+    It overwrites :attr:`newton.ModelBuilder.tri_poses` and
+    :attr:`newton.ModelBuilder.tri_areas` with panel rest data. Call
+    :meth:`newton.solvers.SolverStyle3D.register_custom_attributes` before
+    invoking this helper.
 
     Args:
-        builder: ModelBuilder to populate.
+        builder: :class:`newton.ModelBuilder` to populate.
         pos: World-space translation for the mesh.
         rot: World-space rotation for the mesh.
         vel: Initial velocity for all particles.
@@ -205,20 +243,28 @@ def add_style3d_cloth_mesh(
         scale: Uniform scale applied to ``vertices`` and ``panel_verts``.
         panel_verts: 2D panel coordinates (UVs). Defaults to ``vertices`` XY.
         panel_indices: Triangle indices in panel space. Defaults to ``indices``.
-        tri_aniso_ke: Anisotropic stretch stiffness (weft, warp, shear). Can be a
-            single value or per-triangle list. If a list is provided for all
-            triangles, it is filtered to valid faces.
+        tri_aniso_ke: Anisotropic stretch stiffness (weft, warp, shear). Can be
+            a single value or per-triangle list. Full lists are filtered to
+            valid triangles after degenerates are removed.
         edge_aniso_ke: Anisotropic bending stiffness values. Can be a single
             value or per-edge list (computed from mesh adjacency).
-        tri_ka: Triangle area stiffness (defaults to ``builder.default_tri_ka``).
-        tri_kd: Triangle damping (defaults to ``builder.default_tri_kd``).
-        tri_drag: Triangle drag coefficient (defaults to ``builder.default_tri_drag``).
-        tri_lift: Triangle lift coefficient (defaults to ``builder.default_tri_lift``).
-        edge_kd: Edge damping (defaults to ``builder.default_edge_kd``).
+        tri_ka: Triangle area stiffness (defaults to
+            :attr:`newton.ModelBuilder.default_tri_ka`).
+        tri_kd: Triangle damping (defaults to
+            :attr:`newton.ModelBuilder.default_tri_kd`).
+        tri_drag: Triangle drag coefficient (defaults to
+            :attr:`newton.ModelBuilder.default_tri_drag`).
+        tri_lift: Triangle lift coefficient (defaults to
+            :attr:`newton.ModelBuilder.default_tri_lift`).
+        edge_kd: Edge damping (defaults to
+            :attr:`newton.ModelBuilder.default_edge_kd`).
         add_springs: If True, add structural springs across mesh edges.
-        spring_ke: Spring stiffness (defaults to ``builder.default_spring_ke``).
-        spring_kd: Spring damping (defaults to ``builder.default_spring_kd``).
-        particle_radius: Per-particle radius (defaults to ``builder.default_particle_radius``).
+        spring_ke: Spring stiffness (defaults to
+            :attr:`newton.ModelBuilder.default_spring_ke`).
+        spring_kd: Spring damping (defaults to
+            :attr:`newton.ModelBuilder.default_spring_kd`).
+        particle_radius: Per-particle radius (defaults to
+            :attr:`newton.ModelBuilder.default_particle_radius`).
         custom_attributes_particles: Extra custom attributes for particles.
         custom_attributes_springs: Extra custom attributes for springs.
     """
@@ -340,7 +386,7 @@ def add_style3d_cloth_mesh(
             )
 
 
-def add_style3d_cloth_grid(
+def add_cloth_grid(
     builder: ModelBuilder,
     *,
     pos: Vec3,
@@ -372,11 +418,13 @@ def add_style3d_cloth_grid(
 ) -> None:
     """Create a planar Style3D cloth grid.
 
-    Call ``SolverStyle3D.register_custom_attributes(builder)`` before invoking
-    this helper so the Style3D custom attributes are available on the builder.
+    Call :meth:`newton.solvers.SolverStyle3D.register_custom_attributes` before
+    invoking this helper so the Style3D custom attributes are available on the
+    builder. The grid uses ``mass`` per particle to compute panel density and
+    then delegates to :func:`newton.solvers.style3d.add_cloth_mesh`.
 
     Args:
-        builder: ModelBuilder to populate.
+        builder: :class:`newton.ModelBuilder` to populate.
         pos: World-space translation for the grid.
         rot: World-space rotation for the grid.
         vel: Initial velocity for all particles.
@@ -433,7 +481,7 @@ def add_style3d_cloth_grid(
     density = total_mass / total_area
 
     start_vertex = len(builder.particle_q)
-    add_style3d_cloth_mesh(
+    add_cloth_mesh(
         builder,
         pos=pos,
         rot=rot,
@@ -548,38 +596,41 @@ def compute_sew_v(
                             break
 
 
-def create_trimesh_sew_springs(
+def create_mesh_sew_springs(
     particle_q: np.ndarray,
     edge_indices: np.ndarray,
     sew_distance: float = 1.0e-3,
     sew_interior: bool = False,
 ):
-    """
-    A function that creates sew springs for trimesh.
-    It will sew vertices within sew_distance.
-    It returns the sew spring indices.
+    """Compute sewing spring pairs for a mesh.
+
+    Vertices within ``sew_distance`` are connected by springs. When
+    ``sew_interior`` is False, only boundary vertices are considered as
+    candidates for sewing.
 
     Args:
-        particle_q: The particle positions.
-        edge_indices: The edge indices.
-        sew_distance: The distance within which vertices will be connected by springs.
-        sew_interior: If True, can sew between interior vertices, otherwise only sew boundary-interior
-            or boundary-boundary vertices
+        particle_q: Particle positions.
+        edge_indices: Edge indices in :attr:`newton.Model.edge_indices` layout.
+        sew_distance: Maximum distance between vertices to sew.
+        sew_interior: If True, allow interior-interior sewing; otherwise only
+            boundary-interior or boundary-boundary vertices are sewn.
 
+    Returns:
+        Array of vertex index pairs to connect with springs.
     """
 
-    trimesh_edge_indices = np.array(edge_indices)
+    mesh_edge_indices = np.array(edge_indices)
     # compute unique vert indices
-    flat_inds = trimesh_edge_indices.flatten()
+    flat_inds = mesh_edge_indices.flatten()
     flat_inds = flat_inds[flat_inds >= 0]
     vert_inds = np.unique(flat_inds)
     # compute unique boundary vert indices
-    bound_condition = trimesh_edge_indices[:, 1] < 0
-    bound_edge_inds = trimesh_edge_indices[bound_condition]
+    bound_condition = mesh_edge_indices[:, 1] < 0
+    bound_edge_inds = mesh_edge_indices[bound_condition]
     bound_edge_inds = bound_edge_inds[:, 2:4]
     bound_vert_inds = np.unique(bound_edge_inds.flatten())
     # compute edge bvh
-    num_edge = trimesh_edge_indices.shape[0]
+    num_edge = mesh_edge_indices.shape[0]
     lower_bounds_edges = wp.array(shape=(num_edge,), dtype=wp.vec3, device="cpu")
     upper_bounds_edges = wp.array(shape=(num_edge,), dtype=wp.vec3, device="cpu")
     wp_edge_indices = wp.array(edge_indices, dtype=wp.int32, device="cpu")
@@ -623,13 +674,16 @@ def create_trimesh_sew_springs(
 def sew_close_vertices(builder: ModelBuilder, sew_distance: float = 1.0e-3, sew_interior: bool = False) -> None:
     """Sew close vertices by creating springs between nearby mesh vertices.
 
+    Springs use :attr:`newton.ModelBuilder.default_spring_ke` and
+    :attr:`newton.ModelBuilder.default_spring_kd`.
+
     Args:
-        builder: ModelBuilder with triangle/edge topology.
+        builder: :class:`newton.ModelBuilder` with triangle/edge topology.
         sew_distance: Vertices within this distance are connected by springs.
         sew_interior: If True, allow interior-interior sewing; otherwise only
             boundary-interior or boundary-boundary vertices are sewn.
     """
-    sew_springs = create_trimesh_sew_springs(
+    sew_springs = create_mesh_sew_springs(
         builder.particle_q,
         builder.edge_indices,
         sew_distance,
@@ -646,8 +700,8 @@ def sew_close_vertices(builder: ModelBuilder, sew_distance: float = 1.0e-3, sew_
 
 
 __all__ = [
-    "add_style3d_cloth_grid",
-    "add_style3d_cloth_mesh",
-    "create_trimesh_sew_springs",
+    "add_cloth_grid",
+    "add_cloth_mesh",
+    "create_mesh_sew_springs",
     "sew_close_vertices",
 ]

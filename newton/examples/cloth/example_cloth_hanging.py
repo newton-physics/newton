@@ -121,7 +121,7 @@ class Example:
             }
 
         if self.solver_type == "style3d":
-            style3d.add_style3d_cloth_grid(builder, **common_params, **solver_params)
+            style3d.add_cloth_grid(builder, **common_params, **solver_params)
         else:
             builder.add_cloth_grid(**common_params, **solver_params)
 

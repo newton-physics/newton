@@ -70,7 +70,7 @@ class Example:
             avatar_mesh_indices = avatar_mesh.indices
             avatar_mesh_points = avatar_mesh.vertices
 
-            style3d.add_style3d_cloth_mesh(
+            style3d.add_cloth_mesh(
                 builder,
                 pos=wp.vec3(0, 0, 0),
                 rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
@@ -99,7 +99,7 @@ class Example:
             grid_dim = 100
             grid_width = 1.0
             cloth_density = 0.3
-            style3d.add_style3d_cloth_grid(
+            style3d.add_cloth_grid(
                 builder,
                 pos=wp.vec3(-0.5, 0.0, 2.0),
                 rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),

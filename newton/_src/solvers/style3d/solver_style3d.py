@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
@@ -66,6 +67,47 @@ class SolverStyle3D(SolverBase):
         - :math:`A`: :math:`M / dt^2 + H(x)` or :math:`M / dt^2 + P`
         - :math:`rhs`: Right hand side of the equation: :math:`(M / dt^2) \cdot (x_{inertia} - x) + f_{int}(x)`
         - :math:`res`: Residual: :math:`rhs - A \cdot dx_{init}`, or rhs if :math:`dx_{init} = 0`
+
+    See Also:
+        :doc:`newton.solvers.style3d </api/newton_solvers_style3d>` exposes
+        helper functions that populate Style3D cloth data on a
+        :class:`~newton.ModelBuilder`.
+
+    Example:
+        Build a mesh-based cloth with
+        :func:`newton.solvers.style3d.add_cloth_mesh`::
+
+            from newton.solvers import style3d
+
+            builder = newton.ModelBuilder()
+            SolverStyle3D.register_custom_attributes(builder)
+            style3d.add_cloth_mesh(
+                builder,
+                pos=wp.vec3(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                vertices=mesh.vertices.tolist(),
+                indices=mesh.indices.tolist(),
+                density=0.3,
+                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
+                edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
+            )
+
+        Or build a grid with :func:`newton.solvers.style3d.add_cloth_grid`::
+
+            style3d.add_cloth_grid(
+                builder,
+                pos=wp.vec3(-0.5, 0.0, 2.0),
+                rot=wp.quat_identity(),
+                dim_x=64,
+                dim_y=32,
+                cell_x=0.1,
+                cell_y=0.1,
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                mass=0.1,
+                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
+                edge_aniso_ke=wp.vec3(2.0e-4, 1.0e-4, 5.0e-5),
+            )
 
     """
 
@@ -121,7 +163,22 @@ class SolverStyle3D(SolverBase):
         self.drag_index = wp.array([-1], dtype=int, device=self.device)
         self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
+    @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+        """Advance the Style3D solver by one time step.
+
+        The solver performs non-linear projective dynamics iterations with
+        optional collision handling. During the solve, positions in
+        ``state_in`` are updated in-place to the current iterate; the final
+        positions and velocities are written to ``state_out``.
+
+        Args:
+            state_in: Input :class:`newton.State` (positions updated in-place).
+            state_out: Output :class:`newton.State` with the final state.
+            control: :class:`newton.Control` input (currently unused).
+            contacts: :class:`newton.Contacts` used for collision response.
+            dt: Time step in seconds.
+        """
         if self.collision is not None:
             self.collision.frame_begin(state_in.particle_q, state_in.particle_qd, dt)
 
@@ -291,9 +348,14 @@ class SolverStyle3D(SolverBase):
         if self.collision is not None:
             self.collision.rebuild_bvh(state.particle_q)
 
+    @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Declare Style3D custom attributes under the ``style3d`` namespace."""
+        """Declare Style3D custom attributes under the ``style3d`` namespace.
+
+        See Also:
+            :ref:`custom_attributes` for the custom attribute system overview.
+        """
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tri_aniso_ke",
