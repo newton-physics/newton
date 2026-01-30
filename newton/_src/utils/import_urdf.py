@@ -606,14 +606,9 @@ def parse_urdf(
     if base_joint is not None:
         # in case of a given base joint, the position is applied first, the rotation only
         # after the base joint itself to not rotate its axis
-        if base_parent != -1:
-            # Compute parent_xform to preserve imported pose when attaching to parent_body
-            base_parent_xform = wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[root]
-            # Apply rotation offset to child_xform
-            base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
-        else:
-            base_parent_xform = wp.transform(xform.p, wp.quat_identity())
-            base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
+        # When parent_body is set, xform is interpreted as relative to the parent body
+        base_parent_xform = wp.transform(xform.p, wp.quat_identity())
+        base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
         base_joint_id = builder.add_base_joint(
             child=root,
             base_joint=base_joint,
@@ -647,17 +642,13 @@ def parse_urdf(
         builder.joint_q[start + 6] = xform.q[3]
     else:
         # Fixed joint to world or to parent_body
-        if base_parent != -1:
-            # Compute parent_xform to preserve imported pose when attaching to parent_body
-            fixed_parent_xform = wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[root]
-        else:
-            fixed_parent_xform = xform
+        # When parent_body is set, xform is interpreted as relative to the parent body
         joint_indices.append(
             builder.add_base_joint(
                 child=root,
                 floating=False,
                 key="fixed_base",
-                parent_xform=fixed_parent_xform,
+                parent_xform=xform,
                 parent=base_parent,
             )
         )

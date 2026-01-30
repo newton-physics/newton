@@ -1127,14 +1127,9 @@ def parse_mjcf(
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only
                 # after the base joint itself to not rotate its axis
-                if base_parent != -1:
-                    # Compute parent_xform to preserve imported pose when attaching to parent_body
-                    base_parent_xform = wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[link]
-                    # Apply rotation offset to child_xform
-                    base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
-                else:
-                    base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
-                    base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
+                # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
+                base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
+                base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
                 joint_indices.append(
                     builder.add_base_joint(
                         child=link,
@@ -1157,17 +1152,13 @@ def parse_mjcf(
                 )
             else:
                 # Fixed joint to world or to parent_body
-                if base_parent != -1:
-                    # Compute parent_xform to preserve imported pose when attaching to parent_body
-                    fixed_parent_xform = wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[link]
-                else:
-                    fixed_parent_xform = world_xform
+                # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
                 joint_indices.append(
                     builder.add_base_joint(
                         child=link,
                         floating=False,
                         key="fixed_base",
-                        parent_xform=fixed_parent_xform,
+                        parent_xform=_xform,
                         parent=base_parent,
                     )
                 )
@@ -1527,8 +1518,16 @@ def parse_mjcf(
 
         # Use parent_body if specified for hierarchical composition, otherwise connect to world (-1)
         root_parent = parent_body if parent_body is not None else -1
+
+        # When parent_body is specified, xform is interpreted as relative to the parent body.
+        # Compose it with the parent body's world transform to get the actual world transform.
+        if parent_body is not None:
+            effective_xform = builder.body_q[parent_body] * xform
+        else:
+            effective_xform = xform
+
         for body in world.findall("body"):
-            parse_body(body, root_parent, world_defaults, incoming_xform=xform)
+            parse_body(body, root_parent, world_defaults, incoming_xform=effective_xform)
 
         # -----------------
         # add static geoms
