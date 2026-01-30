@@ -1112,10 +1112,14 @@ def parse_mjcf(
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
-        # Handle FREE joints when base_joint or parent_body is specified
-        # This can happen when: (1) root body (parent==-1) with override params, or
+        # Handle base joint overrides for root bodies or FREE joints with special parameters
+        # This handles: (1) root body (parent==-1) with base_joint/floating/parent_body params, or
         # (2) non-root body with freejoint in MJCF when parent_body is specified
-        if joint_type == JointType.FREE and (base_joint is not None or floating is not None or parent_body is not None):
+        is_root_body = parent == -1
+        has_override_params = base_joint is not None or floating is not None or parent_body is not None
+        is_free_joint_with_override = joint_type == JointType.FREE and has_override_params
+
+        if (is_root_body and has_override_params) or is_free_joint_with_override:
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             # Rotate joint_pos by body orientation before adding to body position
             rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
