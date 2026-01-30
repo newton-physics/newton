@@ -393,7 +393,7 @@ class Example:
             mass=mass,
             jitter=2.0 * radius,
             radius_mean=radius,
-            custom_attributes={"mpm:friction": 0.75}
+            custom_attributes={"mpm:friction": 0.75},
         )
 
 
