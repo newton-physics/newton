@@ -5041,5 +5041,249 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         assert np.allclose(solver.mjc_eq_to_newton_jnt.numpy(), expected_eq_to_newton_jnt)
 
 
+class TestMuJoCoSolverPairProperties(unittest.TestCase):
+    """Test contact pair property conversion and runtime updates across multiple worlds."""
+
+    def test_pair_properties_conversion_and_update(self):
+        """
+        Test validation of contact pair custom attributes:
+        1. Initial conversion from Model to MuJoCo (multi-world)
+        2. Runtime updates (multi-world)
+
+        Tests: pair_solref, pair_solreffriction, pair_solimp, pair_margin, pair_gap, pair_friction
+        """
+        num_worlds = 3
+        pairs_per_world = 2
+
+        # Create a simple model with geoms that we can create pairs between
+        template_builder = newton.ModelBuilder()
+
+        # Add ground plane and a body with two shapes for creating pairs
+        body_idx = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        shape1_idx = template_builder.add_shape_sphere(
+            body=body_idx,
+            xform=wp.transform(wp.vec3(-0.5, 0.0, 0.5), wp.quat_identity()),
+            radius=0.1,
+        )
+        shape2_idx = template_builder.add_shape_sphere(
+            body=body_idx,
+            xform=wp.transform(wp.vec3(0.5, 0.0, 0.5), wp.quat_identity()),
+            radius=0.1,
+        )
+        shape3_idx = template_builder.add_shape_sphere(
+            body=body_idx,
+            xform=wp.transform(wp.vec3(0.0, 0.5, 0.5), wp.quat_identity()),
+            radius=0.1,
+        )
+        joint = template_builder.add_joint_free(child=body_idx)
+        template_builder.add_articulation([joint])
+
+        # Build multi-world model
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+
+        # Register MuJoCo custom attributes (including pair attributes)
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        # Replicate template across worlds
+        for i in range(num_worlds):
+            world_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
+            builder.add_world(template_builder, xform=world_transform)
+
+        # Add contact pairs for each world
+        # Each world gets pairs_per_world pairs
+        total_pairs = num_worlds * pairs_per_world
+        shapes_per_world = template_builder.shape_count
+
+        for w in range(num_worlds):
+            world_shape_offset = w * shapes_per_world + 1  # +1 for ground plane
+
+            # Pair 1: shape1 <-> shape2
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": world_shape_offset + shape1_idx,
+                    "mujoco:pair_geom2": world_shape_offset + shape2_idx,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_solref": wp.vec2(0.02 + w * 0.01, 1.0 + w * 0.1),
+                    "mujoco:pair_solreffriction": wp.vec2(0.03 + w * 0.01, 1.1 + w * 0.1),
+                    "mujoco:pair_solimp": vec5(0.9 - w * 0.01, 0.95, 0.001, 0.5, 2.0),
+                    "mujoco:pair_margin": 0.01 + w * 0.005,
+                    "mujoco:pair_gap": 0.002 + w * 0.001,
+                    "mujoco:pair_friction": vec5(1.0 + w * 0.1, 1.0, 0.005, 0.0001, 0.0001),
+                }
+            )
+
+            # Pair 2: shape2 <-> shape3
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": world_shape_offset + shape2_idx,
+                    "mujoco:pair_geom2": world_shape_offset + shape3_idx,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_solref": wp.vec2(0.025 + w * 0.01, 1.2 + w * 0.1),
+                    "mujoco:pair_solreffriction": wp.vec2(0.035 + w * 0.01, 1.3 + w * 0.1),
+                    "mujoco:pair_solimp": vec5(0.85 - w * 0.01, 0.92, 0.002, 0.6, 2.5),
+                    "mujoco:pair_margin": 0.015 + w * 0.005,
+                    "mujoco:pair_gap": 0.003 + w * 0.001,
+                    "mujoco:pair_friction": vec5(1.1 + w * 0.1, 1.1, 0.006, 0.0002, 0.0002),
+                }
+            )
+
+        model = builder.finalize()
+
+        # Verify custom attribute counts
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), total_pairs)
+
+        # Create solver
+        solver = SolverMuJoCo(model, separate_worlds=True, iterations=1)
+
+        # Verify MuJoCo has the pairs (only from template world, which is world 0)
+        npair = solver.mj_model.npair
+        self.assertEqual(npair, pairs_per_world)
+
+        # --- Step 1: Verify initial conversion ---
+        mjw_pair_solref = solver.mjw_model.pair_solref.numpy()
+        mjw_pair_solreffriction = solver.mjw_model.pair_solreffriction.numpy()
+        mjw_pair_solimp = solver.mjw_model.pair_solimp.numpy()
+        mjw_pair_margin = solver.mjw_model.pair_margin.numpy()
+        mjw_pair_gap = solver.mjw_model.pair_gap.numpy()
+        mjw_pair_friction = solver.mjw_model.pair_friction.numpy()
+
+        # Check values for each world and pair
+        for w in range(num_worlds):
+            newton_pair_base = w * pairs_per_world
+            for p in range(pairs_per_world):
+                newton_pair = newton_pair_base + p
+
+                # Get expected values from Newton custom attributes
+                expected_solref = model.mujoco.pair_solref.numpy()[newton_pair]
+                expected_solreffriction = model.mujoco.pair_solreffriction.numpy()[newton_pair]
+                expected_solimp = model.mujoco.pair_solimp.numpy()[newton_pair]
+                expected_margin = model.mujoco.pair_margin.numpy()[newton_pair]
+                expected_gap = model.mujoco.pair_gap.numpy()[newton_pair]
+                expected_friction = model.mujoco.pair_friction.numpy()[newton_pair]
+
+                np.testing.assert_allclose(
+                    mjw_pair_solref[w, p],
+                    expected_solref,
+                    rtol=1e-5,
+                    err_msg=f"pair_solref mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_solreffriction[w, p],
+                    expected_solreffriction,
+                    rtol=1e-5,
+                    err_msg=f"pair_solreffriction mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_solimp[w, p],
+                    expected_solimp,
+                    rtol=1e-5,
+                    err_msg=f"pair_solimp mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_margin[w, p],
+                    expected_margin,
+                    rtol=1e-5,
+                    err_msg=f"pair_margin mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_gap[w, p],
+                    expected_gap,
+                    rtol=1e-5,
+                    err_msg=f"pair_gap mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_friction[w, p],
+                    expected_friction,
+                    rtol=1e-5,
+                    err_msg=f"pair_friction mismatch at world {w}, pair {p}",
+                )
+
+        # --- Step 2: Runtime Update ---
+        # Generate new values (different pattern)
+        new_solref = np.zeros((total_pairs, 2), dtype=np.float32)
+        new_solreffriction = np.zeros((total_pairs, 2), dtype=np.float32)
+        new_solimp = np.zeros((total_pairs, 5), dtype=np.float32)
+        new_margin = np.zeros(total_pairs, dtype=np.float32)
+        new_gap = np.zeros(total_pairs, dtype=np.float32)
+        new_friction = np.zeros((total_pairs, 5), dtype=np.float32)
+
+        for i in range(total_pairs):
+            new_solref[i] = [0.05 - i * 0.002, 2.0 - i * 0.1]
+            new_solreffriction[i] = [0.06 - i * 0.002, 2.1 - i * 0.1]
+            new_solimp[i] = [0.8 + i * 0.01, 0.9, 0.003, 0.4, 1.5]
+            new_margin[i] = 0.02 + i * 0.003
+            new_gap[i] = 0.005 + i * 0.001
+            new_friction[i] = [1.5 + i * 0.05, 1.2, 0.007, 0.0003, 0.0003]
+
+        # Update Newton model attributes
+        model.mujoco.pair_solref.assign(new_solref)
+        model.mujoco.pair_solreffriction.assign(new_solreffriction)
+        model.mujoco.pair_solimp.assign(wp.array(new_solimp, dtype=vec5, device=model.device))
+        model.mujoco.pair_margin.assign(new_margin)
+        model.mujoco.pair_gap.assign(new_gap)
+        model.mujoco.pair_friction.assign(wp.array(new_friction, dtype=vec5, device=model.device))
+
+        # Notify solver of property change (pair properties are under SHAPE_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        # Verify updates
+        mjw_pair_solref_updated = solver.mjw_model.pair_solref.numpy()
+        mjw_pair_solreffriction_updated = solver.mjw_model.pair_solreffriction.numpy()
+        mjw_pair_solimp_updated = solver.mjw_model.pair_solimp.numpy()
+        mjw_pair_margin_updated = solver.mjw_model.pair_margin.numpy()
+        mjw_pair_gap_updated = solver.mjw_model.pair_gap.numpy()
+        mjw_pair_friction_updated = solver.mjw_model.pair_friction.numpy()
+
+        for w in range(num_worlds):
+            for p in range(pairs_per_world):
+                newton_pair = w * pairs_per_world + p
+
+                np.testing.assert_allclose(
+                    mjw_pair_solref_updated[w, p],
+                    new_solref[newton_pair],
+                    rtol=1e-5,
+                    err_msg=f"Updated pair_solref mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_solreffriction_updated[w, p],
+                    new_solreffriction[newton_pair],
+                    rtol=1e-5,
+                    err_msg=f"Updated pair_solreffriction mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_solimp_updated[w, p],
+                    new_solimp[newton_pair],
+                    rtol=1e-5,
+                    err_msg=f"Updated pair_solimp mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_margin_updated[w, p],
+                    new_margin[newton_pair],
+                    rtol=1e-5,
+                    err_msg=f"Updated pair_margin mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_gap_updated[w, p],
+                    new_gap[newton_pair],
+                    rtol=1e-5,
+                    err_msg=f"Updated pair_gap mismatch at world {w}, pair {p}",
+                )
+                np.testing.assert_allclose(
+                    mjw_pair_friction_updated[w, p],
+                    new_friction[newton_pair],
+                    rtol=1e-5,
+                    err_msg=f"Updated pair_friction mismatch at world {w}, pair {p}",
+                )
+
+        # Sanity check: values actually changed
+        self.assertFalse(
+            np.allclose(mjw_pair_solref_updated[0, 0], mjw_pair_solref[0, 0]),
+            "pair_solref should have changed after update!",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
