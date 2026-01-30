@@ -1724,9 +1724,17 @@ def parse_mjcf(
         # Process ALL actuators in MJCF order
         for actuator_elem in actuator_section:
             actuator_type = actuator_elem.tag  # position, velocity, motor, general
-            joint_name = actuator_elem.attrib.get("joint")
-            body_name = actuator_elem.attrib.get("body")
-            tendon_name = actuator_elem.attrib.get("tendon")
+
+            # Merge class defaults for this actuator element
+            # This handles MJCF class inheritance (e.g., <general class="size3" .../>)
+            elem_class = get_class(actuator_elem)
+            elem_defaults = class_defaults.get(elem_class, {}).get(actuator_type, {})
+            all_defaults = class_defaults.get("__all__", {}).get(actuator_type, {})
+            merged_attrib = merge_attrib(merge_attrib(all_defaults, elem_defaults), dict(actuator_elem.attrib))
+
+            joint_name = merged_attrib.get("joint")
+            body_name = merged_attrib.get("body")
+            tendon_name = merged_attrib.get("tendon")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
@@ -1789,12 +1797,12 @@ def parse_mjcf(
                     print(f"Warning: {actuator_type} actuator has no joint, body, or tendon target, skipping")
                 continue
 
-            act_name = actuator_elem.attrib.get("name", f"{actuator_type}_{target_name_for_log}")
+            act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             # Extract gains based on actuator type
             if actuator_type == "position":
-                kp = parse_float(actuator_elem.attrib, "kp", 0.0)
-                kv = parse_float(actuator_elem.attrib, "kv", 0.0)  # Optional velocity damping
+                kp = parse_float(merged_attrib, "kp", 0.0)
+                kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
@@ -1818,7 +1826,7 @@ def parse_mjcf(
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
-                kv = parse_float(actuator_elem.attrib, "kv", 0.0)
+                kv = parse_float(merged_attrib, "kv", 0.0)
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
@@ -1842,8 +1850,8 @@ def parse_mjcf(
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "general":
-                gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
-                biasprm_str = actuator_elem.attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
+                gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
+                biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
                 gainprm_vals = [float(x) for x in gainprm_str.split()[:10]]
                 biasprm_vals = [float(x) for x in biasprm_str.split()[:10]]
                 while len(gainprm_vals) < 10:
@@ -1859,9 +1867,7 @@ def parse_mjcf(
                 continue
 
             # Add actuator via custom attributes
-            parsed_attrs = parse_custom_attributes(
-                actuator_elem.attrib, builder_custom_attr_actuator, parsing_mode="mjcf"
-            )
+            parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
 
             # Build full values dict
             actuator_values: dict[str, Any] = {}

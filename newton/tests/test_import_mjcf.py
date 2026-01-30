@@ -4263,5 +4263,128 @@ class TestMjcfMultipleWorldbody(unittest.TestCase):
         self.assertIn("main_geom", builder.shape_key)
 
 
+class TestMjcfActuatorClassDefaults(unittest.TestCase):
+    """Test that actuator elements properly inherit from default classes."""
+
+    def test_general_actuator_inherits_biasprm_from_class(self):
+        """Test that general actuators inherit biasprm from default class."""
+        # This MJCF mirrors the pattern used in UR5e and other menagerie robots
+        mjcf_content = """
+        <mujoco>
+            <default>
+                <default class="robot">
+                    <general gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400"/>
+                    <default class="small">
+                        <general gainprm="500" biasprm="0 -500 -100"/>
+                    </default>
+                </default>
+            </default>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="link1" pos="0.2 0 0">
+                        <joint name="joint2" type="hinge" axis="0 0 1"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                        <body name="link2" pos="0.2 0 0">
+                            <joint name="joint3" type="hinge" axis="0 0 1"/>
+                            <geom type="box" size="0.1 0.1 0.1"/>
+                        </body>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <general class="robot" name="act1" joint="joint1"/>
+                <general class="robot" name="act2" joint="joint2"/>
+                <general class="small" name="act3" joint="joint3"/>
+            </actuator>
+        </mujoco>
+        """
+        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Get biasprm values from the finalized model
+        biasprm_values = model.mujoco.actuator_biasprm.numpy()
+
+        # Should have 3 actuators
+        self.assertEqual(biasprm_values.shape[0], 3)
+
+        # act1 and act2 should inherit from "robot" class: biasprm="0 -2000 -400"
+        np.testing.assert_allclose(biasprm_values[0, :3], [0.0, -2000.0, -400.0], atol=1.0)
+        np.testing.assert_allclose(biasprm_values[1, :3], [0.0, -2000.0, -400.0], atol=1.0)
+
+        # act3 should inherit from "small" class (child of "robot"): biasprm="0 -500 -100"
+        np.testing.assert_allclose(biasprm_values[2, :3], [0.0, -500.0, -100.0], atol=1.0)
+
+    def test_general_actuator_inherits_gainprm_from_class(self):
+        """Test that general actuators inherit gainprm from default class."""
+        mjcf_content = """
+        <mujoco>
+            <default>
+                <default class="strong">
+                    <general gainprm="5000"/>
+                </default>
+            </default>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general class="strong" name="act1" joint="joint1"/>
+            </actuator>
+        </mujoco>
+        """
+        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        gainprm_values = model.mujoco.actuator_gainprm.numpy()
+
+        self.assertEqual(gainprm_values.shape[0], 1)
+        self.assertAlmostEqual(gainprm_values[0, 0], 5000.0, places=1)
+
+    def test_position_actuator_inherits_kp_from_class(self):
+        """Test that position actuators inherit kp from default class."""
+        mjcf_content = """
+        <mujoco>
+            <default>
+                <default class="stiff">
+                    <position kp="1000"/>
+                </default>
+            </default>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position class="stiff" name="pos1" joint="joint1"/>
+            </actuator>
+        </mujoco>
+        """
+        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content, ctrl_direct=True)
+        model = builder.finalize()
+
+        # For position actuators with ctrl_direct, gainprm[0] = kp
+        gainprm_values = model.mujoco.actuator_gainprm.numpy()
+
+        self.assertEqual(gainprm_values.shape[0], 1)
+        self.assertAlmostEqual(gainprm_values[0, 0], 1000.0, places=1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
