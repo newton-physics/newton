@@ -540,6 +540,7 @@ class Model:
         self.attribute_frequency["joint_target_pos"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_act_mode"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_lower"] = Model.AttributeFrequency.JOINT_DOF
