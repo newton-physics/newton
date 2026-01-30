@@ -4120,9 +4120,7 @@ class TestImportMjcf(unittest.TestCase):
         ee_body_idx = builder.body_key.index("end_effector")
         ee_world_pos = builder.body_q[ee_body_idx].p
 
-        builder.add_mjcf(
-            gripper_mjcf, parent_body=ee_body_idx, xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity())
-        )
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx, xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
 
         gripper_body_idx = builder.body_key.index("gripper_base")
         gripper_world_pos = builder.body_q[gripper_body_idx].p
