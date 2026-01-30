@@ -165,7 +165,7 @@ class Example:
             ls_parallel=True,
             ls_iterations=50,  # Increased from default 10 for determinism
             njmax=50,
-            nconmax=75,
+            nconmax=100,  # Increased from 75 to handle peak contact count of ~77
         )
 
         self.viewer.set_model(self.model)
