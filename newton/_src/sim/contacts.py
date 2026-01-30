@@ -20,7 +20,7 @@ import warp as wp
 from warp import DeviceLike as Devicelike
 
 
-class Contacts:
+class Contact:
     """
     Stores contact information for rigid and soft body collisions, to be consumed by a solver.
 
@@ -42,7 +42,7 @@ class Contacts:
         clear_buffers: bool = False,
     ):
         """
-        Initialize Contacts storage.
+        Initialize Contact storage.
 
         Args:
             rigid_contact_max: Maximum number of rigid contacts

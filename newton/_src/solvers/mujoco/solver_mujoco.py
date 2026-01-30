@@ -27,7 +27,7 @@ from ...core.types import MAXVAL, nparray, override, vec5, vec10
 from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
 from ...sim import (
     ActuatorMode,
-    Contacts,
+    Contact,
     Control,
     EqType,
     JointType,
@@ -1698,7 +1698,7 @@ class SolverMuJoCo(SolverBase):
 
     @event_scope
     @override
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         # When ref is used, we rely on MuJoCo's FK (eval_fk=False) because ref is handled by MuJoCo via qpos0
         eval_fk = not self._has_ref
 
@@ -1740,7 +1740,7 @@ class SolverMuJoCo(SolverBase):
             m.sensor_rne_postconstraint = True
             # required for cfrc_ext, cfrc_int, cacc
 
-    def convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
+    def convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contact):
         # Ensure the inverse shape mapping exists (lazy creation)
         if self.newton_shape_to_mjc_geom is None:
             self._create_inverse_shape_mapping()
@@ -2182,7 +2182,7 @@ class SolverMuJoCo(SolverBase):
         return shape_color
 
     @override
-    def update_contacts(self, contacts: Contacts) -> None:
+    def update_contacts(self, contacts: Contact) -> None:
         # TODO: ensure that class invariants are preserved
         # TODO: fill actual contact arrays instead of creating new ones
         mj_data = self.mjw_data

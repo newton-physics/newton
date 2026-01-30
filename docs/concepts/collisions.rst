@@ -897,11 +897,11 @@ Soft contacts are generated automatically when particles are present. They use a
 Contact Data
 ------------
 
-The :class:`~newton.Contacts` class stores the results from the collision detection step
+The :class:`~newton.Contact` class stores the results from the collision detection step
 and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for contact handling.
 
 .. note::
-   Contact forces are not part of the :class:`~newton.Contacts` class - it only stores geometric 
+   Contact forces are not part of the :class:`~newton.Contact` class - it only stores geometric 
    contact information. See :class:`~newton.SensorContact` for computing contact forces.
 
 **Rigid contacts:**
@@ -1156,7 +1156,7 @@ See Also
         CollisionPipeline,
         CollisionPipelineUnified,
         BroadPhaseMode,
-        Contacts,
+        Contact,
         GeoType,
     )
     from newton.geometry import SDFHydroelasticConfig
@@ -1166,7 +1166,7 @@ See Also
 - :class:`~newton.CollisionPipeline` - Standard collision pipeline
 - :class:`~newton.CollisionPipelineUnified` - Unified pipeline with broad phase options
 - :class:`~newton.BroadPhaseMode` - Broad phase algorithm selection
-- :class:`~newton.Contacts` - Contact data container
+- :class:`~newton.Contact` - Contact data container
 - :class:`~newton.GeoType` - Shape geometry types
 - :class:`~newton.ModelBuilder.ShapeConfig` - Shape configuration options
 - :meth:`~newton.Model.collide` - Collision detection method

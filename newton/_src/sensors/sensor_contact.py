@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ..sim import Contacts, Model
+from ..sim import Contact, Model
 from ..solvers import SolverBase
 
 
@@ -116,11 +116,11 @@ class MatchAny:
 
 
 def populate_contacts(
-    contacts: Contacts,
+    contacts: Contact,
     solver: SolverBase,
 ):
     """
-    Populate a Contacts object with the latest contact data from a solver.
+    Populate a Contact object with the latest contact data from a solver.
 
     This function updates the given `contacts` object in-place using the contact information
     from the provided `solver`. It is typically called after a simulation step to refresh
@@ -129,7 +129,7 @@ def populate_contacts(
     This function will be removed once contact forces are implemented as extended state attributes.
 
     Args:
-        contacts (Contacts): The Contacts object to be populated or updated.
+        contacts (Contact): The Contact object to be populated or updated.
         solver (SolverBase): The solver instance containing the latest contact results.
 
     Returns:
@@ -264,14 +264,14 @@ class SensorContact:
         self._net_force = wp.zeros(self.shape[0] * self.shape[1], dtype=wp.vec3, device=self.device)
         self.net_force = self._net_force.reshape(self.shape)
 
-    def eval(self, contacts: Contacts):
+    def eval(self, contacts: Contact):
         """Evaluate the contact sensor readings based on the provided contacts.
 
-        Process the given Contacts object and updates the internal net force readings for each sensing_obj-counterpart
+        Process the given Contact object and updates the internal net force readings for each sensing_obj-counterpart
         pair.
 
         Args:
-            contacts (Contacts): The contact data to evaluate.
+            contacts (Contact): The contact data to evaluate
         """
         self._eval_net_force(contacts)
 
@@ -356,7 +356,7 @@ class SensorContact:
         shape = len(sensing_objs), n_readings
         return sp_sorted, sp_reading, shape, counterpart_indices, sensing_obj_kinds, counterpart_kinds
 
-    def _eval_net_force(self, contact: Contacts):
+    def _eval_net_force(self, contact: Contact):
         self._net_force.zero_()
         wp.launch(
             select_aggregate_net_force,

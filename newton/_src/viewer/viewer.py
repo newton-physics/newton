@@ -401,7 +401,7 @@ class ViewerBase:
         Creates line segments along contact normals for rendering.
         Args:
             name: Identifier for the contact lines
-            contacts (newton.Contacts): The contacts to render.
+            contacts (newton.Contact): The contacts to render.
             state: Current simulation state
         """
 

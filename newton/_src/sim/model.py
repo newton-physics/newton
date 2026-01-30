@@ -23,7 +23,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from .contacts import Contacts
+from .contacts import Contact
 from .control import Control
 from .state import State
 
@@ -33,7 +33,7 @@ class ModelAttributeAssignment(IntEnum):
 
     Defines which component of the simulation system owns and manages specific attributes.
     This categorization determines where custom attributes are attached during simulation
-    object creation (Model, State, Control, or Contacts).
+    object creation (Model, State, Control, or Contact).
     """
 
     MODEL = 0
@@ -43,7 +43,7 @@ class ModelAttributeAssignment(IntEnum):
     CONTROL = 2
     """Control attributes are attached to the Control object."""
     CONTACT = 3
-    """Contact attributes are attached to the Contacts object."""
+    """Contact attributes are attached to the Contact object."""
 
 
 class ModelAttributeFrequency(IntEnum):
@@ -238,7 +238,7 @@ class Model:
         """List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting."""
 
         # Local AABB and voxel grid for contact reduction
-        # Note: These are stored in Model (not Contacts) because they are static geometry properties
+        # Note: These are stored in Model (not Contact) because they are static geometry properties
         # computed once during finalization, not per-frame contact data.
         self.shape_local_aabb_lower = None
         """Local-space AABB lower bound for each shape, shape [shape_count, 3], float.
@@ -783,9 +783,9 @@ class Model:
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
         requires_grad: bool | None = None,
-    ) -> Contacts:
+    ) -> Contact:
         """
-        Create and return a :class:`Contacts` object for this model.
+        Create and return a :class:`Contact` object for this model.
 
         This method initializes the collision pipeline (if not provided or already cached) and allocates
         a contacts buffer suitable for storing collision results. Call :meth:`collide` to
@@ -803,7 +803,7 @@ class Model:
             requires_grad (bool, optional): Whether to duplicate contact arrays for gradient computation. If None, uses :attr:`Model.requires_grad`.
 
         Returns:
-            Contacts: The contact object containing collision information.
+            Contact: The contact object containing collision information.
 
         Note:
             Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`, which is populated
@@ -835,21 +835,21 @@ class Model:
     def collide(
         self,
         state: State,
-        contacts: Contacts | None = None,
+        contacts: Contact | None = None,
         collision_pipeline: CollisionPipeline | None = None,
         rigid_contact_max_per_pair: int | None = None,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
         requires_grad: bool | None = None,
-    ) -> Contacts:
+    ) -> Contact:
         """
         Run collision detection and populate the contacts buffer.
-        If no Contacts object is passed, allocate and return one.
+        If no Contact object is passed, allocate and return one.
 
         Args:
             state (State): The current simulation state.
-            contacts (Contacts, optional): The contacts buffer to populate (will be cleared first).
+            contacts (Contact, optional): The contacts buffer to populate (will be cleared first).
                 If None, a contacts buffer will be allocated automatically using :meth:`contacts`.
             collision_pipeline (CollisionPipeline, optional): Collision pipeline to use.
                 If not provided, uses the pipeline cached from :meth:`contacts`.
@@ -864,7 +864,7 @@ class Model:
                 If None, uses :attr:`Model.requires_grad`.
 
         Returns:
-            Contacts: The contact object containing collision information.
+            Contact: The contact object containing collision information.
         """
         # Get or create collision pipeline
         collision_pipeline = collision_pipeline or self._collision_pipeline
@@ -907,7 +907,7 @@ class Model:
         Add custom attributes of a specific assignment type to a destination object.
 
         Args:
-            destination: The object to add attributes to (State, Control, or Contacts)
+            destination: The object to add attributes to (State, Control, or Contact)
             assignment: The assignment type to filter attributes by
             requires_grad: Whether cloned arrays should have requires_grad enabled
             clone_arrays: Whether to clone wp.arrays (True) or use references (False)

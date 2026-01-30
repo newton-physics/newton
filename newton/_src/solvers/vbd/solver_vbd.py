@@ -23,7 +23,7 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import (
-    Contacts,
+    Contact,
     Control,
     JointType,
     Model,
@@ -1097,7 +1097,7 @@ class SolverVBD(SolverBase):
         state_in: State,
         state_out: State,
         control: Control,
-        contacts: Contacts | None,
+        contacts: Contact | None,
         dt: float,
     ):
         """Execute one simulation timestep using VBD (particles) and AVBD (rigid bodies).
@@ -1187,7 +1187,7 @@ class SolverVBD(SolverBase):
     def initialize_rigid_bodies(
         self,
         state_in: State,
-        contacts: Contacts | None,
+        contacts: Contact | None,
         dt: float,
         update_rigid_history: bool,
     ):
@@ -1230,7 +1230,7 @@ class SolverVBD(SolverBase):
             if update_rigid_history:
                 # Contact warmstarts / adjacency are optional: skip completely if contacts=None.
                 if contacts is not None:
-                    # Use the Contacts buffer capacity as launch dimension
+                    # Use the Contact buffer capacity as launch dimension
                     contact_launch_dim = contacts.rigid_contact_max
 
                     # Build per-body contact lists once per step
@@ -1372,7 +1372,7 @@ class SolverVBD(SolverBase):
             )
 
     def solve_particle_iteration(
-        self, state_in: State, state_out: State, contacts: Contacts | None, dt: float, iter_num: int
+        self, state_in: State, state_out: State, contacts: Contact | None, dt: float, iter_num: int
     ):
         """Solve one VBD iteration for particles."""
         model = self.model
@@ -1645,7 +1645,7 @@ class SolverVBD(SolverBase):
                 device=self.device,
             )
 
-    def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
+    def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contact | None, dt: float):
         """Solve one AVBD iteration for rigid bodies (per-iteration phase).
 
         Accumulates contact and joint forces/hessians, solves 6x6 rigid body systems per color,

@@ -17,7 +17,7 @@ import warp as wp
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point_barycentric
-from ...sim import Contacts, Model, State
+from ...sim import Contact, Model, State
 
 
 @wp.func
@@ -612,7 +612,7 @@ def eval_triangle_contact_forces(model: Model, state: State, particle_f: wp.arra
 def eval_body_contact_forces(
     model: Model,
     state: State,
-    contacts: Contacts | None,
+    contacts: Contact | None,
     friction_smoothing: float = 1.0,
     force_in_world_frame: bool = False,
     body_f_out: wp.array | None = None,
@@ -655,7 +655,7 @@ def eval_body_contact_forces(
 def eval_particle_body_contact_forces(
     model: Model,
     state: State,
-    contacts: Contacts | None,
+    contacts: Contact | None,
     particle_f: wp.array,
     body_f: wp.array,
     body_f_in_world_frame: bool = False,

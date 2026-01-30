@@ -1804,7 +1804,7 @@ class SolverImplicitMPM(SolverBase):
         state_in: newton.State,
         state_out: newton.State,
         control: newton.Control,
-        contacts: newton.Contacts,
+        contacts: newton.Contact,
         dt: float,
     ):
         model = self.model

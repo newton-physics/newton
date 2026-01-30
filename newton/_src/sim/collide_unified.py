@@ -34,7 +34,7 @@ from ..geometry.support_function import (
     pack_mesh_ptr,
 )
 from ..geometry.types import GeoType
-from ..sim.contacts import Contacts
+from ..sim.contacts import Contact
 from ..sim.model import Model
 from ..sim.state import State
 
@@ -352,7 +352,7 @@ class CollisionPipelineUnified:
         - Contact matching support for warm-starting solvers
     """
 
-    _contacts: Contacts | None
+    _contacts: Contact | None
     # Cached contacts buffer created by this pipeline
 
     def __init__(
@@ -481,7 +481,7 @@ class CollisionPipelineUnified:
         # Initialize narrow phase with pre-allocated buffers
         # Pass AABB arrays so narrow phase can use them instead of computing AABBs internally
         # max_triangle_pairs is a conservative estimate for mesh collision triangle pairs
-        # Pass write_contact as custom writer to write directly to final Contacts format
+        # Pass write_contact as custom writer to write directly to final Contact format
         self.narrow_phase = NarrowPhase(
             max_candidate_pairs=self.shape_pairs_max,
             max_triangle_pairs=1000000,
@@ -597,17 +597,17 @@ class CollisionPipelineUnified:
 
         return pipeline
 
-    def contacts(self, model: Model) -> Contacts:
+    def contacts(self, model: Model) -> Contact:
         """
-        Allocate and return a new Contacts object for the model.
+        Allocate and return a new Contact object for the model.
 
         Args:
             model: The simulation model
 
         Returns:
-            Contacts: A newly allocated contacts object for the model.
+            Contact: A newly allocated contacts object for the model.
         """
-        return Contacts(
+        return Contact(
             self.rigid_contact_max,
             self.soft_contact_max,
             requires_grad=self.requires_grad,
@@ -615,7 +615,7 @@ class CollisionPipelineUnified:
             per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
         )
 
-    def collide(self, model: Model, state: State, contacts: Contacts | None = None) -> Contacts:
+    def collide(self, model: Model, state: State, contacts: Contact | None = None) -> Contact:
         """
         Run the collision pipeline using NarrowPhase.
 
@@ -625,7 +625,7 @@ class CollisionPipelineUnified:
             contacts: The contacts object to populate. If None, uses the pipeline's cached contacts.
 
         Returns:
-            Contacts: The populated contacts buffer.
+            Contact: The populated contacts buffer.
         """
         if contacts is None:
             # Use cached contacts, or allocate if needed
@@ -740,7 +740,7 @@ class CollisionPipelineUnified:
         writer_data.out_damping = contacts.rigid_contact_damping
         writer_data.out_friction = contacts.rigid_contact_friction
 
-        # Run narrow phase with custom contact writer (writes directly to Contacts format)
+        # Run narrow phase with custom contact writer (writes directly to Contact format)
         self.narrow_phase.launch_custom_write(
             candidate_pair=self.broad_phase_shape_pairs,
             num_candidate_pair=self.broad_phase_pair_count,

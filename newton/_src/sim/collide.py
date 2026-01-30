@@ -27,7 +27,7 @@ from ..geometry.kernels import (
     create_soft_contacts,
     generate_handle_contact_pairs_kernel,
 )
-from .contacts import Contacts
+from .contacts import Contact
 from .model import Model
 from .state import State
 
@@ -104,7 +104,7 @@ class CollisionPipeline:
     for running the collision pipeline on a given simulation state.
     """
 
-    _contacts: Contacts | None
+    _contacts: Contact | None
     # Cached contacts buffer created by this pipeline
 
     def __init__(
@@ -220,35 +220,35 @@ class CollisionPipeline:
             model.device,
         )
 
-    def contacts(self, model: Model) -> Contacts:
+    def contacts(self, model: Model) -> Contact:
         """
-        Allocate and return a new :class:`Contacts` object for the given model.
+        Allocate and return a new :class:`Contact` object for the given model.
 
         Args:
             model (Model): The simulation model.
 
         Returns:
-            Contacts: A newly allocated contacts buffer sized for this pipeline.
+            Contact: A newly allocated contacts buffer sized for this pipeline.
         """
-        return Contacts(
+        return Contact(
             self.rigid_contact_max,
             self.soft_contact_max,
             requires_grad=self.requires_grad,
             device=model.device,
         )
 
-    def collide(self, model: Model, state: State, contacts: Contacts | None = None) -> Contacts:
+    def collide(self, model: Model, state: State, contacts: Contact | None = None) -> Contact:
         """
         Run collision detection and populate the contacts buffer.
 
         Args:
             model (Model): The simulation model.
             state (State): The current simulation state.
-            contacts (Contacts, optional): The contacts buffer to populate (will be cleared first).
+            contacts (Contact, optional): The contacts buffer to populate (will be cleared first).
                 If None, uses the pipeline's cached contacts.
 
         Returns:
-            Contacts: The populated contacts buffer.
+            Contact: The populated contacts buffer.
         """
         if contacts is None:
             # Use cached contacts, or allocate if needed

@@ -18,7 +18,7 @@ from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .collide import CollisionPipeline, CollisionPipelineType, count_rigid_contact_points
 from .collide_unified import BroadPhaseMode, CollisionPipelineUnified
-from .contacts import Contacts
+from .contacts import Contact
 from .control import Control
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
@@ -39,7 +39,7 @@ __all__ = [
     "CollisionPipeline",
     "CollisionPipelineType",
     "CollisionPipelineUnified",
-    "Contacts",
+    "Contact",
     "Control",
     "EqType",
     "JointType",

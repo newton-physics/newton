@@ -364,7 +364,7 @@ class ModelBuilder:
         """
         Represents a custom attribute definition for the ModelBuilder.
         This is used to define custom attributes that are not part of the standard ModelBuilder API.
-        Custom attributes can be defined for the :class:`~newton.Model`, :class:`~newton.State`, :class:`~newton.Control`, or :class:`~newton.Contacts` objects, depending on the :class:`ModelAttributeAssignment` category.
+        Custom attributes can be defined for the :class:`~newton.Model`, :class:`~newton.State`, :class:`~newton.Control`, or :class:`~newton.Contact` objects, depending on the :class:`ModelAttributeAssignment` category.
         Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method.
 
         See :ref:`custom_attributes` for more information.

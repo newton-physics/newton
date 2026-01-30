@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...sim import Contacts, Control, State, Style3DModel, Style3DModelBuilder
+from ...sim import Contact, Control, State, Style3DModel, Style3DModelBuilder
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
 from .collision import Collision
@@ -110,7 +110,7 @@ class SolverStyle3D(SolverBase):
         self.drag_index = wp.array([-1], dtype=int, device=self.device)
         self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+    def step(self, state_in: State, state_out: State, control: Control, contacts: Contact, dt: float):
         if self.collision is not None:
             self.collision.frame_begin(state_in.particle_q, state_in.particle_qd, dt)
 
