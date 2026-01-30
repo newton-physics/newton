@@ -225,8 +225,8 @@ class Example:
         target_local_x = target_world_x - cloth_offset_x
         target_local_y = target_world_z - cloth_offset_z
 
-        # Build model
-        builder = newton.ModelBuilder()
+        # Build model with zero gravity
+        builder = newton.ModelBuilder(gravity=0.0)
 
         # Generate cloth mesh with extension going directly to target
         self.cloth_verts, self.cloth_faces, self.spiral_rows, self.ext_rows = rolled_cloth_mesh(
@@ -305,7 +305,6 @@ class Example:
 
         # Finalize model
         self.model = builder.finalize()
-        self.model.gravity = wp.vec3(0.0, 0.0, 0.0)  # No gravity in this simulation
         self.model.soft_contact_ke = 2.0e5
         self.model.soft_contact_kd = 1.0e-5
         self.model.soft_contact_mu = 0.1
