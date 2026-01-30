@@ -61,10 +61,12 @@ from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
 from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
 from .joints import (
+    ActuatorMode,
     EqType,
     JointType,
     get_joint_constraint_count,
     get_joint_dof_count,
+    infer_actuator_mode,
 )
 from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
 
@@ -304,6 +306,7 @@ class ModelBuilder:
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
             friction: float = 0.0,
+            actuator_mode: ActuatorMode | None = None,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D joint axis in the joint parent anchor frame."""
@@ -333,6 +336,9 @@ class ModelBuilder:
             """Maximum velocity the joint axis can achieve. Defaults to 1e6."""
             self.friction = friction
             """Friction coefficient for the joint axis. Defaults to 0.0."""
+            self.actuator_mode = actuator_mode
+            """Actuator mode for this DOF. Determines which actuators are installed (see :class:`ActuatorMode`).
+            If None, the mode is inferred from gains and targets."""
 
             if self.target_pos > self.limit_upper or self.target_pos < self.limit_lower:
                 self.target_pos = 0.5 * (self.limit_lower + self.limit_upper)
@@ -694,6 +700,7 @@ class ModelBuilder:
         self.joint_type = []
         self.joint_key = []
         self.joint_armature = []
+        self.joint_act_mode = []  # Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3, EFFORT=4)
         self.joint_target_ke = []
         self.joint_target_kd = []
         self.joint_limit_lower = []
@@ -1425,6 +1432,7 @@ class ModelBuilder:
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        force_position_velocity_actuation: bool = False,
     ):
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -1447,6 +1455,12 @@ class ModelBuilder:
             bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+            force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
+                (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
+                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
+                damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
+                (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -1469,6 +1483,7 @@ class ModelBuilder:
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
             mesh_maxhullvert=mesh_maxhullvert,
+            force_position_velocity_actuation=force_position_velocity_actuation,
         )
 
     def add_usd(
@@ -1494,6 +1509,7 @@ class ModelBuilder:
         parse_mujoco_options: bool = True,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
         schema_resolvers: list[SchemaResolver] | None = None,
+        force_position_velocity_actuation: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -1531,6 +1547,12 @@ class ModelBuilder:
 
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+            force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
+                are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
+                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
+                damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
+                (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -1595,6 +1617,7 @@ class ModelBuilder:
             parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
+            force_position_velocity_actuation=force_position_velocity_actuation,
         )
 
     def add_mjcf(
@@ -1628,6 +1651,7 @@ class ModelBuilder:
         skip_equality_constraints: bool = False,
         convert_3d_hinge_to_ball_joints: bool = False,
         mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
     ):
         """
@@ -1663,6 +1687,11 @@ class ModelBuilder:
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+            ctrl_direct (bool): If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
+                where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
+                See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
+                actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
+                from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
             path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
         """
         from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
@@ -1699,6 +1728,7 @@ class ModelBuilder:
             skip_equality_constraints=skip_equality_constraints,
             convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
             mesh_maxhullvert=mesh_maxhullvert,
+            ctrl_direct=ctrl_direct,
             path_resolver=path_resolver,
         )
 
@@ -2064,6 +2094,7 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
+            "joint_act_mode",
             "joint_effort_limit",
             "joint_velocity_limit",
             "joint_friction",
@@ -2146,6 +2177,15 @@ class ModelBuilder:
             )
 
         for full_key, attr in builder.custom_attributes.items():
+            # Fast path: skip attributes with no values (avoids computing offsets/closures)
+            if not attr.values:
+                # Still need to declare empty attribute on first merge
+                if full_key not in self.custom_attributes:
+                    freq_key = attr.frequency_key
+                    mapped_values = [] if isinstance(freq_key, str) else {}
+                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                continue
+
             # Index offset based on frequency
             freq_key = attr.frequency_key
             if isinstance(freq_key, str):
@@ -2185,18 +2225,12 @@ class ModelBuilder:
             # Declare the attribute if it doesn't exist in the main builder
             merged = self.custom_attributes.get(full_key)
             if merged is None:
-                if attr.values:
-                    if isinstance(freq_key, str):
-                        # String frequency: copy list as-is (no offset for sequential data)
-                        mapped_values = [transform_value(value) for value in attr.values]
-                    else:
-                        # Enum frequency: remap dict indices with offset
-                        mapped_values = {
-                            index_offset + idx: transform_value(value) for idx, value in attr.values.items()
-                        }
+                if isinstance(freq_key, str):
+                    # String frequency: copy list as-is (no offset for sequential data)
+                    mapped_values = [transform_value(value) for value in attr.values]
                 else:
-                    # Initialize empty container based on frequency type
-                    mapped_values = [] if isinstance(freq_key, str) else {}
+                    # Enum frequency: remap dict indices with offset
+                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -2216,8 +2250,6 @@ class ModelBuilder:
                     f"Custom attribute '{full_key}' default mismatch when merging builders: "
                     f"existing={merged.default}, incoming={attr.default}"
                 )
-            if not attr.values:
-                continue
 
             # Remap indices and copy values
             if merged.values is None:
@@ -2508,6 +2540,18 @@ class ModelBuilder:
             self.joint_axis.append(dim.axis)
             self.joint_target_pos.append(dim.target_pos)
             self.joint_target_vel.append(dim.target_vel)
+
+            # Use actuator_mode if explicitly set, otherwise infer from gains
+            if dim.actuator_mode is not None:
+                mode = int(dim.actuator_mode)
+            else:
+                # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
+                # This ensures freejoints (gains=0) get NONE, while joints with gains get appropriate mode.
+                has_drive = dim.target_ke != 0.0 or dim.target_kd != 0.0
+                mode = int(infer_actuator_mode(dim.target_ke, dim.target_kd, has_drive=has_drive))
+
+            # Store per-DOF actuator properties
+            self.joint_act_mode.append(mode)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
             self.joint_limit_ke.append(dim.limit_ke)
@@ -2590,6 +2634,7 @@ class ModelBuilder:
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
         friction: float | None = None,
+        actuator_mode: ActuatorMode | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -2647,6 +2692,7 @@ class ModelBuilder:
                 effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
+                actuator_mode=actuator_mode if actuator_mode is not None else self.default_joint_cfg.actuator_mode,
             )
         return self.add_joint(
             JointType.REVOLUTE,
@@ -2681,6 +2727,7 @@ class ModelBuilder:
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
         friction: float | None = None,
+        actuator_mode: ActuatorMode | None = None,
         key: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -2737,6 +2784,7 @@ class ModelBuilder:
                 effort_limit=effort_limit if effort_limit is not None else self.default_joint_cfg.effort_limit,
                 velocity_limit=velocity_limit if velocity_limit is not None else self.default_joint_cfg.velocity_limit,
                 friction=friction if friction is not None else self.default_joint_cfg.friction,
+                actuator_mode=actuator_mode if actuator_mode is not None else self.default_joint_cfg.actuator_mode,
             )
         return self.add_joint(
             JointType.PRISMATIC,
@@ -2763,6 +2811,7 @@ class ModelBuilder:
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
+        actuator_mode: ActuatorMode | None = None,
     ) -> int:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
 
@@ -2777,6 +2826,7 @@ class ModelBuilder:
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
+            actuator_mode: The actuator mode for this joint's DOFs. If None, defaults to NONE.
 
         Returns:
             The index of the added joint.
@@ -2794,16 +2844,19 @@ class ModelBuilder:
             axis=Axis.X,
             armature=armature,
             friction=friction,
+            actuator_mode=actuator_mode,
         )
         y = ModelBuilder.JointDofConfig(
             axis=Axis.Y,
             armature=armature,
             friction=friction,
+            actuator_mode=actuator_mode,
         )
         z = ModelBuilder.JointDofConfig(
             axis=Axis.Z,
             armature=armature,
             friction=friction,
+            actuator_mode=actuator_mode,
         )
 
         return self.add_joint(
@@ -3487,6 +3540,7 @@ class ModelBuilder:
                 data["axes"].append(
                     {
                         "axis": self.joint_axis[j],
+                        "actuator_mode": self.joint_act_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
                         "limit_ke": self.joint_limit_ke[j],
@@ -3696,6 +3750,7 @@ class ModelBuilder:
         self.joint_X_p.clear()
         self.joint_X_c.clear()
         self.joint_axis.clear()
+        self.joint_act_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
         self.joint_limit_lower.clear()
@@ -3735,6 +3790,7 @@ class ModelBuilder:
                 self.joint_articulation.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
+                self.joint_act_mode.append(axis["actuator_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
                 self.joint_limit_lower.append(axis["limit_lower"])
@@ -6841,6 +6897,7 @@ class ModelBuilder:
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)

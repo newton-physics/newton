@@ -583,6 +583,153 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                         msg=f"Updated gravcomp mismatch for mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}",
                     )
 
+    def test_body_subtreemass_update(self):
+        """
+        Tests if body_subtreemass is correctly computed and updated after mass changes.
+
+        body_subtreemass is a derived quantity that represents the total mass of a body
+        and all its descendants in the kinematic tree. It is computed by set_const after
+        mass updates.
+        """
+        # Initialize solver first to get the model structure
+        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
+
+        # Get body mapping - iterate over MuJoCo bodies
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+        nworld = mjc_body_to_newton.shape[0]
+        nbody = mjc_body_to_newton.shape[1]
+
+        # Get initial subtreemass values
+        initial_subtreemass = solver.mjw_model.body_subtreemass.numpy().copy()
+
+        # Verify initial subtreemass values are reasonable (should be >= body_mass)
+        for world_idx in range(nworld):
+            for mjc_body in range(nbody):
+                body_mass = solver.mjw_model.body_mass.numpy()[world_idx, mjc_body]
+                subtree_mass = initial_subtreemass[world_idx, mjc_body]
+                self.assertGreaterEqual(
+                    subtree_mass,
+                    body_mass - 1e-6,
+                    msg=f"Initial subtreemass should be >= body_mass for mjc_body {mjc_body} in world {world_idx}",
+                )
+
+        # Update masses - double all masses
+        new_masses = self.model.body_mass.numpy() * 2.0
+        self.model.body_mass.assign(new_masses)
+
+        # Notify solver of mass changes (this should call set_const to update subtreemass)
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        # Get updated subtreemass values
+        updated_subtreemass = solver.mjw_model.body_subtreemass.numpy()
+
+        # Verify subtreemass values are updated (should have roughly doubled for leaf bodies)
+        # For the world body (0), subtreemass should be the sum of all body masses
+        for world_idx in range(nworld):
+            for mjc_body in range(nbody):
+                newton_body = mjc_body_to_newton[world_idx, mjc_body]
+                if newton_body >= 0:
+                    # Subtreemass should have changed after mass update
+                    old_subtree = initial_subtreemass[world_idx, mjc_body]
+                    new_subtree = updated_subtreemass[world_idx, mjc_body]
+
+                    # For leaf bodies (no children), subtreemass == body_mass
+                    # so it should have doubled
+                    new_body_mass = solver.mjw_model.body_mass.numpy()[world_idx, mjc_body]
+                    self.assertGreaterEqual(
+                        new_subtree,
+                        new_body_mass - 1e-6,
+                        msg=f"Updated subtreemass should be >= body_mass for mjc_body {mjc_body} in world {world_idx}",
+                    )
+
+                    # The subtreemass should be different from the initial value
+                    # (unless it was originally 0, which shouldn't happen for real bodies)
+                    if old_subtree > 1e-6:
+                        self.assertNotAlmostEqual(
+                            old_subtree,
+                            new_subtree,
+                            places=4,
+                            msg=f"Subtreemass should have changed for mjc_body {mjc_body} in world {world_idx}",
+                        )
+
+    def test_derived_fields_updated_correctly(self):
+        """
+        Tests that derived fields (body_subtreemass, body_invweight0, dof_invweight0) are
+        correctly computed after mass changes via Newton's interface.
+
+        This verifies that set_const correctly computes derived quantities for all
+        worlds and bodies. Since Newton's body_mass is per-body (not per-world),
+        all worlds should have the same derived values.
+        """
+        # Initialize solver with multiple worlds
+        solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
+
+        # Get dimensions
+        nworld = self.model.num_worlds
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+        nbody = mjc_body_to_newton.shape[1]
+        nv = solver.mjw_model.nv
+
+        # Randomize masses per-body through Newton's interface
+        new_masses = np.zeros(self.model.body_count, dtype=np.float32)
+        for body_idx in range(self.model.body_count):
+            new_masses[body_idx] = 1.0 + 0.5 * body_idx  # Different mass per body
+
+        self.model.body_mass.assign(new_masses)
+
+        # Notify solver of mass changes (this calls set_const internally)
+        solver.notify_model_changed(SolverNotifyFlags.BODY_INERTIAL_PROPERTIES)
+
+        # Get derived fields (2D arrays: [nworld, nbody] or [nworld, nv])
+        body_subtreemass = solver.mjw_model.body_subtreemass.numpy()
+        body_invweight0 = solver.mjw_model.body_invweight0.numpy()
+        dof_invweight0 = solver.mjw_model.dof_invweight0.numpy()
+        mjw_body_mass = solver.mjw_model.body_mass.numpy()
+
+        # Verify body_subtreemass is correctly computed for all worlds and bodies
+        for world_idx in range(nworld):
+            for mjc_body in range(nbody):
+                newton_body = mjc_body_to_newton[world_idx, mjc_body]
+                if newton_body >= 0:
+                    body_mass = mjw_body_mass[world_idx, mjc_body]
+                    subtree_mass = body_subtreemass[world_idx, mjc_body]
+
+                    # subtreemass should be >= body_mass (includes mass of descendants)
+                    self.assertGreaterEqual(
+                        subtree_mass,
+                        body_mass - 1e-6,
+                        msg=f"body_subtreemass should be >= body_mass for world {world_idx}, body {mjc_body}",
+                    )
+
+        # Verify body_invweight0 is computed for all worlds and bodies
+        for world_idx in range(nworld):
+            for mjc_body in range(1, nbody):  # Skip world body 0
+                newton_body = mjc_body_to_newton[world_idx, mjc_body]
+                if newton_body >= 0:
+                    # body_invweight0 is vec2 (trans, rot) - should be non-negative
+                    invweight = body_invweight0[world_idx, mjc_body]
+                    self.assertGreaterEqual(
+                        invweight[0],
+                        0.0,
+                        msg=f"body_invweight0[0] should be >= 0 for world {world_idx}, body {mjc_body}",
+                    )
+                    self.assertGreaterEqual(
+                        invweight[1],
+                        0.0,
+                        msg=f"body_invweight0[1] should be >= 0 for world {world_idx}, body {mjc_body}",
+                    )
+
+        # Verify dof_invweight0 is computed for all worlds and DOFs
+        for world_idx in range(nworld):
+            for dof_idx in range(nv):
+                invweight = dof_invweight0[world_idx, dof_idx]
+                # dof_invweight0 should be non-negative
+                self.assertGreaterEqual(
+                    invweight,
+                    0.0,
+                    msg=f"dof_invweight0 should be >= 0 for world {world_idx}, dof {dof_idx}",
+                )
+
 
 class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
     def test_joint_attributes_registration_and_updates(self):

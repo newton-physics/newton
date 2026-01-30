@@ -2836,6 +2836,70 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
 
+    def test_actuator_mode_inference_from_actuator_type(self):
+        """Test that ActuatorMode is correctly inferred from MJCF actuator types."""
+        from newton._src.sim.joints import ActuatorMode  # noqa: PLC0415
+
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_actuator_modes">
+    <worldbody>
+        <body name="base" pos="0 0 1">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link_motor" pos="0.2 0 0">
+                <joint name="joint_motor" axis="0 0 1" type="hinge"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="link_position" pos="0.2 0 0">
+                    <joint name="joint_position" axis="0 0 1" type="hinge"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="link_velocity" pos="0.2 0 0">
+                        <joint name="joint_velocity" axis="0 0 1" type="hinge"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                        <body name="link_pos_vel" pos="0.2 0 0">
+                            <joint name="joint_pos_vel" axis="0 0 1" type="hinge"/>
+                            <geom type="box" size="0.1 0.1 0.1"/>
+                            <body name="link_passive" pos="0.2 0 0">
+                                <joint name="joint_passive" axis="0 0 1" type="hinge"/>
+                                <geom type="box" size="0.1 0.1 0.1"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+    <actuator>
+        <motor name="motor1" joint="joint_motor"/>
+        <position name="pos1" joint="joint_position" kp="100"/>
+        <velocity name="vel1" joint="joint_velocity" kv="10"/>
+        <position name="pos2" joint="joint_pos_vel" kp="100"/>
+        <velocity name="vel2" joint="joint_pos_vel" kv="10"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, ctrl_direct=False)
+
+        def get_qd_start(b, joint_name):
+            joint_idx = b.joint_key.index(joint_name)
+            return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
+
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_position")], int(ActuatorMode.POSITION))
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_velocity")], int(ActuatorMode.VELOCITY))
+        self.assertEqual(
+            builder.joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.POSITION_VELOCITY)
+        )
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_passive")], int(ActuatorMode.NONE))
+
+        builder2 = newton.ModelBuilder()
+        builder2.add_mjcf(mjcf_content, ctrl_direct=True)
+
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_motor")], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_position")], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_velocity")], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_pos_vel")], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_passive")], int(ActuatorMode.NONE))
+
     def test_frame_transform_composition_geoms(self):
         """Test that frame transforms are correctly composed with child geom positions.
 

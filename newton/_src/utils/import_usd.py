@@ -30,6 +30,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
+from ..sim.joints import ActuatorMode, infer_actuator_mode
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -59,6 +60,7 @@ def parse_usd(
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
+    force_position_velocity_actuation: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -97,6 +99,12 @@ def parse_usd(
 
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
+        force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
+            are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
+            If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+            :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
+            damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
+            (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -578,12 +586,22 @@ def parse_usd(
             joint_params["armature"] = joint_armature
             joint_params["friction"] = joint_friction
             if joint_desc.drive.enabled:
-                joint_params["target_vel"] = joint_desc.drive.targetVelocity
-                joint_params["target_pos"] = joint_desc.drive.targetPosition
+                target_vel = joint_desc.drive.targetVelocity
+                target_pos = joint_desc.drive.targetPosition
+                target_ke = joint_desc.drive.stiffness
+                target_kd = joint_desc.drive.damping
 
-                joint_params["target_ke"] = joint_desc.drive.stiffness
-                joint_params["target_kd"] = joint_desc.drive.damping
+                joint_params["target_vel"] = target_vel
+                joint_params["target_pos"] = target_pos
+                joint_params["target_ke"] = target_ke
+                joint_params["target_kd"] = target_kd
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
+
+                joint_params["actuator_mode"] = infer_actuator_mode(
+                    target_ke, target_kd, force_position_velocity_actuation, has_drive=True
+                )
+            else:
+                joint_params["actuator_mode"] = ActuatorMode.NONE
 
             # Read initial joint state BEFORE creating/overwriting USD attributes
             initial_position = None
@@ -660,18 +678,25 @@ def parse_usd(
                     target_ke = 0.0
                     target_kd = 0.0
                     effort_limit = np.inf
+                    has_drive = False
                     for drive in joint_desc.jointDrives:
                         if drive.first != dof:
                             continue
                         if drive.second.enabled:
+                            has_drive = True
                             target_vel = drive.second.targetVelocity
                             target_pos = drive.second.targetPosition
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    return target_pos, target_vel, target_ke, target_kd, effort_limit
+                    actuator_mode = infer_actuator_mode(
+                        target_ke, target_kd, force_position_velocity_actuation, has_drive=has_drive
+                    )
+                    return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
 
-                target_pos, target_vel, target_ke, target_kd, effort_limit = define_joint_targets(dof, joint_desc)
+                target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode = define_joint_targets(
+                    dof, joint_desc
+                )
 
                 _trans_axes = {
                     UsdPhysics.JointDOF.TransX: (1.0, 0.0, 0.0),
@@ -738,6 +763,7 @@ def parse_usd(
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             friction=joint_friction,
+                            actuator_mode=actuator_mode,
                         )
                     )
                     # Track that this axis was added as a DOF
@@ -789,6 +815,7 @@ def parse_usd(
                             armature=joint_armature,
                             effort_limit=effort_limit,
                             friction=joint_friction,
+                            actuator_mode=actuator_mode,
                         )
                     )
                     # Track that this axis was added as a DOF
