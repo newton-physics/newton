@@ -66,6 +66,7 @@ from .kernels import (
     update_eq_data_and_active_kernel,
     update_eq_properties_kernel,
     update_geom_properties_kernel,
+    update_initial_positions_kernel,
     update_jnt_properties_kernel,
     update_joint_transforms_kernel,
     update_mocap_transforms_kernel,
@@ -1813,6 +1814,41 @@ class SolverMuJoCo(SolverBase):
             self.update_tendon_properties()
         if flags & SolverNotifyFlags.ACTUATOR_PROPERTIES:
             self.update_actuator_properties()
+        if flags & SolverNotifyFlags.INITIAL_POSITIONS:
+            self.update_initial_positions()
+
+    def update_initial_positions(self):
+        """Update MuJoCo qpos0 from Newton model.joint_q and recalculate derived values.
+
+        This syncs the initial/reference joint positions from Newton to MuJoCo's qpos0,
+        then calls set_const() to recompute derived quantities like tendon_length0.
+        """
+        if self.mjw_model is None or self.model.joint_count == 0:
+            return
+
+        nworld = self.model.num_worlds
+        joints_per_world = self.model.joint_count // nworld
+
+        wp.launch(
+            update_initial_positions_kernel,
+            dim=(nworld, joints_per_world),
+            inputs=[
+                self.model.joint_q,
+                joints_per_world,
+                self.model.joint_type,
+                self.model.joint_q_start,
+                self.model.joint_dof_dim,
+            ],
+            outputs=[self.mjw_model.qpos0],
+            device=self.model.device,
+        )
+
+        # Recompute derived quantities after qpos0 changes.
+        # set_const_0 computes qpos0-dependent quantities:
+        # - tendon_length0: tendon rest lengths (when springlength=-1)
+        # - body_invweight0, dof_invweight0, tendon_invweight0: inverse inertias
+        # (set_const_fixed is not needed since we didn't change mass)
+        self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
 
     def _create_inverse_shape_mapping(self):
         """
@@ -3486,7 +3522,7 @@ class SolverMuJoCo(SolverBase):
             return
 
         model_fields_to_expand = {
-            # "qpos0",
+            "qpos0",
             # "qpos_spring",
             "body_pos",
             "body_quat",

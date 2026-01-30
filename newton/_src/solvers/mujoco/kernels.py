@@ -556,6 +556,56 @@ def convert_warp_coords_to_mj_kernel(
 
 
 @wp.kernel
+def update_initial_positions_kernel(
+    joint_q: wp.array(dtype=wp.float32),
+    joints_per_world: int,
+    joint_type: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    # output
+    qpos: wp.array2d(dtype=wp.float32),
+):
+    """Convert Newton joint_q to MuJoCo qpos format (positions only).
+
+    Used for syncing model.joint_q to mjw_model.qpos0.
+    """
+    worldid, jntid = wp.tid()
+
+    type = joint_type[jntid]
+    q_i = joint_q_start[jntid]
+    wq_i = joint_q_start[joints_per_world * worldid + jntid]
+
+    if type == JointType.FREE:
+        # convert position components
+        for i in range(3):
+            qpos[worldid, q_i + i] = joint_q[wq_i + i]
+
+        rot = wp.quat(
+            joint_q[wq_i + 3],
+            joint_q[wq_i + 4],
+            joint_q[wq_i + 5],
+            joint_q[wq_i + 6],
+        )
+        # change quaternion order from xyzw to wxyz
+        qpos[worldid, q_i + 3] = rot[3]
+        qpos[worldid, q_i + 4] = rot[0]
+        qpos[worldid, q_i + 5] = rot[1]
+        qpos[worldid, q_i + 6] = rot[2]
+
+    elif type == JointType.BALL:
+        # change quaternion order from xyzw to wxyz
+        qpos[worldid, q_i + 0] = joint_q[wq_i + 3]
+        qpos[worldid, q_i + 1] = joint_q[wq_i + 0]
+        qpos[worldid, q_i + 2] = joint_q[wq_i + 1]
+        qpos[worldid, q_i + 3] = joint_q[wq_i + 2]
+    else:
+        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        for i in range(axis_count):
+            # convert position components
+            qpos[worldid, q_i + i] = joint_q[wq_i + i]
+
+
+@wp.kernel
 def convert_mjw_contact_to_warp_kernel(
     # inputs
     mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),

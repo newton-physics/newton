@@ -5188,5 +5188,115 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         assert np.allclose(solver.mjc_eq_to_newton_jnt.numpy(), expected_eq_to_newton_jnt)
 
 
+class TestMuJoCoSolverInitialPositions(unittest.TestCase):
+    """Test qpos0 synchronization from Newton model.joint_q."""
+
+    def test_qpos0_multiworld_sync(self):
+        """Verify model.joint_q syncs to mjw_model.qpos0 per world."""
+        # Create MJCF with a single hinge joint
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="root" pos="0 0 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link1" pos="0 0 0.5">
+                <joint name="hinge1" type="hinge" axis="0 1 0"/>
+                <geom type="box" size="0.05 0.05 0.05"/>
+                <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        # Create multi-world model
+        num_worlds = 3
+        template = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template)
+        template.add_mjcf(mjcf)
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, num_worlds)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, ls_iterations=1)
+
+        # Set different joint_q for each world
+        joint_q_np = model.joint_q.numpy()
+        # Each world has 1 joint with 1 DOF
+        joint_q_np[0] = 0.5  # World 0
+        joint_q_np[1] = 1.0  # World 1
+        joint_q_np[2] = 1.5  # World 2
+        model.joint_q.assign(joint_q_np)
+
+        # Notify solver to sync to qpos0
+        solver.notify_model_changed(SolverNotifyFlags.INITIAL_POSITIONS)
+
+        # Verify qpos0 per world
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        self.assertAlmostEqual(qpos0[0, 0], 0.5, places=5)
+        self.assertAlmostEqual(qpos0[1, 0], 1.0, places=5)
+        self.assertAlmostEqual(qpos0[2, 0], 1.5, places=5)
+
+    def test_qpos0_tendon_length0_multiworld(self):
+        """Verify tendon_length0 is recalculated from qpos0 per world.
+
+        Uses springlength=-1 which auto-computes tendon rest length from qpos0.
+        """
+        # Create MJCF with tendon that uses springlength=-1
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="root" pos="0 0 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link1" pos="0 -0.5 0">
+                <joint name="joint1" type="slide" axis="1 0 0" range="-10 10"/>
+                <geom type="box" size="0.05 0.05 0.05"/>
+                <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+            </body>
+        </body>
+    </worldbody>
+    <tendon>
+        <fixed name="test_tendon" stiffness="1.0" damping="0.5" springlength="-1">
+            <joint joint="joint1" coef="1"/>
+        </fixed>
+    </tendon>
+</mujoco>"""
+
+        # Create multi-world model
+        num_worlds = 3
+        template = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template)
+        template.add_mjcf(mjcf)
+
+        builder = newton.ModelBuilder()
+        builder.replicate(template, num_worlds)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, ls_iterations=1)
+
+        # Check initial tendon_length0 - should be same for all worlds (0.0 since joint_q starts at 0)
+        tendon_length0_before = solver.mjw_model.tendon_length0.numpy().copy()
+        self.assertAlmostEqual(tendon_length0_before[0, 0], 0.0, places=4)
+        self.assertAlmostEqual(tendon_length0_before[1, 0], 0.0, places=4)
+        self.assertAlmostEqual(tendon_length0_before[2, 0], 0.0, places=4)
+
+        # Set different joint_q for each world
+        joint_q_np = model.joint_q.numpy()
+        joint_q_np[0] = 0.5  # World 0
+        joint_q_np[1] = 1.0  # World 1
+        joint_q_np[2] = 2.0  # World 2
+        model.joint_q.assign(joint_q_np)
+
+        # Notify solver to sync to qpos0 and recalculate derived values
+        solver.notify_model_changed(SolverNotifyFlags.INITIAL_POSITIONS)
+
+        # Verify tendon_length0 is now different per world
+        # tendon_length0 = coef * qpos0 = 1.0 * joint_q
+        tendon_length0_after = solver.mjw_model.tendon_length0.numpy()
+        self.assertAlmostEqual(tendon_length0_after[0, 0], 0.5, places=4)
+        self.assertAlmostEqual(tendon_length0_after[1, 0], 1.0, places=4)
+        self.assertAlmostEqual(tendon_length0_after[2, 0], 2.0, places=4)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
