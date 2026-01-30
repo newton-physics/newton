@@ -123,21 +123,18 @@ from ._src.solvers import (
     style3d,
 )
 
+# solver flags
+from ._src.solvers.flags import SolverNotifyFlags
+
 __all__ = [
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",
     "SolverMuJoCo",
+    "SolverNotifyFlags",
     "SolverSemiImplicit",
     "SolverStyle3D",
     "SolverVBD",
     "SolverXPBD",
     "style3d",
-]
-
-# solver flags
-from ._src.solvers.flags import SolverNotifyFlags
-
-__all__ += [
-    "SolverNotifyFlags",
 ]

@@ -60,6 +60,7 @@ class Example:
         h1.add_mjcf(
             newton.utils.download_asset("unitree_h1") / "mjcf/h1_with_hand.xml",
             floating=False,
+            enable_self_collisions=False,
         )
         h1.add_ground_plane()
 
@@ -103,8 +104,11 @@ class Example:
         self.graph = None
         self.model = h1.finalize()
         self.model.soft_contact_ke = 5e3
+        # no friction
+        self.model.soft_contact_mu = 0.0
         self.model.shape_material_mu.fill_(0.0)
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(2.5, 0.0, 1.5), 0.0, 180.0)
 
         # states
         self.state = self.model.state()

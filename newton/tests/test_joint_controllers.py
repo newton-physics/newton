@@ -64,6 +64,7 @@ def test_revolute_controller(
         limit_kd=0.0,
         target_ke=target_ke,
         target_kd=target_kd,
+        actuator_mode=newton.ActuatorMode.POSITION_VELOCITY,
     )
     builder.add_articulation([j])
 
@@ -124,6 +125,7 @@ def test_ball_controller(
         parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         armature=0.0,
+        actuator_mode=newton.ActuatorMode.POSITION_VELOCITY,
     )
     builder.add_articulation([j])
 
@@ -221,6 +223,7 @@ def test_effort_limit_clamping(
         target_ke=high_kp,
         target_kd=high_kd,
         effort_limit=effort_limit,
+        actuator_mode=newton.ActuatorMode.POSITION_VELOCITY,
     )
     builder.add_articulation([j])
 

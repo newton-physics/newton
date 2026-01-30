@@ -22,15 +22,18 @@ from .contacts import Contacts
 from .control import Control
 from .graph_coloring import color_graph, plot_graph
 from .joints import (
+    ActuatorMode,
     EqType,
     JointType,
     get_joint_constraint_count,
     get_joint_dof_count,
+    infer_actuator_mode,
 )
 from .model import Model
 from .state import State
 
 __all__ = [
+    "ActuatorMode",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",
@@ -48,5 +51,6 @@ __all__ = [
     "get_joint_constraint_count",
     "get_joint_dof_count",
     "ik",
+    "infer_actuator_mode",
     "plot_graph",
 ]

@@ -360,6 +360,8 @@ class Model:
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
         self.joint_armature = None
         """Armature for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        self.joint_act_mode = None
+        """Actuator mode per DOF, see :class:`newton.ActuatorMode`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke = None
         """Joint stiffness, shape [joint_dof_count], float."""
         self.joint_target_kd = None
