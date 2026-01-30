@@ -47,7 +47,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 20
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.iterations = 5
+        self.iterations = 10
 
         # Standard poker card dimensions in meters
         self.card_width = 0.0635  # m (6.35 cm / 2.5 inches)
