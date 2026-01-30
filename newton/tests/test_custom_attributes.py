@@ -393,14 +393,14 @@ class TestCustomAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="custom_float_cts",
-                frequency=newton.ModelAttributeFrequency.JOINT_CONSTRAINT,
+                frequency=AttributeFrequency.JOINT_CONSTRAINT,
                 dtype=wp.float32,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="custom_int_cts",
-                frequency=newton.ModelAttributeFrequency.JOINT_CONSTRAINT,
+                frequency=AttributeFrequency.JOINT_CONSTRAINT,
                 dtype=wp.int32,
             )
         )
@@ -492,14 +492,14 @@ class TestCustomAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="custom_float_cts",
-                frequency=newton.ModelAttributeFrequency.JOINT_CONSTRAINT,
+                frequency=AttributeFrequency.JOINT_CONSTRAINT,
                 dtype=wp.float32,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="custom_int_cts",
-                frequency=newton.ModelAttributeFrequency.JOINT_CONSTRAINT,
+                frequency=AttributeFrequency.JOINT_CONSTRAINT,
                 dtype=wp.int32,
             )
         )
@@ -555,7 +555,7 @@ class TestCustomAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="custom_vec3_cts",
-                frequency=newton.ModelAttributeFrequency.JOINT_CONSTRAINT,
+                frequency=AttributeFrequency.JOINT_CONSTRAINT,
                 dtype=wp.vec3,
             )
         )
@@ -623,7 +623,7 @@ class TestCustomAttributes(unittest.TestCase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="custom_float_cts",
-                frequency=newton.ModelAttributeFrequency.JOINT_CONSTRAINT,
+                frequency=AttributeFrequency.JOINT_CONSTRAINT,
                 dtype=wp.float32,
             )
         )

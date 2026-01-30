@@ -552,7 +552,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_trntype",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # TrnType.JOINT
                 namespace="mujoco",
@@ -564,7 +564,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_dyntype",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # DynType.NONE
                 namespace="mujoco",
@@ -576,7 +576,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_gaintype",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # GainType.FIXED
                 namespace="mujoco",
@@ -588,7 +588,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_biastype",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # BiasType.NONE
                 namespace="mujoco",
@@ -601,7 +601,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_trnid",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2i,
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
@@ -612,7 +612,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_world",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -623,7 +623,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_ctrllimited",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -635,7 +635,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_forcelimited",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -647,7 +647,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_ctrlrange",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
@@ -658,7 +658,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_forcerange",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
@@ -669,7 +669,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_gear",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.types.vector(length=6, dtype=wp.float32),
                 default=wp.types.vector(length=6, dtype=wp.float32)(1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -681,7 +681,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_dynprm",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -693,7 +693,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_gainprm",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -705,7 +705,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_biasprm",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -717,7 +717,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_actlimited",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -730,7 +730,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_actrange",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
@@ -742,7 +742,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_actdim",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -754,7 +754,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_actearly",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -767,7 +767,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="ctrl",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.CONTROL,
+                assignment=AttributeAssignment.CONTROL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -778,7 +778,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="ctrl_source",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
                 namespace="mujoco",

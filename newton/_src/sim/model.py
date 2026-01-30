@@ -947,8 +947,3 @@ class Model:
 
         attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes
-
-
-ModelAttributeAssignment = Model.AttributeAssignment
-ModelAttributeFrequency = Model.AttributeFrequency
-AttributeNamespace = Model.AttributeNamespace
