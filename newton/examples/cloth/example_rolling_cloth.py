@@ -372,7 +372,7 @@ class Example:
             particle_vertex_contact_buffer_size=64,
             particle_edge_contact_buffer_size=128,
             particle_collision_detection_interval=5,
-            particle_topological_contact_filter_threshold=1,
+            particle_topological_contact_filter_threshold=2,
         )
 
         # Create states
