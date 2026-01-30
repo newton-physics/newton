@@ -1391,8 +1391,8 @@ class ViewerGL(ViewerBase):
                 pos_text = f"Position: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})"
                 imgui.text(pos_text)
                 imgui.text(f"FOV: {self.camera.fov:.1f}°")
-                imgui.text(f"Yaw: {self.camera.yaw:.1f}°")
                 imgui.text(f"Pitch: {self.camera.pitch:.1f}°")
+                imgui.text(f"Yaw: {self.camera.yaw:.1f}°")
 
                 # Camera controls hint
                 imgui.separator()
