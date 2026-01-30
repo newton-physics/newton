@@ -997,6 +997,45 @@ class TestModel(unittest.TestCase):
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
+    def test_collision_pipeline_initialization(self):
+        """Test different ways to initialize collision pipeline and contacts."""
+        builder = ModelBuilder()
+        builder.add_shape_sphere(body=-1, radius=0.5)
+        builder.add_shape_box(body=-1, hx=0.5, hy=0.5, hz=0.5, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0)))
+        model = builder.finalize()
+        state = model.state()
+
+        # Method 1: model.collision_pipeline() factory with UNIFIED type
+        pipeline_unified = model.collision_pipeline(
+            collision_pipeline_type=newton.CollisionPipelineType.UNIFIED,
+            broad_phase_mode=newton.BroadPhaseMode.SAP,
+        )
+        self.assertIsInstance(pipeline_unified, newton.CollisionPipelineUnified)
+        self.assertIs(model._collision_pipeline, pipeline_unified)
+
+        # Method 2: model.collision_pipeline() factory with STANDARD type
+        pipeline_standard = model.collision_pipeline(collision_pipeline_type=newton.CollisionPipelineType.STANDARD)
+        self.assertIsInstance(pipeline_standard, newton.CollisionPipeline)
+        self.assertIs(model._collision_pipeline, pipeline_standard)
+
+        # Method 3: model.contacts() creates contacts (uses cached pipeline)
+        contacts = model.contacts()
+        self.assertIsNotNone(contacts)
+
+        # Method 4: model.contacts() with explicit pipeline
+        new_pipeline = newton.CollisionPipelineUnified.from_model(model)
+        contacts2 = model.contacts(collision_pipeline=new_pipeline)
+        self.assertIsNotNone(contacts2)
+        self.assertIs(model._collision_pipeline, new_pipeline)
+
+        # Method 5: model.collide() runs collision detection
+        contacts3 = model.collide(state)
+        self.assertIsNotNone(contacts3)
+
+        # Method 6: model.collide() with reused contacts
+        contacts4 = model.collide(state, contacts=contacts3)
+        self.assertIs(contacts4, contacts3)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
