@@ -916,7 +916,6 @@ def parse_mjcf(
                     _defaults,
                     childclass=_childclass,
                     incoming_xform=composed_world,
-                    is_mjcf_root=False,
                 )
 
             # Process child geoms (need body-relative transform)
@@ -951,7 +950,6 @@ def parse_mjcf(
         incoming_defaults: dict,
         childclass: str | None = None,
         incoming_xform: Transform | None = None,
-        is_mjcf_root: bool = False,
     ):
         """Parse a body element from MJCF.
 
@@ -963,11 +961,15 @@ def parse_mjcf(
             incoming_defaults: Default attributes dictionary.
             childclass: Child class name for inheritance.
             incoming_xform: Accumulated transform from parent (may include frame offsets).
-            is_mjcf_root: True if this is a root body in the MJCF file (direct child of <worldbody>),
-                False for nested bodies within the MJCF tree. This flag determines whether the
-                floating/base_joint parameters from parse_mjcf should be applied. Only root bodies
-                respect these parameters; nested bodies use their defined joints from the MJCF.
+
+        Note:
+            Root bodies (direct children of <worldbody>) are automatically detected by checking if
+            parent matches the parent_body parameter from parse_mjcf. Only root bodies respect the
+            floating/base_joint parameters; nested bodies use their defined joints from the MJCF.
         """
+        # Infer if this is a root body by checking if parent matches the outer parent_body parameter
+        # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
+        is_mjcf_root = (parent == parent_body)
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
             body_class = childclass
@@ -1318,7 +1320,7 @@ def parse_mjcf(
             else:
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
             parse_body(
-                child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform, is_mjcf_root=False
+                child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform
             )
 
         # Process frame elements within this body
@@ -1555,7 +1557,7 @@ def parse_mjcf(
             effective_xform = xform
 
         for body in world.findall("body"):
-            parse_body(body, root_parent, world_defaults, incoming_xform=effective_xform, is_mjcf_root=True)
+            parse_body(body, root_parent, world_defaults, incoming_xform=effective_xform)
 
         # -----------------
         # add static geoms
