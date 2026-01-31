@@ -1,0 +1,6 @@
+﻿newton.usd.from\_gfquat
+=======================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: from_gfquat

@@ -1,0 +1,6 @@
+﻿newton.utils.copy\_rgb\_frame\_uint8
+====================================
+
+.. currentmodule:: newton.utils
+
+.. autodata:: copy_rgb_frame_uint8

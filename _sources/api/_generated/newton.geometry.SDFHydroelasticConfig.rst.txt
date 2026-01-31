@@ -1,0 +1,8 @@
+﻿newton.geometry.SDFHydroelasticConfig
+=====================================
+
+.. autoclass:: newton.geometry.SDFHydroelasticConfig
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise
