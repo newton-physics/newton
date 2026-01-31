@@ -39,40 +39,31 @@ from ..usd.schemas import SchemaResolverNewton
 AttributeFrequency = Model.AttributeFrequency
 
 
-def _attach_joints_to_parent_articulation(
-    builder: ModelBuilder, joint_indices: list[int], parent_body: int, allow_expensive_reordering: bool = False
-):
+def _attach_joints_to_parent_articulation(builder: ModelBuilder, joint_indices: list[int], parent_body: int):
     """
     Helper function to attach joints to an existing articulation containing parent_body.
 
     This function handles the bookkeeping required when adding joints to an existing articulation.
-    Since articulation_start assumes contiguous joint indices, we reorder joints by articulation
-    when necessary to maintain this invariant.
+    Only sequential attachment (most recent articulation) is supported.
 
     Args:
         builder: The ModelBuilder to update.
         joint_indices: Newly created joint indices to attach.
         parent_body: Parent body id that already belongs to an articulation.
-        allow_expensive_reordering: Whether O(n²) reordering is permitted.
 
     Returns:
         None.
-    """
 
-    # Check if attachment requires reordering
-    parent_articulation, needs_reordering = builder._check_sequential_composition(
-        parent_body=parent_body,
-        allow_expensive_reordering=allow_expensive_reordering,
-    )
+    Raises:
+        ValueError: If attempting to attach to a non-sequential articulation.
+    """
+    # Check if attachment is sequential
+    parent_articulation = builder._check_sequential_composition(parent_body=parent_body)
 
     if parent_articulation is not None and parent_articulation >= 0:
         # Mark all new joints as belonging to the parent's articulation
         for joint_idx in joint_indices:
             builder.joint_articulation[joint_idx] = parent_articulation
-
-        # Perform reordering if needed
-        if needs_reordering:
-            builder._reorder_joints_by_articulation()
     else:
         raise RuntimeError(
             f"_attach_joints_to_parent_articulation called with parent_body {parent_body} "
@@ -88,7 +79,6 @@ def parse_usd(
     floating: bool | None = None,
     base_joint: dict | str | None = None,
     parent_body: int = -1,
-    allow_expensive_reordering: bool = False,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
@@ -119,10 +109,12 @@ def parse_usd(
         builder (ModelBuilder): The :class:`~newton.ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The transform to apply to the entire scene.
-        floating (bool): If True, floating bodies (bodies not connected as a child to any joint) receive a free joint. If False, floating bodies receive a fixed joint. If None (default), floating bodies receive a free joint. When a ``base_joint`` is specified, it takes precedence over this parameter.
-        base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
-        allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
+        floating (bool or None): If None (default), floating bodies receive a free joint (USD default).
+            If True, creates a FREE joint (only valid when parent_body == -1).
+            If False, floating bodies receive a fixed joint.
+            Cannot be specified together with base_joint.
+        base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
@@ -196,8 +188,13 @@ def parse_usd(
             * - ``"path_original_body_map"``
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
+    # Validate parameter combinations
+    if floating is not None and base_joint is not None:
+        raise ValueError("Cannot specify both 'floating' and 'base_joint'")
+
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
+
     if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
@@ -1353,9 +1350,7 @@ def parse_usd(
                         # child body
                         if parent_body != -1:
                             # Attach to existing articulation
-                            _attach_joints_to_parent_articulation(
-                                builder, [joint_id], parent_body, allow_expensive_reordering
-                            )
+                            _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
                         else:
                             builder.add_articulation(
                                 [joint_id], key=body_data[i]["key"], custom_attributes=articulation_custom_attrs
@@ -1379,9 +1374,7 @@ def parse_usd(
                         # child body
                         if parent_body != -1:
                             # Attach to existing articulation
-                            _attach_joints_to_parent_articulation(
-                                builder, [joint_id], parent_body, allow_expensive_reordering
-                            )
+                            _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
                         else:
                             builder.add_articulation(
                                 [joint_id], key=body_keys[i], custom_attributes=articulation_custom_attrs
@@ -1506,9 +1499,7 @@ def parse_usd(
             if articulation_joint_indices:
                 if parent_body != -1:
                     # Attach to existing articulation
-                    _attach_joints_to_parent_articulation(
-                        builder, articulation_joint_indices, parent_body, allow_expensive_reordering
-                    )
+                    _attach_joints_to_parent_articulation(builder, articulation_joint_indices, parent_body)
                 else:
                     builder.add_articulation(
                         articulation_joint_indices,
@@ -1914,7 +1905,7 @@ def parse_usd(
                     parent_xform=parent_xform,
                 )
                 # Attach to parent's articulation
-                _attach_joints_to_parent_articulation(builder, [joint_id], parent_body, allow_expensive_reordering)
+                _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
         else:
             builder.add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 

@@ -1423,10 +1423,9 @@ class ModelBuilder:
         source: str,
         *,
         xform: Transform | None = None,
-        floating: bool = False,
+        floating: bool | None = None,
         base_joint: dict | str | None = None,
         parent_body: int = -1,
-        allow_expensive_reordering: bool = False,
         scale: float = 1.0,
         hide_visuals: bool = False,
         parse_visuals_as_colliders: bool = False,
@@ -1448,10 +1447,12 @@ class ModelBuilder:
         Args:
             source (str): The filename of the URDF file to parse, or the URDF XML string content.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-            floating (bool): If True, the root body receives a free joint. If False, the root body receives a fixed joint to the world. When a ``base_joint`` is specified, it takes precedence over this parameter.
-            base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
-            allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
+            floating (bool or None): If None (default), the root body receives a fixed joint (URDF default).
+                If True, creates a FREE joint (only valid when parent_body == -1).
+                If False, creates a fixed joint.
+                Cannot be specified together with base_joint.
+            base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes.
             parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
@@ -1481,7 +1482,6 @@ class ModelBuilder:
             floating=floating,
             base_joint=base_joint,
             parent_body=parent_body,
-            allow_expensive_reordering=allow_expensive_reordering,
             scale=scale,
             hide_visuals=hide_visuals,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
@@ -1506,7 +1506,6 @@ class ModelBuilder:
         floating: bool | None = None,
         base_joint: dict | str | None = None,
         parent_body: int = -1,
-        allow_expensive_reordering: bool = False,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
         joint_drive_gains_scaling: float = 1.0,
@@ -1536,10 +1535,12 @@ class ModelBuilder:
         Args:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The transform to apply to the entire scene.
-            floating (bool): If True, floating bodies (bodies not connected as a child to any joint) receive a free joint. If False, floating bodies receive a fixed joint. If None (default), floating bodies receive a free joint. When a ``base_joint`` is specified, it takes precedence over this parameter.
-            base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
-            allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
+            floating (bool or None): If None (default), floating bodies receive a free joint (USD default).
+                If True, creates a FREE joint (only valid when parent_body == -1).
+                If False, floating bodies receive a fixed joint.
+                Cannot be specified together with base_joint.
+            base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
             only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
@@ -1622,7 +1623,6 @@ class ModelBuilder:
             floating=floating,
             base_joint=base_joint,
             parent_body=parent_body,
-            allow_expensive_reordering=allow_expensive_reordering,
             only_load_enabled_rigid_bodies=only_load_enabled_rigid_bodies,
             only_load_enabled_joints=only_load_enabled_joints,
             joint_drive_gains_scaling=joint_drive_gains_scaling,
@@ -1652,7 +1652,6 @@ class ModelBuilder:
         floating: bool | None = None,
         base_joint: dict | str | None = None,
         parent_body: int = -1,
-        allow_expensive_reordering: bool = False,
         armature_scale: float = 1.0,
         scale: float = 1.0,
         hide_visuals: bool = False,
@@ -1687,10 +1686,12 @@ class ModelBuilder:
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform (Transform): The transform to apply to the imported mechanism.
-            floating (bool): If True, the root body receives a free joint. If False, the root body receives a fixed joint to the world. If None (default), the root body receives a free joint if one is defined in the MJCF, otherwise it receives a fixed joint. When a ``base_joint`` is specified, it takes precedence over this parameter.
-            base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
-            allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
+            floating (bool or None): If None (default), the root body receives a free joint if one is defined in the MJCF, otherwise it receives a fixed joint (MJCF default).
+                If True, creates a FREE joint (only valid when parent_body == -1).
+                If False, creates a fixed joint.
+                Cannot be specified together with base_joint.
+            base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
             armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
@@ -1733,7 +1734,6 @@ class ModelBuilder:
             floating=floating,
             base_joint=base_joint,
             parent_body=parent_body,
-            allow_expensive_reordering=allow_expensive_reordering,
             armature_scale=armature_scale,
             scale=scale,
             hide_visuals=hide_visuals,
@@ -6894,364 +6894,38 @@ class ModelBuilder:
         # Body not found in any articulation
         return None
 
-    def _check_sequential_composition(
-        self, parent_body: int, allow_expensive_reordering: bool
-    ) -> tuple[int | None, bool]:
+    def _check_sequential_composition(self, parent_body: int) -> int | None:
         """
-        Check if attaching to parent_body requires expensive reordering.
+        Check if attaching to parent_body is sequential (most recent articulation).
 
         Args:
             parent_body: The parent body index to check.
-            allow_expensive_reordering: Whether expensive operations are allowed.
 
         Returns:
-            tuple: (parent_articulation_id, needs_reordering)
+            The parent articulation ID, or None if parent_body is world (-1) or not in an articulation.
 
         Raises:
-            ValueError: If non-sequential composition attempted without flag.
+            ValueError: If attempting to attach to a non-sequential articulation.
         """
         if parent_body == -1:
-            return (None, False)
+            return None
 
         parent_articulation = self._find_articulation_for_body(parent_body)
         if parent_articulation is None:
-            return (None, False)
+            return None
 
         num_articulations = len(self.articulation_start)
         is_sequential = parent_articulation == num_articulations - 1
 
         if is_sequential:
-            return (parent_articulation, False)
+            return parent_articulation
         else:
-            if not allow_expensive_reordering:
-                body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
-                raise ValueError(
-                    f"Cannot attach to parent_body {body_name} in articulation #{parent_articulation} "
-                    f"(most recent is #{num_articulations - 1}). Requires O(n²) reordering. "
-                    f"Use allow_expensive_reordering=True to proceed."
-                )
-
-            warnings.warn(
-                f"O(n²) reordering {len(self.joint_type)} joints "
-                f"(articulation #{parent_articulation} is not most recent)",
-                UserWarning,
-                stacklevel=3,
+            body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
+            raise ValueError(
+                f"Cannot attach to parent_body {body_name} in articulation #{parent_articulation} "
+                f"(most recent is #{num_articulations - 1}). "
+                f"Attach to the most recently added articulation or build in order."
             )
-            return (parent_articulation, True)
-
-    def _reorder_list_by_mapping(self, lst: list, old_to_new: dict[int, int], list_name: str) -> None:
-        """
-        Reorder a list according to old->new index mapping with validation.
-
-        Args:
-            lst: The list to reorder in-place.
-            old_to_new: Mapping from old indices to new indices.
-            list_name: Name of list for error messages.
-        """
-        if not lst:
-            return
-
-        if len(lst) != len(old_to_new):
-            raise RuntimeError(f"Joint list '{list_name}' length mismatch: expected {len(old_to_new)}, got {len(lst)}")
-
-        new_lst = [None] * len(lst)
-        for old_idx, new_idx in old_to_new.items():
-            new_lst[new_idx] = lst[old_idx]
-
-        if None in new_lst:
-            raise RuntimeError(f"Reordering '{list_name}' left unmapped indices")
-
-        lst[:] = new_lst
-
-    def _reorder_joints_by_articulation(self) -> None:
-        """
-        Reorder all joint arrays so joints within each articulation are contiguous.
-
-        This method correctly handles three types of joint arrays:
-        1. Per-joint arrays (length = number of joints): reordered using index mapping
-        2. Per-DOF arrays (length = total DOF count): rebuilt by concatenating per-joint slices
-        3. Per-coord arrays (length = total coord count): rebuilt by concatenating per-joint slices
-        """
-        num_articulations = len(self.articulation_start)
-        if num_articulations == 0:
-            return
-
-        num_joints = len(self.joint_articulation)
-
-        # Build the new joint order: process joints in articulation order
-        new_order = []  # new_order[new_idx] = old_idx
-        for art_idx in range(num_articulations):
-            for joint_idx in range(num_joints):
-                if self.joint_articulation[joint_idx] == art_idx:
-                    new_order.append(joint_idx)
-
-        # Handle joints not in any articulation
-        for joint_idx in range(num_joints):
-            if self.joint_articulation[joint_idx] < 0 and joint_idx not in new_order:
-                new_order.append(joint_idx)
-
-        if len(new_order) != num_joints:
-            raise RuntimeError(f"Reordering mapped {len(new_order)} joints but model has {num_joints} joints")
-
-        # Build old_to_new mapping for per-joint arrays
-        old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(new_order)}
-
-        # Helper function to get DOF slice for a joint
-        def get_dof_slice(joint_idx: int) -> tuple[int, int]:
-            start = self.joint_qd_start[joint_idx]
-            if joint_idx + 1 < num_joints:
-                end = self.joint_qd_start[joint_idx + 1]
-            else:
-                end = self.joint_dof_count
-            return start, end
-
-        # Helper function to get coord slice for a joint
-        def get_coord_slice(joint_idx: int) -> tuple[int, int]:
-            start = self.joint_q_start[joint_idx]
-            if joint_idx + 1 < num_joints:
-                end = self.joint_q_start[joint_idx + 1]
-            else:
-                end = self.joint_coord_count
-            return start, end
-
-        # Helper function to get constraint slice for a joint
-        def get_cts_slice(joint_idx: int) -> tuple[int, int]:
-            start = self.joint_cts_start[joint_idx]
-            if joint_idx + 1 < num_joints:
-                end = self.joint_cts_start[joint_idx + 1]
-            else:
-                end = self.joint_constraint_count
-            return start, end
-
-        # Rebuild per-DOF arrays by concatenating slices in new joint order
-        def rebuild_per_dof_array(arr: list) -> list:
-            if not arr:
-                return arr
-            new_arr = []
-            for old_idx in new_order:
-                start, end = get_dof_slice(old_idx)
-                new_arr.extend(arr[start:end])
-            return new_arr
-
-        # Rebuild per-coord arrays by concatenating slices in new joint order
-        def rebuild_per_coord_array(arr: list) -> list:
-            if not arr:
-                return arr
-            new_arr = []
-            for old_idx in new_order:
-                start, end = get_coord_slice(old_idx)
-                new_arr.extend(arr[start:end])
-            return new_arr
-
-        # Store original start indices before reordering (needed for slice computation)
-        orig_joint_q_start = self.joint_q_start.copy()
-        orig_joint_qd_start = self.joint_qd_start.copy()
-        orig_joint_cts_start = self.joint_cts_start.copy() if hasattr(self, "joint_cts_start") else []
-
-        # Reorder per-joint arrays (length = number of joints)
-        self._reorder_list_by_mapping(self.joint_type, old_to_new, "joint_type")
-        self._reorder_list_by_mapping(self.joint_enabled, old_to_new, "joint_enabled")
-        self._reorder_list_by_mapping(self.joint_parent, old_to_new, "joint_parent")
-        self._reorder_list_by_mapping(self.joint_child, old_to_new, "joint_child")
-        self._reorder_list_by_mapping(self.joint_X_p, old_to_new, "joint_X_p")
-        self._reorder_list_by_mapping(self.joint_X_c, old_to_new, "joint_X_c")
-        self._reorder_list_by_mapping(self.joint_twist_lower, old_to_new, "joint_twist_lower")
-        self._reorder_list_by_mapping(self.joint_twist_upper, old_to_new, "joint_twist_upper")
-        self._reorder_list_by_mapping(self.joint_articulation, old_to_new, "joint_articulation")
-        self._reorder_list_by_mapping(self.joint_key, old_to_new, "joint_key")
-        self._reorder_list_by_mapping(self.joint_world, old_to_new, "joint_world")
-        self._reorder_list_by_mapping(self.joint_dof_dim, old_to_new, "joint_dof_dim")
-        if hasattr(self, "joint_axis_dim") and self.joint_axis_dim:
-            self._reorder_list_by_mapping(self.joint_axis_dim, old_to_new, "joint_axis_dim")
-
-        # Rebuild per-DOF arrays (length = total DOF count)
-        # Use original start indices for slice computation
-        def get_dof_slice_orig(joint_idx: int) -> tuple[int, int]:
-            start = orig_joint_qd_start[joint_idx]
-            if joint_idx + 1 < num_joints:
-                end = orig_joint_qd_start[joint_idx + 1]
-            else:
-                end = self.joint_dof_count
-            return start, end
-
-        def rebuild_per_dof_array_orig(arr: list) -> list:
-            if not arr:
-                return arr
-            new_arr = []
-            for old_idx in new_order:
-                start, end = get_dof_slice_orig(old_idx)
-                new_arr.extend(arr[start:end])
-            return new_arr
-
-        self.joint_axis[:] = rebuild_per_dof_array_orig(self.joint_axis)
-        self.joint_armature[:] = rebuild_per_dof_array_orig(self.joint_armature)
-        self.joint_target_ke[:] = rebuild_per_dof_array_orig(self.joint_target_ke)
-        self.joint_target_kd[:] = rebuild_per_dof_array_orig(self.joint_target_kd)
-        self.joint_limit_lower[:] = rebuild_per_dof_array_orig(self.joint_limit_lower)
-        self.joint_limit_upper[:] = rebuild_per_dof_array_orig(self.joint_limit_upper)
-        self.joint_limit_ke[:] = rebuild_per_dof_array_orig(self.joint_limit_ke)
-        self.joint_limit_kd[:] = rebuild_per_dof_array_orig(self.joint_limit_kd)
-        self.joint_effort_limit[:] = rebuild_per_dof_array_orig(self.joint_effort_limit)
-        self.joint_velocity_limit[:] = rebuild_per_dof_array_orig(self.joint_velocity_limit)
-        self.joint_friction[:] = rebuild_per_dof_array_orig(self.joint_friction)
-        self.joint_act_mode[:] = rebuild_per_dof_array_orig(self.joint_act_mode)
-        self.joint_target_pos[:] = rebuild_per_dof_array_orig(self.joint_target_pos)
-        self.joint_target_vel[:] = rebuild_per_dof_array_orig(self.joint_target_vel)
-        self.joint_qd[:] = rebuild_per_dof_array_orig(self.joint_qd)
-        self.joint_f[:] = rebuild_per_dof_array_orig(self.joint_f)
-
-        # Rebuild per-coord arrays (length = total coord count)
-        def get_coord_slice_orig(joint_idx: int) -> tuple[int, int]:
-            start = orig_joint_q_start[joint_idx]
-            if joint_idx + 1 < num_joints:
-                end = orig_joint_q_start[joint_idx + 1]
-            else:
-                end = self.joint_coord_count
-            return start, end
-
-        def rebuild_per_coord_array_orig(arr: list) -> list:
-            if not arr:
-                return arr
-            new_arr = []
-            for old_idx in new_order:
-                start, end = get_coord_slice_orig(old_idx)
-                new_arr.extend(arr[start:end])
-            return new_arr
-
-        self.joint_q[:] = rebuild_per_coord_array_orig(self.joint_q)
-
-        # Recompute joint_q_start, joint_qd_start, joint_cts_start based on new order
-        new_q_start = []
-        new_qd_start = []
-        new_cts_start = []
-        q_offset = 0
-        qd_offset = 0
-        cts_offset = 0
-
-        for old_idx in new_order:
-            # Get DOF and coord counts for this joint from original data
-            q_start_orig, q_end_orig = get_coord_slice_orig(old_idx)
-            qd_start_orig, qd_end_orig = get_dof_slice_orig(old_idx)
-            coord_count = q_end_orig - q_start_orig
-            dof_count = qd_end_orig - qd_start_orig
-
-            new_q_start.append(q_offset)
-            new_qd_start.append(qd_offset)
-
-            q_offset += coord_count
-            qd_offset += dof_count
-
-            if orig_joint_cts_start:
-                cts_start_orig = orig_joint_cts_start[old_idx]
-                if old_idx + 1 < num_joints:
-                    cts_end_orig = orig_joint_cts_start[old_idx + 1]
-                else:
-                    cts_end_orig = self.joint_constraint_count
-                cts_count = cts_end_orig - cts_start_orig
-                new_cts_start.append(cts_offset)
-                cts_offset += cts_count
-
-        self.joint_q_start[:] = new_q_start
-        self.joint_qd_start[:] = new_qd_start
-        if hasattr(self, "joint_cts_start") and self.joint_cts_start:
-            self.joint_cts_start[:] = new_cts_start
-
-        # Handle joint_axis_start if present (similar to joint_q_start but for axes)
-        if hasattr(self, "joint_axis_start") and self.joint_axis_start:
-            # Recompute based on joint_dof_dim (which was already reordered)
-            new_axis_start = []
-            axis_offset = 0
-            for joint_idx in range(num_joints):
-                new_axis_start.append(axis_offset)
-                if joint_idx < len(self.joint_dof_dim):
-                    lin_axes, ang_axes = self.joint_dof_dim[joint_idx]
-                    axis_offset += lin_axes + ang_axes
-            self.joint_axis_start[:] = new_axis_start
-
-        # Remap custom attributes to match the new joint order
-        for _attr_key, custom_attr in self.custom_attributes.items():
-            if custom_attr.values is None or len(custom_attr.values) == 0:
-                continue  # Skip attributes with no values
-
-            freq = custom_attr.frequency
-            if custom_attr.is_custom_frequency:
-                # Custom string frequencies are stored as lists and don't need remapping
-                continue
-
-            # Only remap dict-based (enum frequency) attributes for joint-related frequencies
-            if not isinstance(custom_attr.values, dict):
-                continue
-
-            if freq == Model.AttributeFrequency.JOINT:
-                # Remap per-joint attributes using old_to_new mapping
-                new_values = {}
-                for old_idx, value in custom_attr.values.items():
-                    if old_idx in old_to_new:
-                        new_idx = old_to_new[old_idx]
-                        new_values[new_idx] = value
-                custom_attr.values = new_values
-
-            elif freq == Model.AttributeFrequency.JOINT_DOF:
-                # Rebuild per-DOF attributes by concatenating slices in new joint order
-                new_values = {}
-                new_dof_offset = 0
-                for old_joint_idx in new_order:
-                    old_dof_start, old_dof_end = get_dof_slice_orig(old_joint_idx)
-                    old_dof_count = old_dof_end - old_dof_start
-                    # Copy values from old DOF range to new DOF range
-                    for i in range(old_dof_count):
-                        old_dof_idx = old_dof_start + i
-                        if old_dof_idx in custom_attr.values:
-                            new_dof_idx = new_dof_offset + i
-                            new_values[new_dof_idx] = custom_attr.values[old_dof_idx]
-                    new_dof_offset += old_dof_count
-                custom_attr.values = new_values
-
-            elif freq == Model.AttributeFrequency.JOINT_COORD:
-                # Rebuild per-coord attributes by concatenating slices in new joint order
-                new_values = {}
-                new_coord_offset = 0
-                for old_joint_idx in new_order:
-                    old_coord_start, old_coord_end = get_coord_slice_orig(old_joint_idx)
-                    old_coord_count = old_coord_end - old_coord_start
-                    # Copy values from old coord range to new coord range
-                    for i in range(old_coord_count):
-                        old_coord_idx = old_coord_start + i
-                        if old_coord_idx in custom_attr.values:
-                            new_coord_idx = new_coord_offset + i
-                            new_values[new_coord_idx] = custom_attr.values[old_coord_idx]
-                    new_coord_offset += old_coord_count
-                custom_attr.values = new_values
-
-            elif freq == Model.AttributeFrequency.JOINT_CONSTRAINT:
-                # Rebuild per-constraint attributes by concatenating slices in new joint order
-                if not orig_joint_cts_start:
-                    continue  # No constraint data to remap
-                new_values = {}
-                new_cts_offset = 0
-                for old_joint_idx in new_order:
-                    old_cts_start = orig_joint_cts_start[old_joint_idx]
-                    if old_joint_idx + 1 < num_joints:
-                        old_cts_end = orig_joint_cts_start[old_joint_idx + 1]
-                    else:
-                        old_cts_end = self.joint_constraint_count
-                    old_cts_count = old_cts_end - old_cts_start
-                    # Copy values from old constraint range to new constraint range
-                    for i in range(old_cts_count):
-                        old_cts_idx = old_cts_start + i
-                        if old_cts_idx in custom_attr.values:
-                            new_cts_idx = new_cts_offset + i
-                            new_values[new_cts_idx] = custom_attr.values[old_cts_idx]
-                    new_cts_offset += old_cts_count
-                custom_attr.values = new_values
-
-        # Rebuild articulation_start with new contiguous ranges
-        self.articulation_start.clear()
-        for art_idx in range(num_articulations):
-            for new_idx in range(len(self.joint_articulation)):
-                if self.joint_articulation[new_idx] == art_idx:
-                    self.articulation_start.append(new_idx)
-                    break
 
     def _create_joint_from_base_joint_spec(
         self,
@@ -7318,9 +6992,8 @@ class ModelBuilder:
 
         Args:
             child (int): The body index to connect.
-            floating (bool or None, optional): If True or None (default), creates a free joint when
-                ``parent == -1`` (connecting to world). When ``parent != -1`` (connecting to another body),
-                falls back to a fixed joint since free joints cannot be relative to a parent body.
+            floating (bool or None, optional): If None (default), behavior depends on format-specific defaults.
+                If True, creates a FREE joint (only valid when ``parent == -1``).
                 If False, always creates a fixed joint.
             base_joint (str or dict or None, optional): Specifies the joint type to create.
                 This can be either:
@@ -7330,7 +7003,7 @@ class ModelBuilder:
                   and an angular axis in z).
                 - A dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
 
-                When specified, this takes precedence over the ``floating`` parameter.
+                Cannot be specified together with ``floating``.
             key (str or None, optional): A unique key for the joint. If not provided, a default
                 key is generated based on the body index.
             parent_xform (Transform or None, optional): The transform of the joint in the parent frame.
@@ -7345,7 +7018,8 @@ class ModelBuilder:
             int: The index of the created joint.
 
         Raises:
-            ValueError: If parent is invalid.
+            ValueError: If parent is invalid, or if both ``floating`` and ``base_joint`` are specified,
+                or if ``floating=True`` with ``parent != -1``.
 
         Note:
             When ``parent_xform`` is not provided:
@@ -7353,6 +7027,18 @@ class ModelBuilder:
             - If parent is another body, identity transform is used (joint at parent body origin).
         """
         # Validation
+        if floating is not None and base_joint is not None:
+            raise ValueError(
+                "Cannot specify both 'floating' and 'base_joint'. "
+                "Use 'floating' for FREE/FIXED joints, or 'base_joint' for custom mobility."
+            )
+
+        if floating is True and parent != -1:
+            raise ValueError(
+                "Cannot create FREE joint when parent_body != -1. "
+                "FREE joints require world frame. Use floating=False or base_joint."
+            )
+
         self._validate_parent_body(parent, child)
 
         # Determine transforms
@@ -7380,20 +7066,13 @@ class ModelBuilder:
             joint_id = self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key)
         else:
             # Default: floating=None or floating=True
-            # Creates free joint only when parent == -1 (world frame).
-            # When parent != -1, falls back to fixed joint since free joints cannot be relative to a parent body.
+            # At this point, if floating=True, parent must be -1 (validated above)
             if parent == -1:
                 joint_id = self.add_joint_free(child, key=key)
             else:
-                # Can't have a free joint when attaching to another body - use fixed instead
+                # floating=None with parent != -1: use fixed joint
                 joint_id = self.add_joint_fixed(
                     parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key
-                )
-                warnings.warn(
-                    f"Requested floating/free joint for body {child} with parent {parent}, "
-                    f"but free joints can only connect to world (parent=-1). Using fixed joint instead.",
-                    UserWarning,
-                    stacklevel=2,
                 )
 
         return joint_id

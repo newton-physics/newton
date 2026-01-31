@@ -4256,8 +4256,8 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.REVOLUTE)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_overrides_floating(self):
-        """Test that base_joint takes precedence over floating parameter."""
+    def test_floating_and_base_joint_mutually_exclusive(self):
+        """Test that specifying both floating and base_joint raises an error."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
@@ -4269,13 +4269,11 @@ def Xform "Articulation" (
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
         UsdPhysics.CollisionAPI.Apply(body_prim)
 
-        # Even with floating=True, base_joint should take precedence
+        # Specifying both floating and base_joint should raise an error
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, floating=True, base_joint="px,py")
-        model = builder.finalize()
-
-        self.assertEqual(model.joint_count, 1)
-        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_usd(stage, floating=True, base_joint="px,py")
+        self.assertIn("Cannot specify both", str(ctx.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_parent_body_attaches_to_existing_body(self):
@@ -4447,7 +4445,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_non_sequential_articulation_attachment(self):
-        """Test attaching to an earlier articulation with allow_expensive_reordering."""
+        """Test that attaching to a non-sequential articulation raises an error."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         def create_robot_stage():
@@ -4467,21 +4465,15 @@ def Xform "Articulation" (
         builder.add_usd(create_robot_stage(), floating=False)
         robot1_body_idx = 0
 
+        # Add more robots to make robot1_body_idx not part of the most recent articulation
         builder.add_usd(create_robot_stage(), floating=False)
         builder.add_usd(create_robot_stage(), floating=False)
 
+        # Attempting to attach to a non-sequential articulation should raise ValueError
         gripper_stage = create_robot_stage()
-        builder.add_usd(gripper_stage, parent_body=robot1_body_idx, allow_expensive_reordering=True)
-
-        model = builder.finalize()
-        articulation_start = model.articulation_start.numpy()
-        joint_articulation = model.joint_articulation.numpy()
-
-        for art_idx in range(len(articulation_start)):
-            start = articulation_start[art_idx]
-            end = articulation_start[art_idx + 1] if art_idx + 1 < len(articulation_start) else model.joint_count
-            for joint_idx in range(start, end):
-                self.assertEqual(joint_articulation[joint_idx], art_idx)
+        with self.assertRaises(ValueError) as cm:
+            builder.add_usd(gripper_stage, parent_body=robot1_body_idx)
+        self.assertIn("most recent", str(cm.exception))
 
 
 if __name__ == "__main__":

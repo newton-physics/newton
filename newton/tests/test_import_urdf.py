@@ -670,7 +670,7 @@ class TestImportUrdf(unittest.TestCase):
         self.assertEqual(builder.joint_key[0], "base_joint")
 
     def test_base_joint_overrides_floating(self):
-        """Test that base_joint takes precedence over floating parameter."""
+        """Test that specifying both base_joint and floating raises an error."""
         urdf_content = """<?xml version="1.0" encoding="utf-8"?>
 <robot name="test_base_joint_override">
     <link name="base_link">
@@ -684,15 +684,11 @@ class TestImportUrdf(unittest.TestCase):
     </link>
 </robot>
 """
-        # Even with floating=True, base_joint should take precedence
+        # Specifying both parameters should raise ValueError
         builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, floating=True, base_joint="px,py", up_axis="Z")
-        model = builder.finalize()
-
-        # Verify the model has a D6 joint (not free)
-        self.assertEqual(model.joint_count, 1)
-        joint_type = model.joint_type.numpy()[0]
-        self.assertEqual(joint_type, newton.JointType.D6)
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(urdf_content, builder, floating=True, base_joint="px,py", up_axis="Z")
+        self.assertIn("both 'floating' and 'base_joint'", str(cm.exception))
 
     def test_parent_body_attaches_to_existing_body(self):
         """Test that parent_body attaches the URDF root to an existing body."""
@@ -846,7 +842,7 @@ class TestImportUrdf(unittest.TestCase):
         self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
 
     def test_non_sequential_articulation_attachment(self):
-        """Test attaching to an earlier articulation with allow_expensive_reordering."""
+        """Test that attaching to a non-sequential articulation raises an error."""
         robot_urdf = """<?xml version="1.0"?>
 <robot name="robot">
     <link name="base_link">
@@ -879,20 +875,14 @@ class TestImportUrdf(unittest.TestCase):
         self.parse_urdf(robot_urdf, builder, floating=False)
         robot1_link_idx = builder.body_key.index("link1")
 
+        # Add more robots to make robot1_link_idx not part of the most recent articulation
         self.parse_urdf(robot_urdf, builder, floating=False)
         self.parse_urdf(robot_urdf, builder, floating=False)
 
-        self.parse_urdf(gripper_urdf, builder, parent_body=robot1_link_idx, allow_expensive_reordering=True)
-
-        model = builder.finalize()
-        articulation_start = model.articulation_start.numpy()
-        joint_articulation = model.joint_articulation.numpy()
-
-        for art_idx in range(len(articulation_start)):
-            start = articulation_start[art_idx]
-            end = articulation_start[art_idx + 1] if art_idx + 1 < len(articulation_start) else model.joint_count
-            for joint_idx in range(start, end):
-                self.assertEqual(joint_articulation[joint_idx], art_idx)
+        # Attempting to attach to a non-sequential articulation should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(gripper_urdf, builder, parent_body=robot1_link_idx, floating=False)
+        self.assertIn("most recent", str(cm.exception))
 
 
 class TestUrdfUriResolution(unittest.TestCase):

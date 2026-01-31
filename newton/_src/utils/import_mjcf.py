@@ -136,7 +136,6 @@ def parse_mjcf(
     floating: bool | None = None,
     base_joint: dict | str | None = None,
     parent_body: int = -1,
-    allow_expensive_reordering: bool = False,
     armature_scale: float = 1.0,
     scale: float = 1.0,
     hide_visuals: bool = False,
@@ -172,10 +171,12 @@ def parse_mjcf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform (Transform): The transform to apply to the imported mechanism.
-        floating (bool): If True, the root body receives a free joint. If False, the root body receives a fixed joint to the world. If None (default), the root body receives a free joint if one is defined in the MJCF, otherwise it receives a fixed joint. When a ``base_joint`` is specified, it takes precedence over this parameter.
-        base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
-        allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
+        floating (bool or None): If None (default), the root body receives a free joint if one is defined in the MJCF, otherwise it receives a fixed joint (MJCF default).
+            If True, creates a FREE joint (only valid when parent_body == -1).
+            If False, creates a fixed joint.
+            Cannot be specified together with base_joint.
+        base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
@@ -207,8 +208,13 @@ def parse_mjcf(
             from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
+    # Validate parameter combinations
+    if floating is not None and base_joint is not None:
+        raise ValueError("Cannot specify both 'floating' and 'base_joint'")
+
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
+
     if xform is None:
         xform = wp.transform_identity()
     else:
@@ -902,7 +908,14 @@ def parse_mjcf(
 
             # Process child bodies (need world transform)
             for child_body in frame.findall("body"):
-                parse_body(child_body, parent_body, _defaults, childclass=_childclass, incoming_xform=composed_world)
+                parse_body(
+                    child_body,
+                    parent_body,
+                    _defaults,
+                    childclass=_childclass,
+                    incoming_xform=composed_world,
+                    is_mjcf_root=False,
+                )
 
             # Process child geoms (need body-relative transform)
             # Use the same visual/collider partitioning logic as parse_body
@@ -936,15 +949,17 @@ def parse_mjcf(
         incoming_defaults: dict,
         childclass: str | None = None,
         incoming_xform: Transform | None = None,
+        is_mjcf_root: bool = False,
     ):
         """Parse a body element from MJCF.
 
         Args:
             body: The XML body element.
-            parent: Parent body index (-1 for world).
+            parent: Parent body index (-1 for world or parent_body from parse_mjcf).
             incoming_defaults: Default attributes dictionary.
             childclass: Child class name for inheritance.
             incoming_xform: Accumulated transform from parent (may include frame offsets).
+            is_mjcf_root: True if this is a root body in the MJCF (not a child in the MJCF tree).
                 If None, uses the import root xform.
         """
         body_class = body.get("class") or body.get("childclass")
@@ -1113,20 +1128,28 @@ def parse_mjcf(
                 joint_type = JointType.PRISMATIC
 
         # Handle base joint overrides for root bodies or FREE joints with special parameters
-        # This handles: (1) root body (parent==-1) with base_joint/floating/parent_body params, or
+        # This handles: (1) root body with base_joint/floating/parent_body params from parse_mjcf, or
         # (2) non-root body with freejoint in MJCF when parent_body is specified
-        is_root_body = parent == -1
-        has_override_params = base_joint is not None or floating is not None or parent_body != -1
+        # NOTE: For root bodies in the MJCF, parent will be the parent_body parameter from parse_mjcf.
+        # For nested bodies in the MJCF tree, parent will be the parent body index within the tree.
+        has_override_params = base_joint is not None or floating is not None or parent != -1
         is_free_joint_with_override = joint_type == JointType.FREE and has_override_params
 
-        if (is_root_body and has_override_params) or is_free_joint_with_override:
+        if (is_mjcf_root and has_override_params) or is_free_joint_with_override:
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             # Rotate joint_pos by body orientation before adding to body position
             rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
             _xform = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
-            # Determine the parent for the base joint (-1 for world, or an existing body index)
-            base_parent = parent_body
+            # Determine the parent for the base joint
+            base_parent = parent
+
+            # Validate parameter combinations
+            if floating is True and base_parent != -1:
+                raise ValueError(
+                    "Cannot create FREE joint when parent_body != -1. "
+                    "FREE joints require world frame. Use floating=False or base_joint."
+                )
 
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only
@@ -1295,7 +1318,9 @@ def parse_mjcf(
                 _incoming_defaults = defaults
             else:
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
-            parse_body(child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform)
+            parse_body(
+                child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform, is_mjcf_root=False
+            )
 
         # Process frame elements within this body
         # Use body's childclass if declared, otherwise inherit from parent
@@ -1531,7 +1556,7 @@ def parse_mjcf(
             effective_xform = xform
 
         for body in world.findall("body"):
-            parse_body(body, root_parent, world_defaults, incoming_xform=effective_xform)
+            parse_body(body, root_parent, world_defaults, incoming_xform=effective_xform, is_mjcf_root=True)
 
         # -----------------
         # add static geoms
@@ -2006,20 +2031,13 @@ def parse_mjcf(
     # Create articulation from all collected joints (only if not attaching to an existing body)
     if joint_indices:
         if parent_body != -1:
-            # Check if attachment requires reordering
-            parent_articulation, needs_reordering = builder._check_sequential_composition(
-                parent_body=parent_body,
-                allow_expensive_reordering=allow_expensive_reordering,
-            )
+            # Check if attachment is sequential
+            parent_articulation = builder._check_sequential_composition(parent_body=parent_body)
 
             if parent_articulation is not None and parent_articulation >= 0:
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     builder.joint_articulation[joint_idx] = parent_articulation
-
-                # Perform reordering if needed
-                if needs_reordering:
-                    builder._reorder_joints_by_articulation()
             else:
                 # Parent body is not in any articulation, create a new one
                 articulation_key = root.attrib.get("model")
