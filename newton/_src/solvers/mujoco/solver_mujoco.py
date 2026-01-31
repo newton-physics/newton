@@ -566,21 +566,21 @@ class SolverMuJoCo(SolverBase):
         # These are used for general/motor actuators parsed from MJCF
         # All actuator attributes share the "actuator" custom frequency (resolves to "mujoco:actuator" via namespace)
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
-        def parse_trntype(s: str) -> int:
+        def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5}.get(
                 s.lower(), 0
             )
 
-        def parse_dyntype(s: str) -> int:
+        def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4, "user": 5}.get(s.lower(), 0)
 
-        def parse_gaintype(s: str) -> int:
+        def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"fixed": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)
 
-        def parse_biastype(s: str) -> int:
+        def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"none": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)
 
-        def parse_bool_int(s: str) -> int:
+        def parse_bool_int(s: str, _context: dict[str, Any] | None = None) -> int:
             """Parse MJCF boolean values to int (0 or 1)."""
             s = s.strip().lower()
             return 1 if s in ("true", "1") else 0
