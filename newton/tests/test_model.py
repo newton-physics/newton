@@ -1662,19 +1662,22 @@ class TestModel(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             builder.add_base_joint(child_body, base_joint="p")
         self.assertIn("Invalid base_joint axis spec", str(context.exception))
-        self.assertIn("['p']", str(context.exception))
+        self.assertIn("'p'", str(context.exception))
+        self.assertIn("exactly 2 characters", str(context.exception))
 
         # Test invalid axis direction
         with self.assertRaises(ValueError) as context:
             builder.add_base_joint(child_body, base_joint="px,qy")
         self.assertIn("Invalid base_joint axis spec", str(context.exception))
-        self.assertIn("qy", str(context.exception))
+        self.assertIn("'qy'", str(context.exception))
+        self.assertIn("first char must be l/p/a/r", str(context.exception))
 
         # Test invalid coordinate letter
         with self.assertRaises(ValueError) as context:
             builder.add_base_joint(child_body, base_joint="pw,py")
         self.assertIn("Invalid base_joint axis spec", str(context.exception))
-        self.assertIn("pw", str(context.exception))
+        self.assertIn("'pw'", str(context.exception))
+        self.assertIn("second char must be x/y/z", str(context.exception))
 
         # Test valid spec should work
         joint_id = builder.add_base_joint(child_body, base_joint="px,py,rz")
