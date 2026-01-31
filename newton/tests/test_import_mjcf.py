@@ -3407,6 +3407,106 @@ class TestImportMjcf(unittest.TestCase):
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
         np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
 
+    def test_floating_true_creates_free_joint(self):
+        """Test that floating=True creates a free joint for the root body."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_floating">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FREE)
+
+    def test_floating_false_creates_fixed_joint(self):
+        """Test that floating=False creates a fixed joint for the root body."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_fixed">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
+
+    def test_base_joint_string_creates_d6_joint(self):
+        """Test that base_joint as string creates a D6 joint with specified axes."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_string">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="px,py,rz")
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+
+    def test_base_joint_dict_creates_custom_joint(self):
+        """Test that base_joint as dict creates the specified joint type."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_dict">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            mjcf_content,
+            base_joint={
+                "joint_type": newton.JointType.REVOLUTE,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0, 0, 1])],
+            },
+        )
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.REVOLUTE)
+
+    def test_base_joint_overrides_floating(self):
+        """Test that specifying both base_joint and floating raises an error."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_override">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Specifying both parameters should raise ValueError
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(mjcf_content, floating=True, base_joint="px,py")
+        self.assertIn("both 'floating' and 'base_joint'", str(cm.exception))
+
     def test_base_joint_respects_import_xform(self):
         """Test that base joints (parent == -1) correctly use the import xform.
 
@@ -3529,6 +3629,97 @@ class TestImportMjcf(unittest.TestCase):
             actual_quat, -expected_quat, atol=1e-5
         )
         self.assertTrue(quat_match, f"Body orientation should include frame rotation. Got {actual_quat}")
+
+    def test_parent_body_attaches_to_existing_body(self):
+        """Test that parent_body attaches the MJCF root to an existing body."""
+        # First MJCF: a simple robot arm
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot_arm">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Second MJCF: a gripper
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.025 0.025 0.01" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # First, load the robot
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        # Get the end effector body index
+        ee_body_idx = builder.body_key.index("end_effector")
+
+        # Remember the body count before adding gripper
+        robot_body_count = builder.body_count
+        robot_joint_count = builder.joint_count
+
+        # Now load the gripper attached to the end effector
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx)
+
+        model = builder.finalize()
+
+        # Verify body counts
+        self.assertEqual(model.body_count, robot_body_count + 1)  # Robot + gripper
+
+        # Verify the gripper's base joint has the end effector as parent
+        gripper_joint_idx = robot_joint_count  # First joint after robot
+        self.assertEqual(model.joint_parent.numpy()[gripper_joint_idx], ee_body_idx)
+
+        # Verify all joints belong to the same articulation
+        joint_articulations = model.joint_articulation.numpy()
+        robot_articulation = joint_articulations[0]
+        gripper_articulation = joint_articulations[gripper_joint_idx]
+        self.assertEqual(robot_articulation, gripper_articulation)
+
+    def test_parent_body_with_base_joint_creates_d6(self):
+        """Test that parent_body with base_joint creates a D6 joint to parent."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot_body_idx = 0
+
+        # Attach gripper with a D6 joint (rotation around Z)
+        builder.add_mjcf(gripper_mjcf, parent_body=robot_body_idx, base_joint="rz")
+
+        model = builder.finalize()
+
+        # The second joint should be a D6 connecting to the robot body
+        self.assertEqual(model.joint_count, 2)  # Fixed base + D6
+        self.assertEqual(model.joint_type.numpy()[1], newton.JointType.D6)
+        self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
 
     def test_exclude_tag(self):
         """Test that <exclude> tags properly filter collisions between specified body pairs."""
@@ -3716,6 +3907,337 @@ class TestImportMjcf(unittest.TestCase):
         # Check that warnings were printed for invalid exclude entries
         self.assertIn("Warning", output)
         self.assertIn("<exclude>", output)
+
+    def test_base_joint_on_fixed_root(self):
+        """Test that base_joint works on MJCF with fixed root (no freejoint)."""
+        fixed_root_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="fixed_root_robot">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link1" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(fixed_root_mjcf, base_joint="px,py,rz")
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 2)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+        self.assertEqual(model.joint_dof_count, 4)
+
+    def test_xform_relative_to_parent_body(self):
+        """Test that xform is interpreted relative to parent_body when attaching."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="0 1 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False)
+
+        ee_body_idx = builder.body_key.index("end_effector")
+        ee_world_pos = builder.body_q[ee_body_idx].p
+
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx, xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
+
+        gripper_body_idx = builder.body_key.index("gripper_base")
+        gripper_world_pos = builder.body_q[gripper_body_idx].p
+
+        self.assertAlmostEqual(gripper_world_pos[0], ee_world_pos[0], places=5)
+        self.assertAlmostEqual(gripper_world_pos[1], ee_world_pos[1], places=5)
+        self.assertAlmostEqual(gripper_world_pos[2], ee_world_pos[2] + 0.1, places=5)
+
+    def test_non_sequential_articulation_attachment(self):
+        """Test that attaching to a non-sequential articulation raises an error."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot1_link_idx = builder.body_key.index("robot_link")
+
+        # Add more robots to make robot1_link_idx not part of the most recent articulation
+        builder.add_mjcf(robot_mjcf, floating=False)
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        # Attempting to attach to a non-sequential articulation should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(gripper_mjcf, parent_body=robot1_link_idx, floating=False)
+        self.assertIn("most recent", str(cm.exception))
+
+    def test_floating_true_with_parent_body_raises_error(self):
+        """Test that floating=True with parent_body raises an error."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("robot_link")
+
+        # Attempting to use floating=True with parent_body should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(gripper_mjcf, parent_body=link_idx, floating=True)
+        self.assertIn("FREE joint", str(cm.exception))
+        self.assertIn("parent_body", str(cm.exception))
+
+    def test_floating_none_preserves_mjcf_default(self):
+        """Test that floating=None honors MJCF freejoint tags."""
+        # Test with freejoint
+        mjcf_with_freejoint = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_with_freejoint">
+    <worldbody>
+        <body name="floating_body" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_with_freejoint, floating=None)
+        model = builder.finalize()
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FREE)
+
+        # Test without freejoint
+        mjcf_without_freejoint = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_without_freejoint">
+    <worldbody>
+        <body name="fixed_body" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_without_freejoint, floating=None)
+        model = builder.finalize()
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
+
+    def test_sequential_attachment_succeeds(self):
+        """Test that attaching to the most recent articulation succeeds."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+            <body name="gripper_finger">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="box" size="0.01 0.01 0.03" mass="0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("robot_link")
+
+        # Attach gripper immediately - should succeed
+        builder.add_mjcf(gripper_mjcf, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify both are in the same articulation
+        # articulation_start has one extra element as an end marker, so length-1 = number of articulations
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+        # Should have 4 joints: robot FIXED base + robot hinge + gripper FIXED base + gripper hinge
+        self.assertEqual(model.joint_count, 4)
+
+    def test_floating_false_with_parent_body_succeeds(self):
+        """Test that floating=False with parent_body is explicitly allowed."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("robot_link")
+
+        # Explicitly using floating=False with parent_body should succeed
+        builder.add_mjcf(gripper_mjcf, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify it worked - gripper should be attached with FIXED joint
+        self.assertIn("gripper_base", builder.body_key)
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
+
+    def test_multi_root_mjcf_with_parent_body(self):
+        """Test MJCF with multiple root bodies and parent_body parameter."""
+        # MJCF with two root bodies under worldbody
+        multi_root_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="multi_root">
+    <worldbody>
+        <body name="root1" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="root2" pos="1 0 0">
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("link")
+
+        # Add multi-root MJCF - both root bodies should attach to the same parent
+        builder.add_mjcf(multi_root_mjcf, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify both root bodies were added
+        self.assertIn("root1", builder.body_key)
+        self.assertIn("root2", builder.body_key)
+        # Should still be one articulation
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+    def test_error_messages_are_informative(self):
+        """Test that error messages contain helpful information."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot1_link_idx = builder.body_key.index("robot_link")
+
+        # Add more robots to make robot1_link_idx not the most recent
+        builder.add_mjcf(robot_mjcf, floating=False)
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        # Try to attach to non-sequential articulation
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(gripper_mjcf, parent_body=robot1_link_idx, floating=False)
+
+        # Check that error message is informative
+        error_msg = str(cm.exception)
+        self.assertIn("most recent", error_msg)
+        self.assertIn("articulation", error_msg)
+        # Should mention the body name
+        self.assertIn("robot_link", error_msg)
 
 
 class TestMjcfInclude(unittest.TestCase):
@@ -4479,6 +5001,198 @@ class TestMjcfActuatorClassDefaults(unittest.TestCase):
 
         self.assertEqual(gainprm_values.shape[0], 1)
         self.assertAlmostEqual(gainprm_values[0, 0], 1000.0, places=1)
+
+    def test_base_joint_empty_string_fails(self):
+        """Test that empty base_joint string raises ValueError."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint="")
+        self.assertIn("cannot be empty", str(ctx.exception))
+
+    def test_base_joint_whitespace_only_fails(self):
+        """Test that whitespace-only base_joint string raises ValueError."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint="   ")
+        self.assertIn("cannot be empty", str(ctx.exception))
+
+    def test_base_joint_invalid_length_fails(self):
+        """Test that base_joint axis specs with invalid length raise ValueError."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+
+        # Single character
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint="p")
+        self.assertIn("exactly 2 characters", str(ctx.exception))
+
+        # Three characters
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint="pxx")
+        self.assertIn("exactly 2 characters", str(ctx.exception))
+
+    def test_base_joint_invalid_type_char_fails(self):
+        """Test that base_joint with invalid type character raises ValueError."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint="xx")  # 'x' is not a valid type
+        self.assertIn("first char must be l/p/a/r", str(ctx.exception))
+
+    def test_base_joint_invalid_axis_char_fails(self):
+        """Test that base_joint with invalid axis character raises ValueError."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint="pw")  # 'w' is not a valid axis
+        self.assertIn("second char must be x/y/z", str(ctx.exception))
+
+    def test_base_joint_duplicate_axes_fails(self):
+        """Test that base_joint with duplicate axis specifications raises ValueError."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint="px,py,px")  # 'px' appears twice
+        self.assertIn("Duplicate axis specifications", str(ctx.exception))
+        self.assertIn("px", str(ctx.exception))
+
+    def test_base_joint_dict_conflicting_keys_fails(self):
+        """Test that base_joint dict with conflicting keys raises ValueError."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+        builder = newton.ModelBuilder()
+
+        # Test with 'parent' key
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint={"joint_type": newton.JointType.REVOLUTE, "parent": 5})
+        self.assertIn("cannot specify", str(ctx.exception))
+        self.assertIn("parent", str(ctx.exception))
+
+        # Test with 'child' key
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint={"joint_type": newton.JointType.REVOLUTE, "child": 3})
+        self.assertIn("cannot specify", str(ctx.exception))
+        self.assertIn("child", str(ctx.exception))
+
+        # Test with 'parent_xform' key
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(
+                mjcf_content,
+                base_joint={"joint_type": newton.JointType.REVOLUTE, "parent_xform": wp.transform_identity()},
+            )
+        self.assertIn("cannot specify", str(ctx.exception))
+        self.assertIn("parent_xform", str(ctx.exception))
+
+    def test_base_joint_valid_string_variations(self):
+        """Test that various valid base_joint string formats work correctly."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        # Test linear with 'l' prefix
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="lx,ly,lz")
+        model = builder.finalize()
+        self.assertEqual(model.joint_coord_count, 3)  # 3 linear DOFs
+
+        # Test linear with 'p' prefix (prismatic)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="px,py,pz")
+        model = builder.finalize()
+        self.assertEqual(model.joint_coord_count, 3)  # 3 linear DOFs
+
+        # Test angular with 'a' prefix
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="ax,ay,az")
+        model = builder.finalize()
+        self.assertEqual(model.joint_coord_count, 3)  # 3 angular DOFs
+
+        # Test angular with 'r' prefix (revolute)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="rx,ry,rz")
+        model = builder.finalize()
+        self.assertEqual(model.joint_coord_count, 3)  # 3 angular DOFs
+
+        # Test mixed linear and angular
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="px,py,rz")
+        model = builder.finalize()
+        self.assertEqual(model.joint_coord_count, 3)  # 2 linear + 1 angular
+
+        # Test with spaces (should be trimmed)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint=" px , py , rz ")
+        model = builder.finalize()
+        self.assertEqual(model.joint_coord_count, 3)
+
+        # Test uppercase (should be lowercased)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, base_joint="PX,PY,RZ")
+        model = builder.finalize()
+        self.assertEqual(model.joint_coord_count, 3)
 
 
 if __name__ == "__main__":

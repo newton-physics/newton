@@ -562,6 +562,400 @@ class TestImportUrdf(unittest.TestCase):
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
 
+    def test_floating_true_creates_free_joint(self):
+        """Test that floating=True creates a free joint for the root body."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_floating">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(urdf_content, builder, floating=True, up_axis="Z")
+        model = builder.finalize()
+
+        # Verify the model has a free joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.FREE)
+        self.assertEqual(builder.joint_key[0], "floating_base")
+
+    def test_floating_false_creates_fixed_joint(self):
+        """Test that floating=False creates a fixed joint for the root body."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_fixed">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(urdf_content, builder, floating=False, up_axis="Z")
+        model = builder.finalize()
+
+        # Verify the model has a fixed joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.FIXED)
+
+    def test_base_joint_string_creates_d6_joint(self):
+        """Test that base_joint as string creates a D6 joint with specified axes."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_base_joint_string">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(urdf_content, builder, base_joint="px,py,rz", up_axis="Z")
+        model = builder.finalize()
+
+        # Verify the model has a D6 joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.D6)
+        self.assertEqual(builder.joint_key[0], "base_joint")
+
+    def test_base_joint_dict_creates_custom_joint(self):
+        """Test that base_joint as dict creates the specified joint type."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_base_joint_dict">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(
+            urdf_content,
+            builder,
+            base_joint={
+                "joint_type": newton.JointType.REVOLUTE,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0, 0, 1])],
+            },
+            up_axis="Z",
+        )
+        model = builder.finalize()
+
+        # Verify the model has a revolute joint
+        self.assertEqual(model.joint_count, 1)
+        joint_type = model.joint_type.numpy()[0]
+        self.assertEqual(joint_type, newton.JointType.REVOLUTE)
+        self.assertEqual(builder.joint_key[0], "base_joint")
+
+    def test_base_joint_overrides_floating(self):
+        """Test that specifying both base_joint and floating raises an error."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_base_joint_override">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        # Specifying both parameters should raise ValueError
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(urdf_content, builder, floating=True, base_joint="px,py", up_axis="Z")
+        self.assertIn("both 'floating' and 'base_joint'", str(cm.exception))
+
+    def test_parent_body_attaches_to_existing_body(self):
+        """Test that parent_body attaches the URDF root to an existing body."""
+        # First URDF: a simple robot arm
+        robot_urdf = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="robot_arm">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+    <link name="end_effector">
+        <inertial>
+            <mass value="0.5"/>
+            <inertia ixx="0.05" ixy="0.0" ixz="0.0" iyy="0.05" iyz="0.0" izz="0.05"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.05"/></geometry>
+        </visual>
+    </link>
+    <joint name="arm_joint" type="revolute">
+        <parent link="base_link"/>
+        <child link="end_effector"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14"/>
+    </joint>
+</robot>
+"""
+        # Second URDF: a gripper
+        gripper_urdf = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial>
+            <mass value="0.2"/>
+            <inertia ixx="0.02" ixy="0.0" ixz="0.0" iyy="0.02" iyz="0.0" izz="0.02"/>
+        </inertial>
+        <visual>
+            <geometry><box size="0.05 0.05 0.02"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        # First, load the robot
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False, up_axis="Z")
+
+        # Get the end effector body index
+        ee_body_idx = builder.body_key.index("end_effector")
+
+        # Remember the body count before adding gripper
+        robot_body_count = builder.body_count
+        robot_joint_count = builder.joint_count
+
+        # Now load the gripper attached to the end effector
+        self.parse_urdf(gripper_urdf, builder, parent_body=ee_body_idx, up_axis="Z")
+
+        model = builder.finalize()
+
+        # Verify body counts
+        self.assertEqual(model.body_count, robot_body_count + 1)  # Robot + gripper
+
+        # Verify the gripper's base joint has the end effector as parent
+        gripper_joint_idx = robot_joint_count  # First joint after robot
+        self.assertEqual(model.joint_parent.numpy()[gripper_joint_idx], ee_body_idx)
+
+        # Verify all joints belong to the same articulation
+        joint_articulations = model.joint_articulation.numpy()
+        robot_articulation = joint_articulations[0]
+        gripper_articulation = joint_articulations[gripper_joint_idx]
+        self.assertEqual(robot_articulation, gripper_articulation)
+
+    def test_parent_body_with_base_joint_creates_d6(self):
+        """Test that parent_body with base_joint creates a D6 joint to parent."""
+        robot_urdf = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="robot">
+    <link name="base">
+        <inertial><mass value="1.0"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial>
+    </link>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/><inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/></inertial>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False, up_axis="Z")
+        robot_body_idx = 0
+
+        # Attach gripper with a D6 joint (rotation around Z)
+        self.parse_urdf(gripper_urdf, builder, parent_body=robot_body_idx, base_joint="rz", up_axis="Z")
+
+        model = builder.finalize()
+
+        # The second joint should be a D6 connecting to the robot body
+        self.assertEqual(model.joint_count, 2)  # Fixed base + D6
+        self.assertEqual(model.joint_type.numpy()[1], newton.JointType.D6)
+        self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
+
+    def test_parent_body_creates_joint_to_parent(self):
+        """Test that parent_body creates a joint connecting to the parent body."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base_link">
+        <inertial><mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+    <link name="end_effector">
+        <inertial><mass value="0.5"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.05"/></geometry></visual>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="base_link"/><child link="end_effector"/>
+        <origin xyz="0 1 0"/><axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    </joint>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+        <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False)
+
+        ee_body_idx = builder.body_key.index("end_effector")
+        initial_joint_count = builder.joint_count
+
+        self.parse_urdf(gripper_urdf, builder, parent_body=ee_body_idx)
+
+        # Verify a new joint was created connecting to the parent
+        self.assertEqual(builder.joint_count, initial_joint_count + 1)
+        self.assertEqual(builder.joint_parent[initial_joint_count], ee_body_idx)
+
+        # Both should be in the same articulation
+        model = builder.finalize()
+        joint_articulation = model.joint_articulation.numpy()
+        self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
+
+    def test_non_sequential_articulation_attachment(self):
+        """Test that attaching to a non-sequential articulation raises an error."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base_link">
+        <inertial><mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+    <link name="link1">
+        <inertial><mass value="0.5"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.05"/></geometry></visual>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="base_link"/><child link="link1"/>
+        <origin xyz="1 0 0"/><axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    </joint>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+        <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False)
+        robot1_link_idx = builder.body_key.index("link1")
+
+        # Add more robots to make robot1_link_idx not part of the most recent articulation
+        self.parse_urdf(robot_urdf, builder, floating=False)
+        self.parse_urdf(robot_urdf, builder, floating=False)
+
+        # Attempting to attach to a non-sequential articulation should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(gripper_urdf, builder, parent_body=robot1_link_idx, floating=False)
+        self.assertIn("most recent", str(cm.exception))
+
+    def test_floating_false_with_parent_body_succeeds(self):
+        """Test that floating=False with parent_body is explicitly allowed."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base_link">
+        <inertial><mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+    <link name="link1">
+        <inertial><mass value="0.5"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.05"/></geometry></visual>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="base_link"/><child link="link1"/>
+        <origin xyz="1 0 0"/><axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    </joint>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+        <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False)
+        link_idx = builder.body_key.index("link1")
+
+        # Explicitly using floating=False with parent_body should succeed
+        self.parse_urdf(gripper_urdf, builder, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify it worked - gripper should be attached
+        self.assertIn("gripper_base", builder.body_key)
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
+
+    def test_floating_true_with_parent_body_raises_error(self):
+        """Test that floating=True with parent_body raises an error."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base_link">
+        <inertial><mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+        <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False)
+        base_idx = builder.body_key.index("base_link")
+
+        # floating=True with parent_body should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(gripper_urdf, builder, parent_body=base_idx, floating=True)
+        self.assertIn("FREE joint", str(cm.exception))
+        self.assertIn("parent", str(cm.exception))
+
 
 class TestUrdfUriResolution(unittest.TestCase):
     """Tests for URDF URI resolution functionality."""

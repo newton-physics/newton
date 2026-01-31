@@ -44,6 +44,9 @@ def parse_usd(
     source,
     *,
     xform: Transform | None = None,
+    floating: bool | None = None,
+    base_joint: dict | str | None = None,
+    parent_body: int = -1,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
     joint_drive_gains_scaling: float = 1.0,
@@ -74,6 +77,15 @@ def parse_usd(
         builder (ModelBuilder): The :class:`~newton.ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The transform to apply to the entire scene.
+        floating (bool or None): Controls the base joint type for floating bodies (bodies not connected as
+            a child to any joint).
+            - ``None`` (default): Uses format-specific default (FREE for USD bodies without joints).
+            - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+              parent_body == -1 since FREE joints must connect to world.
+            - ``False``: Creates a FIXED joint (0 DOF) for floating bodies.
+            Cannot be specified together with base_joint.
+        base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
         joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
@@ -147,6 +159,9 @@ def parse_usd(
             * - ``"path_original_body_map"``
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
+    # Early validation of base joint parameters
+    builder._validate_base_joint_params(floating, base_joint, parent_body)
+
     if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
@@ -1244,22 +1259,54 @@ def parse_usd(
 
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
+                # Use add_base_joint to honor floating, base_joint, and parent_body parameters
+                base_parent = parent_body
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
                         child_body_id = add_body(**body_data[i])
-                        joint_id = builder.add_joint_free(child=child_body_id)
+                        # Compute parent_xform to preserve imported pose when attaching to parent_body
+                        parent_xform = None
+                        if base_parent != -1:
+                            parent_xform = (
+                                wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
+                            )
+                        joint_id = builder.add_base_joint(
+                            child_body_id,
+                            floating=floating,
+                            base_joint=base_joint,
+                            parent=base_parent,
+                            parent_xform=parent_xform,
+                        )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        builder.add_articulation(
-                            [joint_id], key=body_data[i]["key"], custom_attributes=articulation_custom_attrs
+                        builder._finalize_imported_articulation(
+                            joint_indices=[joint_id],
+                            parent_body=parent_body,
+                            articulation_key=body_data[i]["key"],
+                            custom_attributes=articulation_custom_attrs,
                         )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
-                        joint_id = builder.add_joint_free(child=child_body_id)
+                        # Compute parent_xform to preserve imported pose when attaching to parent_body
+                        parent_xform = None
+                        if base_parent != -1:
+                            parent_xform = (
+                                wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
+                            )
+                        joint_id = builder.add_base_joint(
+                            child_body_id,
+                            floating=floating,
+                            base_joint=base_joint,
+                            parent=base_parent,
+                            parent_xform=parent_xform,
+                        )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        builder.add_articulation(
-                            [joint_id], key=body_keys[i], custom_attributes=articulation_custom_attrs
+                        builder._finalize_imported_articulation(
+                            joint_indices=[joint_id],
+                            parent_body=parent_body,
+                            articulation_key=body_keys[i],
+                            custom_attributes=articulation_custom_attrs,
                         )
                 sorted_joints = []
             else:
@@ -1302,22 +1349,60 @@ def parse_usd(
                 first_joint_parent = joint_edges[sorted_joints[0]][0]
                 if first_joint_parent != -1:
                     # the mechanism is floating since there is no joint connecting it to the world
-                    # we explicitly add a free joint connecting the first body in the articulation to the world
-                    # to make sure generalized-coordinate solvers can simulate it
+                    # we explicitly add a joint connecting the first body in the articulation to the world
+                    # (or to parent_body if specified) to make sure generalized-coordinate solvers can simulate it
+                    base_parent = parent_body
                     if bodies_follow_joint_ordering:
                         child_body = body_data[first_joint_parent]
                         child_body_id = path_body_map[child_body["key"]]
                     else:
                         child_body_id = art_bodies[first_joint_parent]
-                    # apply the articulation transform to the body
-                    free_joint_id = builder.add_joint_free(child=child_body_id)
-                    articulation_joint_indices.append(free_joint_id)
+                    # Compute parent_xform to preserve imported pose when attaching to parent_body
+                    parent_xform = None
+                    if base_parent != -1:
+                        parent_xform = wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
+                    base_joint_id = builder.add_base_joint(
+                        child_body_id,
+                        floating=floating,
+                        base_joint=base_joint,
+                        parent=base_parent,
+                        parent_xform=parent_xform,
+                    )
+                    articulation_joint_indices.append(base_joint_id)
 
                 # insert the remaining joints in topological order
                 for joint_id, i in enumerate(sorted_joints):
                     if joint_id == 0 and first_joint_parent == -1:
                         # the articulation root joint receives the articulation transform as parent transform
                         # except if we already inserted a floating-base joint
+                        # If base_joint or floating is specified, override the USD's root joint
+                        if base_joint is not None or floating is not None:
+                            # Get the child body of the root joint
+                            root_joint_child = joint_edges[sorted_joints[0]][1]
+                            if bodies_follow_joint_ordering:
+                                child_body = body_data[root_joint_child]
+                                child_body_id = path_body_map[child_body["key"]]
+                            else:
+                                child_body_id = art_bodies[root_joint_child]
+                            base_parent = parent_body
+                            # Compute parent_xform to preserve imported pose
+                            parent_xform = None
+                            if base_parent != -1:
+                                parent_xform = (
+                                    wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
+                                )
+                            else:
+                                # body_q is already in world space, use it directly
+                                parent_xform = builder.body_q[child_body_id]
+                            base_joint_id = builder.add_base_joint(
+                                child_body_id,
+                                floating=floating,
+                                base_joint=base_joint,
+                                parent=base_parent,
+                                parent_xform=parent_xform,
+                            )
+                            articulation_joint_indices.append(base_joint_id)
+                            continue  # Skip parsing the USD's root joint
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             incoming_xform=articulation_incoming_xform,
@@ -1338,9 +1423,10 @@ def parse_usd(
 
             # Create the articulation from all collected joints
             if articulation_joint_indices:
-                builder.add_articulation(
-                    articulation_joint_indices,
-                    key=articulation_path,
+                builder._finalize_imported_articulation(
+                    joint_indices=articulation_joint_indices,
+                    parent_body=parent_body,
+                    articulation_key=articulation_path,
                     custom_attributes=articulation_custom_attrs,
                 )
 
@@ -1364,6 +1450,7 @@ def parse_usd(
     )
 
     # insert remaining bodies that were not part of any articulation so far
+    # (joints for these bodies will be added later by add_base_joints_to_floating_bodies)
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
         body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
@@ -1372,10 +1459,6 @@ def parse_usd(
             incoming_xform=incoming_world_xform,
             add_body_to_builder=True,
         )
-        if not (no_articulations and has_joints):
-            # add articulation and free joint for this body
-            joint_id = builder.add_joint_free(child=body_id)
-            builder.add_articulation([joint_id], key=key)
 
     if no_articulations and has_joints:
         # parse external joints that are not part of any articulation
@@ -1697,10 +1780,34 @@ def parse_usd(
                         stacklevel=2,
                     )
 
-    # add free joints to floating bodies that's just been added by import_usd
+    # add joints to floating bodies (bodies not connected as children to any joint)
     if not (no_articulations and has_joints):
-        new_bodies = path_body_map.values()
-        builder.add_free_joints_to_floating_bodies(new_bodies)
+        new_bodies = list(path_body_map.values())
+        if parent_body != -1:
+            # When parent_body is specified, manually add joints to floating bodies with correct parent
+            joint_children = set(builder.joint_child)
+            for body_id in new_bodies:
+                if body_id in joint_children:
+                    continue  # Already has a joint
+                if builder.body_mass[body_id] <= 0:
+                    continue  # Skip static bodies
+                # Compute parent_xform to preserve imported pose when attaching to parent_body
+                parent_xform = wp.transform_inverse(builder.body_q[parent_body]) * builder.body_q[body_id]
+                joint_id = builder.add_base_joint(
+                    body_id,
+                    floating=floating,
+                    base_joint=base_joint,
+                    parent=parent_body,
+                    parent_xform=parent_xform,
+                )
+                # Attach to parent's articulation
+                builder._finalize_imported_articulation(
+                    joint_indices=[joint_id],
+                    parent_body=parent_body,
+                    articulation_key=None,
+                )
+        else:
+            builder.add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None

@@ -730,6 +730,9 @@ class ModelBuilder:
         self.articulation_key = []
         self.articulation_world = []  # world index for each articulation
 
+        # Cache for body -> articulation lookup (invalidated when joints/articulations change)
+        self._body_articulation_cache = {}
+
         self.joint_dof_count = 0
         self.joint_coord_count = 0
         self.joint_constraint_count = 0
@@ -1418,14 +1421,18 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
+        # Invalidate body-articulation cache since articulation structure changed
+        self._invalidate_body_articulation_cache()
+
     # region importers
     def add_urdf(
         self,
         source: str,
         *,
         xform: Transform | None = None,
-        floating: bool = False,
+        floating: bool | None = None,
         base_joint: dict | str | None = None,
+        parent_body: int = -1,
         scale: float = 1.0,
         hide_visuals: bool = False,
         parse_visuals_as_colliders: bool = False,
@@ -1447,8 +1454,16 @@ class ModelBuilder:
         Args:
             source (str): The filename of the URDF file to parse, or the URDF XML string content.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-            floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
-            base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            floating (bool or None): Controls the base joint type for the root body.
+
+                - ``None`` (default): Uses format-specific default (FIXED for URDF).
+                - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+                  parent_body == -1 since FREE joints must connect to world.
+                - ``False``: Creates a FIXED joint (0 DOF).
+
+                Cannot be specified together with base_joint.
+            base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes.
             parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
@@ -1477,6 +1492,7 @@ class ModelBuilder:
             xform=xform,
             floating=floating,
             base_joint=base_joint,
+            parent_body=parent_body,
             scale=scale,
             hide_visuals=hide_visuals,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
@@ -1498,6 +1514,9 @@ class ModelBuilder:
         source,
         *,
         xform: Transform | None = None,
+        floating: bool | None = None,
+        base_joint: dict | str | None = None,
+        parent_body: int = -1,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
         joint_drive_gains_scaling: float = 1.0,
@@ -1527,6 +1546,17 @@ class ModelBuilder:
         Args:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The transform to apply to the entire scene.
+            floating (bool or None): Controls the base joint type for floating bodies (bodies not connected as
+                a child to any joint).
+
+                - ``None`` (default): Uses format-specific default (FREE for USD bodies without joints).
+                - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+                  parent_body == -1 since FREE joints must connect to world.
+                - ``False``: Creates a FIXED joint (0 DOF) for floating bodies.
+
+                Cannot be specified together with base_joint.
+            base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
             only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
@@ -1606,6 +1636,9 @@ class ModelBuilder:
             self,
             source,
             xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            parent_body=parent_body,
             only_load_enabled_rigid_bodies=only_load_enabled_rigid_bodies,
             only_load_enabled_joints=only_load_enabled_joints,
             joint_drive_gains_scaling=joint_drive_gains_scaling,
@@ -1634,6 +1667,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         floating: bool | None = None,
         base_joint: dict | str | None = None,
+        parent_body: int = -1,
         armature_scale: float = 1.0,
         scale: float = 1.0,
         hide_visuals: bool = False,
@@ -1668,8 +1702,17 @@ class ModelBuilder:
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform (Transform): The transform to apply to the imported mechanism.
-            floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
-            base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            floating (bool or None): Controls the base joint type for the root body.
+
+                - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
+                  otherwise FIXED).
+                - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+                  parent_body == -1 since FREE joints must connect to world.
+                - ``False``: Creates a FIXED joint (0 DOF).
+
+                Cannot be specified together with base_joint.
+            base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
             armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
@@ -1711,6 +1754,7 @@ class ModelBuilder:
             xform=xform,
             floating=floating,
             base_joint=base_joint,
+            parent_body=parent_body,
             armature_scale=armature_scale,
             scale=scale,
             hide_visuals=hide_visuals,
@@ -2628,6 +2672,9 @@ class ModelBuilder:
                 joint_index=joint_index,
                 custom_attrs=custom_attributes,
             )
+
+        # Invalidate body-articulation cache since joint structure changed
+        self._invalidate_body_articulation_cache()
 
         return joint_index
 
@@ -6226,26 +6273,424 @@ class ModelBuilder:
         else:
             self.body_inv_inertia[i] = new_inertia
 
-    def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
+    def _validate_parent_body(self, parent_body: int, child: int) -> None:
         """
-        Adds a free joint and single-joint articulation to every rigid body that is not a child in any joint
+        Validate that parent_body is a valid body index.
+
+        Args:
+            parent_body: The parent body index to validate (-1 for world is OK).
+            child: The child body index (to check for self-reference).
+
+        Raises:
+            ValueError: If validation fails.
+        """
+        if parent_body == -1:
+            return  # -1 is valid (world reference)
+
+        # Check bounds
+        if parent_body < -1:
+            raise ValueError(f"Invalid parent_body index: {parent_body}. Must be >= -1 (use -1 for world).")
+
+        if parent_body >= len(self.body_mass):
+            raise ValueError(
+                f"Invalid parent_body index: {parent_body}. "
+                f"Body index out of bounds (model has {len(self.body_mass)} bodies)."
+            )
+
+        # Check self-reference
+        if parent_body == child:
+            raise ValueError(f"Cannot attach body {child} to itself (parent_body == child).")
+
+        # Validate body has positive mass (optional warning)
+        if self.body_mass[parent_body] <= 0.0:
+            warnings.warn(
+                f"parent_body {parent_body} has zero or negative mass ({self.body_mass[parent_body]}). "
+                f"This may cause unexpected behavior.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    def _find_articulation_for_body(self, body_id: int) -> int | None:
+        """
+        Find which articulation (if any) contains the given body.
+
+        This method uses caching for performance. The cache is invalidated when
+        joints or articulations are added/modified.
+
+        Args:
+            body_id: The body index to search for.
+
+        Returns:
+            int: Articulation index if found, or None if body is not in any articulation.
+
+        Note:
+            If a body appears in multiple articulations (as parent in one and child in another),
+            this returns the first articulation found, which may be non-deterministic.
+        """
+        # Check cache first
+        if body_id in self._body_articulation_cache:
+            return self._body_articulation_cache[body_id]
+
+        # Cache miss - compute the articulation
+        result = None
+
+        # Check if body is a child in any joint
+        for joint_idx in range(len(self.joint_child)):
+            if self.joint_child[joint_idx] == body_id:
+                art_id = self.joint_articulation[joint_idx]
+                if art_id >= 0:  # -1 means no articulation
+                    result = art_id
+                    break
+
+        # If not found as child, check if body is a parent in any joint
+        if result is None:
+            for joint_idx in range(len(self.joint_parent)):
+                if self.joint_parent[joint_idx] == body_id:
+                    art_id = self.joint_articulation[joint_idx]
+                    if art_id >= 0:
+                        result = art_id
+                        break
+
+        # Cache the result (even if None)
+        self._body_articulation_cache[body_id] = result
+        return result
+
+    def _invalidate_body_articulation_cache(self) -> None:
+        """
+        Invalidate the body-to-articulation lookup cache.
+
+        This should be called whenever joints or articulations are added or modified,
+        as these operations can change which bodies belong to which articulations.
+        """
+        self._body_articulation_cache.clear()
+
+    @staticmethod
+    def _validate_base_joint_params(floating: bool | None, base_joint: dict | str | None, parent: int) -> None:
+        """
+        Validate floating and base_joint parameter combinations.
+
+        This is a shared validation function used by all importers (MJCF, URDF, USD)
+        to ensure consistent parameter validation.
+
+        Args:
+            floating: The floating parameter value (True, False, or None).
+            base_joint: The base_joint parameter value.
+            parent: The parent body index (-1 for world, >= 0 for a body).
+
+        Raises:
+            ValueError: If parameter combinations are invalid:
+                - Both floating and base_joint are specified (mutually exclusive)
+                - floating=True with parent != -1 (FREE joints require world frame)
+        """
+        if floating is not None and base_joint is not None:
+            raise ValueError(
+                "Cannot specify both 'floating' and 'base_joint'. "
+                "Use 'floating' for FREE/FIXED joints, or 'base_joint' for custom mobility."
+            )
+
+        if floating is True and parent != -1:
+            raise ValueError(
+                "Cannot create FREE joint when parent_body != -1. "
+                "FREE joints require world frame. Use floating=False or base_joint."
+            )
+
+    def _check_sequential_composition(self, parent_body: int) -> int | None:
+        """
+        Check if attaching to parent_body is sequential (most recent articulation).
+
+        Args:
+            parent_body: The parent body index to check.
+
+        Returns:
+            The parent articulation ID, or None if parent_body is world (-1) or not in an articulation.
+
+        Raises:
+            ValueError: If attempting to attach to a non-sequential articulation.
+        """
+        if parent_body == -1:
+            return None
+
+        parent_articulation = self._find_articulation_for_body(parent_body)
+        if parent_articulation is None:
+            return None
+
+        num_articulations = len(self.articulation_start)
+        is_sequential = parent_articulation == num_articulations - 1
+
+        if is_sequential:
+            return parent_articulation
+        else:
+            body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
+            raise ValueError(
+                f"Cannot attach to parent_body {body_name} in articulation #{parent_articulation} "
+                f"(most recent is #{num_articulations - 1}). "
+                f"Attach to the most recently added articulation or build in order."
+            )
+
+    def _finalize_imported_articulation(
+        self,
+        joint_indices: list[int],
+        parent_body: int,
+        articulation_key: str | None = None,
+        custom_attributes: dict | None = None,
+    ) -> None:
+        """
+        Attach imported joints to parent articulation or create a new articulation.
+
+        This helper method encapsulates the common logic used by all importers (MJCF, URDF, USD)
+        for handling articulation creation after importing a model.
+
+        Args:
+            joint_indices: List of joint indices from the imported model.
+            parent_body: The parent body index (-1 for world, or a body index for hierarchical composition).
+            articulation_key: Optional key for the articulation (e.g., model name).
+            custom_attributes: Optional custom attributes for the articulation.
+
+        Note:
+            - If parent_body != -1 and it belongs to an articulation, the imported joints are added
+              to the parent's articulation (only works for sequential composition).
+            - Otherwise, a new articulation is created.
+            - If joint_indices is empty, does nothing.
+        """
+        if not joint_indices:
+            return
+
+        if parent_body != -1:
+            # Check if attachment is sequential
+            parent_articulation = self._check_sequential_composition(parent_body=parent_body)
+
+            if parent_articulation is not None:
+                # Mark all new joints as belonging to the parent's articulation
+                for joint_idx in joint_indices:
+                    self.joint_articulation[joint_idx] = parent_articulation
+            else:
+                # Parent body is not in any articulation, create a new one
+                self.add_articulation(
+                    joints=joint_indices,
+                    key=articulation_key,
+                    custom_attributes=custom_attributes,
+                )
+        else:
+            # No parent_body specified, create a new articulation
+            self.add_articulation(
+                joints=joint_indices,
+                key=articulation_key,
+                custom_attributes=custom_attributes,
+            )
+
+    def _create_joint_from_base_joint_spec(
+        self,
+        base_joint: str | dict,
+        parent: int,
+        child: int,
+        parent_xform: Transform,
+        child_xform: Transform,
+        key: str | None,
+    ) -> int:
+        """Create joint from base_joint specification (string or dict)."""
+        if isinstance(base_joint, str):
+            # Parse string like "px,py,rz"
+            axes_spec = [ax.strip() for ax in base_joint.lower().split(",") if ax.strip()]
+
+            # Validate non-empty
+            if not axes_spec:
+                raise ValueError(
+                    "base_joint string cannot be empty. "
+                    "Expected comma-separated axis specs like 'px,py,rz' or 'lx,ly,az'."
+                )
+
+            axes_vec = {
+                "x": [1.0, 0.0, 0.0],
+                "y": [0.0, 1.0, 0.0],
+                "z": [0.0, 0.0, 1.0],
+            }
+
+            # Validate axis specs: must be exactly 2 characters (type + axis)
+            invalid = []
+            for ax in axes_spec:
+                if len(ax) != 2:
+                    invalid.append(f"{ax!r} (must be exactly 2 characters)")
+                elif ax[0] not in {"l", "p", "a", "r"}:
+                    invalid.append(f"{ax!r} (first char must be l/p/a/r)")
+                elif ax[1] not in axes_vec:
+                    invalid.append(f"{ax!r} (second char must be x/y/z)")
+
+            if invalid:
+                raise ValueError(
+                    f"Invalid base_joint axis spec(s): {', '.join(invalid)}. "
+                    f"Expected 2-character tokens like 'px', 'py', 'rz' where first char is "
+                    f"'l'/'p' (linear/prismatic) or 'a'/'r' (angular/revolute), and second char is 'x'/'y'/'z'."
+                )
+
+            # Check for duplicates
+            if len(axes_spec) != len(set(axes_spec)):
+                duplicates = [ax for ax in axes_spec if axes_spec.count(ax) > 1]
+                raise ValueError(
+                    f"Duplicate axis specifications in base_joint: {duplicates}. Each axis can only be specified once."
+                )
+
+            linear_axes_str = [ax[1] for ax in axes_spec if ax[0] in {"l", "p"}]
+            angular_axes_str = [ax[1] for ax in axes_spec if ax[0] in {"a", "r"}]
+            return self.add_joint_d6(
+                linear_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str],
+                angular_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str],
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                parent=parent,
+                child=child,
+                key=key,
+            )
+        elif isinstance(base_joint, dict):
+            # Check for conflicting keys that will be overwritten
+            conflicting_keys = set(base_joint.keys()) & {"parent", "child", "parent_xform", "child_xform"}
+            if conflicting_keys:
+                raise ValueError(
+                    f"base_joint dict cannot specify {conflicting_keys}. "
+                    f"These parameters are automatically set based on the attachment. "
+                    f"Remove these keys from the base_joint dict."
+                )
+
+            joint_params = base_joint.copy()
+            joint_params["parent"] = parent
+            joint_params["child"] = child
+            joint_params["parent_xform"] = parent_xform
+            joint_params["child_xform"] = child_xform
+            if "key" not in joint_params and key is not None:
+                joint_params["key"] = key
+            return self.add_joint(**joint_params)
+        else:
+            raise ValueError(f"base_joint must be a string or dict, got {type(base_joint).__name__}")
+
+    def add_base_joint(
+        self,
+        child: int,
+        floating: bool | None = None,
+        base_joint: dict | str | None = None,
+        key: str | None = None,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        parent: int = -1,
+    ) -> int:
+        """
+        Adds a joint connecting a body to a parent body (or the world) based on the ``floating`` and ``base_joint`` parameters.
+
+        This method is used to attach a body to a parent body or the world frame with the appropriate joint type.
+        By default, the body's current transform is used as the parent transform for the joint.
+
+        Args:
+            child (int): The body index to connect.
+            floating (bool or None, optional): If None (default), behavior depends on format-specific defaults.
+                If True, creates a FREE joint (only valid when ``parent == -1``).
+                If False, always creates a fixed joint.
+            base_joint (str or dict or None, optional): Specifies the joint type to create.
+                This can be either:
+
+                - A string defining the joint axes of a D6 joint with comma-separated positional
+                  and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y
+                  and an angular axis in z).
+                - A dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+
+                Cannot be specified together with ``floating``.
+            key (str or None, optional): A unique key for the joint. If not provided, a default
+                key is generated based on the body index.
+            parent_xform (Transform or None, optional): The transform of the joint in the parent frame.
+                If None, defaults to the body's current transform (``body_q[child]``) when parent is world (-1),
+                or identity transform when parent is another body.
+            child_xform (Transform or None, optional): The transform of the joint in the child frame.
+                If None, defaults to identity transform.
+            parent (int, optional): The index of the parent body. Use -1 (default) to connect to the world.
+                When connecting to an existing body, the child body becomes part of the same kinematic articulation.
+
+        Returns:
+            int: The index of the created joint.
+
+        Raises:
+            ValueError: If parent is invalid, or if both ``floating`` and ``base_joint`` are specified,
+                or if ``floating=True`` with ``parent != -1``.
+
+        Note:
+            When ``parent_xform`` is not provided:
+            - If parent is -1 (world), the body's current transform (``body_q[child]``) is used.
+            - If parent is another body, identity transform is used (joint at parent body origin).
+        """
+        # Validate parameter combinations
+        self._validate_base_joint_params(floating, base_joint, parent)
+        self._validate_parent_body(parent, child)
+
+        # Determine transforms
+        if parent_xform is None:
+            if parent == -1:
+                parent_xform = self.body_q[child]
+            else:
+                parent_xform = wp.transform_identity()
+        if child_xform is None:
+            child_xform = wp.transform_identity()
+
+        # Create joint based on parameters
+        if base_joint is not None:
+            # Handle base_joint parameter (string or dict)
+            joint_id = self._create_joint_from_base_joint_spec(
+                base_joint=base_joint,
+                parent=parent,
+                child=child,
+                parent_xform=parent_xform,
+                child_xform=child_xform,
+                key=key,
+            )
+        elif floating is not None and not floating:
+            # floating=False means fixed joints
+            joint_id = self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key)
+        else:
+            # Default: floating=None or floating=True
+            # At this point, if floating=True, parent must be -1 (validated above)
+            if parent == -1:
+                joint_id = self.add_joint_free(child, key=key)
+            else:
+                # floating=None with parent != -1: use fixed joint
+                joint_id = self.add_joint_fixed(
+                    parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key
+                )
+
+        return joint_id
+
+    def add_base_joints_to_floating_bodies(
+        self,
+        new_bodies: Iterable[int] | None = None,
+        floating: bool | None = None,
+        base_joint: dict | str | None = None,
+    ):
+        """
+        Adds joints and single-joint articulations to every rigid body that is not a child in any joint
         and has positive mass.
 
         Args:
-            new_bodies (Iterable[int] or None, optional): The set of body indices to consider for adding free joints.
+            new_bodies (Iterable[int] or None, optional): The set of body indices to consider for adding joints.
+            floating (bool or None, optional): If True or None (default), floating bodies receive a free joint.
+                If False, floating bodies receive a fixed joint.
+            base_joint (str or dict or None, optional): The joint by which floating bodies are connected to the world.
+                This can be either a string defining the joint axes of a D6 joint with comma-separated positional
+                and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis
+                in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+                When specified, this takes precedence over the ``floating`` parameter.
 
         Note:
             - Bodies that are already a child in any joint will be skipped.
-            - Only bodies with strictly positive mass will receive a free joint.
-            - Each free joint is added to its own single-joint articulation.
+            - Only bodies with strictly positive mass will receive a joint.
+            - Each joint is added to its own single-joint articulation.
             - This is useful for ensuring that all floating (unconnected) bodies are properly articulated.
         """
+        if new_bodies is None:
+            return
+
         # set(self.joint_child) is connected_bodies
         floating_bodies = set(new_bodies) - set(self.joint_child)
         for body_id in floating_bodies:
-            if self.body_mass[body_id] > 0:
-                joint = self.add_joint_free(child=body_id)
-                self.add_articulation([joint])
+            if self.body_mass[body_id] <= 0:
+                continue
+
+            joint = self.add_base_joint(body_id, floating=floating, base_joint=base_joint)
+            # Use body key as articulation key for single-body articulations
+            self.add_articulation([joint], key=self.body_key[body_id])
 
     def request_state_attributes(self, *attributes: str) -> None:
         """
