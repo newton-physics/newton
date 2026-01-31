@@ -1459,7 +1459,8 @@ def parse_usd(
                                     wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
                                 )
                             else:
-                                parent_xform = articulation_incoming_xform * builder.body_q[child_body_id]
+                                # body_q is already in world space, use it directly
+                                parent_xform = builder.body_q[child_body_id]
                             base_joint_id = builder.add_base_joint(
                                 child_body_id,
                                 floating=floating,
