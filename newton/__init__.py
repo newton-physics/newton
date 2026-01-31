@@ -55,6 +55,7 @@ __all__ += [
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
+    ActuatorMode,
     BroadPhaseMode,
     CollisionPipeline,
     CollisionPipelineUnified,
@@ -63,8 +64,6 @@ from ._src.sim import (  # noqa: E402
     EqType,
     JointType,
     Model,
-    ModelAttributeAssignment,
-    ModelAttributeFrequency,
     ModelBuilder,
     State,
     count_rigid_contact_points,
@@ -72,9 +71,11 @@ from ._src.sim import (  # noqa: E402
     eval_ik,
     get_joint_constraint_count,
     get_joint_dof_count,
+    infer_actuator_mode,
 )
 
 __all__ += [
+    "ActuatorMode",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",
@@ -83,8 +84,6 @@ __all__ += [
     "EqType",
     "JointType",
     "Model",
-    "ModelAttributeAssignment",
-    "ModelAttributeFrequency",
     "ModelBuilder",
     "State",
     "count_rigid_contact_points",
@@ -92,17 +91,7 @@ __all__ += [
     "eval_ik",
     "get_joint_constraint_count",
     "get_joint_dof_count",
-]
-
-# ==================================================================================
-# Style3D helpers
-# TODO: eliminate these and roll the functionality into Model and ModelBuilder?
-# ==================================================================================
-from ._src.sim.style3d import Style3DModel, Style3DModelBuilder  # noqa: E402
-
-__all__ += [
-    "Style3DModel",
-    "Style3DModelBuilder",
+    "infer_actuator_mode",
 ]
 
 # ==================================================================================

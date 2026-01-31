@@ -79,3 +79,14 @@ class Control:
             self.joint_target_pos.zero_()
         if self.joint_target_vel is not None:
             self.joint_target_vel.zero_()
+        self._clear_namespaced_arrays()
+
+    def _clear_namespaced_arrays(self) -> None:
+        """Clear all wp.array attributes in namespaced containers (e.g., control.mujoco.ctrl)."""
+        from .model import AttributeNamespace  # noqa: PLC0415
+
+        for attr in self.__dict__.values():
+            if isinstance(attr, AttributeNamespace):
+                for value in attr.__dict__.values():
+                    if isinstance(value, wp.array):
+                        value.zero_()

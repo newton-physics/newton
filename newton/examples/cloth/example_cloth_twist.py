@@ -231,6 +231,7 @@ class Example:
         )
 
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(2.25, 0.0, 0.0), 0.0, -180.0)
 
         # put graph capture into it's own function
         self.capture()

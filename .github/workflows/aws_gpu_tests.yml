@@ -1,9 +1,9 @@
 name: GPU Unit Tests on AWS EC2 (Reusable)
 
 # This is a reusable workflow that uses machulav/ec2-github-runner to run GPU tests.
-# It replaces the old pr_aws_gpu_tests.yml and push_aws_gpu_tests.yml workflows.
 # Called by:
-#   - pr_target_aws_gpu.yml (for pull requests)
+#   - pr_target_aws_gpu_tests.yml (for pull requests)
+#   - merge_queue_aws_gpu.yml (for merge groups)
 #   - push_aws_gpu.yml (for pushes to main/release branches)
 
 # Workflow configuration variables
