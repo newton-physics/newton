@@ -6978,19 +6978,47 @@ class ModelBuilder:
         if isinstance(base_joint, str):
             # Parse string like "px,py,rz"
             axes_spec = [ax.strip() for ax in base_joint.lower().split(",") if ax.strip()]
+
+            # Validate non-empty
+            if not axes_spec:
+                raise ValueError(
+                    "base_joint string cannot be empty. "
+                    "Expected comma-separated axis specs like 'px,py,rz' or 'lx,ly,az'."
+                )
+
             axes_vec = {
                 "x": [1.0, 0.0, 0.0],
                 "y": [0.0, 1.0, 0.0],
                 "z": [0.0, 0.0, 1.0],
             }
-            # Validate axis specs before indexing
-            invalid = [
-                ax for ax in axes_spec if len(ax) < 2 or ax[0] not in {"l", "p", "a", "r"} or ax[-1] not in axes_vec
-            ]
+
+            # Validate axis specs: must be exactly 2 characters (type + axis)
+            invalid = []
+            for ax in axes_spec:
+                if len(ax) != 2:
+                    invalid.append(f"{ax!r} (must be exactly 2 characters)")
+                elif ax[0] not in {"l", "p", "a", "r"}:
+                    invalid.append(f"{ax!r} (first char must be l/p/a/r)")
+                elif ax[1] not in axes_vec:
+                    invalid.append(f"{ax!r} (second char must be x/y/z)")
+
             if invalid:
-                raise ValueError(f"Invalid base_joint axis spec(s): {invalid}. Expected tokens like 'px', 'py', 'rz'.")
-            linear_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"l", "p"}]
-            angular_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"a", "r"}]
+                raise ValueError(
+                    f"Invalid base_joint axis spec(s): {', '.join(invalid)}. "
+                    f"Expected 2-character tokens like 'px', 'py', 'rz' where first char is "
+                    f"'l'/'p' (linear/prismatic) or 'a'/'r' (angular/revolute), and second char is 'x'/'y'/'z'."
+                )
+
+            # Check for duplicates
+            if len(axes_spec) != len(set(axes_spec)):
+                duplicates = [ax for ax in axes_spec if axes_spec.count(ax) > 1]
+                raise ValueError(
+                    f"Duplicate axis specifications in base_joint: {duplicates}. "
+                    f"Each axis can only be specified once."
+                )
+
+            linear_axes_str = [ax[1] for ax in axes_spec if ax[0] in {"l", "p"}]
+            angular_axes_str = [ax[1] for ax in axes_spec if ax[0] in {"a", "r"}]
             return self.add_joint_d6(
                 linear_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str],
                 angular_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str],
@@ -7001,6 +7029,15 @@ class ModelBuilder:
                 key=key,
             )
         elif isinstance(base_joint, dict):
+            # Check for conflicting keys that will be overwritten
+            conflicting_keys = set(base_joint.keys()) & {"parent", "child", "parent_xform", "child_xform"}
+            if conflicting_keys:
+                raise ValueError(
+                    f"base_joint dict cannot specify {conflicting_keys}. "
+                    f"These parameters are automatically set based on the attachment. "
+                    f"Remove these keys from the base_joint dict."
+                )
+
             joint_params = base_joint.copy()
             joint_params["parent"] = parent
             joint_params["child"] = child
