@@ -152,7 +152,7 @@ class ModelBuilder:
 
         density: float = 1000.0
         """The density of the shape material."""
-        ke: float = 1.0e3
+        ke: float = 2.5e3
         """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
         kd: float = 100.0
         """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
