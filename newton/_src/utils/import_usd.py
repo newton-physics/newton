@@ -42,12 +42,23 @@ AttributeFrequency = Model.AttributeFrequency
 def _attach_joints_to_parent_articulation(
     builder: ModelBuilder, joint_indices: list[int], parent_body: int, allow_expensive_reordering: bool = False
 ):
-    """Helper function to attach joints to an existing articulation containing parent_body.
+    """
+    Helper function to attach joints to an existing articulation containing parent_body.
 
     This function handles the bookkeeping required when adding joints to an existing articulation.
     Since articulation_start assumes contiguous joint indices, we reorder joints by articulation
     when necessary to maintain this invariant.
+
+    Args:
+        builder: The ModelBuilder to update.
+        joint_indices: Newly created joint indices to attach.
+        parent_body: Parent body id that already belongs to an articulation.
+        allow_expensive_reordering: Whether O(n²) reordering is permitted.
+
+    Returns:
+        None.
     """
+
     # Check if attachment requires reordering
     parent_articulation, needs_reordering = builder._check_sequential_composition(
         parent_body=parent_body,
