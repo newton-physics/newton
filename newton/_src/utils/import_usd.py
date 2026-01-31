@@ -1042,6 +1042,11 @@ def parse_usd(
             return True
         return False
 
+    # parse static visual-only shapes on the World prim
+    if load_visual_shapes:
+        root_prim = stage.GetPrimAtPath(root_path)
+        _load_visual_shapes_impl(-1, root_prim, incoming_world_xform, wp.vec3(1.0, 1.0, 1.0))
+
     # Parsing physics materials from the stage
     for sdf_path, desc in data_for_key(ret_dict, UsdPhysics.ObjectType.RigidBodyMaterial):
         if warn_invalid_desc(sdf_path, desc):

@@ -358,7 +358,53 @@ def quat_between_axes(*axes: AxisType) -> wp.quat:
     return q
 
 
+@wp.func
+def angvel_between_quats(q1: wp.quat, q2: wp.quat, dt: float):
+    """
+    Compute angular velocity vector omega (rad/s) taking orientation q1 to q2 over time dt.
+
+    Args:
+        q1, q2 : wp.quat
+            Unit quaternions representing orientations.
+        dt : float
+            Time step in seconds (> 0).
+
+    Returns:
+        omega : ndarray shape (3,)
+            Angular velocity vector in rad/s.
+
+    Notes:
+        - Uses omega = (2/dt) * log( q_rel ), where q_rel = q2 * conj(q1) with shortest-arc fix.
+        - The returned omega corresponds to the rotation that maps q1 to q2.
+        - q1 and q2 are normalized internally; dt must be positive.
+    """
+
+    if wp.dot(q1, q2) < 0.0:
+        q2 = -q2
+
+    q_rel = q2 * wp.quat_inverse(q1)
+    q_rel = wp.normalize(q_rel)
+
+    v = wp.vec3(q_rel.x, q_rel.y, q_rel.z)
+    w = wp.clamp(q_rel.w, -1.0, 1.0)
+
+    v_norm = wp.length(v)
+
+    # Stable handling for small angles
+    eps = 1e-12
+    if v_norm < eps:
+        omega = (2.0 / dt) * v
+    else:
+        phi = wp.atan2(v_norm, w)
+        n = v / v_norm
+        theta = 2.0 * phi
+        omega = (theta / dt) * n
+
+    return omega
+
+
 __all__ = [
+    "angvel_between_quats",
     "quat_between_axes",
     "quat_decompose",
     "quat_from_euler",
