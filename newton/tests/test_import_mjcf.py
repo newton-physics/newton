@@ -5134,7 +5134,8 @@ class TestMjcfActuatorClassDefaults(unittest.TestCase):
         # Test with 'parent_xform' key
         with self.assertRaises(ValueError) as ctx:
             builder.add_mjcf(
-                mjcf_content, base_joint={"joint_type": newton.JointType.REVOLUTE, "parent_xform": wp.transform_identity()}
+                mjcf_content,
+                base_joint={"joint_type": newton.JointType.REVOLUTE, "parent_xform": wp.transform_identity()},
             )
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent_xform", str(ctx.exception))
