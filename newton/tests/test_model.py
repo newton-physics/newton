@@ -444,6 +444,13 @@ class TestModel(unittest.TestCase):
             self.assertEqual(articulation_groups[2], 1)
             self.assertEqual(articulation_groups[3], 2)
 
+        # Verify per-world time-step allocations
+        # NOTE: All worlds were added with the default time step of `0.001`s
+        self.assertIsNotNone(model.dt)
+        dt_np = model.dt.numpy()
+        self.assertEqual(len(dt_np), 3)
+        np.testing.assert_allclose(dt_np, [0.001] * 3)
+
     def test_num_worlds_tracking(self):
         """Test that num_worlds is properly tracked when using add_world."""
         main_builder = ModelBuilder()
