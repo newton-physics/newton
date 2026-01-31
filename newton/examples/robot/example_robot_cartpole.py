@@ -116,7 +116,7 @@ class Example:
             self.model,
             self.state_0,
             "cart is at ground level and has correct orientation",
-            lambda q, qd: q[2] == 0.0 and newton.utils.vec_allclose(q.q, wp.quat_identity()),
+            lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
             indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
@@ -161,21 +161,21 @@ class Example:
             self.model,
             self.state_0,
             "cart velocities match across worlds",
-            lambda q, qd: newton.utils.vec_allclose(qd, world0_cart_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_cart_vel),
             indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole1 velocities match across worlds",
-            lambda q, qd: newton.utils.vec_allclose(qd, world0_pole1_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole1_vel),
             indices=[i * num_bodies_per_world + 1 for i in range(self.num_worlds)],
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "pole2 velocities match across worlds",
-            lambda q, qd: newton.utils.vec_allclose(qd, world0_pole2_vel),
+            lambda q, qd: newton.math.vec_allclose(qd, world0_pole2_vel),
             indices=[i * num_bodies_per_world + 2 for i in range(self.num_worlds)],
         )
 

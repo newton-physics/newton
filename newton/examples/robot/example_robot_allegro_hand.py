@@ -218,7 +218,7 @@ class Example:
                 self.model,
                 self.state_0,
                 f"hand bodies from world {i} are close to the initial position",
-                lambda q, qd: newton.utils.vec_inside_limits(q.p, hand_lower, hand_upper),  # noqa: B023
+                lambda q, qd: newton.math.vec_inside_limits(q.p, hand_lower, hand_upper),  # noqa: B023
                 indices=hand_body_indices,
             )
 
@@ -231,7 +231,7 @@ class Example:
                 self.model,
                 self.state_0,
                 f"cube from world {i} is within bounds and above ground",
-                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.utils.vec_inside_limits(q.p, lower, upper)
+                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.math.vec_inside_limits(q.p, lower, upper)
                 and q.p[2] > 0.0,
                 indices=np.array([cube_body_idx], dtype=np.int32),
             )

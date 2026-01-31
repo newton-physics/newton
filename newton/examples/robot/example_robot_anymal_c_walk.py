@@ -32,7 +32,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton import State
-from newton.geometry import generate_terrain_grid
+from newton.geometry import create_mesh_terrain
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -106,7 +106,7 @@ class Example:
 
         # Generate procedural terrain for visual demonstration (but not during unit tests)
         if not self.is_test:
-            vertices, indices = generate_terrain_grid(
+            vertices, indices = create_mesh_terrain(
                 grid_size=(8, 3),  # 3x8 grid for forward walking
                 block_size=(3.0, 3.0),
                 terrain_types=["random_grid", "flat", "wave", "gap", "pyramid_stairs"],
@@ -324,7 +324,7 @@ class Example:
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
+            lambda q, qd: newton.math.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
 

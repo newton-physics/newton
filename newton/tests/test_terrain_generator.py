@@ -25,8 +25,8 @@ from newton._src.geometry.terrain_generator import (
     _pyramid_stairs_terrain,
     _random_grid_terrain,
     _wave_terrain,
-    generate_terrain_grid,
-    heightfield_to_mesh,
+    create_mesh_heightfield,
+    create_mesh_terrain,
 )
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -43,7 +43,7 @@ class TestTerrainGenerator(unittest.TestCase):
         # Create a simple 3x3 heightfield
         heightfield = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)
 
-        vertices, indices = heightfield_to_mesh(heightfield=heightfield, extent_x=2.0, extent_y=2.0)
+        vertices, indices = create_mesh_heightfield(heightfield=heightfield, extent_x=2.0, extent_y=2.0)
 
         # Check output types
         self.assertEqual(vertices.dtype, np.float32)
@@ -67,7 +67,7 @@ class TestTerrainGenerator(unittest.TestCase):
         # Minimum valid grid: 2x2
         heightfield = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 
-        vertices, indices = heightfield_to_mesh(heightfield=heightfield, extent_x=1.0, extent_y=1.0)
+        vertices, indices = create_mesh_heightfield(heightfield=heightfield, extent_x=1.0, extent_y=1.0)
 
         # Check that mesh was created successfully
         self.assertEqual(len(vertices), 8)  # 2x2 grid = 4 top + 4 bottom vertices
@@ -78,13 +78,13 @@ class TestTerrainGenerator(unittest.TestCase):
         # 1D array
         heightfield_1d = np.array([0.0, 1.0, 2.0])
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield_1d, extent_x=1.0, extent_y=1.0)
+            create_mesh_heightfield(heightfield=heightfield_1d, extent_x=1.0, extent_y=1.0)
         self.assertIn("must be 2D array", str(context.exception))
 
         # 3D array
         heightfield_3d = np.zeros((3, 3, 3))
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield_3d, extent_x=1.0, extent_y=1.0)
+            create_mesh_heightfield(heightfield=heightfield_3d, extent_x=1.0, extent_y=1.0)
         self.assertIn("must be 2D array", str(context.exception))
 
     def test_heightfield_to_mesh_too_small_grid(self):
@@ -92,19 +92,19 @@ class TestTerrainGenerator(unittest.TestCase):
         # 1x1 grid (too small)
         heightfield_1x1 = np.array([[1.0]])
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield_1x1, extent_x=1.0, extent_y=1.0)
+            create_mesh_heightfield(heightfield=heightfield_1x1, extent_x=1.0, extent_y=1.0)
         self.assertIn("at least 2x2", str(context.exception))
 
         # 1x3 grid (one dimension too small)
         heightfield_1x3 = np.array([[0.0, 1.0, 2.0]])
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield_1x3, extent_x=1.0, extent_y=1.0)
+            create_mesh_heightfield(heightfield=heightfield_1x3, extent_x=1.0, extent_y=1.0)
         self.assertIn("at least 2x2", str(context.exception))
 
         # 3x1 grid (one dimension too small)
         heightfield_3x1 = np.array([[0.0], [1.0], [2.0]])
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield_3x1, extent_x=1.0, extent_y=1.0)
+            create_mesh_heightfield(heightfield=heightfield_3x1, extent_x=1.0, extent_y=1.0)
         self.assertIn("at least 2x2", str(context.exception))
 
     def test_heightfield_to_mesh_non_positive_extent(self):
@@ -113,29 +113,29 @@ class TestTerrainGenerator(unittest.TestCase):
 
         # Zero extent_x
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield, extent_x=0.0, extent_y=1.0)
+            create_mesh_heightfield(heightfield=heightfield, extent_x=0.0, extent_y=1.0)
         self.assertIn("must be positive", str(context.exception))
 
         # Negative extent_x
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield, extent_x=-1.0, extent_y=1.0)
+            create_mesh_heightfield(heightfield=heightfield, extent_x=-1.0, extent_y=1.0)
         self.assertIn("must be positive", str(context.exception))
 
         # Zero extent_y
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield, extent_x=1.0, extent_y=0.0)
+            create_mesh_heightfield(heightfield=heightfield, extent_x=1.0, extent_y=0.0)
         self.assertIn("must be positive", str(context.exception))
 
         # Negative extent_y
         with self.assertRaises(ValueError) as context:
-            heightfield_to_mesh(heightfield=heightfield, extent_x=1.0, extent_y=-1.0)
+            create_mesh_heightfield(heightfield=heightfield, extent_x=1.0, extent_y=-1.0)
         self.assertIn("must be positive", str(context.exception))
 
     def test_heightfield_to_mesh_flat_terrain(self):
         """Test heightfield to mesh with flat terrain (all zeros)."""
         heightfield = np.zeros((5, 5), dtype=np.float32)
 
-        vertices, _indices = heightfield_to_mesh(heightfield=heightfield, extent_x=4.0, extent_y=4.0, ground_z=-1.0)
+        vertices, _indices = create_mesh_heightfield(heightfield=heightfield, extent_x=4.0, extent_y=4.0, ground_z=-1.0)
 
         # Check that top surface is at z=0
         top_vertices = vertices[: len(vertices) // 2]
@@ -150,7 +150,7 @@ class TestTerrainGenerator(unittest.TestCase):
         # Create a simple slope from 0 to 1
         heightfield = np.array([[0.0, 0.5, 1.0], [0.0, 0.5, 1.0], [0.0, 0.5, 1.0]], dtype=np.float32)
 
-        vertices, _indices = heightfield_to_mesh(heightfield=heightfield, extent_x=2.0, extent_y=2.0)
+        vertices, _indices = create_mesh_heightfield(heightfield=heightfield, extent_x=2.0, extent_y=2.0)
 
         # Check that heights are preserved in top vertices
         top_vertices = vertices[: len(vertices) // 2]
@@ -162,7 +162,7 @@ class TestTerrainGenerator(unittest.TestCase):
         rng = np.random.default_rng(42)
         heightfield = rng.uniform(-1.0, 1.0, size=(10, 10)).astype(np.float32)
 
-        vertices, _indices = heightfield_to_mesh(heightfield=heightfield, extent_x=5.0, extent_y=5.0)
+        vertices, _indices = create_mesh_heightfield(heightfield=heightfield, extent_x=5.0, extent_y=5.0)
 
         # Check vertex count
         expected_vertices = 10 * 10 * 2  # top + bottom
@@ -176,7 +176,7 @@ class TestTerrainGenerator(unittest.TestCase):
         """Test heightfield to mesh with custom center coordinates."""
         heightfield = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 
-        vertices, _indices = heightfield_to_mesh(
+        vertices, _indices = create_mesh_heightfield(
             heightfield=heightfield, extent_x=2.0, extent_y=2.0, center_x=5.0, center_y=10.0
         )
 
@@ -200,7 +200,7 @@ class TestTerrainGenerator(unittest.TestCase):
         rng = np.random.default_rng(42)
         heightfield = rng.random((N, M)).astype(np.float32)
 
-        _vertices, indices = heightfield_to_mesh(heightfield=heightfield, extent_x=4.0, extent_y=6.0)
+        _vertices, indices = create_mesh_heightfield(heightfield=heightfield, extent_x=4.0, extent_y=6.0)
 
         # Each triangle has 3 indices
         num_triangles = len(indices) // 3
@@ -216,7 +216,7 @@ class TestTerrainGenerator(unittest.TestCase):
         """Test that the generated mesh is watertight (closed)."""
         heightfield = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)
 
-        vertices, _indices = heightfield_to_mesh(heightfield=heightfield, extent_x=2.0, extent_y=2.0, ground_z=-0.5)
+        vertices, _indices = create_mesh_heightfield(heightfield=heightfield, extent_x=2.0, extent_y=2.0, ground_z=-0.5)
 
         # Check that we have both top and bottom vertices
         num_grid_points = heightfield.size
@@ -391,7 +391,7 @@ class TestTerrainGenerator(unittest.TestCase):
 
     def test_generate_terrain_grid_single_block(self):
         """Test terrain grid generation with a single block."""
-        vertices, indices = generate_terrain_grid(grid_size=(1, 1), block_size=(5.0, 5.0), terrain_types="flat")
+        vertices, indices = create_mesh_terrain(grid_size=(1, 1), block_size=(5.0, 5.0), terrain_types="flat")
 
         # Check output types
         self.assertEqual(vertices.dtype, np.float32)
@@ -403,9 +403,7 @@ class TestTerrainGenerator(unittest.TestCase):
 
     def test_generate_terrain_grid_multiple_blocks(self):
         """Test terrain grid generation with multiple blocks."""
-        vertices, indices = generate_terrain_grid(
-            grid_size=(2, 2), block_size=(5.0, 5.0), terrain_types=["flat", "wave"]
-        )
+        vertices, indices = create_mesh_terrain(grid_size=(2, 2), block_size=(5.0, 5.0), terrain_types=["flat", "wave"])
 
         # Should have more vertices than a single block
         self.assertGreater(len(vertices), 4)
@@ -413,11 +411,11 @@ class TestTerrainGenerator(unittest.TestCase):
 
     def test_generate_terrain_grid_with_seed(self):
         """Test that terrain grid generation is deterministic with seed."""
-        vertices1, indices1 = generate_terrain_grid(
+        vertices1, indices1 = create_mesh_terrain(
             grid_size=(2, 2), block_size=(5.0, 5.0), terrain_types="random_grid", seed=42
         )
 
-        vertices2, indices2 = generate_terrain_grid(
+        vertices2, indices2 = create_mesh_terrain(
             grid_size=(2, 2), block_size=(5.0, 5.0), terrain_types="random_grid", seed=42
         )
 
@@ -431,7 +429,7 @@ class TestTerrainGenerator(unittest.TestCase):
         heightfield = np.array([[0.0, 0.5], [0.5, 1.0]], dtype=np.float32)
 
         # Generate terrain grid with heightfield type
-        vertices, indices = generate_terrain_grid(
+        vertices, indices = create_mesh_terrain(
             grid_size=(1, 1),
             block_size=(5.0, 5.0),
             terrain_types="heightfield",
