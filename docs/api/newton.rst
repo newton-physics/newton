@@ -8,6 +8,7 @@ newton
 
    newton_geometry
    newton_ik
+   newton_math
    newton_selection
    newton_sensors
    newton_solvers
