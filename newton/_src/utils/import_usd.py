@@ -109,9 +109,12 @@ def parse_usd(
         builder (ModelBuilder): The :class:`~newton.ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The transform to apply to the entire scene.
-        floating (bool or None): If None (default), floating bodies receive a free joint (USD default).
-            If True, creates a FREE joint (only valid when parent_body == -1).
-            If False, floating bodies receive a fixed joint.
+        floating (bool or None): Controls the base joint type for floating bodies (bodies not connected as
+            a child to any joint).
+            - ``None`` (default): Uses format-specific default (FREE for USD bodies without joints).
+            - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+              parent_body == -1 since FREE joints must connect to world.
+            - ``False``: Creates a FIXED joint (0 DOF) for floating bodies.
             Cannot be specified together with base_joint.
         base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
         parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
@@ -188,9 +191,8 @@ def parse_usd(
             * - ``"path_original_body_map"``
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
-    # Validate parameter combinations
-    if floating is not None and base_joint is not None:
-        raise ValueError("Cannot specify both 'floating' and 'base_joint'")
+    # Early validation of base joint parameters
+    builder._validate_base_joint_params(floating, base_joint, parent_body)
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES

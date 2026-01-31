@@ -1447,9 +1447,11 @@ class ModelBuilder:
         Args:
             source (str): The filename of the URDF file to parse, or the URDF XML string content.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-            floating (bool or None): If None (default), the root body receives a fixed joint (URDF default).
-                If True, creates a FREE joint (only valid when parent_body == -1).
-                If False, creates a fixed joint.
+            floating (bool or None): Controls the base joint type for the root body.
+                - ``None`` (default): Uses format-specific default (FIXED for URDF).
+                - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+                  parent_body == -1 since FREE joints must connect to world.
+                - ``False``: Creates a FIXED joint (0 DOF).
                 Cannot be specified together with base_joint.
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
             parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
@@ -1535,9 +1537,12 @@ class ModelBuilder:
         Args:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The transform to apply to the entire scene.
-            floating (bool or None): If None (default), floating bodies receive a free joint (USD default).
-                If True, creates a FREE joint (only valid when parent_body == -1).
-                If False, floating bodies receive a fixed joint.
+            floating (bool or None): Controls the base joint type for floating bodies (bodies not connected as
+                a child to any joint).
+                - ``None`` (default): Uses format-specific default (FREE for USD bodies without joints).
+                - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+                  parent_body == -1 since FREE joints must connect to world.
+                - ``False``: Creates a FIXED joint (0 DOF) for floating bodies.
                 Cannot be specified together with base_joint.
             base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
             parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
@@ -1686,9 +1691,12 @@ class ModelBuilder:
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform (Transform): The transform to apply to the imported mechanism.
-            floating (bool or None): If None (default), the root body receives a free joint if one is defined in the MJCF, otherwise it receives a fixed joint (MJCF default).
-                If True, creates a FREE joint (only valid when parent_body == -1).
-                If False, creates a fixed joint.
+            floating (bool or None): Controls the base joint type for the root body.
+                - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
+                  otherwise FIXED).
+                - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+                  parent_body == -1 since FREE joints must connect to world.
+                - ``False``: Creates a FIXED joint (0 DOF).
                 Cannot be specified together with base_joint.
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
             parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
@@ -6894,6 +6902,36 @@ class ModelBuilder:
         # Body not found in any articulation
         return None
 
+    @staticmethod
+    def _validate_base_joint_params(floating: bool | None, base_joint: dict | str | None, parent: int) -> None:
+        """
+        Validate floating and base_joint parameter combinations.
+
+        This is a shared validation function used by all importers (MJCF, URDF, USD)
+        to ensure consistent parameter validation.
+
+        Args:
+            floating: The floating parameter value (True, False, or None).
+            base_joint: The base_joint parameter value.
+            parent: The parent body index (-1 for world, >= 0 for a body).
+
+        Raises:
+            ValueError: If parameter combinations are invalid:
+                - Both floating and base_joint are specified (mutually exclusive)
+                - floating=True with parent != -1 (FREE joints require world frame)
+        """
+        if floating is not None and base_joint is not None:
+            raise ValueError(
+                "Cannot specify both 'floating' and 'base_joint'. "
+                "Use 'floating' for FREE/FIXED joints, or 'base_joint' for custom mobility."
+            )
+
+        if floating is True and parent != -1:
+            raise ValueError(
+                "Cannot create FREE joint when parent_body != -1. "
+                "FREE joints require world frame. Use floating=False or base_joint."
+            )
+
     def _check_sequential_composition(self, parent_body: int) -> int | None:
         """
         Check if attaching to parent_body is sequential (most recent articulation).
@@ -7026,19 +7064,8 @@ class ModelBuilder:
             - If parent is -1 (world), the body's current transform (``body_q[child]``) is used.
             - If parent is another body, identity transform is used (joint at parent body origin).
         """
-        # Validation
-        if floating is not None and base_joint is not None:
-            raise ValueError(
-                "Cannot specify both 'floating' and 'base_joint'. "
-                "Use 'floating' for FREE/FIXED joints, or 'base_joint' for custom mobility."
-            )
-
-        if floating is True and parent != -1:
-            raise ValueError(
-                "Cannot create FREE joint when parent_body != -1. "
-                "FREE joints require world frame. Use floating=False or base_joint."
-            )
-
+        # Validate parameter combinations
+        self._validate_base_joint_params(floating, base_joint, parent)
         self._validate_parent_body(parent, child)
 
         # Determine transforms

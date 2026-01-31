@@ -95,9 +95,11 @@ def parse_urdf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the URDF file to parse, or the URDF XML string content.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-        floating (bool or None): If None (default), the root body receives a fixed joint (URDF default).
-            If True, creates a FREE joint (only valid when parent_body == -1).
-            If False, creates a fixed joint.
+        floating (bool or None): Controls the base joint type for the root body.
+            - ``None`` (default): Uses format-specific default (FIXED for URDF).
+            - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+              parent_body == -1 since FREE joints must connect to world.
+            - ``False``: Creates a FIXED joint (0 DOF).
             Cannot be specified together with base_joint.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
         parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
@@ -120,10 +122,9 @@ def parse_urdf(
             :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
             damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
-    """    
-    # Validate parameter combinations
-    if floating is not None and base_joint is not None:
-        raise ValueError("Cannot specify both 'floating' and 'base_joint'")
+    """
+    # Early validation of base joint parameters
+    builder._validate_base_joint_params(floating, base_joint, parent_body)
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES

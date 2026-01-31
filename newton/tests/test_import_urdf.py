@@ -884,6 +884,78 @@ class TestImportUrdf(unittest.TestCase):
             self.parse_urdf(gripper_urdf, builder, parent_body=robot1_link_idx, floating=False)
         self.assertIn("most recent", str(cm.exception))
 
+    def test_floating_false_with_parent_body_succeeds(self):
+        """Test that floating=False with parent_body is explicitly allowed."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base_link">
+        <inertial><mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+    <link name="link1">
+        <inertial><mass value="0.5"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.05"/></geometry></visual>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="base_link"/><child link="link1"/>
+        <origin xyz="1 0 0"/><axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    </joint>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+        <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False)
+        link_idx = builder.body_key.index("link1")
+
+        # Explicitly using floating=False with parent_body should succeed
+        self.parse_urdf(gripper_urdf, builder, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify it worked - gripper should be attached
+        self.assertIn("gripper_base", builder.body_key)
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
+
+    def test_floating_true_with_parent_body_raises_error(self):
+        """Test that floating=True with parent_body raises an error."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base_link">
+        <inertial><mass value="1.0"/>
+            <inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+        <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, floating=False)
+        base_idx = builder.body_key.index("base_link")
+
+        # floating=True with parent_body should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(gripper_urdf, builder, parent_body=base_idx, floating=True)
+        self.assertIn("FREE joint", str(cm.exception))
+        self.assertIn("parent", str(cm.exception))
+
 
 class TestUrdfUriResolution(unittest.TestCase):
     """Tests for URDF URI resolution functionality."""

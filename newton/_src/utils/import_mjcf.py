@@ -171,9 +171,12 @@ def parse_mjcf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform (Transform): The transform to apply to the imported mechanism.
-        floating (bool or None): If None (default), the root body receives a free joint if one is defined in the MJCF, otherwise it receives a fixed joint (MJCF default).
-            If True, creates a FREE joint (only valid when parent_body == -1).
-            If False, creates a fixed joint.
+        floating (bool or None): Controls the base joint type for the root body.
+            - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
+              otherwise FIXED).
+            - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
+              parent_body == -1 since FREE joints must connect to world.
+            - ``False``: Creates a FIXED joint (0 DOF).
             Cannot be specified together with base_joint.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
         parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
@@ -208,9 +211,8 @@ def parse_mjcf(
             from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
-    # Validate parameter combinations
-    if floating is not None and base_joint is not None:
-        raise ValueError("Cannot specify both 'floating' and 'base_joint'")
+    # Early validation of base joint parameters
+    builder._validate_base_joint_params(floating, base_joint, parent_body)
 
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
@@ -955,12 +957,16 @@ def parse_mjcf(
 
         Args:
             body: The XML body element.
-            parent: Parent body index (-1 for world or parent_body from parse_mjcf).
+            parent: Parent body index. For root bodies in the MJCF, this will be the parent_body
+                parameter from parse_mjcf (-1 for world, or a body index for hierarchical composition).
+                For nested bodies within the MJCF tree, this is the parent body index in the tree.
             incoming_defaults: Default attributes dictionary.
             childclass: Child class name for inheritance.
             incoming_xform: Accumulated transform from parent (may include frame offsets).
-            is_mjcf_root: True if this is a root body in the MJCF (not a child in the MJCF tree).
-                If None, uses the import root xform.
+            is_mjcf_root: True if this is a root body in the MJCF file (direct child of <worldbody>),
+                False for nested bodies within the MJCF tree. This flag determines whether the
+                floating/base_joint parameters from parse_mjcf should be applied. Only root bodies
+                respect these parameters; nested bodies use their defined joints from the MJCF.
         """
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
@@ -1143,13 +1149,6 @@ def parse_mjcf(
 
             # Determine the parent for the base joint
             base_parent = parent
-
-            # Validate parameter combinations
-            if floating is True and base_parent != -1:
-                raise ValueError(
-                    "Cannot create FREE joint when parent_body != -1. "
-                    "FREE joints require world frame. Use floating=False or base_joint."
-                )
 
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only

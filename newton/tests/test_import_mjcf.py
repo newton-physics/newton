@@ -4274,6 +4274,127 @@ class TestImportMjcf(unittest.TestCase):
         # Should have 4 joints: robot FIXED base + robot hinge + gripper FIXED base + gripper hinge
         self.assertEqual(model.joint_count, 4)
 
+    def test_floating_false_with_parent_body_succeeds(self):
+        """Test that floating=False with parent_body is explicitly allowed."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("robot_link")
+
+        # Explicitly using floating=False with parent_body should succeed
+        builder.add_mjcf(gripper_mjcf, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify it worked - gripper should be attached with FIXED joint
+        self.assertIn("gripper_base", builder.body_key)
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
+
+    def test_multi_root_mjcf_with_parent_body(self):
+        """Test MJCF with multiple root bodies and parent_body parameter."""
+        # MJCF with two root bodies under worldbody
+        multi_root_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="multi_root">
+    <worldbody>
+        <body name="root1" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="root2" pos="1 0 0">
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("link")
+
+        # Add multi-root MJCF - both root bodies should attach to the same parent
+        builder.add_mjcf(multi_root_mjcf, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify both root bodies were added
+        self.assertIn("root1", builder.body_key)
+        self.assertIn("root2", builder.body_key)
+        # Should still be one articulation
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+    def test_error_messages_are_informative(self):
+        """Test that error messages contain helpful information."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot1_link_idx = builder.body_key.index("robot_link")
+
+        # Add more robots to make robot1_link_idx not the most recent
+        builder.add_mjcf(robot_mjcf, floating=False)
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        # Try to attach to non-sequential articulation
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(gripper_mjcf, parent_body=robot1_link_idx, floating=False)
+
+        # Check that error message is informative
+        error_msg = str(cm.exception)
+        self.assertIn("most recent", error_msg)
+        self.assertIn("articulation", error_msg)
+        # Should mention the body name
+        self.assertIn("robot_link", error_msg)
+
 
 class TestMjcfInclude(unittest.TestCase):
     """Tests for MJCF <include> tag support."""
