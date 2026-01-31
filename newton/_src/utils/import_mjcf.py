@@ -969,7 +969,7 @@ def parse_mjcf(
         """
         # Infer if this is a root body by checking if parent matches the outer parent_body parameter
         # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
-        is_mjcf_root = (parent == parent_body)
+        is_mjcf_root = parent == parent_body
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
             body_class = childclass
@@ -1319,9 +1319,7 @@ def parse_mjcf(
                 _incoming_defaults = defaults
             else:
                 _incoming_defaults = merge_attrib(defaults, class_defaults[_childclass])
-            parse_body(
-                child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform
-            )
+            parse_body(child, link, _incoming_defaults, childclass=_childclass, incoming_xform=world_xform)
 
         # Process frame elements within this body
         # Use body's childclass if declared, otherwise inherit from parent
@@ -2029,24 +2027,13 @@ def parse_mjcf(
             for j in range(i + 1, end_shape_count):
                 builder.add_shape_collision_filter_pair(i, j)
 
-    # Create articulation from all collected joints (only if not attaching to an existing body)
-    if joint_indices:
-        if parent_body != -1:
-            # Check if attachment is sequential
-            parent_articulation = builder._check_sequential_composition(parent_body=parent_body)
-
-            if parent_articulation is not None and parent_articulation >= 0:
-                # Mark all new joints as belonging to the parent's articulation
-                for joint_idx in joint_indices:
-                    builder.joint_articulation[joint_idx] = parent_articulation
-            else:
-                # Parent body is not in any articulation, create a new one
-                articulation_key = root.attrib.get("model")
-                builder.add_articulation(joints=joint_indices, key=articulation_key)
-        else:
-            # No parent_body specified, create a new articulation
-            articulation_key = root.attrib.get("model")
-            builder.add_articulation(joints=joint_indices, key=articulation_key)
+    # Create articulation from all collected joints
+    articulation_key = root.attrib.get("model")
+    builder._finalize_imported_articulation(
+        joint_indices=joint_indices,
+        parent_body=parent_body,
+        articulation_key=articulation_key,
+    )
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

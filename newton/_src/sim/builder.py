@@ -751,6 +751,9 @@ class ModelBuilder:
         self.articulation_key = []
         self.articulation_world = []  # world index for each articulation
 
+        # Cache for body -> articulation lookup (invalidated when joints/articulations change)
+        self._body_articulation_cache = {}
+
         self.joint_dof_count = 0
         self.joint_coord_count = 0
         self.joint_constraint_count = 0
@@ -1416,6 +1419,9 @@ class ModelBuilder:
                 custom_attrs=custom_attributes,
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
+
+        # Invalidate body-articulation cache since articulation structure changed
+        self._invalidate_body_articulation_cache()
 
     # region importers
     def add_urdf(
@@ -2705,6 +2711,9 @@ class ModelBuilder:
                 joint_index=joint_index,
                 custom_attrs=custom_attributes,
             )
+
+        # Invalidate body-articulation cache since joint structure changed
+        self._invalidate_body_articulation_cache()
 
         return joint_index
 
@@ -6879,28 +6888,55 @@ class ModelBuilder:
         """
         Find which articulation (if any) contains the given body.
 
+        This method uses caching for performance. The cache is invalidated when
+        joints or articulations are added/modified.
+
         Args:
             body_id: The body index to search for.
 
         Returns:
             int: Articulation index if found, or None if body is not in any articulation.
+
+        Note:
+            If a body appears in multiple articulations (as parent in one and child in another),
+            this returns the first articulation found, which may be non-deterministic.
         """
+        # Check cache first
+        if body_id in self._body_articulation_cache:
+            return self._body_articulation_cache[body_id]
+
+        # Cache miss - compute the articulation
+        result = None
+
         # Check if body is a child in any joint
         for joint_idx in range(len(self.joint_child)):
             if self.joint_child[joint_idx] == body_id:
                 art_id = self.joint_articulation[joint_idx]
                 if art_id >= 0:  # -1 means no articulation
-                    return art_id
+                    result = art_id
+                    break
 
-        # Check if body is a parent in any joint
-        for joint_idx in range(len(self.joint_parent)):
-            if self.joint_parent[joint_idx] == body_id:
-                art_id = self.joint_articulation[joint_idx]
-                if art_id >= 0:
-                    return art_id
+        # If not found as child, check if body is a parent in any joint
+        if result is None:
+            for joint_idx in range(len(self.joint_parent)):
+                if self.joint_parent[joint_idx] == body_id:
+                    art_id = self.joint_articulation[joint_idx]
+                    if art_id >= 0:
+                        result = art_id
+                        break
 
-        # Body not found in any articulation
-        return None
+        # Cache the result (even if None)
+        self._body_articulation_cache[body_id] = result
+        return result
+
+    def _invalidate_body_articulation_cache(self) -> None:
+        """
+        Invalidate the body-to-articulation lookup cache.
+
+        This should be called whenever joints or articulations are added or modified,
+        as these operations can change which bodies belong to which articulations.
+        """
+        self._body_articulation_cache.clear()
 
     @staticmethod
     def _validate_base_joint_params(floating: bool | None, base_joint: dict | str | None, parent: int) -> None:
@@ -6965,6 +7001,57 @@ class ModelBuilder:
                 f"Attach to the most recently added articulation or build in order."
             )
 
+    def _finalize_imported_articulation(
+        self,
+        joint_indices: list[int],
+        parent_body: int,
+        articulation_key: str | None = None,
+        custom_attributes: dict | None = None,
+    ) -> None:
+        """
+        Attach imported joints to parent articulation or create a new articulation.
+
+        This helper method encapsulates the common logic used by all importers (MJCF, URDF, USD)
+        for handling articulation creation after importing a model.
+
+        Args:
+            joint_indices: List of joint indices from the imported model.
+            parent_body: The parent body index (-1 for world, or a body index for hierarchical composition).
+            articulation_key: Optional key for the articulation (e.g., model name).
+            custom_attributes: Optional custom attributes for the articulation.
+
+        Note:
+            - If parent_body != -1 and it belongs to an articulation, the imported joints are added
+              to the parent's articulation (only works for sequential composition).
+            - Otherwise, a new articulation is created.
+            - If joint_indices is empty, does nothing.
+        """
+        if not joint_indices:
+            return
+
+        if parent_body != -1:
+            # Check if attachment is sequential
+            parent_articulation = self._check_sequential_composition(parent_body=parent_body)
+
+            if parent_articulation is not None:
+                # Mark all new joints as belonging to the parent's articulation
+                for joint_idx in joint_indices:
+                    self.joint_articulation[joint_idx] = parent_articulation
+            else:
+                # Parent body is not in any articulation, create a new one
+                self.add_articulation(
+                    joints=joint_indices,
+                    key=articulation_key,
+                    custom_attributes=custom_attributes,
+                )
+        else:
+            # No parent_body specified, create a new articulation
+            self.add_articulation(
+                joints=joint_indices,
+                key=articulation_key,
+                custom_attributes=custom_attributes,
+            )
+
     def _create_joint_from_base_joint_spec(
         self,
         base_joint: str | dict,
@@ -7013,8 +7100,7 @@ class ModelBuilder:
             if len(axes_spec) != len(set(axes_spec)):
                 duplicates = [ax for ax in axes_spec if axes_spec.count(ax) > 1]
                 raise ValueError(
-                    f"Duplicate axis specifications in base_joint: {duplicates}. "
-                    f"Each axis can only be specified once."
+                    f"Duplicate axis specifications in base_joint: {duplicates}. Each axis can only be specified once."
                 )
 
             linear_axes_str = [ax[1] for ax in axes_spec if ax[0] in {"l", "p"}]

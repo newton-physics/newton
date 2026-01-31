@@ -780,37 +780,16 @@ def parse_urdf(
             )
 
     # Create articulation from all collected joints
-    if joint_indices:
-        if parent_body != -1:
-            # Check if attachment is sequential
-            parent_articulation = builder._check_sequential_composition(parent_body=parent_body)
-
-            if parent_articulation is not None and parent_articulation >= 0:
-                # Mark all new joints as belonging to the parent's articulation
-                for joint_idx in joint_indices:
-                    builder.joint_articulation[joint_idx] = parent_articulation
-            else:
-                # Parent body is not in any articulation, create a new one
-                articulation_key = urdf_root.attrib.get("name")
-                articulation_custom_attrs = parse_custom_attributes(
-                    urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
-                )
-                builder.add_articulation(
-                    joints=joint_indices,
-                    key=articulation_key,
-                    custom_attributes=articulation_custom_attrs,
-                )
-        else:
-            # No parent_body specified, create a new articulation
-            articulation_key = urdf_root.attrib.get("name")
-            articulation_custom_attrs = parse_custom_attributes(
-                urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
-            )
-            builder.add_articulation(
-                joints=joint_indices,
-                key=articulation_key,
-                custom_attributes=articulation_custom_attrs,
-            )
+    articulation_key = urdf_root.attrib.get("name")
+    articulation_custom_attrs = parse_custom_attributes(
+        urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
+    )
+    builder._finalize_imported_articulation(
+        joint_indices=joint_indices,
+        parent_body=parent_body,
+        articulation_key=articulation_key,
+        custom_attributes=articulation_custom_attrs,
+    )
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:

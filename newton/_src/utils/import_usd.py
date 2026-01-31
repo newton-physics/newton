@@ -39,38 +39,6 @@ from ..usd.schemas import SchemaResolverNewton
 AttributeFrequency = Model.AttributeFrequency
 
 
-def _attach_joints_to_parent_articulation(builder: ModelBuilder, joint_indices: list[int], parent_body: int):
-    """
-    Helper function to attach joints to an existing articulation containing parent_body.
-
-    This function handles the bookkeeping required when adding joints to an existing articulation.
-    Only sequential attachment (most recent articulation) is supported.
-
-    Args:
-        builder: The ModelBuilder to update.
-        joint_indices: Newly created joint indices to attach.
-        parent_body: Parent body id that already belongs to an articulation.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If attempting to attach to a non-sequential articulation.
-    """
-    # Check if attachment is sequential
-    parent_articulation = builder._check_sequential_composition(parent_body=parent_body)
-
-    if parent_articulation is not None and parent_articulation >= 0:
-        # Mark all new joints as belonging to the parent's articulation
-        for joint_idx in joint_indices:
-            builder.joint_articulation[joint_idx] = parent_articulation
-    else:
-        raise RuntimeError(
-            f"_attach_joints_to_parent_articulation called with parent_body {parent_body} "
-            f"which is not in any articulation. This is likely a bug."
-        )
-
-
 def parse_usd(
     builder: ModelBuilder,
     source,
@@ -1350,13 +1318,12 @@ def parse_usd(
                         )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        if parent_body != -1:
-                            # Attach to existing articulation
-                            _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
-                        else:
-                            builder.add_articulation(
-                                [joint_id], key=body_data[i]["key"], custom_attributes=articulation_custom_attrs
-                            )
+                        builder._finalize_imported_articulation(
+                            joint_indices=[joint_id],
+                            parent_body=parent_body,
+                            articulation_key=body_data[i]["key"],
+                            custom_attributes=articulation_custom_attrs,
+                        )
                 else:
                     for i, child_body_id in enumerate(art_bodies):
                         # Compute parent_xform to preserve imported pose when attaching to parent_body
@@ -1374,13 +1341,12 @@ def parse_usd(
                         )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        if parent_body != -1:
-                            # Attach to existing articulation
-                            _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
-                        else:
-                            builder.add_articulation(
-                                [joint_id], key=body_keys[i], custom_attributes=articulation_custom_attrs
-                            )
+                        builder._finalize_imported_articulation(
+                            joint_indices=[joint_id],
+                            parent_body=parent_body,
+                            articulation_key=body_keys[i],
+                            custom_attributes=articulation_custom_attrs,
+                        )
                 sorted_joints = []
             else:
                 # we have an articulation with joints, we need to sort them topologically
@@ -1497,17 +1463,14 @@ def parse_usd(
                     if joint is not None:
                         processed_joints.add(joint_key)
 
-            # Create the articulation from all collected joints (only if not attaching to an existing body)
+            # Create the articulation from all collected joints
             if articulation_joint_indices:
-                if parent_body != -1:
-                    # Attach to existing articulation
-                    _attach_joints_to_parent_articulation(builder, articulation_joint_indices, parent_body)
-                else:
-                    builder.add_articulation(
-                        articulation_joint_indices,
-                        key=articulation_path,
-                        custom_attributes=articulation_custom_attrs,
-                    )
+                builder._finalize_imported_articulation(
+                    joint_indices=articulation_joint_indices,
+                    parent_body=parent_body,
+                    articulation_key=articulation_path,
+                    custom_attributes=articulation_custom_attrs,
+                )
 
             articulation_bodies[articulation_id] = art_bodies
             # determine if self-collisions are enabled
@@ -1907,7 +1870,11 @@ def parse_usd(
                     parent_xform=parent_xform,
                 )
                 # Attach to parent's articulation
-                _attach_joints_to_parent_articulation(builder, [joint_id], parent_body)
+                builder._finalize_imported_articulation(
+                    joint_indices=[joint_id],
+                    parent_body=parent_body,
+                    articulation_key=None,
+                )
         else:
             builder.add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 
