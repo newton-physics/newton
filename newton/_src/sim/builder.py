@@ -7171,6 +7171,83 @@ class ModelBuilder:
                     axis_offset += lin_axes + ang_axes
             self.joint_axis_start[:] = new_axis_start
 
+        # Remap custom attributes to match the new joint order
+        for _attr_key, custom_attr in self.custom_attributes.items():
+            if custom_attr.values is None or len(custom_attr.values) == 0:
+                continue  # Skip attributes with no values
+
+            freq = custom_attr.frequency
+            if custom_attr.is_custom_frequency:
+                # Custom string frequencies are stored as lists and don't need remapping
+                continue
+
+            # Only remap dict-based (enum frequency) attributes for joint-related frequencies
+            if not isinstance(custom_attr.values, dict):
+                continue
+
+            if freq == Model.AttributeFrequency.JOINT:
+                # Remap per-joint attributes using old_to_new mapping
+                new_values = {}
+                for old_idx, value in custom_attr.values.items():
+                    if old_idx in old_to_new:
+                        new_idx = old_to_new[old_idx]
+                        new_values[new_idx] = value
+                custom_attr.values = new_values
+
+            elif freq == Model.AttributeFrequency.JOINT_DOF:
+                # Rebuild per-DOF attributes by concatenating slices in new joint order
+                new_values = {}
+                new_dof_offset = 0
+                for old_joint_idx in new_order:
+                    old_dof_start, old_dof_end = get_dof_slice_orig(old_joint_idx)
+                    old_dof_count = old_dof_end - old_dof_start
+                    # Copy values from old DOF range to new DOF range
+                    for i in range(old_dof_count):
+                        old_dof_idx = old_dof_start + i
+                        if old_dof_idx in custom_attr.values:
+                            new_dof_idx = new_dof_offset + i
+                            new_values[new_dof_idx] = custom_attr.values[old_dof_idx]
+                    new_dof_offset += old_dof_count
+                custom_attr.values = new_values
+
+            elif freq == Model.AttributeFrequency.JOINT_COORD:
+                # Rebuild per-coord attributes by concatenating slices in new joint order
+                new_values = {}
+                new_coord_offset = 0
+                for old_joint_idx in new_order:
+                    old_coord_start, old_coord_end = get_coord_slice_orig(old_joint_idx)
+                    old_coord_count = old_coord_end - old_coord_start
+                    # Copy values from old coord range to new coord range
+                    for i in range(old_coord_count):
+                        old_coord_idx = old_coord_start + i
+                        if old_coord_idx in custom_attr.values:
+                            new_coord_idx = new_coord_offset + i
+                            new_values[new_coord_idx] = custom_attr.values[old_coord_idx]
+                    new_coord_offset += old_coord_count
+                custom_attr.values = new_values
+
+            elif freq == Model.AttributeFrequency.JOINT_CONSTRAINT:
+                # Rebuild per-constraint attributes by concatenating slices in new joint order
+                if not orig_joint_cts_start:
+                    continue  # No constraint data to remap
+                new_values = {}
+                new_cts_offset = 0
+                for old_joint_idx in new_order:
+                    old_cts_start = orig_joint_cts_start[old_joint_idx]
+                    if old_joint_idx + 1 < num_joints:
+                        old_cts_end = orig_joint_cts_start[old_joint_idx + 1]
+                    else:
+                        old_cts_end = self.joint_constraint_count
+                    old_cts_count = old_cts_end - old_cts_start
+                    # Copy values from old constraint range to new constraint range
+                    for i in range(old_cts_count):
+                        old_cts_idx = old_cts_start + i
+                        if old_cts_idx in custom_attr.values:
+                            new_cts_idx = new_cts_offset + i
+                            new_values[new_cts_idx] = custom_attr.values[old_cts_idx]
+                    new_cts_offset += old_cts_count
+                custom_attr.values = new_values
+
         # Rebuild articulation_start with new contiguous ranges
         self.articulation_start.clear()
         for art_idx in range(num_articulations):
