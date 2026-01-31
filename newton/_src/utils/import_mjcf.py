@@ -135,7 +135,7 @@ def parse_mjcf(
     xform: Transform | None = None,
     floating: bool | None = None,
     base_joint: dict | str | None = None,
-    parent_body: int | None = None,
+    parent_body: int = -1,
     allow_expensive_reordering: bool = False,
     armature_scale: float = 1.0,
     scale: float = 1.0,
@@ -174,7 +174,7 @@ def parse_mjcf(
         xform (Transform): The transform to apply to the imported mechanism.
         floating (bool): If True, the root body receives a free joint. If False, the root body receives a fixed joint to the world. If None (default), the root body receives a free joint if one is defined in the MJCF, otherwise it receives a fixed joint. When a ``base_joint`` is specified, it takes precedence over this parameter.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic chain as the parent body. If None (default), the root is connected to the world.
+        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
         allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
         scale (float): The scaling factor to apply to the imported mechanism.
@@ -1116,7 +1116,7 @@ def parse_mjcf(
         # This handles: (1) root body (parent==-1) with base_joint/floating/parent_body params, or
         # (2) non-root body with freejoint in MJCF when parent_body is specified
         is_root_body = parent == -1
-        has_override_params = base_joint is not None or floating is not None or parent_body is not None
+        has_override_params = base_joint is not None or floating is not None or parent_body != -1
         is_free_joint_with_override = joint_type == JointType.FREE and has_override_params
 
         if (is_root_body and has_override_params) or is_free_joint_with_override:
@@ -1126,7 +1126,7 @@ def parse_mjcf(
             _xform = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
             # Determine the parent for the base joint (-1 for world, or an existing body index)
-            base_parent = parent_body if parent_body is not None else -1
+            base_parent = parent_body
 
             if base_joint is not None:
                 # in case of a given base joint, the position is applied first, the rotation only
@@ -1521,11 +1521,11 @@ def parse_mjcf(
         # add bodies
 
         # Use parent_body if specified for hierarchical composition, otherwise connect to world (-1)
-        root_parent = parent_body if parent_body is not None else -1
+        root_parent = parent_body
 
         # When parent_body is specified, xform is interpreted as relative to the parent body.
         # Compose it with the parent body's world transform to get the actual world transform.
-        if parent_body is not None:
+        if parent_body != -1:
             effective_xform = builder.body_q[parent_body] * xform
         else:
             effective_xform = xform
@@ -2005,7 +2005,7 @@ def parse_mjcf(
 
     # Create articulation from all collected joints (only if not attaching to an existing body)
     if joint_indices:
-        if parent_body is not None:
+        if parent_body != -1:
             # Check if attachment requires reordering
             parent_articulation, needs_reordering = builder._check_sequential_composition(
                 parent_body=parent_body,

@@ -1425,7 +1425,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         floating: bool = False,
         base_joint: dict | str | None = None,
-        parent_body: int | None = None,
+        parent_body: int = -1,
         allow_expensive_reordering: bool = False,
         scale: float = 1.0,
         hide_visuals: bool = False,
@@ -1450,7 +1450,7 @@ class ModelBuilder:
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
             floating (bool): If True, the root body receives a free joint. If False, the root body receives a fixed joint to the world. When a ``base_joint`` is specified, it takes precedence over this parameter.
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic chain as the parent body. If None (default), the root is connected to the world.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
             allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes.
@@ -1505,7 +1505,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         floating: bool | None = None,
         base_joint: dict | str | None = None,
-        parent_body: int | None = None,
+        parent_body: int = -1,
         allow_expensive_reordering: bool = False,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
@@ -1538,7 +1538,7 @@ class ModelBuilder:
             xform (Transform): The transform to apply to the entire scene.
             floating (bool): If True, floating bodies (bodies not connected as a child to any joint) receive a free joint. If False, floating bodies receive a fixed joint. If None (default), floating bodies receive a free joint. When a ``base_joint`` is specified, it takes precedence over this parameter.
             base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic chain as the parent body. If None (default), the root is connected to the world.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
             allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
             only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
@@ -1651,7 +1651,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         floating: bool | None = None,
         base_joint: dict | str | None = None,
-        parent_body: int | None = None,
+        parent_body: int = -1,
         allow_expensive_reordering: bool = False,
         armature_scale: float = 1.0,
         scale: float = 1.0,
@@ -1689,7 +1689,7 @@ class ModelBuilder:
             xform (Transform): The transform to apply to the imported mechanism.
             floating (bool): If True, the root body receives a free joint. If False, the root body receives a fixed joint to the world. If None (default), the root body receives a free joint if one is defined in the MJCF, otherwise it receives a fixed joint. When a ``base_joint`` is specified, it takes precedence over this parameter.
             base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic chain as the parent body. If None (default), the root is connected to the world.
+            parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
             allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
             armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
             scale (float): The scaling factor to apply to the imported mechanism.
@@ -6830,7 +6830,7 @@ class ModelBuilder:
         else:
             self.body_inv_inertia[i] = new_inertia
 
-    def _validate_parent_body(self, parent_body: int | None, child: int) -> None:
+    def _validate_parent_body(self, parent_body: int, child: int) -> None:
         """
         Validate that parent_body is a valid body index.
 
@@ -6841,9 +6841,6 @@ class ModelBuilder:
         Raises:
             ValueError: If validation fails.
         """
-        if parent_body is None:
-            return  # None is valid (means world)
-
         if parent_body == -1:
             return  # -1 is valid (world reference)
 
@@ -7342,7 +7339,7 @@ class ModelBuilder:
             child_xform (Transform or None, optional): The transform of the joint in the child frame.
                 If None, defaults to identity transform.
             parent (int, optional): The index of the parent body. Use -1 (default) to connect to the world.
-                When connecting to an existing body, the child body becomes part of the same kinematic chain.
+                When connecting to an existing body, the child body becomes part of the same kinematic articulation.
 
         Returns:
             int: The index of the created joint.

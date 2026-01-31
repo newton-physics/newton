@@ -72,7 +72,7 @@ def parse_urdf(
     xform: Transform | None = None,
     floating: bool = False,
     base_joint: dict | str | None = None,
-    parent_body: int | None = None,
+    parent_body: int = -1,
     allow_expensive_reordering: bool = False,
     scale: float = 1.0,
     hide_visuals: bool = False,
@@ -98,7 +98,7 @@ def parse_urdf(
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
         floating (bool): If True, the root body receives a free joint. If False, the root body receives a fixed joint to the world. When a ``base_joint`` is specified, it takes precedence over this parameter.
         base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic chain as the parent body. If None (default), the root is connected to the world.
+        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
         allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes.
@@ -601,7 +601,7 @@ def parse_urdf(
     root = link_index[base_link_name]
 
     # Determine the parent for the base joint (-1 for world, or an existing body index)
-    base_parent = parent_body if parent_body is not None else -1
+    base_parent = parent_body
 
     if base_joint is not None:
         # in case of a given base joint, the position is applied first, the rotation only
@@ -774,7 +774,7 @@ def parse_urdf(
 
     # Create articulation from all collected joints
     if joint_indices:
-        if parent_body is not None:
+        if parent_body != -1:
             # Check if attachment requires reordering
             parent_articulation, needs_reordering = builder._check_sequential_composition(
                 parent_body=parent_body,

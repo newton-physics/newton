@@ -76,7 +76,7 @@ def parse_usd(
     xform: Transform | None = None,
     floating: bool | None = None,
     base_joint: dict | str | None = None,
-    parent_body: int | None = None,
+    parent_body: int = -1,
     allow_expensive_reordering: bool = False,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
@@ -110,7 +110,7 @@ def parse_usd(
         xform (Transform): The transform to apply to the entire scene.
         floating (bool): If True, floating bodies (bodies not connected as a child to any joint) receive a free joint. If False, floating bodies receive a fixed joint. If None (default), floating bodies receive a free joint. When a ``base_joint`` is specified, it takes precedence over this parameter.
         base_joint (Union[str, dict]): The joint by which floating bodies are connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). When specified, this takes precedence over the ``floating`` parameter.
-        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic chain as the parent body. If None (default), the root is connected to the world.
+        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world.
         allow_expensive_reordering (bool): If True, allow O(n²) joint reordering when attaching to non-sequential articulations. If False (default), raises ValueError when attempting to attach to any articulation other than the most recently added one. Only relevant when using parent_body parameter.
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
@@ -1321,7 +1321,7 @@ def parse_usd(
             if len(joint_edges) == 0:
                 # We have an articulation without joints, i.e. only free rigid bodies
                 # Use add_base_joint to honor floating, base_joint, and parent_body parameters
-                base_parent = parent_body if parent_body is not None else -1
+                base_parent = parent_body
                 if bodies_follow_joint_ordering:
                     for i in body_ids.values():
                         child_body_id = add_body(**body_data[i])
@@ -1340,7 +1340,7 @@ def parse_usd(
                         )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        if parent_body is not None:
+                        if parent_body != -1:
                             # Attach to existing articulation
                             _attach_joints_to_parent_articulation(
                                 builder, [joint_id], parent_body, allow_expensive_reordering
@@ -1366,7 +1366,7 @@ def parse_usd(
                         )
                         # note the free joint's coordinates will be initialized by the body_q of the
                         # child body
-                        if parent_body is not None:
+                        if parent_body != -1:
                             # Attach to existing articulation
                             _attach_joints_to_parent_articulation(
                                 builder, [joint_id], parent_body, allow_expensive_reordering
@@ -1418,7 +1418,7 @@ def parse_usd(
                     # the mechanism is floating since there is no joint connecting it to the world
                     # we explicitly add a joint connecting the first body in the articulation to the world
                     # (or to parent_body if specified) to make sure generalized-coordinate solvers can simulate it
-                    base_parent = parent_body if parent_body is not None else -1
+                    base_parent = parent_body
                     if bodies_follow_joint_ordering:
                         child_body = body_data[first_joint_parent]
                         child_body_id = path_body_map[child_body["key"]]
@@ -1451,7 +1451,7 @@ def parse_usd(
                                 child_body_id = path_body_map[child_body["key"]]
                             else:
                                 child_body_id = art_bodies[root_joint_child]
-                            base_parent = parent_body if parent_body is not None else -1
+                            base_parent = parent_body
                             # Compute parent_xform to preserve imported pose
                             parent_xform = None
                             if base_parent != -1:
@@ -1493,7 +1493,7 @@ def parse_usd(
 
             # Create the articulation from all collected joints (only if not attaching to an existing body)
             if articulation_joint_indices:
-                if parent_body is not None:
+                if parent_body != -1:
                     # Attach to existing articulation
                     _attach_joints_to_parent_articulation(
                         builder, articulation_joint_indices, parent_body, allow_expensive_reordering
@@ -1885,7 +1885,7 @@ def parse_usd(
     # add joints to floating bodies (bodies not connected as children to any joint)
     if not (no_articulations and has_joints):
         new_bodies = list(path_body_map.values())
-        if parent_body is not None:
+        if parent_body != -1:
             # When parent_body is specified, manually add joints to floating bodies with correct parent
             joint_children = set(builder.joint_child)
             for body_id in new_bodies:
