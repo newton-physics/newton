@@ -7268,15 +7268,20 @@ class ModelBuilder:
         """Create joint from base_joint specification (string or dict)."""
         if isinstance(base_joint, str):
             # Parse string like "px,py,rz"
-            axes_spec = base_joint.lower().split(",")
-            axes_spec = [ax.strip() for ax in axes_spec]
-            linear_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"l", "p"}]
-            angular_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"a", "r"}]
+            axes_spec = [ax.strip() for ax in base_joint.lower().split(",") if ax.strip()]
             axes_vec = {
                 "x": [1.0, 0.0, 0.0],
                 "y": [0.0, 1.0, 0.0],
                 "z": [0.0, 0.0, 1.0],
             }
+            # Validate axis specs before indexing
+            invalid = [
+                ax for ax in axes_spec if len(ax) < 2 or ax[0] not in {"l", "p", "a", "r"} or ax[-1] not in axes_vec
+            ]
+            if invalid:
+                raise ValueError(f"Invalid base_joint axis spec(s): {invalid}. Expected tokens like 'px', 'py', 'rz'.")
+            linear_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"l", "p"}]
+            angular_axes_str = [ax[-1] for ax in axes_spec if ax[0] in {"a", "r"}]
             return self.add_joint_d6(
                 linear_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str],
                 angular_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str],
