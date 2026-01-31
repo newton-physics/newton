@@ -1418,6 +1418,145 @@ class TestCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(arctic_stiff[0], 100.0, places=5)
         self.assertAlmostEqual(arctic_stiff[1], 150.0, places=5)
 
+    def test_joint_reordering_remaps_custom_attributes(self):
+        """Test that custom attributes are correctly remapped during joint reordering.
+
+        This test manually simulates the joint reordering scenario by creating joints in
+        one order, manually marking them for different articulations, then calling the
+        reordering function to verify custom attributes are remapped correctly.
+        """
+        builder = ModelBuilder()
+
+        # Declare custom attributes for all joint-related frequencies
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="joint_id",
+                frequency=AttributeFrequency.JOINT,
+                dtype=wp.int32,
+                assignment=AttributeAssignment.MODEL,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dof_gain",
+                frequency=AttributeFrequency.JOINT_DOF,
+                dtype=wp.float32,
+                assignment=AttributeAssignment.CONTROL,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="coord_offset",
+                frequency=AttributeFrequency.JOINT_COORD,
+                dtype=wp.float32,
+                assignment=AttributeAssignment.MODEL,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="constraint_weight",
+                frequency=AttributeFrequency.JOINT_CONSTRAINT,
+                dtype=wp.float32,
+                assignment=AttributeAssignment.MODEL,
+            )
+        )
+
+        # Create joints in articulation 0
+        base1 = builder.add_link(mass=1.0)
+        link1 = builder.add_link(mass=0.5)
+        joint1 = builder.add_joint_revolute(
+            parent=base1,
+            child=link1,
+            axis=[1, 0, 0],
+            custom_attributes={
+                "joint_id": 100,
+                "dof_gain": [1.0],
+                "coord_offset": [0.1],
+                "constraint_weight": [0.01, 0.02, 0.03, 0.04, 0.05],
+            },
+        )
+        builder.add_articulation([joint1])
+
+        # Create joints in articulation 1
+        base2 = builder.add_link(mass=1.0)
+        link2 = builder.add_link(mass=0.5)
+        joint2 = builder.add_joint_revolute(
+            parent=base2,
+            child=link2,
+            axis=[0, 1, 0],
+            custom_attributes={
+                "joint_id": 200,
+                "dof_gain": [2.0],
+                "coord_offset": [0.2],
+                "constraint_weight": [0.11, 0.12, 0.13, 0.14, 0.15],
+            },
+        )
+        builder.add_articulation([joint2])
+
+        # Create a third joint that should belong to articulation 0 but is added last
+        # In real scenarios, this happens when using parent_body with allow_expensive_reordering
+        link3 = builder.add_link(mass=0.3)
+        joint3 = builder.add_joint_revolute(
+            parent=link1,
+            child=link3,
+            axis=[0, 0, 1],
+            custom_attributes={
+                "joint_id": 300,
+                "dof_gain": [3.0],
+                "coord_offset": [0.3],
+                "constraint_weight": [0.21, 0.22, 0.23, 0.24, 0.25],
+            },
+        )
+
+        # Manually set articulation for joint3 to 0 (same as joint1)
+        # This simulates what happens during import with parent_body
+        builder.joint_articulation[joint3] = 0
+
+        # Before reordering: joint order is [joint1, joint2, joint3]
+        # joint1 -> art 0, joint2 -> art 1, joint3 -> art 0
+        # After reordering should be: [joint1, joint3, joint2]
+        # joint1 -> art 0, joint3 -> art 0, joint2 -> art 1
+
+        # Manually trigger reordering (this is normally called during import)
+        builder._reorder_joints_by_articulation()
+
+        # Build model and verify
+        model = builder.finalize(device=self.device)
+        control = model.control()
+
+        # Verify joint order by checking articulation assignments
+        joint_articulations = model.joint_articulation.numpy()
+        self.assertEqual(joint_articulations[0], 0)  # joint1 -> art0
+        self.assertEqual(joint_articulations[1], 0)  # joint3 -> art0 (was last, now second)
+        self.assertEqual(joint_articulations[2], 1)  # joint2 -> art1 (was second, now last)
+
+        # Verify JOINT frequency attributes are remapped
+        joint_ids = model.joint_id.numpy()
+        self.assertEqual(joint_ids[0], 100)  # joint1
+        self.assertEqual(joint_ids[1], 300)  # joint3 (remapped from position 2 to 1)
+        self.assertEqual(joint_ids[2], 200)  # joint2 (remapped from position 1 to 2)
+
+        # Verify JOINT_DOF frequency attributes are remapped
+        dof_gains = control.dof_gain.numpy()
+        self.assertAlmostEqual(dof_gains[0], 1.0, places=5)  # joint1's DOF
+        self.assertAlmostEqual(dof_gains[1], 3.0, places=5)  # joint3's DOF
+        self.assertAlmostEqual(dof_gains[2], 2.0, places=5)  # joint2's DOF
+
+        # Verify JOINT_COORD frequency attributes are remapped
+        coord_offsets = model.coord_offset.numpy()
+        self.assertAlmostEqual(coord_offsets[0], 0.1, places=5)  # joint1's coord
+        self.assertAlmostEqual(coord_offsets[1], 0.3, places=5)  # joint3's coord
+        self.assertAlmostEqual(coord_offsets[2], 0.2, places=5)  # joint2's coord
+
+        # Verify JOINT_CONSTRAINT frequency attributes are remapped
+        constraint_weights = model.constraint_weight.numpy()
+        # joint1's constraints (5 total, indices 0-4)
+        np.testing.assert_array_almost_equal(constraint_weights[0:5], [0.01, 0.02, 0.03, 0.04, 0.05], decimal=5)
+        # joint3's constraints (5 total, indices 5-9) - were at 10-14, now at 5-9
+        np.testing.assert_array_almost_equal(constraint_weights[5:10], [0.21, 0.22, 0.23, 0.24, 0.25], decimal=5)
+        # joint2's constraints (5 total, indices 10-14) - were at 5-9, now at 10-14
+        np.testing.assert_array_almost_equal(constraint_weights[10:15], [0.11, 0.12, 0.13, 0.14, 0.15], decimal=5)
+
 
 class TestCustomFrequencyAttributes(unittest.TestCase):
     """Test custom attributes with custom frequencies."""
