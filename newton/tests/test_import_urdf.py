@@ -1023,6 +1023,136 @@ class TestImportUrdf(unittest.TestCase):
         self.assertIn("FREE joint", str(cm.exception))
         self.assertIn("parent", str(cm.exception))
 
+    def test_parent_body_not_in_articulation_raises_error(self):
+        """Test that attaching to a body not in any articulation raises an error."""
+        builder = newton.ModelBuilder()
+
+        # Create a standalone body (not in any articulation)
+        standalone_body = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(
+            body=standalone_body,
+            radius=0.1,
+        )
+
+        urdf_content = """<?xml version="1.0"?>
+<robot name="test_robot">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+    </link>
+</robot>
+"""
+
+        # Attempting to attach to standalone body should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(urdf_content, builder, parent_body=standalone_body, floating=False)
+
+        self.assertIn("not part of any articulation", str(cm.exception))
+
+    def test_three_level_hierarchical_composition(self):
+        """Test attaching multiple levels: arm → gripper → sensor."""
+        arm_urdf = """<?xml version="1.0"?>
+<robot name="arm">
+    <link name="arm_base">
+        <inertial><mass value="1.0"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial>
+    </link>
+    <link name="arm_link">
+        <inertial><mass value="0.5"/><inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05"/></inertial>
+    </link>
+    <link name="end_effector">
+        <inertial><mass value="0.2"/><inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/></inertial>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="arm_base"/><child link="arm_link"/>
+        <origin xyz="1 0 0"/><axis xyz="0 0 1"/>
+    </joint>
+    <joint name="joint2" type="revolute">
+        <parent link="arm_link"/><child link="end_effector"/>
+        <origin xyz="0.5 0 0"/><axis xyz="0 0 1"/>
+    </joint>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.1"/><inertia ixx="0.01" ixy="0" ixz="0" iyy="0.01" iyz="0" izz="0.01"/></inertial>
+    </link>
+    <link name="gripper_finger">
+        <inertial><mass value="0.05"/><inertia ixx="0.005" ixy="0" ixz="0" iyy="0.005" iyz="0" izz="0.005"/></inertial>
+    </link>
+    <joint name="gripper_joint" type="revolute">
+        <parent link="gripper_base"/><child link="gripper_finger"/>
+        <origin xyz="0.05 0 0"/><axis xyz="0 1 0"/>
+    </joint>
+</robot>
+"""
+        sensor_urdf = """<?xml version="1.0"?>
+<robot name="sensor">
+    <link name="sensor_mount">
+        <inertial><mass value="0.01"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/></inertial>
+    </link>
+</robot>
+"""
+
+        builder = newton.ModelBuilder()
+
+        # Level 1: Add arm
+        self.parse_urdf(arm_urdf, builder, floating=False)
+        ee_idx = builder.body_key.index("end_effector")
+
+        # Level 2: Attach gripper to end effector
+        self.parse_urdf(gripper_urdf, builder, parent_body=ee_idx, floating=False)
+        finger_idx = builder.body_key.index("gripper_finger")
+
+        # Level 3: Attach sensor to gripper finger
+        self.parse_urdf(sensor_urdf, builder, parent_body=finger_idx, floating=False)
+
+        model = builder.finalize()
+
+        # All should be in ONE articulation
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+        # Verify joint count: arm (3) + gripper (2) + sensor (1) = 6
+        self.assertEqual(model.joint_count, 6)
+
+    def test_many_independent_articulations(self):
+        """Test creating many (5) independent articulations and verifying indexing."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base">
+        <inertial><mass value="1.0"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial>
+    </link>
+    <link name="link">
+        <inertial><mass value="0.5"/><inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05"/></inertial>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="base"/><child link="link"/>
+        <origin xyz="0.5 0 0"/><axis xyz="0 0 1"/>
+    </joint>
+</robot>
+"""
+
+        builder = newton.ModelBuilder()
+
+        # Add 5 independent robots
+        for i in range(5):
+            self.parse_urdf(
+                robot_urdf,
+                builder,
+                xform=wp.transform(wp.vec3(float(i * 2), 0.0, 0.0), wp.quat_identity()),
+                floating=False,
+            )
+
+        model = builder.finalize()
+
+        # Should have 5 articulations
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 5)
+
+        # Each articulation has 2 joints (FIXED base + revolute)
+        self.assertEqual(model.joint_count, 10)
+
     def test_base_joint_empty_string_fails(self):
         """Test that empty base_joint string raises ValueError."""
         urdf_content = """<?xml version="1.0"?>
