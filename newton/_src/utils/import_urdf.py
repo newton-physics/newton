@@ -121,56 +121,54 @@ def parse_urdf(
             articulation can be used as parent; attempting to attach to an older articulation will raise
             a ``ValueError``.
 
-    **Parameter Interactions**:
+        .. note::
+           Valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
 
-        The table below shows valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
+           .. list-table::
+              :header-rows: 1
+              :widths: 15 15 15 55
 
-        .. list-table::
-           :header-rows: 1
-           :widths: 15 15 15 55
+              * - floating
+                - base_joint
+                - parent_body
+                - Result
+              * - ``None``
+                - ``None``
+                - ``-1``
+                - Format default (URDF: FIXED joint)
+              * - ``True``
+                - ``None``
+                - ``-1``
+                - FREE joint to world (6 DOF)
+              * - ``False``
+                - ``None``
+                - ``-1``
+                - FIXED joint to world (0 DOF)
+              * - ``None``
+                - ``"px,py,rz"``
+                - ``-1``
+                - D6 joint to world with specified axes
+              * - ``False``
+                - ``None``
+                - ``body_idx``
+                - FIXED joint to parent body
+              * - ``None``
+                - ``"px,py,rz"``
+                - ``body_idx``
+                - D6 joint to parent body with specified axes
+              * - ``True``
+                - *any*
+                - *any*
+                - ❌ Error: mutually exclusive
+              * - *any*
+                - *any*
+                - *any*
+                - ❌ Error: mutually exclusive
+              * - ``True``
+                - ``None``
+                - ``body_idx``
+                - ❌ Error: FREE joints require world frame
 
-           * - floating
-             - base_joint
-             - parent_body
-             - Result
-           * - ``None``
-             - ``None``
-             - ``-1``
-             - Format default (URDF: FIXED joint)
-           * - ``True``
-             - ``None``
-             - ``-1``
-             - FREE joint to world (6 DOF)
-           * - ``False``
-             - ``None``
-             - ``-1``
-             - FIXED joint to world (0 DOF)
-           * - ``None``
-             - ``"px,py,rz"``
-             - ``-1``
-             - D6 joint to world with specified axes
-           * - ``False``
-             - ``None``
-             - ``body_idx``
-             - FIXED joint to parent body
-           * - ``None``
-             - ``"px,py,rz"``
-             - ``body_idx``
-             - D6 joint to parent body with specified axes
-           * - ``True``
-             - *any*
-             - *any*
-             - ❌ Error: mutually exclusive
-           * - *any*
-             - *any*
-             - *any*
-             - ❌ Error: mutually exclusive
-           * - ``True``
-             - ``None``
-             - ``body_idx``
-             - ❌ Error: FREE joints require world frame
-
-    Args (continued):
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes.
         parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
