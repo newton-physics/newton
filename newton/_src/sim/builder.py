@@ -6928,7 +6928,6 @@ class ModelBuilder:
 
         # Cache miss - compute the articulation
         result = None
-        found_as_child = False
 
         # Priority 1: Check if body is a child in any joint
         # A body should be a child in at most ONE joint (tree structure)
@@ -6937,7 +6936,6 @@ class ModelBuilder:
                 art_id = self.joint_articulation[joint_idx]
                 if art_id >= 0:  # -1 means no articulation
                     result = art_id
-                    found_as_child = True
                     break  # Body found as child - this is its home articulation
 
         # Priority 2: If not found as child, check if body is a parent in any joint

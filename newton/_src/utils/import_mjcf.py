@@ -1137,15 +1137,26 @@ def parse_mjcf(
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
-        # Handle base joint overrides for root bodies or FREE joints with special parameters
-        # This handles: (1) root body with base_joint/floating/parent_body params from parse_mjcf, or
-        # (2) non-root body with freejoint in MJCF when parent_body is specified
-        # NOTE: For root bodies in the MJCF, parent will be the parent_body parameter from parse_mjcf.
-        # For nested bodies in the MJCF tree, parent will be the parent body index within the tree.
-        has_override_params = base_joint is not None or floating is not None or parent != -1
-        is_free_joint_with_override = joint_type == JointType.FREE and has_override_params
+        # Handle base joint overrides for root bodies or FREE joints with explicit parameters
+        # Only apply base_joint logic when:
+        # (1) This is an MJCF root body AND (base_joint or floating are explicitly set OR parent_body is set)
+        # (2) This is a FREE joint AND it's an MJCF root being attached with parent_body
+        #
+        # NOTE: For root bodies in the MJCF, parent will equal the parent_body parameter from parse_mjcf.
+        # For nested bodies in the MJCF tree, parent will be a different body index within the tree.
+        # We check is_mjcf_root (parent == parent_body) to distinguish these cases.
 
-        if (is_mjcf_root and has_override_params) or is_free_joint_with_override:
+        # has_override_params: True if user explicitly provided base_joint or floating parameters
+        has_override_params = base_joint is not None or floating is not None
+
+        # has_hierarchical_composition: True if we're doing hierarchical composition (parent_body != -1)
+        has_hierarchical_composition = parent_body != -1
+
+        # is_free_joint_with_override: True if this is a FREE joint at MJCF root with hierarchical composition
+        # This handles the case where a MJCF with a <freejoint> is being attached to an existing body
+        is_free_joint_with_override = joint_type == JointType.FREE and is_mjcf_root and has_hierarchical_composition
+
+        if (is_mjcf_root and (has_override_params or has_hierarchical_composition)) or is_free_joint_with_override:
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             # Rotate joint_pos by body orientation before adding to body position
             rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
