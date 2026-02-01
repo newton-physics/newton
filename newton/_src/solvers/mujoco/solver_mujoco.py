@@ -620,7 +620,7 @@ class SolverMuJoCo(SolverBase):
             s = s.strip().lower()
             return 1 if s in ("true", "1") else 0
 
-        def parse_bool(s: str, context: dict[str, Any] | None = None) -> bool:
+        def parse_bool(s: str, context: dict[str, Any]) -> bool:
             """Parse MJCF/USD boolean values to bool."""
             s = s.strip().lower()
             if s == "auto":
