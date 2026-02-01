@@ -373,8 +373,6 @@ class SolverVBD(SolverBase):
 
             self.particle_conservative_bound_relaxation = particle_conservative_bound_relaxation
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
-            # CCD safety margin: 2x the conservative bound relaxation (e.g., 0.42 -> 0.84)
-            self.ccd_safety_margin = 2.0 * self.particle_conservative_bound_relaxation
 
             self.trimesh_collision_detector = TriMeshCollisionDetector(
                 self.model,
@@ -403,9 +401,7 @@ class SolverVBD(SolverBase):
                 self.model.edge_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
             )
         else:
-            self.particle_self_contact_evaluation_kernel_launch_size = (
-                self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE
-            )
+            self.particle_self_contact_evaluation_kernel_launch_size = None
 
         # Particle force and hessian storage
         self.particle_forces = wp.zeros(self.model.particle_count, dtype=wp.vec3, device=self.device)
@@ -1212,7 +1208,7 @@ class SolverVBD(SolverBase):
                     self.model.edge_indices,
                     self.trimesh_collision_info,
                     self.trimesh_collision_detector.edge_edge_parallel_epsilon,
-                    self.particle_conservative_bound_relaxation * 2,
+                    self.particle_conservative_bound_relaxation,
                 ],
                 outputs=[
                     self.truncation_ts,
@@ -1225,13 +1221,14 @@ class SolverVBD(SolverBase):
                 kernel=apply_truncation_ts,
                 dim=self.model.particle_count,
                 inputs=[
-                    self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
-                    self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
-                    self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
-                    self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
-                    particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
+                    self.pos_prev_collision_detection,
+                    self.particle_displacements,
+                    self.truncation_ts,
+                    self.particle_displacements,
+                    particle_q_out,
                     self.particle_self_contact_margin
-                    * self.particle_conservative_bound_relaxation,  # max_displacement: float
+                    * self.particle_conservative_bound_relaxation
+                    * 0.5,  # degenerate to isotropic truncation
                 ],
                 device=self.device,
             )
