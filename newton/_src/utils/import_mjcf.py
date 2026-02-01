@@ -1651,10 +1651,10 @@ def parse_mjcf(
 
         process_frames(
             world.findall("frame"),
-            parent_body=-1,
+            parent_body=root_parent,
             defaults=world_defaults,
             childclass=None,
-            world_xform=xform,
+            world_xform=effective_xform,
             body_relative_xform=None,  # Static geoms use world coords
         )
 

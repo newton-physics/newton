@@ -4532,6 +4532,61 @@ class TestImportMjcf(unittest.TestCase):
         # Should still be one articulation
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
 
+    def test_frame_bodies_with_parent_body(self):
+        """Test that bodies inside worldbody frames are correctly attached to parent_body."""
+        # Create a simple arm
+        arm_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="arm">
+    <worldbody>
+        <body name="arm_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="arm_link" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # MJCF with body inside a worldbody frame
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <frame name="gripper_frame" pos="0.1 0 0" euler="0 0 45">
+            <body name="gripper_body" pos="0.05 0 0">
+                <geom type="box" size="0.02 0.02 0.05" mass="0.1"/>
+                <body name="gripper_finger" pos="0 0.03 0">
+                    <joint type="slide" axis="0 1 0"/>
+                    <geom type="box" size="0.01 0.01 0.04" mass="0.05"/>
+                </body>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+
+        # Add arm
+        builder.add_mjcf(arm_mjcf, floating=False)
+        arm_link_idx = builder.body_key.index("arm_link")
+
+        # Add gripper with body inside frame - should attach to arm_link
+        builder.add_mjcf(gripper_mjcf, parent_body=arm_link_idx, floating=False)
+
+        model = builder.finalize()
+
+        # All should be in ONE articulation (frame bodies attached to parent)
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+        # Verify bodies from frame were added
+        self.assertIn("gripper_body", builder.body_key)
+        self.assertIn("gripper_finger", builder.body_key)
+
+        # Verify joint count: arm (2 joints) + gripper (2 joints) = 4
+        # arm: FIXED base + hinge = 2
+        # gripper: FIXED base (to arm_link) + slide = 2
+        self.assertEqual(model.joint_count, 4)
+
     def test_error_messages_are_informative(self):
         """Test that error messages contain helpful information."""
         robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
