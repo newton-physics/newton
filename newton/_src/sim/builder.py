@@ -7274,6 +7274,8 @@ class ModelBuilder:
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     self.joint_articulation[joint_idx] = parent_articulation
+                # Invalidate cache since articulation assignments changed
+                self._invalidate_body_articulation_cache()
             else:
                 # Parent body exists but is not in any articulation - this is an error
                 # because user explicitly specified parent_body but it can't be used
