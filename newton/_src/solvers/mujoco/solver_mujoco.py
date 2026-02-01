@@ -850,7 +850,7 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="actrange",
-                usd_attribute_name="mjc:actRange",
+                usd_attribute_name="mjc:actRange:min",
                 usd_value_transformer=usd_parse_range,
             )
         )
