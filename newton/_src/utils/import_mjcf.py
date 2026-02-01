@@ -1157,16 +1157,15 @@ def parse_mjcf(
         is_free_joint_with_override = joint_type == JointType.FREE and is_mjcf_root and has_hierarchical_composition
 
         if (is_mjcf_root and (has_override_params or has_hierarchical_composition)) or is_free_joint_with_override:
+            # Extract joint position (used for transform calculation)
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             # Rotate joint_pos by body orientation before adding to body position
             rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
             _xform = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
-            # Determine the parent for the base joint
-            base_parent = parent
-
+            # Add base joint based on parameters
             if base_joint is not None:
-                # in case of a given base joint, the position is applied first, the rotation only
+                # In case of a given base joint, the position is applied first, the rotation only
                 # after the base joint itself to not rotate its axis
                 # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
                 base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
@@ -1178,33 +1177,25 @@ def parse_mjcf(
                         key="base_joint",
                         parent_xform=base_parent_xform,
                         child_xform=base_child_xform,
-                        parent=base_parent,
+                        parent=parent,
                     )
                 )
-            elif floating is not None and floating and base_parent == -1:
+            elif floating is not None and floating and parent == -1:
                 # floating=True only makes sense when connecting to world
                 joint_indices.append(
-                    builder.add_base_joint(
-                        child=link,
-                        floating=True,
-                        key="floating_base",
-                        parent=base_parent,
-                    )
+                    builder.add_base_joint(child=link, floating=True, key="floating_base", parent=parent)
                 )
             else:
                 # Fixed joint to world or to parent_body
                 # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
                 joint_indices.append(
                     builder.add_base_joint(
-                        child=link,
-                        floating=False,
-                        key="fixed_base",
-                        parent_xform=_xform,
-                        parent=base_parent,
+                        child=link, floating=False, key="fixed_base", parent_xform=_xform, parent=parent
                     )
                 )
 
         else:
+            # Extract joint position for non-root bodies
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             if len(joint_name) == 0:
                 joint_name = [f"{body_name}_joint"]

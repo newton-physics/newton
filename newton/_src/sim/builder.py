@@ -7086,6 +7086,59 @@ class ModelBuilder:
                 custom_attributes=custom_attributes,
             )
 
+    @staticmethod
+    def _parse_d6_axes_spec(base_joint_str: str) -> tuple[list[str], list[str]]:
+        """
+        Parse D6 joint axis specification string.
+
+        Args:
+            base_joint_str: Comma-separated axis specs like 'px,py,rz' or 'lx,ly,az'
+
+        Returns:
+            Tuple of (linear_axes, angular_axes) where each is a list of axis characters ('x', 'y', 'z')
+
+        Raises:
+            ValueError: If the specification is invalid
+        """
+        # Parse and clean axis specifications
+        axes_spec = [ax.strip() for ax in base_joint_str.lower().split(",") if ax.strip()]
+
+        # Validate non-empty
+        if not axes_spec:
+            raise ValueError(
+                "base_joint string cannot be empty. Expected comma-separated axis specs like 'px,py,rz' or 'lx,ly,az'."
+            )
+
+        # Validate axis specs: must be exactly 2 characters (type + axis)
+        invalid = []
+        for ax in axes_spec:
+            if len(ax) != 2:
+                invalid.append(f"{ax!r} (must be exactly 2 characters)")
+            elif ax[0] not in {"l", "p", "a", "r"}:
+                invalid.append(f"{ax!r} (first char must be l/p/a/r)")
+            elif ax[1] not in {"x", "y", "z"}:
+                invalid.append(f"{ax!r} (second char must be x/y/z)")
+
+        if invalid:
+            raise ValueError(
+                f"Invalid base_joint axis spec(s): {', '.join(invalid)}. "
+                f"Expected 2-character tokens like 'px', 'py', 'rz' where first char is "
+                f"'l'/'p' (linear/prismatic) or 'a'/'r' (angular/revolute), and second char is 'x'/'y'/'z'."
+            )
+
+        # Check for duplicates
+        if len(axes_spec) != len(set(axes_spec)):
+            duplicates = [ax for ax in axes_spec if axes_spec.count(ax) > 1]
+            raise ValueError(
+                f"Duplicate axis specifications in base_joint: {duplicates}. Each axis can only be specified once."
+            )
+
+        # Separate into linear and angular axes
+        linear_axes = [ax[1] for ax in axes_spec if ax[0] in {"l", "p"}]
+        angular_axes = [ax[1] for ax in axes_spec if ax[0] in {"a", "r"}]
+
+        return linear_axes, angular_axes
+
     def _create_joint_from_base_joint_spec(
         self,
         base_joint: str | dict,
@@ -7097,51 +7150,16 @@ class ModelBuilder:
     ) -> int:
         """Create joint from base_joint specification (string or dict)."""
         if isinstance(base_joint, str):
-            # Parse string like "px,py,rz"
-            axes_spec = [ax.strip() for ax in base_joint.lower().split(",") if ax.strip()]
+            # Parse axis specification and create D6 joint
+            linear_axes_str, angular_axes_str = self._parse_d6_axes_spec(base_joint)
 
-            # Validate non-empty
-            if not axes_spec:
-                raise ValueError(
-                    "base_joint string cannot be empty. "
-                    "Expected comma-separated axis specs like 'px,py,rz' or 'lx,ly,az'."
-                )
+            axes_vec = {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}
+            linear_axes = [ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str]
+            angular_axes = [ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str]
 
-            axes_vec = {
-                "x": [1.0, 0.0, 0.0],
-                "y": [0.0, 1.0, 0.0],
-                "z": [0.0, 0.0, 1.0],
-            }
-
-            # Validate axis specs: must be exactly 2 characters (type + axis)
-            invalid = []
-            for ax in axes_spec:
-                if len(ax) != 2:
-                    invalid.append(f"{ax!r} (must be exactly 2 characters)")
-                elif ax[0] not in {"l", "p", "a", "r"}:
-                    invalid.append(f"{ax!r} (first char must be l/p/a/r)")
-                elif ax[1] not in axes_vec:
-                    invalid.append(f"{ax!r} (second char must be x/y/z)")
-
-            if invalid:
-                raise ValueError(
-                    f"Invalid base_joint axis spec(s): {', '.join(invalid)}. "
-                    f"Expected 2-character tokens like 'px', 'py', 'rz' where first char is "
-                    f"'l'/'p' (linear/prismatic) or 'a'/'r' (angular/revolute), and second char is 'x'/'y'/'z'."
-                )
-
-            # Check for duplicates
-            if len(axes_spec) != len(set(axes_spec)):
-                duplicates = [ax for ax in axes_spec if axes_spec.count(ax) > 1]
-                raise ValueError(
-                    f"Duplicate axis specifications in base_joint: {duplicates}. Each axis can only be specified once."
-                )
-
-            linear_axes_str = [ax[1] for ax in axes_spec if ax[0] in {"l", "p"}]
-            angular_axes_str = [ax[1] for ax in axes_spec if ax[0] in {"a", "r"}]
             return self.add_joint_d6(
-                linear_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str],
-                angular_axes=[ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str],
+                linear_axes=linear_axes,
+                angular_axes=angular_axes,
                 parent_xform=parent_xform,
                 child_xform=child_xform,
                 parent=parent,
