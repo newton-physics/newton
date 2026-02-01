@@ -524,11 +524,11 @@ Custom frequencies can optionally support automatic USD parsing by providing a `
 
 .. code-block:: python
 
-   def find_actuator_prims(stage, context):
-       """Find all prims with MjcActuatorAPI applied."""
-       for prim in stage.Traverse():
-           if prim.HasAPI("MjcActuatorAPI"):
-               yield prim
+  def find_actuator_prims(stage, context):
+      """Find all prims with type name ``MjcActuator``."""
+      for prim in stage.Traverse():
+          if prim.GetTypeName() == "MjcActuator":
+              yield prim
    
    builder.add_custom_frequency(
        ModelBuilder.CustomFrequency(
