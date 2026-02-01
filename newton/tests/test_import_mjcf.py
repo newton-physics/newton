@@ -3877,6 +3877,47 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[1], newton.JointType.D6)
         self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
 
+    def test_parent_body_creates_joint_to_parent(self):
+        """Test that parent_body creates a joint connecting to the parent body."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base_link">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="0 1 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        ee_body_idx = builder.body_key.index("end_effector")
+        initial_joint_count = builder.joint_count
+
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx)
+
+        # Verify a new joint was created connecting to the parent
+        self.assertEqual(builder.joint_count, initial_joint_count + 1)
+        self.assertEqual(builder.joint_parent[initial_joint_count], ee_body_idx)
+
+        # Both should be in the same articulation
+        model = builder.finalize()
+        joint_articulation = model.joint_articulation.numpy()
+        self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
+
     def test_exclude_tag(self):
         """Test that <exclude> tags properly filter collisions between specified body pairs."""
         builder = newton.ModelBuilder()
