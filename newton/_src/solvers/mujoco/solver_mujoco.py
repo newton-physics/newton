@@ -229,6 +229,27 @@ class SolverMuJoCo(SolverBase):
                 return parsed * (180 / np.pi)
         return parsed
 
+    @staticmethod
+    def _find_mjc_actuator_prims(stage, _context: dict[str, Any] | None = None):
+        """Find all prims with MjcActuatorAPI applied for USD parsing.
+
+        This is used as the ``usd_prim_finder`` for the ``mujoco:actuator`` custom frequency.
+        It yields USD Prim objects that have the MjcActuatorAPI schema applied, either
+        formally (schema is registered) or via apiSchemas metadata (unregistered schema).
+
+        Args:
+            stage: The USD stage to search.
+            context: Optional context dictionary with parsing results (path maps, units, etc.).
+
+        Yields:
+            USD Prim objects with MjcActuatorAPI applied.
+        """
+        for prim in stage.Traverse():
+            # print(prim.GetPath(), "\t", prim.GetAppliedSchemas())
+
+            if prim.GetTypeName() == "MjcActuator":
+                yield prim
+
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
@@ -237,6 +258,19 @@ class SolverMuJoCo(SolverBase):
         Note that we declare all custom attributes with the :attr:`newton.ModelBuilder.CustomAttribute.usd_attribute_name` set to ``"mjc"`` here to leverage the MuJoCo USD schema
         where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
+        # Register custom frequencies before adding attributes that use them
+        # This is required as custom frequencies must be registered before use
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="actuator",
+                namespace="mujoco",
+                usd_prim_finder=cls._find_mjc_actuator_prims,
+            )
+        )
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="tendon", namespace="mujoco"))
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="tendon_joint", namespace="mujoco"))
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="condim",
@@ -457,11 +491,11 @@ class SolverMuJoCo(SolverBase):
         # --- Pair attributes (from MJCF <pair> tag) ---
         # Explicit contact pairs with custom properties. Only pairs from the template world are used.
         # These are parsed automatically from MJCF <contact><pair> elements.
-        # All pair attributes share the "pair" custom frequency (resolves to "mujoco:pair" via namespace).
+        # All pair attributes share the "mujoco:pair" custom frequency.
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_world",
-                frequency="pair",  # Resolves to "mujoco:pair" via namespace
+                frequency="mujoco:pair",
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -472,7 +506,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_geom1",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -483,7 +517,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_geom2",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -494,7 +528,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_condim",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=wp.int32,
                 default=3,
                 namespace="mujoco",
@@ -504,7 +538,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solref",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -514,7 +548,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solreffriction",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -524,7 +558,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_solimp",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -534,7 +568,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_margin",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -544,7 +578,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_gap",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -554,7 +588,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="pair_friction",
-                frequency="pair",
+                frequency="mujoco:pair",
                 dtype=vec5,
                 default=vec5(1.0, 1.0, 0.005, 0.0001, 0.0001),
                 namespace="mujoco",
@@ -564,8 +598,9 @@ class SolverMuJoCo(SolverBase):
 
         # --- MuJoCo General Actuator attributes (mujoco:actuator frequency) ---
         # These are used for general/motor actuators parsed from MJCF
-        # All actuator attributes share the "actuator" custom frequency (resolves to "mujoco:actuator" via namespace)
+        # All actuator attributes share the "mujoco:actuator" custom frequency.
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
+        # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
         def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5}.get(
                 s.lower(), 0
@@ -585,10 +620,35 @@ class SolverMuJoCo(SolverBase):
             s = s.strip().lower()
             return 1 if s in ("true", "1") else 0
 
+        def parse_bool(s: str, context: dict[str, Any] | None = None) -> bool:
+            """Parse MJCF/USD boolean values to bool."""
+            s = s.strip().lower()
+            if s == "auto":
+                # This can only happen when parsing USD attributes, in which case the context must be provided.
+                assert context is not None
+                prim = context["prim"]
+                attr = context["attr"]
+                raise NotImplementedError(
+                    f"Error while parsing value '{attr.usd_attribute_name}' at prim '{prim.GetPath()}'. Auto boolean values are not supported at the moment."
+                )
+            return s in ("true", "1")
+
+        def usd_parse_range(_: str, context: dict[str, Any]) -> wp.vec2 | None:
+            """Parse USD range values to wp.vec2."""
+            prim = context["prim"]
+            attr = context["attr"]
+            # Note: we use the min attribute as key to discover the range attribute and then parse the range from the *:min and *:max values as a vec2.
+            range_attr_name = attr.usd_attribute_name.replace(":min", "").replace(":max", "")
+            rmin = prim.GetAttribute(f"{range_attr_name}:min").Get()
+            rmax = prim.GetAttribute(f"{range_attr_name}:max").Get()
+            if rmin is None or rmax is None:
+                return None
+            return wp.vec2(rmin, rmax)
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_trntype",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # TrnType.JOINT
@@ -600,7 +660,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_dyntype",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # DynType.NONE
@@ -612,7 +672,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_gaintype",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # GainType.FIXED
@@ -624,7 +684,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_biastype",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # BiasType.NONE
@@ -637,7 +697,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_trnid",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2i,
                 default=wp.vec2i(-1, -1),
@@ -648,7 +708,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_world",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=-1,
@@ -659,151 +719,173 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_ctrllimited",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
                 mjcf_attribute_name="ctrllimited",
                 mjcf_value_transformer=parse_bool_int,
+                usd_attribute_name="mjc:ctrlLimited",
+                usd_value_transformer=parse_bool,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_forcelimited",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
                 mjcf_attribute_name="forcelimited",
                 mjcf_value_transformer=parse_bool_int,
+                usd_attribute_name="mjc:forceLimited",
+                usd_value_transformer=parse_bool,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_ctrlrange",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
                 mjcf_attribute_name="ctrlrange",
+                # USD stores min and max separately, we use the min as key to discover the range
+                # attribute and then parse the range from the *:min and *:max values as a vec2.
+                usd_attribute_name="mjc:ctrlRange:min",
+                usd_value_transformer=usd_parse_range,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_forcerange",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
                 mjcf_attribute_name="forcerange",
+                # USD stores min and max separately, we use the min as key to discover the range
+                # attribute and then parse the range from the *:min and *:max values as a vec2.
+                usd_attribute_name="mjc:forceRange:min",
+                usd_value_transformer=usd_parse_range,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_gear",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.types.vector(length=6, dtype=wp.float32),
                 default=wp.types.vector(length=6, dtype=wp.float32)(1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="gear",
+                usd_attribute_name="mjc:gear",
             )
         )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_dynprm",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="dynprm",
+                usd_attribute_name="mjc:dynPrm",
             )
         )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_gainprm",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="gainprm",
+                usd_attribute_name="mjc:gainPrm",
             )
         )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_biasprm",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="biasprm",
+                usd_attribute_name="mjc:biasPrm",
             )
         )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actlimited",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
                 mjcf_attribute_name="actlimited",
                 mjcf_value_transformer=parse_bool_int,
+                usd_attribute_name="mjc:actLimited",
+                usd_value_transformer=parse_bool,
             )
         )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actrange",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="actrange",
+                usd_attribute_name="mjc:actRange",
+                usd_value_transformer=usd_parse_range,
             )
         )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actdim",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
                 mjcf_attribute_name="actdim",
+                usd_attribute_name="mjc:actDim",
             )
         )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_actearly",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
                 mjcf_attribute_name="actearly",
                 mjcf_value_transformer=parse_bool_int,
+                usd_attribute_name="mjc:actEarly",
             )
         )
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ctrl",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.CONTROL,
                 dtype=wp.float32,
                 default=0.0,
@@ -814,7 +896,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ctrl_source",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
@@ -830,7 +912,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_world",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -840,7 +922,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_stiffness",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -850,7 +932,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_damping",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -860,7 +942,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_frictionloss",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -882,7 +964,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_limited",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.int32,
                 default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
@@ -893,7 +975,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_range",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
@@ -903,7 +985,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_margin",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -913,7 +995,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solref_limit",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -923,7 +1005,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solimp_limit",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -933,7 +1015,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solref_friction",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -943,7 +1025,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_solimp_friction",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -953,7 +1035,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_armature",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -963,7 +1045,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_springlength",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(-1.0, -1.0),  # -1 means use default (model length)
                 namespace="mujoco",
@@ -974,7 +1056,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_joint_adr",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -984,7 +1066,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_joint_num",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -993,7 +1075,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_actuator_force_range",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.vec2,
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
@@ -1003,7 +1085,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_actuator_force_limited",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=wp.int32,
                 default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
@@ -1016,7 +1098,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_joint",
-                frequency="tendon_joint",
+                frequency="mujoco:tendon_joint",
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -1026,7 +1108,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_coef",
-                frequency="tendon_joint",
+                frequency="mujoco:tendon_joint",
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",

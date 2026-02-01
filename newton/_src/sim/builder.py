@@ -21,9 +21,9 @@ import copy
 import ctypes
 import math
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -69,6 +69,9 @@ from .joints import (
     infer_actuator_mode,
 )
 from .model import Model
+
+if TYPE_CHECKING:
+    from pxr import Usd
 
 
 class ModelBuilder:
@@ -382,9 +385,9 @@ class ModelBuilder:
         Can be either:
             - A :class:`Model.AttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
               Uses dict-based storage where keys are entity indices, allowing sparse assignment.
-            - A string for custom frequencies (e.g., ``"mujoco:pair"``). Uses list-based storage for
-              sequential data appended via :meth:`add_custom_values`. All attributes sharing the same
-              custom frequency must have the same count, validated at finalize time."""
+            - A string for custom frequencies using the full frequency key (e.g., ``"mujoco:pair"``).
+              Uses list-based storage for sequential data appended via :meth:`add_custom_values`. All attributes
+              sharing the same custom frequency must have the same count, validated at finalize time."""
 
         assignment: Model.AttributeAssignment = Model.AttributeAssignment.MODEL
         """Assignment category (see :class:`Model.AttributeAssignment`), defaults to :attr:`Model.AttributeAssignment.MODEL`"""
@@ -428,8 +431,10 @@ class ModelBuilder:
         urdf_attribute_name: str | None = None
         """Name of the attribute in the URDF definition. If None, the attribute name is used."""
 
-        usd_value_transformer: Callable[[Any, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives an optional context dict with parsing-time information."""
+        usd_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = None
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives a context dict with the following keys:
+        - ``"prim"``: The USD prim to query.
+        - ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` object to get the value for."""
 
         mjcf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
         """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
@@ -478,21 +483,6 @@ class ModelBuilder:
             return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
         @property
-        def frequency_key(self) -> Model.AttributeFrequency | str:
-            """Return the resolved frequency, with namespace prepended for custom string frequencies.
-
-            For string frequencies: returns "namespace:frequency" if namespace is set, otherwise just "frequency".
-            For enum frequencies: returns the enum value unchanged.
-            """
-            if isinstance(self.frequency, str):
-                return (
-                    f"{self.namespace}:{self.frequency}"
-                    if self.namespace and ":" not in self.frequency
-                    else self.frequency
-                )
-            return self.frequency
-
-        @property
         def is_custom_frequency(self) -> bool:
             """Check if this attribute uses a custom (string) frequency.
 
@@ -526,6 +516,63 @@ class ModelBuilder:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
                 arr = [self.values.get(i, self.default) for i in range(count)]
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
+
+    @dataclass
+    class CustomFrequency:
+        """
+        Represents a custom frequency definition for the ModelBuilder.
+
+        Custom frequencies allow defining entity types beyond the built-in ones (BODY, SHAPE, JOINT, etc.).
+        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before any custom attributes
+        using them can be added.
+
+        The optional ``usd_prim_finder`` callback enables automatic USD parsing for this frequency.
+        When provided, :func:`newton.parse_usd` will call this function to find USD prims of this
+        entity type and extract custom attribute values from them.
+
+        See :ref:`custom_attributes` for more information on custom frequencies.
+
+        Example:
+
+            .. code-block:: python
+
+                # Define a custom frequency for MuJoCo actuators with USD parsing support
+                def find_actuator_prims(stage, context):
+                    for prim in stage.Traverse():
+                        if prim.HasAPI("MjcActuatorAPI"):
+                            yield prim
+
+
+                builder.add_custom_frequency(
+                    ModelBuilder.CustomFrequency(
+                        name="actuator",
+                        namespace="mujoco",
+                        usd_prim_finder=find_actuator_prims,
+                    )
+                )
+        """
+
+        name: str
+        """The name of the custom frequency (e.g., ``"actuator"``, ``"pair"``)."""
+
+        namespace: str | None = None
+        """Namespace for the custom frequency. If provided, the frequency key becomes ``"namespace:name"``.
+        If None, the custom frequency is registered without a namespace."""
+
+        usd_prim_finder: Callable[[Usd.Stage, dict[str, Any] | None], Generator[Usd.Prim, None, None]] | None = None
+        """Optional callback to find USD prims for this frequency during USD parsing.
+
+        The callback receives the USD stage and a context dictionary containing parsing results
+        (path maps, units, etc.) and should yield USD Prim objects. For each yielded prim,
+        custom attribute values will be extracted and added to the builder via
+        :meth:`ModelBuilder.add_custom_values`.
+
+        If None, this frequency cannot be automatically parsed from USD files."""
+
+        @property
+        def key(self) -> str:
+            """The key of the custom frequency (e.g., ``"mujoco:actuator"`` or ``"pair"``)."""
+            return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
         """
@@ -769,6 +816,8 @@ class ModelBuilder:
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
+        # Registered custom frequencies (must be registered before adding attributes with that frequency)
+        self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
 
@@ -786,8 +835,16 @@ class ModelBuilder:
         Define a custom per-entity attribute to be added to the Model.
         See :ref:`custom_attributes` for more information.
 
+        For attributes with custom string frequencies (not enum frequencies like BODY, SHAPE, etc.),
+        the frequency must be registered first via :meth:`add_custom_frequency`. This ensures
+        explicit declaration of custom entity types and enables USD parsing support.
+
         Args:
             attribute: The custom attribute to add.
+
+        Raises:
+            ValueError: If the attribute key already exists with incompatible specification,
+                or if the attribute uses a custom string frequency that hasn't been registered.
 
         Example:
 
@@ -827,19 +884,61 @@ class ModelBuilder:
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
             return
 
-        self.custom_attributes[key] = attribute
-        # Initialize frequency count for string frequencies
+        # Validate that custom frequencies are registered before use
         if attribute.is_custom_frequency:
-            freq_key = attribute.frequency_key
-            if freq_key not in self._custom_frequency_counts:
-                self._custom_frequency_counts[freq_key] = 0
+            freq_key = attribute.frequency
+            if freq_key not in self.custom_frequencies:
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is not registered. "
+                    f"Please register it first using add_custom_frequency() before adding attributes with this frequency."
+                )
+
+        self.custom_attributes[key] = attribute
+
+    def add_custom_frequency(self, frequency: CustomFrequency) -> None:
+        """
+        Register a custom frequency for the builder.
+
+        Custom frequencies must be registered before adding any custom attributes that use them.
+        This enables explicit declaration of custom entity types and optionally provides USD
+        parsing support via the ``usd_prim_finder`` callback.
+
+        This method is idempotent: registering the same frequency multiple times is silently
+        ignored (useful when loading multiple files that all register the same frequencies).
+
+        Args:
+            frequency: A :class:`CustomFrequency` object with full configuration.
+
+        Example:
+
+            .. code-block:: python
+
+                # Full registration with USD parsing support
+                builder.add_custom_frequency(
+                    ModelBuilder.CustomFrequency(
+                        name="actuator",
+                        namespace="mujoco",
+                        usd_prim_finder=find_actuator_prims,
+                    )
+                )
+        """
+        freq_obj = frequency
+
+        freq_key = freq_obj.key
+        if freq_key in self.custom_frequencies:
+            # Already registered - silently skip (allows idempotent registration)
+            return
+
+        self.custom_frequencies[freq_key] = freq_obj
+        if freq_key not in self._custom_frequency_counts:
+            self._custom_frequency_counts[freq_key] = 0
 
     def has_custom_attribute(self, key: str) -> bool:
         """Check if a custom attribute is defined."""
         return key in self.custom_attributes
 
     def get_custom_attributes_by_frequency(
-        self, frequencies: Sequence[Model.AttributeFrequency]
+        self, frequencies: Sequence[Model.AttributeFrequency | str]
     ) -> list[CustomAttribute]:
         """
         Get custom attributes by frequency.
@@ -911,7 +1010,8 @@ class ModelBuilder:
             if attr.values is None:
                 attr.values = []
 
-            freq_key = attr.frequency_key
+            freq_key = attr.frequency
+            assert isinstance(freq_key, str), f"Custom frequency '{freq_key}' is not a string"
 
             # Determine index for this frequency (same index for all attrs with same frequency in this call)
             if freq_key not in frequency_indices:
@@ -2197,13 +2297,13 @@ class ModelBuilder:
             if not attr.values:
                 # Still need to declare empty attribute on first merge
                 if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency_key
+                    freq_key = attr.frequency
                     mapped_values = [] if isinstance(freq_key, str) else {}
                     self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
             # Index offset based on frequency
-            freq_key = attr.frequency_key
+            freq_key = attr.frequency
             if isinstance(freq_key, str):
                 # Custom frequency: offset by pre-merge count
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
@@ -7172,7 +7272,7 @@ class ModelBuilder:
 
             # First pass: collect max len(values) per frequency as fallback
             for _full_key, custom_attr in self.custom_attributes.items():
-                freq_key = custom_attr.frequency_key
+                freq_key = custom_attr.frequency
                 if isinstance(freq_key, str):
                     attr_len = len(custom_attr.values) if custom_attr.values else 0
                     frequency_max_lens[freq_key] = max(frequency_max_lens.get(freq_key, 0), attr_len)
@@ -7188,7 +7288,7 @@ class ModelBuilder:
 
             # Relaxed validation: warn about attributes with fewer values than frequency count
             for full_key, custom_attr in self.custom_attributes.items():
-                freq_key = custom_attr.frequency_key
+                freq_key = custom_attr.frequency
                 if isinstance(freq_key, str):
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
@@ -7205,7 +7305,7 @@ class ModelBuilder:
 
             # Process custom attributes
             for _full_key, custom_attr in self.custom_attributes.items():
-                freq_key = custom_attr.frequency_key
+                freq_key = custom_attr.frequency
 
                 # determine count by frequency
                 if isinstance(freq_key, str):

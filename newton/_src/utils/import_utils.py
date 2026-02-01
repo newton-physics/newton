@@ -149,7 +149,11 @@ def parse_custom_attributes(
             name = attr.name
         dict_value = dictlike.get(name)
         if dict_value is not None:
-            out[attr.key] = transformer(dict_value, context)
+            value = transformer(dict_value, context)
+            if value is None:
+                # Treat None as "undefined" so defaults are applied later.
+                continue
+            out[attr.key] = value
     return out
 
 

@@ -1730,7 +1730,8 @@ def parse_usd(
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {key: idx for idx, key in enumerate(builder.joint_key)}
 
-    return {
+    # Build result dict early so we can pass it as context to custom frequency prim finders
+    result = {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
         "up_axis": stage_up_axis,
@@ -1749,6 +1750,37 @@ def parse_usd(
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
     }
+
+    # Process custom frequencies with USD prim finders
+    # For each frequency that has a usd_prim_finder callback, find prims and extract custom attribute values
+    for freq_key, freq_obj in builder.custom_frequencies.items():
+        if freq_obj.usd_prim_finder is None:
+            continue
+
+        # Get all custom attributes with this frequency
+        freq_attrs = [attr for attr in builder.custom_attributes.values() if attr.frequency == freq_key]
+        if not freq_attrs:
+            continue
+
+        # Find prims using the callback and extract custom attribute values
+        for prim in freq_obj.usd_prim_finder(stage, result):
+            prim_custom_attrs = usd.get_custom_attribute_values(prim, freq_attrs)
+
+            # Build a complete values dict for all attributes in this frequency
+            # Use None for missing values so add_custom_values can apply defaults
+            values_dict = {}
+            for attr in freq_attrs:
+                if attr.key in prim_custom_attrs:
+                    values_dict[attr.key] = prim_custom_attrs[attr.key]
+
+            # Add values for this prim (increments the frequency count)
+            if values_dict:
+                builder.add_custom_values(**values_dict)
+
+            if verbose:
+                print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+
+    return result
 
 
 def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export_usda: bool = False) -> str:

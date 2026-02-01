@@ -514,9 +514,13 @@ def get_custom_attribute_values(
     Returns a dictionary mapping from :attr:`ModelBuilder.CustomAttribute.key` to the converted Warp value.
     The conversion is performed by :meth:`ModelBuilder.CustomAttribute.usd_value_transformer`.
 
+    The context dictionary passed to the transformer function contains the following keys:
+    - ``"prim"``: The USD prim to query.
+    - ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` object to get the value for.
+
     Args:
         prim: The USD prim to query.
-        custom_attributes: The custom attributes to get values for.
+        custom_attributes: The :class:`~newton.ModelBuilder.CustomAttribute` objects to get values for.
 
     Returns:
         A dictionary of found custom attribute values mapping from attribute name to value.
@@ -527,7 +531,11 @@ def get_custom_attribute_values(
         usd_attr = prim.GetAttribute(usd_attr_name)
         if usd_attr is not None and usd_attr.HasAuthoredValue():
             if attr.usd_value_transformer is not None:
-                out[attr.key] = attr.usd_value_transformer(usd_attr.Get())
+                value = attr.usd_value_transformer(usd_attr.Get(), {"prim": prim, "attr": attr})
+                if value is None:
+                    # Treat None as "undefined" to allow defaults to be applied later.
+                    continue
+                out[attr.key] = value
             else:
                 out[attr.key] = convert_warp_value(usd_attr.Get(), attr.dtype)
     return out

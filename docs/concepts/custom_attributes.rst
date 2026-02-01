@@ -441,24 +441,47 @@ While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cas
 
 **Example use case:** MuJoCo's ``<contact><pair>`` elements define contact pairs between geometries. These pairs have their own count independent of bodies or shapes, and their indices must be remapped when merging worlds.
 
-Declaring Custom Frequencies
-----------------------------
+Registering Custom Frequencies
+------------------------------
 
-Pass a string instead of an enum for the ``frequency`` parameter:
+Custom frequencies must be **registered before use** via :meth:`~newton.ModelBuilder.add_custom_frequency` using a :class:`~newton.ModelBuilder.CustomFrequency` object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.
 
 .. code-block:: python
 
+   # Register a custom frequency
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(
+           name="item",
+           namespace="myns",
+       )
+   )
+
+The frequency key follows the same namespace rules as attribute keys: if a namespace is provided, it is prepended to the name (e.g., ``"mujoco:pair"``). When declaring a custom attribute, the ``frequency`` string must match this full key.
+
+Declaring Custom Frequency Attributes
+-------------------------------------
+
+Once a custom frequency is registered, pass a string instead of an enum for the ``frequency`` parameter when adding attributes:
+
+.. code-block:: python
+
+   # First register the custom frequency
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(name="pair", namespace="mujoco")
+   )
+   
+   # Then add attributes using that frequency
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="pair_geom1",
-           frequency="pair",  # Custom frequency (string)
+           frequency="mujoco:pair",  # Custom frequency (string)
            dtype=wp.int32,
            namespace="mujoco",
        )
    )
-   # → Frequency resolves to "mujoco:pair" via namespace
 
-When a namespace is provided, it is automatically prepended to the frequency string, matching how attribute keys work.
+.. note::
+   Attempting to add an attribute with an unregistered custom frequency will raise a ``ValueError``.
 
 Adding Values
 -------------
@@ -467,12 +490,15 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 
 .. code-block:: python
 
-   # Declare attributes sharing a frequency
-   builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(name="item_id", frequency="item", dtype=wp.int32, namespace="myns")
+   # Register and declare attributes sharing a frequency
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(name="item", namespace="myns")
    )
    builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(name="item_value", frequency="item", dtype=wp.float32, namespace="myns")
+       ModelBuilder.CustomAttribute(name="item_id", frequency="myns:item", dtype=wp.int32, namespace="myns")
+   )
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(name="item_value", frequency="myns:item", dtype=wp.float32, namespace="myns")
    )
    
    # Append values together
@@ -491,6 +517,40 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 
 **Validation:** All attributes sharing a custom frequency must have the same count at ``finalize()`` time. This catches synchronization bugs early.
 
+USD Parsing Support
+-------------------
+
+Custom frequencies can optionally support automatic USD parsing by providing a ``usd_prim_finder`` callback when registering the frequency. This callback is invoked during :func:`~newton.parse_usd` to find USD prims of that entity type.
+
+.. code-block:: python
+
+   def find_actuator_prims(stage, context):
+       """Find all prims with MjcActuatorAPI applied."""
+       for prim in stage.Traverse():
+           if prim.HasAPI("MjcActuatorAPI"):
+               yield prim
+   
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(
+           name="actuator",
+           namespace="mujoco",
+           usd_prim_finder=find_actuator_prims,
+       )
+   )
+
+When ``parse_usd()`` is called, it will:
+
+1. After parsing all standard entities (bodies, shapes, joints, etc.), iterate over registered custom frequencies
+2. For each frequency with a ``usd_prim_finder``, call the finder to discover prims
+3. For each discovered prim, extract custom attribute values and add them via ``add_custom_values()``
+
+The ``usd_prim_finder`` callback receives:
+
+* ``stage``: The USD stage being parsed
+* ``context``: A dictionary with parsing results (path maps, units, etc.) that can be used to resolve references
+
+This enables solvers like MuJoCo to define their own USD schemas and have them automatically parsed during model loading.
+
 Multi-World Merging
 -------------------
 
@@ -501,7 +561,7 @@ When using ``add_world()`` to create multi-world simulations, the ``references``
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="pair_world",
-           frequency="pair",
+           frequency="mujoco:pair",
            dtype=wp.int32,
            namespace="mujoco",
            references="world",  # Replaced with current_world during merge
@@ -510,7 +570,7 @@ When using ``add_world()`` to create multi-world simulations, the ``references``
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="pair_geom1",
-           frequency="pair",
+           frequency="mujoco:pair",
            dtype=wp.int32,
            namespace="mujoco",
            references="shape",  # Offset by shape count during merge
@@ -537,7 +597,7 @@ Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a cust
    pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
 
 .. note::
-   When querying, use the **resolved** frequency key with namespace prefix (e.g., ``"mujoco:pair"``), not the raw string used in the declaration (``"pair"``). This matches how attribute keys work: ``model.get_attribute_frequency("mujoco:condim")`` for a namespaced attribute.
+   When querying, use the full frequency key with namespace prefix (e.g., ``"mujoco:pair"``). This matches how attribute keys work: ``model.get_attribute_frequency("mujoco:condim")`` for a namespaced attribute.
 
 ArticulationView Limitations
 ----------------------------
