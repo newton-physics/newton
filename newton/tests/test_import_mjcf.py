@@ -4315,6 +4315,33 @@ class TestImportMjcf(unittest.TestCase):
         # Should have 4 joints: robot FIXED base + robot hinge + gripper FIXED base + gripper hinge
         self.assertEqual(model.joint_count, 4)
 
+    def test_parent_body_not_in_articulation_raises_error(self):
+        """Test that attaching to a body not in any articulation raises an error."""
+        builder = newton.ModelBuilder()
+
+        # Create a standalone body (not in any articulation)
+        standalone_body = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(
+            body=standalone_body,
+            radius=0.1,
+        )
+
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        # Attempting to attach to standalone body should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(robot_mjcf, parent_body=standalone_body, floating=False)
+
+        self.assertIn("not part of any articulation", str(cm.exception))
+
     def test_floating_false_with_parent_body_succeeds(self):
         """Test that floating=False with parent_body is explicitly allowed."""
         robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
@@ -4350,6 +4377,118 @@ class TestImportMjcf(unittest.TestCase):
         # Verify it worked - gripper should be attached with FIXED joint
         self.assertIn("gripper_base", builder.body_key)
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
+
+    def test_three_level_hierarchical_composition(self):
+        """Test attaching multiple levels: arm → gripper → sensor."""
+        arm_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="arm">
+    <worldbody>
+        <body name="arm_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="arm_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+                <body name="end_effector" pos="0.5 0 0">
+                    <joint type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.03" mass="0.2"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.1"/>
+            <body name="gripper_finger" pos="0.05 0 0">
+                <joint type="hinge" axis="0 1 0"/>
+                <geom type="box" size="0.01 0.01 0.03" mass="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        sensor_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="sensor">
+    <worldbody>
+        <body name="sensor_mount" pos="0 0 0">
+            <geom type="box" size="0.005 0.005 0.005" mass="0.01"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+
+        # Level 1: Add arm
+        builder.add_mjcf(arm_mjcf, floating=False)
+        ee_idx = builder.body_key.index("end_effector")
+
+        # Level 2: Attach gripper to end effector
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_idx, floating=False)
+        finger_idx = builder.body_key.index("gripper_finger")
+
+        # Level 3: Attach sensor to gripper finger
+        builder.add_mjcf(sensor_mjcf, parent_body=finger_idx, floating=False)
+
+        model = builder.finalize()
+
+        # All should be in ONE articulation
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+        # Verify joint count: arm (3 joints) + gripper (2 joints) + sensor (1 joint) = 6
+        # arm: FIXED base + 2 hinges = 3
+        # gripper: FIXED base + 1 hinge = 2
+        # sensor: FIXED base = 1
+        self.assertEqual(model.joint_count, 6)
+
+        # Verify all bodies present
+        self.assertIn("arm_base", builder.body_key)
+        self.assertIn("end_effector", builder.body_key)
+        self.assertIn("gripper_base", builder.body_key)
+        self.assertIn("gripper_finger", builder.body_key)
+        self.assertIn("sensor_mount", builder.body_key)
+
+    def test_many_independent_articulations(self):
+        """Test creating many (5) independent articulations and verifying indexing."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+
+        # Add 5 independent robots
+        for i in range(5):
+            builder.add_mjcf(
+                robot_mjcf,
+                xform=wp.transform(wp.vec3(float(i * 2), 0.0, 0.0), wp.quat_identity()),
+                floating=False,
+            )
+
+        model = builder.finalize()
+
+        # Should have 5 articulations
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 5)
+
+        # Each articulation has 2 joints (FIXED base + hinge)
+        self.assertEqual(model.joint_count, 10)
+
+        # Verify we can identify the first robot's link
+        # (Body names might be deduplicated with suffixes)
+        link_bodies = [name for name in builder.body_key if "link" in name]
+        self.assertEqual(len(link_bodies), 5)
 
     def test_multi_root_mjcf_with_parent_body(self):
         """Test MJCF with multiple root bodies and parent_body parameter."""

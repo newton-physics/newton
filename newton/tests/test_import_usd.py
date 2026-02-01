@@ -4629,6 +4629,145 @@ def Xform "Articulation" (
         self.assertIn("most recent", str(cm.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_parent_body_not_in_articulation_raises_error(self):
+        """Test that attaching to a body not in any articulation raises an error."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+
+        # Create a standalone body (not in any articulation)
+        standalone_body = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(
+            body=standalone_body,
+            radius=0.1,
+        )
+
+        # Create a simple USD stage with a floating body
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Cube.Define(stage, "/Robot")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+        UsdPhysics.MassAPI.Apply(body.GetPrim()).GetMassAttr().Set(1.0)
+
+        # Attempting to attach to standalone body should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            builder.add_usd(stage, parent_body=standalone_body, floating=False)
+
+        self.assertIn("not part of any articulation", str(cm.exception))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_three_level_hierarchical_composition(self):
+        """Test attaching multiple levels: arm → gripper → sensor."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        def create_simple_articulation(name, num_links):
+            """Helper to create a simple chain articulation."""
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            # Create articulation root
+            root = UsdGeom.Xform.Define(stage, f"/{name}")
+            UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+            # Create chain of bodies
+            for i in range(num_links):
+                body = UsdGeom.Xform.Define(stage, f"/{name}/Link{i}")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                UsdPhysics.MassAPI.Apply(body.GetPrim()).GetMassAttr().Set(1.0)
+
+                if i > 0:
+                    # Create joint connecting to previous link
+                    joint = UsdPhysics.RevoluteJoint.Define(stage, f"/{name}/Joint{i}")
+                    joint.CreateBody0Rel().SetTargets([f"/{name}/Link{i - 1}"])
+                    joint.CreateBody1Rel().SetTargets([f"/{name}/Link{i}"])
+                    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                    joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                    joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                    joint.CreateAxisAttr().Set("Z")
+
+            return stage
+
+        builder = newton.ModelBuilder()
+
+        # Level 1: Add arm (3 links)
+        arm_stage = create_simple_articulation("Arm", 3)
+        builder.add_usd(arm_stage, floating=False)
+        ee_idx = next(i for i, name in enumerate(builder.body_key) if "Link2" in name)
+
+        # Level 2: Attach gripper to end effector (2 links)
+        gripper_stage = create_simple_articulation("Gripper", 2)
+        builder.add_usd(gripper_stage, parent_body=ee_idx, floating=False)
+        finger_idx = next(i for i, name in enumerate(builder.body_key) if "Gripper" in name and "Link1" in name)
+
+        # Level 3: Attach sensor to gripper finger (1 link)
+        sensor_stage = create_simple_articulation("Sensor", 1)
+        builder.add_usd(sensor_stage, parent_body=finger_idx, floating=False)
+
+        model = builder.finalize()
+
+        # All should be in ONE articulation
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+        # Verify joint count: arm (1 fixed + 2 revolute) + gripper (1 fixed + 1 revolute) + sensor (1 fixed) = 6
+        self.assertEqual(model.joint_count, 6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_many_independent_articulations(self):
+        """Test creating many (5) independent articulations and verifying indexing."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        def create_robot_stage():
+            """Helper to create a simple 2-link robot."""
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            root = UsdGeom.Xform.Define(stage, "/Robot")
+            UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+            base = UsdGeom.Xform.Define(stage, "/Robot/Base")
+            UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+            UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+            link = UsdGeom.Xform.Define(stage, "/Robot/Link")
+            UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+            UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+            joint = UsdPhysics.RevoluteJoint.Define(stage, "/Robot/Joint")
+            joint.CreateBody0Rel().SetTargets(["/Robot/Base"])
+            joint.CreateBody1Rel().SetTargets(["/Robot/Link"])
+            joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            joint.CreateAxisAttr().Set("Z")
+
+            return stage
+
+        builder = newton.ModelBuilder()
+
+        # Add 5 independent robots
+        for i in range(5):
+            builder.add_usd(
+                create_robot_stage(),
+                xform=wp.transform(wp.vec3(float(i * 2), 0.0, 0.0), wp.quat_identity()),
+                floating=False,
+            )
+
+        model = builder.finalize()
+
+        # Should have 5 articulations
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 5)
+
+        # Each articulation has 2 joints (FIXED base + revolute)
+        self.assertEqual(model.joint_count, 10)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_empty_string_fails(self):
         """Test that empty base_joint string raises ValueError."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415

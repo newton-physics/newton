@@ -7256,8 +7256,12 @@ class ModelBuilder:
         Note:
             - If parent_body != -1 and it belongs to an articulation, the imported joints are added
               to the parent's articulation (only works for sequential composition).
-            - Otherwise, a new articulation is created.
+            - If parent_body != -1 but is not in any articulation, raises ValueError.
+            - If parent_body == -1, a new articulation is created.
             - If joint_indices is empty, does nothing.
+
+        Raises:
+            ValueError: If parent_body is specified but not part of any articulation.
         """
         if not joint_indices:
             return
@@ -7271,11 +7275,13 @@ class ModelBuilder:
                 for joint_idx in joint_indices:
                     self.joint_articulation[joint_idx] = parent_articulation
             else:
-                # Parent body is not in any articulation, create a new one
-                self.add_articulation(
-                    joints=joint_indices,
-                    key=articulation_key,
-                    custom_attributes=custom_attributes,
+                # Parent body exists but is not in any articulation - this is an error
+                # because user explicitly specified parent_body but it can't be used
+                body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
+                raise ValueError(
+                    f"Cannot attach to parent_body '{body_name}': body is not part of any articulation. "
+                    f"Only bodies within articulations can be used as parent_body. "
+                    f"To create an independent articulation, use parent_body=-1 (default)."
                 )
         else:
             # No parent_body specified, create a new articulation
@@ -7441,6 +7447,17 @@ class ModelBuilder:
         # Validate parameter combinations
         self._validate_base_joint_params(floating, base_joint, parent)
         self._validate_parent_body(parent, child)
+
+        # Validate that parent body is in an articulation (if not world)
+        if parent != -1:
+            parent_articulation = self._find_articulation_for_body(parent)
+            if parent_articulation is None:
+                body_name = self.body_key[parent] if parent < len(self.body_key) else f"#{parent}"
+                raise ValueError(
+                    f"Cannot attach to parent_body '{body_name}': body is not part of any articulation. "
+                    f"Only bodies within articulations can be used as parent_body. "
+                    f"To create an independent articulation, use parent_body=-1 (default)."
+                )
 
         # Determine transforms
         if parent_xform is None:
