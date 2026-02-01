@@ -669,7 +669,7 @@ class TestImportUrdf(unittest.TestCase):
         self.assertEqual(joint_type, newton.JointType.REVOLUTE)
         self.assertEqual(builder.joint_key[0], "base_joint")
 
-    def test_base_joint_overrides_floating(self):
+    def test_floating_and_base_joint_mutually_exclusive(self):
         """Test that specifying both base_joint and floating raises an error."""
         urdf_content = """<?xml version="1.0" encoding="utf-8"?>
 <robot name="test_base_joint_override">

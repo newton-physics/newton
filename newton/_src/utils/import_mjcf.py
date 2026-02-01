@@ -174,14 +174,80 @@ def parse_mjcf(
         floating (bool or None): Controls the base joint type for the root body.
 
             - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
-              otherwise FIXED).
-            - ``True``: Creates a FREE joint with 6 DOF (translation + rotation). Only valid when
-              parent_body == -1 since FREE joints must connect to world.
+              otherwise creates a FIXED joint).
+            - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+              ``parent_body == -1`` since FREE joints must connect to world frame.
             - ``False``: Creates a FIXED joint (0 DOF).
 
-            Cannot be specified together with base_joint.
-        base_joint (Union[str, dict]): The joint by which the root body is connected to the world (or parent_body if specified). This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`). Cannot be specified together with floating.
-        parent_body (int): If specified, attaches imported bodies to this existing body using the provided base_joint type (enabling hierarchical composition). The imported model becomes part of the same kinematic articulation as the parent body. If -1 (default), the root is connected to the world. Only the most recently added articulation can be used as parent.
+            Cannot be specified together with ``base_joint``.
+        base_joint (Union[str, dict]): Custom joint specification for connecting the root body to the world
+            (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
+            custom mobility. Can be either:
+
+            - **String format**: Comma-separated axis names for a D6 joint (e.g., ``"px,py,rz"`` for a
+              planar robot with 2 translations and 1 rotation, or ``"px,py,pz,rx,ry,rz"`` for full 6-DOF).
+              Valid axis names: ``px``, ``py``, ``pz`` (translation), ``rx``, ``ry``, ``rz`` (rotation).
+            - **Dictionary format**: Full joint specification with parameters as accepted by
+              :meth:`ModelBuilder.add_joint` (e.g., custom joint types, axes, limits, stiffness).
+
+            Cannot be specified together with ``floating``.
+        parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+            imported root body to this existing body, making them part of the same kinematic articulation.
+            The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
+            the root connects to the world frame. **Restriction**: Only the most recently added
+            articulation can be used as parent; attempting to attach to an older articulation will raise
+            a ``ValueError``.
+
+    **Parameter Interactions**:
+
+        The table below shows valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
+
+        .. list-table::
+           :header-rows: 1
+           :widths: 15 15 15 55
+
+           * - floating
+             - base_joint
+             - parent_body
+             - Result
+           * - ``None``
+             - ``None``
+             - ``-1``
+             - Format default (MJCF: honors ``<freejoint>``, else FIXED)
+           * - ``True``
+             - ``None``
+             - ``-1``
+             - FREE joint to world (6 DOF)
+           * - ``False``
+             - ``None``
+             - ``-1``
+             - FIXED joint to world (0 DOF)
+           * - ``None``
+             - ``"px,py,rz"``
+             - ``-1``
+             - D6 joint to world with specified axes
+           * - ``False``
+             - ``None``
+             - ``body_idx``
+             - FIXED joint to parent body
+           * - ``None``
+             - ``"px,py,rz"``
+             - ``body_idx``
+             - D6 joint to parent body with specified axes
+           * - ``True``
+             - *any*
+             - *any*
+             - ❌ Error: mutually exclusive
+           * - *any*
+             - *any*
+             - *any*
+             - ❌ Error: mutually exclusive
+           * - ``True``
+             - ``None``
+             - ``body_idx``
+             - ❌ Error: FREE joints require world frame
+
+    Args (continued):
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).

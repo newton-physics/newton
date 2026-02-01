@@ -3645,7 +3645,7 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(model.joint_count, 1)
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.REVOLUTE)
 
-    def test_base_joint_overrides_floating(self):
+    def test_floating_and_base_joint_mutually_exclusive(self):
         """Test that specifying both base_joint and floating raises an error."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_base_joint_override">
