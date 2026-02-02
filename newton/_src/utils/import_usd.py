@@ -316,13 +316,23 @@ def parse_usd(
                         properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
 
         metallic_input = shader.GetInput("metallic")
-        if metallic_input and not metallic_input.GetConnectedSource():
+        if metallic_input and metallic_input.GetConnectedSource():
+            warnings.warn(
+                "Metallic texture inputs are not yet supported; using scalar fallback.",
+                stacklevel=2,
+            )
+        elif metallic_input:
             metallic_value = metallic_input.Get()
             if metallic_value is not None:
                 properties["metallic"] = float(metallic_value)
 
         roughness_input = shader.GetInput("roughness")
-        if roughness_input and not roughness_input.GetConnectedSource():
+        if roughness_input and roughness_input.GetConnectedSource():
+            warnings.warn(
+                "Roughness texture inputs are not yet supported; using scalar fallback.",
+                stacklevel=2,
+            )
+        elif roughness_input:
             roughness_value = roughness_input.Get()
             if roughness_value is not None:
                 properties["roughness"] = float(roughness_value)
