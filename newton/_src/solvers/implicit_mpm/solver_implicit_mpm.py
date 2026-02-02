@@ -1456,6 +1456,14 @@ class SolverImplicitMPM(SolverBase):
             # Update max query dist if provided
             prev_max_dist, self._mpm_model.collider.query_max_dist = self._mpm_model.collider.query_max_dist, max_dist
 
+        if (
+            self._last_step_data.body_q_prev is not None
+            and state_in.body_q is not None
+            and self._last_step_data.body_q_prev.shape != state_in.body_q.shape
+        ):
+            # In unlikely case that number of colliding bodies has changed
+            self._last_step_data.body_q_prev = wp.clone(state_in.body_q)
+
         wp.launch(
             project_outside_collider,
             dim=state_in.particle_count,
