@@ -1031,6 +1031,53 @@ def update_body_mass_ipos_kernel(
         body_gravcomp_out[world, mjc_body] = body_gravcomp[newton_body]
 
 
+@wp.func
+def _sort_eigenpairs_descending(eigenvalues: wp.vec3f, eigenvectors: wp.mat33f) -> tuple[wp.vec3f, wp.mat33f]:
+    """Sort eigenvalues descending and reorder eigenvector columns to match."""
+    # Transpose to work with rows (easier swapping)
+    vecs_t = wp.transpose(eigenvectors)
+    vals = eigenvalues
+
+    # Bubble sort for 3 elements
+    for i in range(2):
+        for j in range(2 - i):
+            if vals[j] < vals[j + 1]:
+                # Swap eigenvalues
+                tmp_val = vals[j]
+                vals[j] = vals[j + 1]
+                vals[j + 1] = tmp_val
+                # Swap eigenvector rows
+                tmp_vec = vecs_t[j]
+                vecs_t[j] = vecs_t[j + 1]
+                vecs_t[j + 1] = tmp_vec
+
+    return vals, wp.transpose(vecs_t)
+
+
+@wp.func
+def _ensure_proper_rotation(V: wp.mat33f) -> wp.mat33f:
+    """Ensure matrix is a proper rotation (det=+1) by negating a column if needed.
+
+    wp.eig3 can return eigenvector matrices with det=-1 (reflections), which
+    cannot be converted to valid quaternions. This fixes it by negating the
+    third column when det < 0.
+    """
+    if wp.determinant(V) < 0.0:
+        # Negate third column to flip determinant sign
+        return wp.mat33(
+            V[0, 0],
+            V[0, 1],
+            -V[0, 2],
+            V[1, 0],
+            V[1, 1],
+            -V[1, 2],
+            V[2, 0],
+            V[2, 1],
+            -V[2, 2],
+        )
+    return V
+
+
 @wp.kernel
 def update_body_inertia_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
@@ -1049,31 +1096,17 @@ def update_body_inertia_kernel(
     if newton_body < 0:
         return
 
-    # Get inertia tensor
-    I = body_inertia[newton_body]
+    # Eigendecomposition of inertia tensor
+    eigenvectors, eigenvalues = wp.eig3(body_inertia[newton_body])
 
-    # Calculate eigenvalues and eigenvectors
-    eigenvectors, eigenvalues = wp.eig3(I)
+    # Sort descending (MuJoCo convention)
+    eigenvalues, V = _sort_eigenpairs_descending(eigenvalues, eigenvectors)
 
-    # transpose eigenvectors to allow reshuffling by indexing rows.
-    vecs_transposed = wp.transpose(eigenvectors)
+    # Ensure proper rotation matrix (det=+1) for valid quaternion conversion
+    V = _ensure_proper_rotation(V)
 
-    # Bubble sort for 3 elements in descending order
-    for i in range(2):
-        for j in range(2 - i):
-            if eigenvalues[j] < eigenvalues[j + 1]:
-                # Swap eigenvalues
-                temp_val = eigenvalues[j]
-                eigenvalues[j] = eigenvalues[j + 1]
-                eigenvalues[j + 1] = temp_val
-                # Swap eigenvectors
-                temp_vec = vecs_transposed[j]
-                vecs_transposed[j] = vecs_transposed[j + 1]
-                vecs_transposed[j + 1] = temp_vec
-
-    # Convert eigenvectors to quaternion (xyzw format)
-    q = wp.quat_from_matrix(wp.transpose(vecs_transposed))
-    q = wp.normalize(q)
+    # Convert to quaternion (wp returns xyzw, MuJoCo uses wxyz)
+    q = wp.normalize(wp.quat_from_matrix(V))
 
     # Convert from xyzw to wxyz format
     q = wp.quat(q[1], q[2], q[3], q[0])
@@ -1535,7 +1568,7 @@ def update_geom_properties_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _create_inverse_shape_mapping_kernel(
+def create_inverse_shape_mapping_kernel(
     mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
     # output
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
@@ -1779,3 +1812,47 @@ def convert_rigid_forces_from_mj_kernel(
     if body_parent_f:
         # TODO: implement link incoming forces
         pass
+
+
+@wp.kernel
+def update_pair_properties_kernel(
+    pairs_per_world: int,
+    pair_solref_in: wp.array(dtype=wp.vec2),
+    pair_solreffriction_in: wp.array(dtype=wp.vec2),
+    pair_solimp_in: wp.array(dtype=vec5),
+    pair_margin_in: wp.array(dtype=float),
+    pair_gap_in: wp.array(dtype=float),
+    pair_friction_in: wp.array(dtype=vec5),
+    # outputs
+    pair_solref_out: wp.array2d(dtype=wp.vec2),
+    pair_solreffriction_out: wp.array2d(dtype=wp.vec2),
+    pair_solimp_out: wp.array2d(dtype=vec5),
+    pair_margin_out: wp.array2d(dtype=float),
+    pair_gap_out: wp.array2d(dtype=float),
+    pair_friction_out: wp.array2d(dtype=vec5),
+):
+    """Update MuJoCo contact pair properties from Newton custom attributes.
+
+    Iterates over MuJoCo pairs [world, pair] and copies solver properties
+    (solref, solimp, margin, gap, friction) from Newton custom attributes.
+    """
+    world, mjc_pair = wp.tid()
+    newton_pair = world * pairs_per_world + mjc_pair
+
+    if pair_solref_in:
+        pair_solref_out[world, mjc_pair] = pair_solref_in[newton_pair]
+
+    if pair_solreffriction_in:
+        pair_solreffriction_out[world, mjc_pair] = pair_solreffriction_in[newton_pair]
+
+    if pair_solimp_in:
+        pair_solimp_out[world, mjc_pair] = pair_solimp_in[newton_pair]
+
+    if pair_margin_in:
+        pair_margin_out[world, mjc_pair] = pair_margin_in[newton_pair]
+
+    if pair_gap_in:
+        pair_gap_out[world, mjc_pair] = pair_gap_in[newton_pair]
+
+    if pair_friction_in:
+        pair_friction_out[world, mjc_pair] = pair_friction_in[newton_pair]

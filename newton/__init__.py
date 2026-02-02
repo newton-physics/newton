@@ -64,8 +64,6 @@ from ._src.sim import (  # noqa: E402
     EqType,
     JointType,
     Model,
-    ModelAttributeAssignment,
-    ModelAttributeFrequency,
     ModelBuilder,
     State,
     count_rigid_contact_points,
@@ -86,8 +84,6 @@ __all__ += [
     "EqType",
     "JointType",
     "Model",
-    "ModelAttributeAssignment",
-    "ModelAttributeFrequency",
     "ModelBuilder",
     "State",
     "count_rigid_contact_points",
@@ -96,17 +92,6 @@ __all__ += [
     "get_joint_constraint_count",
     "get_joint_dof_count",
     "infer_actuator_mode",
-]
-
-# ==================================================================================
-# Style3D helpers
-# TODO: eliminate these and roll the functionality into Model and ModelBuilder?
-# ==================================================================================
-from ._src.sim.style3d import Style3DModel, Style3DModelBuilder  # noqa: E402
-
-__all__ += [
-    "Style3DModel",
-    "Style3DModelBuilder",
 ]
 
 # ==================================================================================
