@@ -231,18 +231,17 @@ class SolverMuJoCo(SolverBase):
 
     @staticmethod
     def _find_mjc_actuator_prims(stage, _context: dict[str, Any] | None = None):
-        """Find all prims with MjcActuatorAPI applied for USD parsing.
+        """Find all prims of type ``MjcActuator`` for USD parsing.
 
         This is used as the ``usd_prim_finder`` for the ``mujoco:actuator`` custom frequency.
-        It yields USD Prim objects that have the MjcActuatorAPI schema applied, either
-        formally (schema is registered) or via apiSchemas metadata (unregistered schema).
+        It yields USD Prim objects whose type name is ``MjcActuator``.
 
         Args:
             stage: The USD stage to search.
             context: Optional context dictionary with parsing results (path maps, units, etc.).
 
         Yields:
-            USD Prim objects with MjcActuatorAPI applied.
+            USD Prim objects with type name ``MjcActuator``.
         """
         for prim in stage.Traverse():
             if prim.GetTypeName() == "MjcActuator":
