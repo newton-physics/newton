@@ -245,8 +245,6 @@ class SolverMuJoCo(SolverBase):
             USD Prim objects with MjcActuatorAPI applied.
         """
         for prim in stage.Traverse():
-            # print(prim.GetPath(), "\t", prim.GetAppliedSchemas())
-
             if prim.GetTypeName() == "MjcActuator":
                 yield prim
 

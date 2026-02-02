@@ -539,7 +539,7 @@ class ModelBuilder:
                 # Define a custom frequency for MuJoCo actuators with USD parsing support
                 def find_actuator_prims(stage, context):
                     for prim in stage.Traverse():
-                        if prim.HasAPI("MjcActuatorAPI"):
+                        if prim.GetTypeName() == "MjcActuator":
                             yield prim
 
 
