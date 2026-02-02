@@ -80,10 +80,6 @@ class ImplicitMPMOptions:
     """Fraction for particles under which the yield surface collapses."""
     air_drag: float = 1.0
     """Numerical drag for the background air."""
-    ground_height: float = -1.0e12
-    """Height of the ground plane. Default is effectively disabled."""
-    ground_normal: tuple[float, float, float] | None = None
-    """Normal of the ground plane. Default (None) uses model.up_axis."""
 
     # experimental
     collider_normal_from_sdf_gradient: bool = False
@@ -258,15 +254,6 @@ class ImplicitMPMModel:
 
         self.air_drag = float(options.air_drag)
         """Drag for the background air"""
-
-        self.ground_height = float(options.ground_height)
-        """Height of the ground plane"""
-
-        if options.ground_normal is not None:
-            self.ground_normal = wp.vec3(options.ground_normal)
-        else:
-            self.ground_normal = None
-        """Normal of the ground plane (None means use model.up_axis)"""
 
         self.collider = Collider()
         """Collider struct"""
