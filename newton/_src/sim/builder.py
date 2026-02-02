@@ -743,9 +743,6 @@ class ModelBuilder:
         self.articulation_key = []
         self.articulation_world = []  # world index for each articulation
 
-        # Cache for body -> articulation lookup (invalidated when joints/articulations change)
-        self._body_articulation_cache = {}
-
         self.joint_dof_count = 0
         self.joint_coord_count = 0
         self.joint_constraint_count = 0
@@ -1418,9 +1415,6 @@ class ModelBuilder:
                 custom_attrs=custom_attributes,
                 expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
-
-        # Invalidate body-articulation cache since articulation structure changed
-        self._invalidate_body_articulation_cache()
 
     # region importers
     def add_urdf(
@@ -2869,9 +2863,6 @@ class ModelBuilder:
                 joint_index=joint_index,
                 custom_attrs=custom_attributes,
             )
-
-        # Invalidate body-articulation cache since joint structure changed
-        self._invalidate_body_articulation_cache()
 
         return joint_index
 
@@ -6548,9 +6539,6 @@ class ModelBuilder:
         """
         Find which articulation (if any) contains the given body.
 
-        This method uses caching for performance. The cache is invalidated when
-        joints or articulations are added/modified.
-
         A body "belongs to" the articulation where it appears as a child in a joint.
         If a body is only a parent (e.g., root body of an articulation), it belongs
         to the articulation of its child joints.
@@ -6576,55 +6564,36 @@ class ModelBuilder:
             may appear in multiple articulations; in such cases, the first articulation
             found is returned.
         """
-        # Check cache first
-        if body_id in self._body_articulation_cache:
-            return self._body_articulation_cache[body_id]
-
-        # Cache miss - compute the articulation
-        result = None
-
         # Priority 1: Check if body is a child in any joint
         # A body should be a child in at most ONE joint (tree structure)
         for joint_idx in range(len(self.joint_child)):
             if self.joint_child[joint_idx] == body_id:
                 art_id = self.joint_articulation[joint_idx]
                 if art_id >= 0:  # -1 means no articulation
-                    result = art_id
-                    break  # Body found as child - this is its home articulation
+                    return art_id  # Body found as child - this is its home articulation
 
         # Priority 2: If not found as child, check if body is a parent in any joint
         # This handles root bodies that are parents but not children
-        if result is None:
-            parent_articulations = []
-            for joint_idx in range(len(self.joint_parent)):
-                if self.joint_parent[joint_idx] == body_id:
-                    art_id = self.joint_articulation[joint_idx]
-                    if art_id >= 0 and art_id not in parent_articulations:
-                        parent_articulations.append(art_id)
+        parent_articulations = []
+        for joint_idx in range(len(self.joint_parent)):
+            if self.joint_parent[joint_idx] == body_id:
+                art_id = self.joint_articulation[joint_idx]
+                if art_id >= 0 and art_id not in parent_articulations:
+                    parent_articulations.append(art_id)
 
-            # Use first articulation found, but warn if multiple (shouldn't happen in valid trees)
-            if parent_articulations:
-                result = parent_articulations[0]
-                if len(parent_articulations) > 1:
-                    warnings.warn(
-                        f"Body {body_id} is a parent in multiple articulations {parent_articulations}. "
-                        f"Using articulation {result}. This may indicate an unusual model structure.",
-                        UserWarning,
-                        stacklevel=3,
-                    )
+        # Use first articulation found, but warn if multiple (shouldn't happen in valid trees)
+        if parent_articulations:
+            result = parent_articulations[0]
+            if len(parent_articulations) > 1:
+                warnings.warn(
+                    f"Body {body_id} is a parent in multiple articulations {parent_articulations}. "
+                    f"Using articulation {result}. This may indicate an unusual model structure.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            return result
 
-        # Cache the result (even if None)
-        self._body_articulation_cache[body_id] = result
-        return result
-
-    def _invalidate_body_articulation_cache(self) -> None:
-        """
-        Invalidate the body-to-articulation lookup cache.
-
-        This should be called whenever joints or articulations are added or modified,
-        as these operations can change which bodies belong to which articulations.
-        """
-        self._body_articulation_cache.clear()
+        return None
 
     @staticmethod
     def _validate_base_joint_params(floating: bool | None, base_joint: dict | str | None, parent: int) -> None:
@@ -6736,8 +6705,6 @@ class ModelBuilder:
                 # Mark all new joints as belonging to the parent's articulation
                 for joint_idx in joint_indices:
                     self.joint_articulation[joint_idx] = parent_articulation
-                # Invalidate cache since articulation assignments changed
-                self._invalidate_body_articulation_cache()
             else:
                 # Parent body exists but is not in any articulation - this is an error
                 # because user explicitly specified parent_body but it can't be used
