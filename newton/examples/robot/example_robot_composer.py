@@ -57,6 +57,8 @@ class Example:
 
         self.viewer._paused = True
 
+        self.collide_substeps = False
+
         # Download required assets
         self._download_assets()
 
@@ -78,10 +80,10 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # Create solver
-        use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
+        self.use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=use_mujoco_contacts,
+            use_mujoco_contacts=self.use_mujoco_contacts,
             solver="newton",
             integrator="implicitfast",
             cone="elliptic",
@@ -382,8 +384,13 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        """Run one frame of simulation (multiple substeps)."""
+        if not self.collide_substeps and not self.use_mujoco_contacts:
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
         for _ in range(self.sim_substeps):
+            if self.collide_substeps and not self.use_mujoco_contacts:
+                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+
             self.state_0.clear_forces()
 
             # Apply forces for interactive picking
