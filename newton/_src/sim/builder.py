@@ -1142,44 +1142,18 @@ class ModelBuilder:
                     cts_end = self.joint_constraint_count
 
                 cts_count = cts_end - cts_start
-
-                # Check if value is a dict (mapping cts index to value)
-                if isinstance(value, dict):
-                    # Dict format: only specified cts indices have values, rest use defaults
-                    for cts_offset, cts_value in value.items():
-                        if not isinstance(cts_offset, int):
-                            raise TypeError(
-                                f"JOINT_CONSTRAINT attribute '{attr_key}' dict keys must be integers (constraint indices), got {type(cts_offset)}"
-                            )
-                        if cts_offset < 0 or cts_offset >= cts_count:
-                            raise ValueError(
-                                f"JOINT_CONSTRAINT attribute '{attr_key}' has invalid constraint index {cts_offset} (joint has {cts_count} constraints)"
-                            )
-                        single_attr = {attr_key: cts_value}
-                        self._process_custom_attributes(
-                            entity_index=cts_start + cts_offset,
-                            custom_attrs=single_attr,
-                            expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
-                        )
-                else:
-                    # List format or single value for single-constraint joints
-                    value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)) and cts_count == 1:
-                        value_sanitized = [value_sanitized]
-
-                    if len(value_sanitized) != cts_count:
-                        raise ValueError(
-                            f"JOINT_CONSTRAINT attribute '{attr_key}' has {len(value_sanitized)} values but joint has {cts_count} constraints"
-                        )
-
-                    # Apply each value to its corresponding constraint
-                    for i, cts_value in enumerate(value_sanitized):
-                        single_attr = {attr_key: cts_value}
-                        self._process_custom_attributes(
-                            entity_index=cts_start + i,
-                            custom_attrs=single_attr,
-                            expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
-                        )
+                apply_indexed_values(
+                    value=value,
+                    attr_key=attr_key,
+                    expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
+                    index_start=cts_start,
+                    index_count=cts_count,
+                    index_label="constraint",
+                    count_label="constraints",
+                    length_error_template=(
+                        "JOINT_CONSTRAINT attribute '{attr_key}' has {actual} values but joint has {expected} constraints"
+                    ),
+                )
 
             else:
                 raise ValueError(
