@@ -36,10 +36,6 @@ import newton.examples
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
-# wp.config.mode = "debug"
-# wp.config.verify_cuda = True
-#
-
 
 class Example:
     def __init__(self, viewer):
@@ -142,7 +138,7 @@ class Example:
                 self.simulate()
 
         self.solver.update_contacts(self.contacts, self.state_0)
-        self.plate_contact_sensor.eval(self.contacts, self.state_0)
+        self.plate_contact_sensor.eval(self.contacts)
 
         net_force = self.plate_contact_sensor.net_force.numpy()
         for i in range(2):
@@ -159,7 +155,7 @@ class Example:
             print(f"Plate {self.model.shape_key[plate]} was touched by counterpart {obj_key}")
             self.viewer.update_shape_colors({plate: self.shape_colors[obj_key]})
 
-        self.flap_contact_sensor.eval(self.contacts, self.state_0)
+        self.flap_contact_sensor.eval(self.contacts)
         self.plot_window.add_point(np.abs(self.flap_contact_sensor.net_force.numpy()[0, 0, 2]))
         self.sim_time += self.frame_dt
 
