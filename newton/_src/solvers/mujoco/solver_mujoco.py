@@ -618,7 +618,7 @@ class SolverMuJoCo(SolverBase):
             s = s.strip().lower()
             return 1 if s in ("true", "1") else 0
 
-        def parse_bool(s: str, context: dict[str, Any] | None = None) -> bool:
+        def parse_bool(s: str, context: dict[str, Any]) -> bool:
             """Parse MJCF/USD boolean values to bool."""
             s = s.strip().lower()
             if s == "auto":
@@ -848,7 +848,7 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="actrange",
-                usd_attribute_name="mjc:actRange",
+                usd_attribute_name="mjc:actRange:min",
                 usd_value_transformer=usd_parse_range,
             )
         )

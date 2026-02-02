@@ -1776,10 +1776,8 @@ def parse_usd(
             # Add values for this prim (increments the frequency count)
             if values_dict:
                 builder.add_custom_values(**values_dict)
-
-            if verbose:
-                print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
-
+                if verbose:
+                    print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
     return result
 
 
