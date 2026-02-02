@@ -617,9 +617,13 @@ class SolverMuJoCo(SolverBase):
             s = s.strip().lower()
             return 1 if s in ("true", "1") else 0
 
-        def parse_bool(s: str, context: dict[str, Any]) -> bool:
+        def parse_bool(value: Any, context: dict[str, Any]) -> bool:
             """Parse MJCF/USD boolean values to bool."""
-            s = s.strip().lower()
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, np.integer)):
+                return bool(value)
+            s = value.strip().lower()
             if s == "auto":
                 # This can only happen when parsing USD attributes, in which case the context must be provided.
                 assert context is not None
