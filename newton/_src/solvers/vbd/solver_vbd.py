@@ -1266,7 +1266,7 @@ class SolverVBD(SolverBase):
             device=self.device,
         )
 
-        self.penetration_free_truncation(state_out.particle_q)
+        self.penetration_free_truncation(state_in.particle_q)
 
     def initialize_rigid_bodies(
         self,
@@ -1485,7 +1485,7 @@ class SolverVBD(SolverBase):
                 self.particle_collision_detection_interval >= 1
                 and iter_num % self.particle_collision_detection_interval == 0
             ):
-                self.collision_detection_penetration_free(state_out)
+                self.collision_detection_penetration_free(state_in)
 
         # Zero out forces and hessians
         self.particle_forces.zero_()
@@ -1501,7 +1501,7 @@ class SolverVBD(SolverBase):
                         dt,
                         color,
                         self.particle_q_prev,
-                        state_out.particle_q,
+                        state_in.particle_q,
                         model.particle_colors,
                         # body-particle contact
                         self.friction_epsilon,
@@ -1537,7 +1537,7 @@ class SolverVBD(SolverBase):
                         dt,
                         color,
                         self.particle_q_prev,
-                        state_out.particle_q,
+                        state_in.particle_q,
                         self.model.particle_colors,
                         model.spring_count,
                         self.model.spring_indices,
@@ -1558,7 +1558,7 @@ class SolverVBD(SolverBase):
                         dt,
                         color,
                         self.particle_q_prev,
-                        state_out.particle_q,
+                        state_in.particle_q,
                         self.model.particle_colors,
                         self.model.tri_indices,
                         self.model.edge_indices,
@@ -1584,7 +1584,7 @@ class SolverVBD(SolverBase):
                         dt,
                         self.model.particle_color_groups[color],
                         self.particle_q_prev,
-                        state_out.particle_q,
+                        state_in.particle_q,
                         self.model.particle_mass,
                         self.inertia,
                         self.model.particle_flags,
@@ -1616,7 +1616,7 @@ class SolverVBD(SolverBase):
                         dt,
                         self.model.particle_color_groups[color],
                         self.particle_q_prev,
-                        state_out.particle_q,
+                        state_in.particle_q,
                         self.model.particle_mass,
                         self.inertia,
                         self.model.particle_flags,
@@ -1640,7 +1640,9 @@ class SolverVBD(SolverBase):
                     ],
                     device=self.device,
                 )
-            self.penetration_free_truncation(state_out.particle_q)
+            self.penetration_free_truncation(state_in.particle_q)
+
+        wp.copy(state_out.particle_q, state_in.particle_q)
 
     def solve_rigid_body_iteration(self, state_in: State, state_out: State, contacts: Contacts | None, dt: float):
         """Solve one AVBD iteration for rigid bodies (per-iteration phase).
