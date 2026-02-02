@@ -316,6 +316,8 @@ class RodState:
         """
         for rod in self.rods:
             rod.set_gravity(gravity)
+        if self.batched_arrays is not None:
+            self.batched_arrays.mark_params_dirty()
 
     def set_bend_stiffness(self, bend_stiffness: float, twist_stiffness: float) -> None:
         """Set bend and twist stiffness for all rods.
@@ -326,6 +328,8 @@ class RodState:
         """
         for rod in self.rods:
             rod.set_bend_stiffness(bend_stiffness, twist_stiffness)
+        if self.batched_arrays is not None:
+            self.batched_arrays.mark_params_dirty()
 
     def set_rest_darboux(self, rest_bend_d1: float, rest_bend_d2: float, rest_twist: float) -> None:
         """Set rest Darboux vector for all rods.
@@ -961,11 +965,27 @@ class BatchedGPUArrays:
         self._delta_lambda_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._correction_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
 
+        # ====================================================================
+        # Dirty tracking for parameter arrays (avoid HtoD transfers when unchanged)
+        # ====================================================================
+        self._params_dirty = True  # Force initial sync
+
+    def mark_params_dirty(self) -> None:
+        """Mark parameter arrays as dirty, requiring HtoD transfer on next sync.
+
+        Call this when rod parameters (gravity, young_modulus, torsion_modulus,
+        inv_inertia_local_diag) change and need to be re-synced to GPU.
+        """
+        self._params_dirty = True
+
     def sync_from_rods(self, rods: list) -> None:
         """Synchronize batched arrays from individual rod states.
 
         Copies data from each rod's GPU arrays into the concatenated batched arrays
         using direct GPU-to-GPU kernel launches (no CPU roundtrip).
+
+        Per-rod parameter arrays (gravity, moduli, inertia) are only transferred
+        when `_params_dirty` is True, avoiding unnecessary HtoD copies.
 
         Args:
             rods: List of WarpResidentRodState objects.
@@ -1083,25 +1103,28 @@ class BatchedGPUArrays:
                 device=self.device,
             )
 
-        # Copy per-rod parameters (these are small, numpy is acceptable)
-        gravity_np = np.array([
-            [rod.gravity[0, 0], rod.gravity[0, 1], rod.gravity[0, 2]]
-            for rod in rods
-        ], dtype=np.float32)
-        self.gravity_wp.assign(wp.array(gravity_np, dtype=wp.vec3, device=self.device))
+        # Copy per-rod parameters only when dirty (avoid HtoD transfers)
+        if self._params_dirty:
+            gravity_np = np.array([
+                [rod.gravity[0, 0], rod.gravity[0, 1], rod.gravity[0, 2]]
+                for rod in rods
+            ], dtype=np.float32)
+            self.gravity_wp.assign(wp.array(gravity_np, dtype=wp.vec3, device=self.device))
 
-        young_modulus_np = np.array([rod.young_modulus for rod in rods], dtype=np.float32)
-        self.young_modulus_wp.assign(wp.array(young_modulus_np, dtype=wp.float32, device=self.device))
+            young_modulus_np = np.array([rod.young_modulus for rod in rods], dtype=np.float32)
+            self.young_modulus_wp.assign(wp.array(young_modulus_np, dtype=wp.float32, device=self.device))
 
-        torsion_modulus_np = np.array([rod.torsion_modulus for rod in rods], dtype=np.float32)
-        self.torsion_modulus_wp.assign(wp.array(torsion_modulus_np, dtype=wp.float32, device=self.device))
+            torsion_modulus_np = np.array([rod.torsion_modulus for rod in rods], dtype=np.float32)
+            self.torsion_modulus_wp.assign(wp.array(torsion_modulus_np, dtype=wp.float32, device=self.device))
 
-        inv_inertia_local_np = np.array([
-            rod.inv_inertia_local_diag for rod in rods
-        ], dtype=np.float32)
-        self.inv_inertia_local_diag_wp.assign(
-            wp.array(inv_inertia_local_np, dtype=wp.vec3, device=self.device)
-        )
+            inv_inertia_local_np = np.array([
+                rod.inv_inertia_local_diag for rod in rods
+            ], dtype=np.float32)
+            self.inv_inertia_local_diag_wp.assign(
+                wp.array(inv_inertia_local_np, dtype=wp.vec3, device=self.device)
+            )
+
+            self._params_dirty = False
 
     def sync_to_rods(self, rods: list) -> None:
         """Synchronize individual rod states from batched arrays.

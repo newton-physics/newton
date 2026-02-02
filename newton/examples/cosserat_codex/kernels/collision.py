@@ -496,6 +496,58 @@ def _warp_zero_vec3(arr: wp.array(dtype=wp.vec3)):
 
 
 @wp.kernel
+def _warp_copy_with_offset_batched(
+    src: wp.array(dtype=wp.vec3),
+    offsets: wp.array(dtype=wp.vec3),
+    rod_offsets: wp.array(dtype=wp.int32),
+    particle_rod_id: wp.array(dtype=wp.int32),
+    dst: wp.array(dtype=wp.vec3),
+):
+    """Copy all rods' positions with per-rod offsets to destination in one launch.
+
+    This batched version handles all rods in a single kernel launch,
+    reducing kernel launch overhead from 2N to 2 per sync operation.
+
+    Args:
+        src: Concatenated source positions from batched arrays.
+        offsets: Per-rod world offsets (n_rods elements).
+        rod_offsets: Cumulative point offsets per rod (n_rods + 1 elements).
+        particle_rod_id: Rod index for each particle.
+        dst: Destination array (e.g., state.particle_q).
+    """
+    i = wp.tid()
+    rod_id = particle_rod_id[i]
+    offset = offsets[rod_id]
+    dst[i] = src[i] + offset
+
+
+@wp.kernel
+def _warp_copy_from_offset_batched(
+    src: wp.array(dtype=wp.vec3),
+    offsets: wp.array(dtype=wp.vec3),
+    rod_offsets: wp.array(dtype=wp.int32),
+    particle_rod_id: wp.array(dtype=wp.int32),
+    dst: wp.array(dtype=wp.vec3),
+):
+    """Copy from global array back to batched arrays with offset subtraction.
+
+    This batched version handles all rods in a single kernel launch,
+    reducing kernel launch overhead from 2N to 2 per sync operation.
+
+    Args:
+        src: Source array (e.g., state.particle_q).
+        offsets: Per-rod world offsets (n_rods elements).
+        rod_offsets: Cumulative point offsets per rod (n_rods + 1 elements).
+        particle_rod_id: Rod index for each particle.
+        dst: Concatenated destination positions in batched arrays.
+    """
+    i = wp.tid()
+    rod_id = particle_rod_id[i]
+    offset = offsets[rod_id]
+    dst[i] = src[i] - offset
+
+
+@wp.kernel
 def _warp_copy_vec3_to_batched(
     src: wp.array(dtype=wp.vec3),
     dst: wp.array(dtype=wp.vec3),
@@ -1450,11 +1502,13 @@ __all__ = [
     "_warp_copy_float_from_batched",
     "_warp_copy_float_to_batched",
     "_warp_copy_from_offset",
+    "_warp_copy_from_offset_batched",
     "_warp_copy_quat_from_batched",
     "_warp_copy_quat_to_batched",
     "_warp_copy_vec3_from_batched",
     "_warp_copy_vec3_to_batched",
     "_warp_copy_with_offset",
+    "_warp_copy_with_offset_batched",
     "_warp_set_root_on_track",
     "_warp_set_root_orientation",
     "_warp_update_velocities_from_positions",

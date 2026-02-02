@@ -43,7 +43,9 @@ from newton.examples.cosserat_codex.kernels import (
     _warp_apply_track_sliding,
     _warp_build_segment_lines,
     _warp_copy_from_offset,
+    _warp_copy_from_offset_batched,
     _warp_copy_with_offset,
+    _warp_copy_with_offset_batched,
     _warp_set_root_on_track,
     _warp_update_velocities_from_positions,
     warp_concentric_constraint_direct,
@@ -217,6 +219,9 @@ class Example:
         self.iterative_refinement_iters = 2
         self._force_sync_reference = True
         self._force_sync_gpu = True
+        # Dirty flags to avoid HtoD transfers when data hasn't changed
+        self._collision_masses_dirty = True  # Force initial sync
+        self._ref_rod_dirty = True  # Force initial sync
         self._perf_window = 90
         self._frame_times = deque(maxlen=self._perf_window)
         self._ref_times = deque(maxlen=self._perf_window)
@@ -602,6 +607,20 @@ class Example:
                 wp.zeros(rod.num_points, dtype=wp.vec3, device=device) for rod in self.gpu_state.rods
             ]
 
+        # Pre-allocate GPU arrays for batched sync operations (reduces kernel launch overhead)
+        # These are used by _sync_state_from_rods and constraint copy-back when batched_arrays exist
+        self._gpu_offsets_wp = None
+        self._gpu_particle_start_indices_wp = None
+        if self.gpu_state is not None and self.gpu_state.batched_arrays is not None:
+            # Build offsets array for GPU rods (vec3 per rod)
+            gpu_offsets_np = np.array(
+                [[o[0], o[1], o[2]] for o in self.gpu_offsets], dtype=np.float32
+            )
+            self._gpu_offsets_wp = wp.array(gpu_offsets_np, dtype=wp.vec3, device=device)
+
+            # Build particle start indices for mapping global particle index to rod index
+            # This is stored in batched_arrays already as particle_rod_id_wp
+
         self._sync_state_from_rods(force=True)
         self._update_gravity()
 
@@ -651,6 +670,13 @@ class Example:
         # Backward compatibility: gpu_offsets for Warp rods only
         self.gpu_base_offset = self.mesh_offset.copy()
         self.gpu_offsets = self._build_gpu_offsets()
+
+        # Update GPU offsets warp array if it exists (for batched sync)
+        if hasattr(self, "_gpu_offsets_wp") and self._gpu_offsets_wp is not None and self.gpu_offsets:
+            gpu_offsets_np = np.array(
+                [[o[0], o[1], o[2]] for o in self.gpu_offsets], dtype=np.float32
+            )
+            self._gpu_offsets_wp.assign(wp.array(gpu_offsets_np, dtype=wp.vec3, device=self.model.device))
 
     def _build_gpu_offsets(self):
         """Build offsets list for Warp GPU rods (backward compatibility)."""
@@ -710,26 +736,68 @@ class Example:
             )
             self._force_sync_reference = False
 
-        if sync_gpu:
-            for idx, rod in enumerate(self.gpu_state.rods):
-                gpu_offset = self.gpu_offsets[idx]
-                offset_wp = wp.vec3(float(gpu_offset[0]), float(gpu_offset[1]), float(gpu_offset[2]))
-                start = self._gpu_point_starts[idx]
+        if sync_gpu and self.gpu_state is not None:
+            batched = self.gpu_state.batched_arrays
+            # Use batched kernel if batched arrays exist and GPU offsets warp array is ready
+            if batched is not None and self._gpu_offsets_wp is not None:
+                # Ensure batched arrays are synced from individual rods first
+                batched.sync_from_rods(self.gpu_state.rods)
+                total_gpu_points = batched.total_points
+                # Single kernel launch for all GPU rods - positions
                 wp.launch(
-                    _warp_copy_with_offset,
-                    dim=rod.num_points,
-                    inputs=[rod.positions_wp, offset_wp, start, self.state.particle_q],
+                    _warp_copy_with_offset_batched,
+                    dim=total_gpu_points,
+                    inputs=[
+                        batched.positions_wp,
+                        self._gpu_offsets_wp,
+                        batched.rod_offsets_wp,
+                        batched.particle_rod_id_wp,
+                        self.state.particle_q,
+                    ],
                     device=self.model.device,
                 )
+                # Single kernel launch for all GPU rods - velocities (no offset)
+                # Note: velocities don't need offset, so we use a zeroed offsets array
+                if not hasattr(self, "_zero_offsets_wp") or self._zero_offsets_wp is None:
+                    zero_offsets_np = np.zeros((len(self.gpu_state.rods), 3), dtype=np.float32)
+                    self._zero_offsets_wp = wp.array(zero_offsets_np, dtype=wp.vec3, device=self.model.device)
                 wp.launch(
-                    _warp_copy_with_offset,
-                    dim=rod.num_points,
-                    inputs=[rod.velocities_wp, zero_offset, start, self.state.particle_qd],
+                    _warp_copy_with_offset_batched,
+                    dim=total_gpu_points,
+                    inputs=[
+                        batched.velocities_wp,
+                        self._zero_offsets_wp,
+                        batched.rod_offsets_wp,
+                        batched.particle_rod_id_wp,
+                        self.state.particle_qd,
+                    ],
                     device=self.model.device,
                 )
+            else:
+                # Fall back to per-rod kernel launches
+                for idx, rod in enumerate(self.gpu_state.rods):
+                    gpu_offset = self.gpu_offsets[idx]
+                    offset_wp = wp.vec3(float(gpu_offset[0]), float(gpu_offset[1]), float(gpu_offset[2]))
+                    start = self._gpu_point_starts[idx]
+                    wp.launch(
+                        _warp_copy_with_offset,
+                        dim=rod.num_points,
+                        inputs=[rod.positions_wp, offset_wp, start, self.state.particle_q],
+                        device=self.model.device,
+                    )
+                    wp.launch(
+                        _warp_copy_with_offset,
+                        dim=rod.num_points,
+                        inputs=[rod.velocities_wp, zero_offset, start, self.state.particle_qd],
+                        device=self.model.device,
+                    )
             self._force_sync_gpu = False
 
     def _update_collision_inv_masses(self):
+        # Skip HtoD transfer if collision masses haven't changed
+        if not self._collision_masses_dirty:
+            return
+
         # Update collision inverse masses for all rods
         for idx, rod_info in enumerate(self.rod_infos):
             rod = rod_info.rod
@@ -739,8 +807,17 @@ class Example:
         self._collision_inv_masses_wp.assign(
             wp.array(self._collision_inv_masses_np, dtype=wp.float32, device=self.model.device)
         )
+        self._collision_masses_dirty = False
 
-    def _apply_mesh_collisions(self, dt: float):
+    def _apply_mesh_collisions(self, dt: float, skip_initial_sync: bool = False):
+        """Apply mesh collision constraints to all rods.
+
+        Args:
+            dt: Time step for velocity update.
+            skip_initial_sync: If True, skip the initial sync from rods to state.
+                Use this when a sync was already performed (e.g., in step() before
+                the constraint loop) to avoid redundant kernel launches.
+        """
         if not hasattr(self, "vessel_bvh"):
             return
 
@@ -753,7 +830,8 @@ class Example:
                 self._rod_positions_prev[idx][:] = rod.positions[:, 0:3]
 
         self._update_collision_inv_masses()
-        self._sync_state_from_rods(force=True)
+        if not skip_initial_sync:
+            self._sync_state_from_rods(force=True)
 
         wp.launch(
             kernel=collide_particles_vs_triangles_bvh_kernel,
@@ -773,40 +851,97 @@ class Example:
         )
 
         # Copy back to all rods
-        for idx, rod_info in enumerate(self.rod_infos):
-            rod = rod_info.rod
-            offset = rod_info.offset
-            offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
-            start = self._rod_point_starts[idx]
+        # Use batched kernel for GPU rods if batched arrays are available
+        batched = self.gpu_state.batched_arrays if self.gpu_state is not None else None
+        if batched is not None and self._gpu_offsets_wp is not None:
+            # Single kernel launch for all GPU rods - copy back positions
+            total_gpu_points = batched.total_points
+            wp.launch(
+                _warp_copy_from_offset_batched,
+                dim=total_gpu_points,
+                inputs=[
+                    self.state.particle_q,
+                    self._gpu_offsets_wp,
+                    batched.rod_offsets_wp,
+                    batched.particle_rod_id_wp,
+                    batched.positions_wp,
+                ],
+                device=self.model.device,
+            )
+            # Also update predicted positions (same as positions after collision)
+            wp.launch(
+                _warp_copy_from_offset_batched,
+                dim=total_gpu_points,
+                inputs=[
+                    self.state.particle_q,
+                    self._gpu_offsets_wp,
+                    batched.rod_offsets_wp,
+                    batched.particle_rod_id_wp,
+                    batched.predicted_positions_wp,
+                ],
+                device=self.model.device,
+            )
+            # Sync batched arrays back to individual rods
+            batched.sync_to_rods(self.gpu_state.rods)
 
-            if rod_info.solver_type == SolverType.WARP:
-                warp_idx = self.warp_rod_indices.index(idx)
-                wp.launch(
-                    _warp_copy_from_offset,
-                    dim=rod.num_points,
-                    inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
-                    device=self.model.device,
-                )
-                wp.launch(
-                    _warp_copy_from_offset,
-                    dim=rod.num_points,
-                    inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
-                    device=self.model.device,
-                )
-                wp.launch(
-                    _warp_update_velocities_from_positions,
-                    dim=rod.num_points,
-                    inputs=[
-                        self._gpu_positions_prev[warp_idx],
-                        rod.positions_wp,
-                        rod.inv_masses_wp,
-                        float(dt),
-                        rod.velocities_wp,
-                    ],
-                    device=self.model.device,
-                )
-            else:
-                # For NumPy/DLL rods
+            # Update velocities for GPU rods (still per-rod for now due to prev positions tracking)
+            for idx, rod_info in enumerate(self.rod_infos):
+                if rod_info.solver_type == SolverType.WARP:
+                    warp_idx = self.warp_rod_indices.index(idx)
+                    rod = rod_info.rod
+                    wp.launch(
+                        _warp_update_velocities_from_positions,
+                        dim=rod.num_points,
+                        inputs=[
+                            self._gpu_positions_prev[warp_idx],
+                            rod.positions_wp,
+                            rod.inv_masses_wp,
+                            float(dt),
+                            rod.velocities_wp,
+                        ],
+                        device=self.model.device,
+                    )
+        else:
+            # Fall back to per-rod kernel launches for GPU rods
+            for idx, rod_info in enumerate(self.rod_infos):
+                if rod_info.solver_type == SolverType.WARP:
+                    rod = rod_info.rod
+                    offset = rod_info.offset
+                    offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
+                    start = self._rod_point_starts[idx]
+                    warp_idx = self.warp_rod_indices.index(idx)
+                    wp.launch(
+                        _warp_copy_from_offset,
+                        dim=rod.num_points,
+                        inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
+                        device=self.model.device,
+                    )
+                    wp.launch(
+                        _warp_copy_from_offset,
+                        dim=rod.num_points,
+                        inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
+                        device=self.model.device,
+                    )
+                    wp.launch(
+                        _warp_update_velocities_from_positions,
+                        dim=rod.num_points,
+                        inputs=[
+                            self._gpu_positions_prev[warp_idx],
+                            rod.positions_wp,
+                            rod.inv_masses_wp,
+                            float(dt),
+                            rod.velocities_wp,
+                        ],
+                        device=self.model.device,
+                    )
+
+        # Handle NumPy/DLL rods (always per-rod)
+        for idx, rod_info in enumerate(self.rod_infos):
+            if rod_info.solver_type in (SolverType.NUMPY, SolverType.DLL):
+                rod = rod_info.rod
+                offset = rod_info.offset
+                offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
+                start = self._rod_point_starts[idx]
                 wp.launch(
                     _warp_copy_from_offset,
                     dim=rod.num_points,
@@ -825,18 +960,24 @@ class Example:
         self._force_sync_reference = True
         self._force_sync_gpu = True
 
-    def _apply_track_constraint(self):
+    def _apply_track_constraint(self, skip_initial_sync: bool = False):
         """Apply track sliding constraint to keep particles on a line segment.
 
         This applies to all rods regardless of solver type. Each rod has:
         - A track (line segment from first to last initial position)
         - An insertion value (how far along the track the root is positioned)
+
+        Args:
+            skip_initial_sync: If True, skip the initial sync from rods to state.
+                Use this when a sync was already performed (e.g., in step() before
+                the constraint loop) to avoid redundant kernel launches.
         """
         if not self.track_enabled:
             return
 
         self._update_collision_inv_masses()
-        self._sync_state_from_rods(force=True)
+        if not skip_initial_sync:
+            self._sync_state_from_rods(force=True)
 
         # Apply track constraint to all rods
         for idx, rod_info in enumerate(self.rod_infos):
@@ -905,24 +1046,9 @@ class Example:
                 device=self.model.device,
             )
 
-            # Copy back to rod state
-            offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
-
-            if rod_info.solver_type == SolverType.WARP:
-                wp.launch(
-                    _warp_copy_from_offset,
-                    dim=rod.num_points,
-                    inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
-                    device=self.model.device,
-                )
-                wp.launch(
-                    _warp_copy_from_offset,
-                    dim=rod.num_points,
-                    inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
-                    device=self.model.device,
-                )
-            else:
-                # For NumPy/DLL rods, copy via temp warp array
+            # Copy back to rod state (NumPy/DLL rods only - GPU rods handled in batch below)
+            if rod_info.solver_type in (SolverType.NUMPY, SolverType.DLL):
+                offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
                 wp.launch(
                     _warp_copy_from_offset,
                     dim=rod.num_points,
@@ -932,6 +1058,59 @@ class Example:
                 positions = self._rod_positions_wp[idx].numpy()
                 rod.positions[:, 0:3] = positions
                 rod.predicted_positions[:, 0:3] = positions
+
+        # Batch copy-back for GPU rods
+        batched = self.gpu_state.batched_arrays if self.gpu_state is not None else None
+        if batched is not None and self._gpu_offsets_wp is not None:
+            total_gpu_points = batched.total_points
+            # Single kernel launch for all GPU rods - copy back positions
+            wp.launch(
+                _warp_copy_from_offset_batched,
+                dim=total_gpu_points,
+                inputs=[
+                    self.state.particle_q,
+                    self._gpu_offsets_wp,
+                    batched.rod_offsets_wp,
+                    batched.particle_rod_id_wp,
+                    batched.positions_wp,
+                ],
+                device=self.model.device,
+            )
+            # Also update predicted positions
+            wp.launch(
+                _warp_copy_from_offset_batched,
+                dim=total_gpu_points,
+                inputs=[
+                    self.state.particle_q,
+                    self._gpu_offsets_wp,
+                    batched.rod_offsets_wp,
+                    batched.particle_rod_id_wp,
+                    batched.predicted_positions_wp,
+                ],
+                device=self.model.device,
+            )
+            # Sync batched arrays back to individual rods
+            batched.sync_to_rods(self.gpu_state.rods)
+        else:
+            # Fall back to per-rod kernel launches for GPU rods
+            for idx, rod_info in enumerate(self.rod_infos):
+                if rod_info.solver_type == SolverType.WARP:
+                    rod = rod_info.rod
+                    offset = rod_info.offset
+                    offset_wp = wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
+                    start = self._rod_point_starts[idx]
+                    wp.launch(
+                        _warp_copy_from_offset,
+                        dim=rod.num_points,
+                        inputs=[self.state.particle_q, offset_wp, start, rod.positions_wp],
+                        device=self.model.device,
+                    )
+                    wp.launch(
+                        _warp_copy_from_offset,
+                        dim=rod.num_points,
+                        inputs=[self.state.particle_q, offset_wp, start, rod.predicted_positions_wp],
+                        device=self.model.device,
+                    )
 
         self._force_sync_reference = True
         self._force_sync_gpu = True
@@ -1326,9 +1505,18 @@ class Example:
                             gpu_time += time.perf_counter() - t0
 
                     with wp.ScopedTimer("collisions", active=do_warp_profile, synchronize=do_warp_profile):
+                        # Perform a single sync before all constraints to avoid redundant syncs
+                        # Each constraint function would otherwise sync independently
+                        needs_constraints = (
+                            self.collision_iterations > 0 or self.track_enabled or self.concentric_enabled
+                        )
+                        if needs_constraints:
+                            self._update_collision_inv_masses()
+                            self._sync_state_from_rods(force=True)
+
                         for _ in range(self.collision_iterations):
-                            self._apply_mesh_collisions(sub_dt)
-                        self._apply_track_constraint()
+                            self._apply_mesh_collisions(sub_dt, skip_initial_sync=True)
+                        self._apply_track_constraint(skip_initial_sync=True)
                         self._apply_concentric_constraint()
 
             with wp.ScopedTimer("sync", active=do_warp_profile, synchronize=do_warp_profile):
