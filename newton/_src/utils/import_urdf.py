@@ -156,7 +156,17 @@ def parse_urdf(
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
 
-    def resolve_urdf_asset(filename: str) -> tuple[str | None, tempfile.NamedTemporaryFile | None]:
+    def resolve_urdf_asset(filename: str | None) -> tuple[str | None, tempfile.NamedTemporaryFile | None]:
+        """Resolve a URDF asset URI/path to a local filename.
+
+        Args:
+            filename: Asset filename or URI from the URDF (may be None).
+
+        Returns:
+            A tuple of (resolved_filename, tmpfile). The tmpfile is only
+            populated for temporary downloads (e.g., http/https) and must be
+            cleaned up by the caller (e.g., remove tmpfile.name).
+        """
         if filename is None:
             return None, None
 
@@ -410,6 +420,7 @@ def parse_urdf(
                             f"Warning: mesh {resolved} has a texture but no UVs; texture will be ignored.",
                             stacklevel=2,
                         )
+                        m_mesh.texture = None
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,

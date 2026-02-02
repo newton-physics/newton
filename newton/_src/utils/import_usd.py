@@ -646,6 +646,7 @@ def parse_usd(
                         f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
                         stacklevel=2,
                     )
+                    mesh.texture = None
                 if material_props.get("color") is not None and mesh.texture is None:
                     mesh._color = material_props["color"]
                 if material_props.get("roughness") is not None:
