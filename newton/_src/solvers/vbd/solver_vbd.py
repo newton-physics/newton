@@ -1242,7 +1242,11 @@ class SolverVBD(SolverBase):
             return
 
         # Collision detection before initialization to compute conservative bounds
-        self.collision_detection_penetration_free(state_in)
+        if self.particle_enable_self_contact:
+            self.collision_detection_penetration_free(state_in)
+        else:
+            self.pos_prev_collision_detection.assign(state_in.particle_q)
+            self.particle_displacements.zero_()
 
         model = self.model
 
@@ -1964,21 +1968,17 @@ class SolverVBD(SolverBase):
             )
 
     def collision_detection_penetration_free(self, current_state: State):
-        self.pos_prev_collision_detection.assign(current_state.particle_q)
-        self.particle_displacements.zero_()
-
-        if self.particle_enable_self_contact:
-            self.trimesh_collision_detector.refit(current_state.particle_q)
-            self.trimesh_collision_detector.vertex_triangle_collision_detection(
-                self.particle_self_contact_margin,
-                min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
-                min_distance_filtering_ref_pos=self.particle_q_rest,
-            )
-            self.trimesh_collision_detector.edge_edge_collision_detection(
-                self.particle_self_contact_margin,
-                min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
-                min_distance_filtering_ref_pos=self.particle_q_rest,
-            )
+        self.trimesh_collision_detector.refit(current_state.particle_q)
+        self.trimesh_collision_detector.vertex_triangle_collision_detection(
+            self.particle_self_contact_margin,
+            min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
+            min_distance_filtering_ref_pos=self.particle_q_rest,
+        )
+        self.trimesh_collision_detector.edge_edge_collision_detection(
+            self.particle_self_contact_margin,
+            min_query_radius=self.particle_rest_shape_contact_exclusion_radius,
+            min_distance_filtering_ref_pos=self.particle_q_rest,
+        )
 
     def rebuild_bvh(self, state: State):
         """This function will rebuild the BVHs used for detecting self-contacts using the input `state`.
