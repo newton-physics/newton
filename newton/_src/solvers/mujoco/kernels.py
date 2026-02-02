@@ -575,7 +575,7 @@ def update_initial_positions_kernel(
     q_i = joint_q_start[jntid]
     wq_i = joint_q_start[joints_per_world * worldid + jntid]
 
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.DISTANCE:
         # convert position components
         for i in range(3):
             qpos[worldid, q_i + i] = joint_q[wq_i + i]

@@ -1820,8 +1820,9 @@ class SolverMuJoCo(SolverBase):
     def update_initial_positions(self):
         """Update MuJoCo qpos0 from Newton model.joint_q and recalculate derived values.
 
-        This syncs the initial/reference joint positions from Newton to MuJoCo's qpos0,
-        then calls set_const() to recompute derived quantities like tendon_length0.
+        This syncs joint positions from Newton's model.joint_q to MuJoCo's qpos0 (the
+        default configuration), then calls set_const_0() to recompute derived
+        quantities like tendon_length0.
         """
         if self.mjw_model is None or self.model.joint_count == 0:
             return

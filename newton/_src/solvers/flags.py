@@ -55,7 +55,7 @@ class SolverNotifyFlags(IntEnum):
     """Indicates actuator property updates: gains, biases, limits, etc."""
 
     INITIAL_POSITIONS = 1 << 9
-    """Indicates initial position updates: model.joint_q changed, needs sync to qpos0."""
+    """Indicates default position update: sync model.joint_q to MuJoCo qpos0 (not in ALL, call explicitly)."""
 
     ALL = (
         JOINT_PROPERTIES
@@ -67,9 +67,8 @@ class SolverNotifyFlags(IntEnum):
         | EQUALITY_CONSTRAINT_PROPERTIES
         | TENDON_PROPERTIES
         | ACTUATOR_PROPERTIES
-        | INITIAL_POSITIONS
     )
-    """Indicates all property updates."""
+    """Indicates all property updates (excludes INITIAL_POSITIONS)."""
 
 
 __all__ = [
