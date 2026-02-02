@@ -70,7 +70,6 @@ class GeoType(enum.IntEnum):
 
 # Default maximum vertices for convex hull approximation
 MESH_MAXHULLVERT = 64
-TextureInput = str | nparray | None
 
 
 class SDF:
@@ -150,7 +149,7 @@ class Mesh:
         color: Vec3 | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
-        texture: TextureInput = None,
+        texture: str | nparray | None = None,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -170,7 +169,7 @@ class Mesh:
             color (Vec3 | None, optional): Optional per-mesh base color (values in [0, 1]).
             roughness (float | None, optional): Optional mesh roughness in [0, 1].
             metallic (float | None, optional): Optional mesh metallic in [0, 1].
-            texture (TextureInput, optional): Optional texture path/URL or image data (H, W, C).
+            texture (str | nparray | None, optional): Optional texture path/URL or image data (H, W, C).
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
@@ -264,11 +263,11 @@ class Mesh:
         return self._uvs
 
     @property
-    def texture(self) -> TextureInput:
+    def texture(self) -> str | nparray | None:
         return self._texture
 
     @texture.setter
-    def texture(self, value: TextureInput):
+    def texture(self, value: str | nparray | None):
         self._texture = normalize_texture_input(value)
         self._texture_hash = None
         self._cached_hash = None
