@@ -24,7 +24,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
-from ..utils.texture import normalize_texture_input
+from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -149,15 +149,6 @@ class ViewerViser(ViewerBase):
         except Exception:
             return method(**kwargs)
 
-    @staticmethod
-    def _normalize_texture_image(texture_image: np.ndarray | None) -> np.ndarray | None:
-        if texture_image is None:
-            return None
-        image = np.asarray(texture_image)
-        if image.dtype != np.uint8:
-            image = np.clip(image, 0, 255).astype(np.uint8)
-        return image
-
     @property
     def url(self) -> str:
         """Get the URL of the viser server."""
@@ -195,7 +186,12 @@ class ViewerViser(ViewerBase):
         points_np = self._to_numpy(points).astype(np.float32)
         indices_np = self._to_numpy(indices).astype(np.uint32)
         uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
-        texture_image = self._normalize_texture_image(normalize_texture_input(texture))
+        texture_image = normalize_texture(
+            load_texture(texture),
+            flip_vertical=False,
+            require_channels=False,
+            scale_unit_range=False,
+        )
 
         # Viser expects indices as (N, 3) for triangles
         if indices_np.ndim == 1:
@@ -258,7 +254,12 @@ class ViewerViser(ViewerBase):
         base_points = mesh_data["points"]
         base_indices = mesh_data["indices"]
         base_uvs = mesh_data.get("uvs")
-        texture_image = self._normalize_texture_image(mesh_data.get("texture"))
+        texture_image = normalize_texture(
+            mesh_data.get("texture"),
+            flip_vertical=False,
+            require_channels=False,
+            scale_unit_range=False,
+        )
 
         if hidden:
             # Remove existing instances if present

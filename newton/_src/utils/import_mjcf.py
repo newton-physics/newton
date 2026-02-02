@@ -34,7 +34,7 @@ from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
 from .mesh import load_meshes_from_file
-from .texture import normalize_texture_input
+from .texture import load_texture
 
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
@@ -503,7 +503,7 @@ def parse_mjcf(
             if texture_name:
                 texture_asset = texture_assets.get(texture_name)
                 if texture_asset and "file" in texture_asset:
-                    texture = normalize_texture_input(texture_asset["file"])
+                    texture = load_texture(texture_asset["file"])
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(

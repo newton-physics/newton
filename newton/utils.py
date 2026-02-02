@@ -174,3 +174,14 @@ from ._src.utils.import_utils import parse_warp_value_from_string  # noqa: E402
 __all__ += [
     "parse_warp_value_from_string",
 ]
+
+# ==================================================================================
+# texture utils
+# ==================================================================================
+
+from ._src.utils.texture import load_texture, normalize_texture  # noqa: E402
+
+__all__ += [
+    "load_texture",
+    "normalize_texture",
+]

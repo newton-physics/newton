@@ -20,7 +20,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, Vec2, Vec3, nparray, override
-from ..utils.texture import compute_texture_hash, normalize_texture_input
+from ..utils.texture import compute_texture_hash, load_texture
 
 
 class GeoType(enum.IntEnum):
@@ -180,7 +180,7 @@ class Mesh:
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self.color = color
-        self._texture = normalize_texture_input(texture)
+        self._texture = load_texture(texture)
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -278,7 +278,7 @@ class Mesh:
 
     @texture.setter
     def texture(self, value: str | nparray | None):
-        self._texture = normalize_texture_input(value)
+        self._texture = load_texture(value)
         self._texture_hash = None
         self._cached_hash = None
 

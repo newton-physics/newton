@@ -20,6 +20,7 @@ import warp as wp
 
 from ..core.types import Axis
 from .download_assets import clear_git_cache, download_asset
+from .texture import load_texture, normalize_texture
 from .topology import topological_sort, topological_sort_undirected
 
 
@@ -306,6 +307,8 @@ __all__ = [
     "download_asset",
     "leaky_max",
     "leaky_min",
+    "load_texture",
+    "normalize_texture",
     "smooth_max",
     "smooth_min",
     "topological_sort",

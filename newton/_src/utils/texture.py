@@ -60,7 +60,7 @@ def load_texture_from_file(texture_path: str | None) -> nparray | None:
         texture_path: Path or URL to the texture image.
 
     Returns:
-        Texture image as uint8 numpy array (H, W, C), or None if load fails.
+        Texture image as uint8 RGBA numpy array (H, W, 4), or None if load fails.
     """
     if texture_path is None:
         return None
@@ -84,7 +84,7 @@ def load_texture_from_file(texture_path: str | None) -> nparray | None:
         return None
 
 
-def normalize_texture_input(texture: str | os.PathLike[str] | nparray | None) -> nparray | None:
+def load_texture(texture: str | os.PathLike[str] | nparray | None) -> nparray | None:
     """Normalize a texture input into a contiguous image array.
 
     Args:
@@ -106,6 +106,48 @@ def normalize_texture_input(texture: str | os.PathLike[str] | nparray | None) ->
         return np.ascontiguousarray(loaded)
 
     return np.ascontiguousarray(np.asarray(texture))
+
+
+def normalize_texture(
+    texture_image: nparray | None,
+    *,
+    flip_vertical: bool = False,
+    require_channels: bool = False,
+    scale_unit_range: bool = True,
+) -> nparray | None:
+    """Normalize a texture array for rendering.
+
+    Args:
+        texture_image: Texture image array (H, W, C) or None.
+        flip_vertical: Whether to flip the image vertically.
+        require_channels: Whether to enforce 3/4-channel images and expand grayscale.
+        scale_unit_range: Whether to scale unit-range floats to 0-255.
+
+    Returns:
+        np.ndarray | None: Normalized uint8 image array or None if unavailable.
+    """
+    if texture_image is None:
+        return None
+
+    image = np.asarray(texture_image)
+    if image.dtype != np.uint8:
+        image = np.clip(image, 0.0, 255.0)
+        if scale_unit_range and image.max() <= 1.0:
+            image = image * 255.0
+        image = image.astype(np.uint8)
+
+    if require_channels:
+        if image.ndim == 2:
+            image = np.repeat(image[:, :, None], 3, axis=2)
+        if image.ndim < 2 or image.shape[0] == 0 or image.shape[1] == 0:
+            raise ValueError("Texture image has invalid dimensions.")
+        if image.shape[2] not in (3, 4):
+            raise ValueError(f"Unsupported texture channels: {image.shape[2]}")
+
+    if flip_vertical:
+        image = np.flipud(image)
+
+    return np.ascontiguousarray(image)
 
 
 def compute_texture_hash(texture: nparray | None) -> int:

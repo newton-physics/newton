@@ -24,6 +24,7 @@ import warp as wp
 from newton.utils import create_sphere_mesh
 
 from ...utils.mesh import compute_vertex_normals_wp
+from ...utils.texture import normalize_texture
 from .shaders import (
     FrameShader,
     ShaderLine,
@@ -62,26 +63,16 @@ def check_gl_error():
         print(f"Called from: {''.join(stack[-2:-1])}")
 
 
-def _normalize_texture_image(texture_image: np.ndarray) -> tuple[np.ndarray, int]:
-    image = np.asarray(texture_image)
-    if image.dtype != np.uint8:
-        image = np.clip(image, 0.0, 255.0)
-        if image.max() <= 1.0:
-            image = image * 255.0
-        image = image.astype(np.uint8)
-    if image.ndim == 2:
-        image = np.repeat(image[:, :, None], 3, axis=2)
-    if image.ndim < 2 or image.shape[0] == 0 or image.shape[1] == 0:
-        raise ValueError("Texture image has invalid dimensions.")
-    if image.shape[2] not in (3, 4):
-        raise ValueError(f"Unsupported texture channels: {image.shape[2]}")
-    # Flip vertically to match OpenGL texture coordinates
-    image = np.ascontiguousarray(np.flipud(image))
-    return image, image.shape[2]
-
-
 def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
-    image, channels = _normalize_texture_image(texture_image)
+    image = normalize_texture(
+        texture_image,
+        flip_vertical=True,
+        require_channels=True,
+        scale_unit_range=True,
+    )
+    if image is None:
+        return 0
+    channels = image.shape[2]
     if image.size == 0:
         return 0
     max_size = gl.GLint()
@@ -98,6 +89,12 @@ def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
 
     format_enum = gl.GL_RGBA if channels == 4 else gl.GL_RGB
+    row_stride = image.shape[1] * channels
+    prev_alignment = None
+    if row_stride % 4 != 0:
+        prev_alignment = gl.GLint()
+        gl.glGetIntegerv(gl.GL_UNPACK_ALIGNMENT, prev_alignment)
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
     gl.glTexImage2D(
         gl.GL_TEXTURE_2D,
         0,
@@ -109,6 +106,8 @@ def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
         gl.GL_UNSIGNED_BYTE,
         image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
     )
+    if prev_alignment is not None:
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, prev_alignment.value)
     gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
     return texture_id
@@ -335,9 +334,9 @@ class MeshGL:
         gl = RendererGL.gl
         texture_image = None
         if texture is not None:
-            from ...utils.texture import normalize_texture_input  # noqa: PLC0415
+            from ...utils.texture import load_texture  # noqa: PLC0415
 
-            texture_image = normalize_texture_input(texture)
+            texture_image = load_texture(texture)
 
         if texture_image is None:
             if self.texture_id is not None:

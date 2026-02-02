@@ -33,7 +33,7 @@ from ..sim.joints import ActuatorMode
 from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .mesh import load_meshes_from_file
-from .texture import normalize_texture_input
+from .texture import load_texture
 from .topology import topological_sort
 
 AttributeFrequency = Model.AttributeFrequency
@@ -264,7 +264,7 @@ def parse_urdf(
                 resolved, tmpfile = resolve_urdf_asset(texture_name)
                 try:
                     if resolved is not None:
-                        texture = normalize_texture_input(resolved)
+                        texture = load_texture(resolved)
                 finally:
                     if tmpfile is not None:
                         os.remove(tmpfile.name)
