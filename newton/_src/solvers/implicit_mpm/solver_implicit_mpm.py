@@ -579,7 +579,7 @@ def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
     return fem.PointBasisSpace(pic, max_nodes_per_element=max_points_per_cell)
 
 
-class _ImplicitMPMScratchpad:
+class ImplicitMPMScratchpad:
     """Per-step spaces, fields, and temporaries for the implicit MPM solver."""
 
     def __init__(self):
@@ -963,7 +963,7 @@ class _ImplicitMPMScratchpad:
             self.color_offsets.release()
 
 
-class _LastStepData:
+class LastStepData:
     """Persistent solver state preserved across time steps.
 
     Separate from _ImplicitMPMScratchpad which is rebuilt when the grid changes.
@@ -1358,7 +1358,7 @@ class SolverImplicitMPM(SolverBase):
 
         # Pre-allocate scratchpad and last step data so that step() can be graph-captured
         self._scratchpad = None
-        self._last_step_data = _LastStepData()
+        self._last_step_data = LastStepData()
         with wp.ScopedDevice(model.device):
             pic = self._particles_to_cells(model.particle_q)
             self._rebuild_scratchpad(pic)
@@ -1682,7 +1682,7 @@ class SolverImplicitMPM(SolverBase):
         """
 
         if self._scratchpad is None:
-            self._scratchpad = _ImplicitMPMScratchpad()
+            self._scratchpad = ImplicitMPMScratchpad()
 
         scratch = self._scratchpad
 
@@ -1763,7 +1763,7 @@ class SolverImplicitMPM(SolverBase):
         state_out: newton.State,
         dt: float,
         pic: fem.PicQuadrature,
-        scratch: _ImplicitMPMScratchpad,
+        scratch: ImplicitMPMScratchpad,
     ):
         """Single implicit MPM step: bin, rasterize, assemble, solve, advect.
 
@@ -1820,7 +1820,7 @@ class SolverImplicitMPM(SolverBase):
         state_in: newton.State,
         dt: float,
         pic: fem.PicQuadrature,
-        scratch: _ImplicitMPMScratchpad,
+        scratch: ImplicitMPMScratchpad,
         inv_cell_volume: float,
     ):
         """Compute the unconstrained (ballistic) velocity at grid nodes, as well as inverse mass matrix."""
@@ -1895,8 +1895,8 @@ class SolverImplicitMPM(SolverBase):
         self,
         state_in: newton.State,
         dt: float,
-        last_step_data: _LastStepData,
-        scratch: _ImplicitMPMScratchpad,
+        last_step_data: LastStepData,
+        scratch: ImplicitMPMScratchpad,
         inv_cell_volume: float,
     ):
         # Rasterize collider to grid
@@ -1962,7 +1962,7 @@ class SolverImplicitMPM(SolverBase):
     def _build_collider_rigidity_operator(
         self,
         state_in: newton.State,
-        scratch: _ImplicitMPMScratchpad,
+        scratch: ImplicitMPMScratchpad,
         cell_volume: float,
     ):
         has_compliant_colliders = self._mpm_model.min_collider_mass < _INFINITY
@@ -2001,7 +2001,7 @@ class SolverImplicitMPM(SolverBase):
         state_in: newton.State,
         dt: float,
         pic: fem.PicQuadrature,
-        scratch: _ImplicitMPMScratchpad,
+        scratch: ImplicitMPMScratchpad,
         inv_cell_volume: float,
     ):
         """Build the elasticity and compliance system."""
@@ -2089,7 +2089,7 @@ class SolverImplicitMPM(SolverBase):
         state_in: newton.State,
         dt: float,
         pic: fem.PicQuadrature,
-        scratch: _ImplicitMPMScratchpad,
+        scratch: ImplicitMPMScratchpad,
         inv_cell_volume: float,
     ):
         model = self.model
@@ -2208,9 +2208,9 @@ class SolverImplicitMPM(SolverBase):
 
     def _solve_rheology(
         self,
-        scratch: _ImplicitMPMScratchpad,
+        scratch: ImplicitMPMScratchpad,
         rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix, sp.BsrMatrix] | None,
-        last_step_data: _LastStepData,
+        last_step_data: LastStepData,
     ):
         strain_node_count = scratch.strain_node_count
         has_compliant_particles = self._mpm_model.has_compliant_particles
@@ -2272,7 +2272,7 @@ class SolverImplicitMPM(SolverBase):
         state_out: newton.State,
         dt: float,
         pic: fem.PicQuadrature,
-        scratch: _ImplicitMPMScratchpad,
+        scratch: ImplicitMPMScratchpad,
     ):
         """Update particle quantities (strains, velocities, ...) from grid fields an advect them."""
 
@@ -2335,8 +2335,8 @@ class SolverImplicitMPM(SolverBase):
     def _save_data(
         self,
         state_in: newton.State,
-        scratch: _ImplicitMPMScratchpad,
-        last_step_data: _LastStepData,
+        scratch: ImplicitMPMScratchpad,
+        last_step_data: LastStepData,
         state_out: newton.State,
     ):
         """Save data for next step or further processing."""
@@ -2356,12 +2356,12 @@ class SolverImplicitMPM(SolverBase):
         # Re-generated at each step, defined on space partition
         state_out.velocity_field = scratch.velocity_field
 
-    def _require_velocity_space_fields(self, scratch: _ImplicitMPMScratchpad, has_compliant_particles: bool):
+    def _require_velocity_space_fields(self, scratch: ImplicitMPMScratchpad, has_compliant_particles: bool):
         """Ensure velocity-space fields exist and match current spaces."""
 
         scratch.require_velocity_space_fields(has_compliant_particles)
 
-    def _require_collision_space_fields(self, scratch: _ImplicitMPMScratchpad, last_step_data: _LastStepData):
+    def _require_collision_space_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Ensure collision-space fields exist and match current spaces."""
         scratch.require_collision_space_fields()
 
@@ -2376,7 +2376,7 @@ class SolverImplicitMPM(SolverBase):
         ):
             last_step_data.body_q_prev = wp.clone(self._mpm_model.collider_body_q)
 
-    def _require_strain_space_fields(self, scratch: _ImplicitMPMScratchpad, last_step_data: _LastStepData):
+    def _require_strain_space_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Ensure strain-space fields exist and match current spaces."""
         scratch.require_strain_space_fields()
 
@@ -2384,7 +2384,7 @@ class SolverImplicitMPM(SolverBase):
         if last_step_data.ws_stress_field is None:
             last_step_data.ws_stress_field = scratch.stress_field.space.make_field()
 
-    def _warmstart_fields(self, scratch: _ImplicitMPMScratchpad, last_step_data: _LastStepData):
+    def _warmstart_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Interpolate previous grid fields into the current grid layout.
 
         Transfers impulse and stress fields from the previous grid to the new
@@ -2426,7 +2426,7 @@ class SolverImplicitMPM(SolverBase):
         )
 
     @staticmethod
-    def _save_for_next_warmstart(scratch: _ImplicitMPMScratchpad, last_step_data: _LastStepData):
+    def _save_for_next_warmstart(scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         if last_step_data.ws_impulse_field.geometry != scratch.impulse_field.geometry:
             last_step_data.ws_impulse_field = scratch.impulse_field.space.make_field()
 
@@ -2466,7 +2466,7 @@ class SolverImplicitMPM(SolverBase):
 
     def _compute_coloring(
         self,
-        scratch: _ImplicitMPMScratchpad,
+        scratch: ImplicitMPMScratchpad,
     ):
         """Compute Gauss-Seidel coloring of strain nodes to avoid write conflicts.
 
