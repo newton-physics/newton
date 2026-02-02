@@ -1,7 +1,7 @@
 .. _Worlds:
 
 Worlds
-=======
+======
 
 Newton enables multiple independent simulations, referred to *worlds*, within a single :class:`~newton.Model` object.
 Each *world*, thus provides an index-based grouping of all primary simulation entities such as particles, bodies, shapes, joints, articulations and equality constraints.
@@ -24,7 +24,7 @@ Lastly, world-based grouping also enables selectively operating on only the enti
 .. _World assignment:
 
 World Assignment
------------------
+----------------
 
 World assignment occurs when entities are added to an instance of :class:`~newton.ModelBuilder`, using one of the entity-specific methods such as :meth:`~newton.ModelBuilder.add_body`,
 :meth:`~newton.ModelBuilder.add_joint`, :meth:`~newton.ModelBuilder.add_shape` etc, and this can either be global (world index ``-1``) or specific to a particular world (world index ``0, 1, 2, ...``).
@@ -70,7 +70,7 @@ In this example, we are creating a model with two worlds (world ``0`` and world 
 .. _World grouping:
 
 World Grouping
------------------
+--------------
 
 The :class:`~newton.ModelBuilder` maintains internal lists that track the world assignment of each entity added to it.
 When :meth:`~newton.ModelBuilder.finalize` is called, the :class:`~newton.Model` object generated will contain arrays that store the world indices for each entity type.
@@ -96,7 +96,7 @@ For the example above, the corresponding world grouping arrays would be as follo
 .. _World starts:
 
 World Start Indices & Dimensions
-----------------------------
+--------------------------------
 
 In addition to the world grouping arrays, the :class:`~newton.Model` object will also contain Warp arrays that store the per-world starting indices for each entity type.
 
@@ -144,7 +144,7 @@ For the previous example, we can compute the per-world shape counts as follows:
 .. _World-entity partitioning:
 
 World-Entity GPU Thread Partitioning
-----------------------------
+------------------------------------
 
 Another important use of world grouping is to facilitate partitioning of GPU thread grids according to both world indices and the number of entities per world, i.e. into 2D world-entity grids.
 
