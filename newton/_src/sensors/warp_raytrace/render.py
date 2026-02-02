@@ -23,7 +23,7 @@ from . import lighting, ray_cast, textures
 from .types import RenderOrder
 
 if TYPE_CHECKING:
-    from .render_context import ClearData, RenderContext
+    from .render_context import RenderContext
 
 
 @wp.func
@@ -360,32 +360,7 @@ def render_megakernel(
     shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None,
     normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None,
     albedo_image: wp.array(dtype=wp.uint32, ndim=3) | None,
-    clear_data: ClearData | None,
 ):
-    if color_image is not None:
-        if clear_data is not None and clear_data.clear_color is not None:
-            color_image.fill_(wp.uint32(clear_data.clear_color))
-
-    if depth_image is not None:
-        if clear_data is not None and clear_data.clear_depth is not None:
-            depth_image.fill_(wp.float32(clear_data.clear_depth))
-
-    if shape_index_image is not None:
-        if clear_data is not None and clear_data.clear_shape_index is not None:
-            shape_index_image.fill_(wp.uint32(clear_data.clear_shape_index))
-
-    if normal_image is not None:
-        if clear_data is not None and clear_data.clear_normal is not None:
-            normal_image.fill_(clear_data.clear_normal)
-
-    if albedo_image is not None:
-        if clear_data is not None and clear_data.clear_albedo is not None:
-            albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
-
-    if rc.options.render_order == RenderOrder.TILED:
-        assert width % rc.options.tile_width == 0, "render width must be a multiple of tile_width"
-        assert height % rc.options.tile_height == 0, "render height must be a multiple of tile_height"
-
     wp.launch(
         kernel=_render_megakernel,
         dim=(rc.num_worlds * num_cameras * width * height),
