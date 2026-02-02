@@ -675,6 +675,49 @@ def fan_triangulate_faces(counts: nparray, indices: nparray) -> nparray:
     return out
 
 
+def _expand_indexed_primvar(
+    values: np.ndarray,
+    indices: np.ndarray | None,
+    primvar_name: str,
+    prim_path: str,
+) -> np.ndarray:
+    """
+    Expand primvar values using indices if provided.
+
+    USD primvars can be stored in an indexed form where a compact set of unique
+    values is stored along with an index array that maps each face corner (or vertex)
+    to the appropriate value. This function expands such indexed primvars to their
+    full form.
+
+    Args:
+        values: The primvar values array.
+        indices: Optional index array for expansion.
+        primvar_name: Name of the primvar (for error messages).
+        prim_path: Path to the prim (for error messages).
+
+    Returns:
+        The expanded values array (same as input if no indices provided).
+
+    Raises:
+        ValueError: If indices are out of range.
+    """
+    if indices is None or len(indices) == 0:
+        return values
+
+    indices = np.asarray(indices, dtype=np.int64)
+
+    # Validate indices are within range
+    if indices.max() >= len(values):
+        raise ValueError(
+            f"{primvar_name} primvar index out of range: max index {indices.max()} >= "
+            f"number of values {len(values)} for mesh {prim_path}"
+        )
+    if indices.min() < 0:
+        raise ValueError(f"Negative {primvar_name} primvar index found: {indices.min()} for mesh {prim_path}")
+
+    return values[indices]
+
+
 def get_mesh(
     prim: Usd.Prim,
     load_normals: bool = False,
@@ -749,6 +792,12 @@ def get_mesh(
         uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
         if uv_primvar:
             uvs = uv_primvar.Get()
+            if uvs is not None:
+                uvs = np.array(uvs)
+                # Check if this primvar is indexed and expand if so
+                if uv_primvar.IsIndexed():
+                    uv_indices = uv_primvar.GetIndices()
+                    uvs = _expand_indexed_primvar(uvs, uv_indices, "UV", str(prim.GetPath()))
 
     normals = None
     if load_normals:
@@ -761,15 +810,25 @@ def get_mesh(
         if mesh.GetNormalsInterpolation() == "faceVarying":
             # compute vertex normals
             # try to read primvars:normals:indices (the primvar indexer)
-            normals_index_attr = prim.GetAttribute("primvars:normals:indices")
-            if normals_index_attr:
-                normal_indices = np.array(normals_index_attr.Get(), dtype=np.int64)
-                normals_fv = normals[normal_indices]  # (C,3) expanded
+            # First check if normals is a primvar and use its indices
+            normals_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
+            normal_indices = None
+            if normals_primvar and normals_primvar.IsIndexed():
+                normal_indices = normals_primvar.GetIndices()
+            # Fall back to direct attribute access for backwards compatibility
+            if normal_indices is None:
+                normals_index_attr = prim.GetAttribute("primvars:normals:indices")
+                if normals_index_attr and normals_index_attr.HasAuthoredValue():
+                    normal_indices = normals_index_attr.Get()
+
+            prim_path = str(prim.GetPath())
+            if normal_indices is not None and len(normal_indices) > 0:
+                normals_fv = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
             else:
                 # If faceVarying, values length must match number of corners
                 if len(normals) != len(indices):
                     raise ValueError(
-                        f"Length of normals ({len(normals)}) does not match length of indices ({len(indices)}) for mesh {prim.GetPath()}"
+                        f"Length of normals ({len(normals)}) does not match length of indices ({len(indices)}) for mesh {prim_path}"
                     )
                 normals_fv = normals  # (C,3)
 
