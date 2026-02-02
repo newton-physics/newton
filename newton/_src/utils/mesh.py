@@ -390,7 +390,7 @@ def _resolve_file_url(path: str) -> str:
     return unquote(parsed.path)
 
 
-def _download_texture_bytes(url: str) -> bytes | None:
+def _download_texture_from_file_bytes(url: str) -> bytes | None:
     if url in _texture_url_cache:
         return _texture_url_cache[url]
     try:
@@ -403,7 +403,7 @@ def _download_texture_bytes(url: str) -> bytes | None:
         return None
 
 
-def load_texture(texture_path: str | None) -> np.ndarray | None:
+def load_texture_from_file(texture_path: str | None) -> np.ndarray | None:
     """Load a texture image from disk or URL into a numpy array.
 
     Args:
@@ -418,7 +418,7 @@ def load_texture(texture_path: str | None) -> np.ndarray | None:
         from PIL import Image  # noqa: PLC0415
 
         if _is_http_url(texture_path):
-            data = _download_texture_bytes(texture_path)
+            data = _download_texture_from_file_bytes(texture_path)
             if data is None:
                 return None
             with Image.open(io.BytesIO(data)) as source_img:
@@ -525,7 +525,7 @@ def _extract_trimesh_material_params(
     return roughness, metallic, base_color
 
 
-def load_trimesh_meshes(
+def load_meshes_from_file(
     filename: str,
     *,
     scale: np.ndarray | list[float] | tuple[float, ...] = (1.0, 1.0, 1.0),

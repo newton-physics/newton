@@ -33,7 +33,7 @@ from ..sim.builder import ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
-from ..utils.mesh import load_texture
+from ..utils.mesh import load_texture_from_file
 
 
 def parse_usd(
@@ -649,7 +649,7 @@ def parse_usd(
                     is_url = texture_path.startswith(("http://", "https://"))
                     if is_url or os.path.exists(texture_path):
                         mesh.texture_path = texture_path
-                        mesh.texture_image = load_texture(texture_path)
+                        mesh.texture_image = load_texture_from_file(texture_path)
                     elif verbose:
                         print(f"Warning: texture file not found for {path_name}: {texture_path}")
                 if mesh.texture_image is not None and mesh.uvs is None:

@@ -80,7 +80,7 @@ def _normalize_texture_image(texture_image: np.ndarray) -> tuple[np.ndarray, int
     return image, image.shape[2]
 
 
-def _upload_texture(gl, texture_image: np.ndarray) -> int:
+def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
     image, channels = _normalize_texture_image(texture_image)
     if image.size == 0:
         return 0
@@ -334,9 +334,9 @@ class MeshGL:
     def update_texture(self, texture_image=None, texture_path=None):
         gl = RendererGL.gl
         if texture_image is None and texture_path:
-            from ...utils.mesh import load_texture  # noqa: PLC0415
+            from ...utils.mesh import load_texture_from_file  # noqa: PLC0415
 
-            texture_image = load_texture(texture_path)
+            texture_image = load_texture_from_file(texture_path)
 
         if texture_image is None:
             if self.texture_id is not None:
@@ -354,7 +354,7 @@ class MeshGL:
                 pass
             self.texture_id = None
 
-        texture_id = _upload_texture(gl, texture_image)
+        texture_id = _upload_texture_from_file(gl, texture_image)
         if not texture_id:
             return
         self.texture_id = texture_id
@@ -1671,9 +1671,9 @@ class RendererGL:
 
     def set_environment_map(self, path: str, intensity: float = 1.0) -> None:
         gl = RendererGL.gl
-        from ...utils.mesh import load_texture  # noqa: PLC0415
+        from ...utils.mesh import load_texture_from_file  # noqa: PLC0415
 
-        image = load_texture(path)
+        image = load_texture_from_file(path)
         if image is None:
             return
         if self._env_texture is not None:
@@ -1682,7 +1682,7 @@ class RendererGL:
             except Exception:
                 pass
             self._env_texture = None
-        self._env_texture = _upload_texture(gl, image)
+        self._env_texture = _upload_texture_from_file(gl, image)
         self._env_texture_obj = None
         self._env_intensity = float(intensity)
 

@@ -31,7 +31,7 @@ from ..geometry import MESH_MAXHULLVERT
 from ..sim import ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from .import_utils import parse_custom_attributes, sanitize_xml_content
-from .mesh import load_texture, load_trimesh_meshes
+from .mesh import load_meshes_from_file, load_texture_from_file
 from .topology import topological_sort
 
 # Optional dependency for robust URI resolution
@@ -244,7 +244,7 @@ def parse_urdf(
                 resolved, tmpfile = resolve_urdf_asset(texture_name)
                 try:
                     if resolved is not None:
-                        texture_image = load_texture(resolved)
+                        texture_image = load_texture_from_file(resolved)
                         if tmpfile is None:
                             texture_path = resolved
                 finally:
@@ -396,7 +396,7 @@ def parse_urdf(
                 if resolved is None:
                     continue
 
-                m_meshes = load_trimesh_meshes(
+                m_meshes = load_meshes_from_file(
                     resolved,
                     scale=scaling,
                     maxhullvert=mesh_maxhullvert,

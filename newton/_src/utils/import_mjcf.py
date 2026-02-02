@@ -31,7 +31,7 @@ from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import parse_custom_attributes, sanitize_xml_content
-from .mesh import load_texture, load_trimesh_meshes
+from .mesh import load_meshes_from_file, load_texture_from_file
 
 
 def parse_mjcf(
@@ -383,7 +383,7 @@ def parse_mjcf(
                 if texture_asset and "file" in texture_asset:
                     texture_path = texture_asset["file"]
                     if os.path.exists(texture_path):
-                        texture_image = load_texture(texture_path)
+                        texture_image = load_texture_from_file(texture_path)
                     else:
                         texture_path = None
 
@@ -427,7 +427,7 @@ def parse_mjcf(
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
 
-                m_meshes = load_trimesh_meshes(
+                m_meshes = load_meshes_from_file(
                     stl_file,
                     scale=scaling,
                     maxhullvert=maxhullvert,
