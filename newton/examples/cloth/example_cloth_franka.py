@@ -275,6 +275,7 @@ class Example:
             )
 
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(-0.6, 0.6, 1.24), -42.0, -58.0)
 
         # create Warp arrays for gravity so we can swap Model.gravity during
         # a simulation running under CUDA graph capture

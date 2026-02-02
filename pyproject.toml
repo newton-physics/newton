@@ -25,7 +25,9 @@ classifiers = [
 description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["warp-lang>=1.12.0.dev20251219"]
+dependencies = [
+    "warp-lang>=1.11.0",
+]
 
 [project.optional-dependencies]
 # Core simulation dependencies
@@ -33,23 +35,35 @@ sim = [
     # MuJoCo simulation
     "mujoco-warp>=0.0.2",         # MuJoCo, warp-accelerated
     "mujoco>=3.4.1.dev856273160", # MuJoCo physics engine
-    "cbor2>=5.7.0",
 ]
 
 # Asset import and mesh processing dependencies
 importers = [
+    # HTTP client for downloading meshes from URIs
+    "requests>=2.25.0",
+
     # Mesh processing dependencies used by ModelBuilder.approximate_meshes
     "scipy",                       # for convex hull approximation
     "fast-simplification>=0.1.11", # for mesh simplification
     "alphashape>=1.3.1",           # for alphashape remeshing
     "coacd>=1.0.7",                # for convex decomposition
     "trimesh>=4.6.8",              # for mesh operations and V-HACD
-    "pycollada>=0.9",              # for loading mesh data with trimesh
-    "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs
+    "meshio>=5.3.0",               # alternative mesh file loader (fallback)
+    "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
+    "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs (package://, model://)
 
     # USD core libraries
     "usd-core>=25.5 ; platform_machine != 'aarch64'",
     "usd-exchange>=2.1.0a3 ; platform_machine == 'aarch64'",
+
+    # Newton USD Schemas
+    "newton-usd-schemas>=0.1.0a2",
+]
+
+# Remeshing dependencies (for SurfaceReconstructor)
+remesh = [
+    "open3d>=0.18.0",              # for Poisson surface reconstruction
+    "pyfqmr>=0.5.0",               # for fast mesh simplification
 ]
 
 # Examples dependencies including visualization
@@ -60,6 +74,7 @@ examples = [
     "GitPython>=3.1.44",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
+    "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
 ]
 
 # Extra dependency needed to run examples that inference an RL policy
@@ -72,7 +87,6 @@ torch-cu12 = [
 # Contains all w/o torch, plus development debugging dependencies
 dev = [
     "newton[examples]",      # includes examples, which pulls in sim and visualization
-    "tqdm>=4.67.1",          # for progress bars
     "coverage[toml]>=7.8.0", # for code coverage testing
 ]
 
@@ -97,7 +111,6 @@ docs = [
 notebook = [
     "newton[examples]",
     "rerun-sdk[notebook]>=0.27.1",
-    "tqdm>=4.67.1",
     "jupyterlab>=4.4.10",
 ]
 

@@ -159,15 +159,12 @@ def add_example_test(
                 except OSError:
                     pass
         else:
-            # new-style example, setup viewer type and output path
-            if USD_AVAILABLE:
-                stage_path = os.path.join(
-                    os.path.dirname(__file__), f"outputs/{name}_{sanitize_identifier(device)}.usd"
-                )
-                command.extend(["--viewer", "usd", "--output-path", stage_path])
-            else:
-                stage_path = "None"
-                command.extend(["--viewer", "null"])
+            # new-style example, use null viewer for tests (no disk I/O needed)
+            stage_path = "None"
+            command.extend(["--viewer", "null"])
+            # Remove viewer/stage_path from options so they can't override the null viewer
+            options.pop("viewer", None)
+            options.pop("stage_path", None)
 
         command.extend(_build_command_line_options(options))
 
@@ -192,8 +189,8 @@ def add_example_test(
             msg=f"Failed with return code {result.returncode}, command: {' '.join(command)}\n\nOutput:\n{result.stdout}\n{result.stderr}",
         )
 
-        # If the test succeeded, try to clean up the output by default
-        if stage_path and result.returncode == 0:
+        # Clean up output file for old-style examples that may have created one
+        if stage_path and stage_path != "None" and result.returncode == 0:
             try:
                 os.remove(stage_path)
             except OSError:
@@ -544,6 +541,14 @@ add_example_test(
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
 )
+add_example_test(
+    TestSelectionAPIExamples,
+    name="selection.example_selection_multiple",
+    devices=test_devices,
+    test_options={"num-frames": 100},
+    test_options_cpu={"num-frames": 10},
+    use_viewer=True,
+)
 
 
 class TestDiffSimExamples(unittest.TestCase):
@@ -642,7 +647,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_granular",
     devices=cuda_test_devices,
-    test_options={"viewer": "null", "num-frames": 100},
+    test_options={"num-frames": 100},
     use_viewer=True,
 )
 
@@ -650,7 +655,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_multi_material",
     devices=cuda_test_devices,
-    test_options={"viewer": "null", "num-frames": 10},
+    test_options={"num-frames": 10},
     use_viewer=True,
 )
 
@@ -658,7 +663,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_grain_rendering",
     devices=cuda_test_devices,
-    test_options={"viewer": "null", "num-frames": 10},
+    test_options={"num-frames": 10},
     use_viewer=True,
 )
 
@@ -666,7 +671,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_twoway_coupling",
     devices=cuda_test_devices,
-    test_options={"viewer": "null", "num-frames": 80},
+    test_options={"num-frames": 80},
     use_viewer=True,
 )
 

@@ -29,11 +29,14 @@ from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
 from ..geometry import MESH_MAXHULLVERT
 from ..sim import ModelBuilder
-from ..sim.model import ModelAttributeFrequency
+from ..sim.joints import ActuatorMode
+from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .mesh import load_meshes_from_file
 from .texture import normalize_texture_input
 from .topology import topological_sort
+
+AttributeFrequency = Model.AttributeFrequency
 
 # Optional dependency for robust URI resolution
 try:
@@ -82,6 +85,7 @@ def parse_urdf(
     bodies_follow_joint_ordering: bool = True,
     collapse_fixed_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    force_position_velocity_actuation: bool = False,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -105,6 +109,12 @@ def parse_urdf(
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+        force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
+            (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
+            If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+            :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
+            damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
+            (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
     """
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     if xform is None:
@@ -285,16 +295,16 @@ def parse_urdf(
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.SHAPE]
+        [AttributeFrequency.SHAPE]
     )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.BODY]
+        [AttributeFrequency.BODY]
     )
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT]
+        [AttributeFrequency.JOINT]
     )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.ARTICULATION]
+        [AttributeFrequency.ARTICULATION]
     )
 
     def parse_transform(element):
@@ -644,11 +654,16 @@ def parse_urdf(
             "custom_attributes": joint["custom_attributes"],
         }
 
+        # URDF doesn't contain gain information (only damping, no stiffness), so we can't infer
+        # actuator mode. Default to POSITION.
+        actuator_mode = ActuatorMode.POSITION_VELOCITY if force_position_velocity_actuation else ActuatorMode.POSITION
+
         if joint["type"] == "revolute" or joint["type"] == "continuous":
             joint_indices.append(
                 builder.add_joint_revolute(
                     axis=joint["axis"],
                     target_kd=joint_damping,
+                    actuator_mode=actuator_mode,
                     limit_lower=lower,
                     limit_upper=upper,
                     **joint_params,
@@ -659,6 +674,7 @@ def parse_urdf(
                 builder.add_joint_prismatic(
                     axis=joint["axis"],
                     target_kd=joint_damping,
+                    actuator_mode=actuator_mode,
                     limit_lower=lower * scale,
                     limit_upper=upper * scale,
                     **joint_params,
@@ -690,12 +706,14 @@ def parse_urdf(
                             limit_lower=lower * scale,
                             limit_upper=upper * scale,
                             target_kd=joint_damping,
+                            actuator_mode=actuator_mode,
                         ),
                         ModelBuilder.JointDofConfig(
                             v,
                             limit_lower=lower * scale,
                             limit_upper=upper * scale,
                             target_kd=joint_damping,
+                            actuator_mode=actuator_mode,
                         ),
                     ],
                     **joint_params,
@@ -718,12 +736,12 @@ def parse_urdf(
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:
-            builder.shape_collision_filter_pairs.append((i, j))
+            builder.add_shape_collision_filter_pair(i, j)
 
     if not enable_self_collisions:
         for i in range(start_shape_count, end_shape_count):
             for j in range(i + 1, end_shape_count):
-                builder.shape_collision_filter_pairs.append((i, j))
+                builder.add_shape_collision_filter_pair(i, j)
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

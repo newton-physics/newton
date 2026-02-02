@@ -27,8 +27,6 @@ from ...sim import (
     Control,
     JointType,
     Model,
-    ModelAttributeAssignment,
-    ModelAttributeFrequency,
     ModelBuilder,
     State,
 )
@@ -37,8 +35,6 @@ from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     ParticleForceElementAdjacencyInfo,
-    # Topological filtering helper functions
-    _set_to_csr,
     accumulate_contact_force_and_hessian,
     accumulate_contact_force_and_hessian_no_self_contact,
     accumulate_spring_force_and_hessian,
@@ -56,6 +52,8 @@ from .particle_vbd_kernels import (
     # Solver kernels (particle VBD)
     forward_step,
     forward_step_penetration_free,
+    # Topological filtering helper functions
+    set_to_csr,
     solve_trimesh_no_self_contact,
     solve_trimesh_no_self_contact_tile,
     solve_trimesh_with_self_contact_penetration_free,
@@ -454,9 +452,9 @@ class SolverVBD(SolverBase):
         # -------------------------------------------------------------
         if not self.integrate_with_external_rigid_solver and model.body_count > 0:
             # State storage
-            self.body_q_prev = wp.zeros_like(
-                model.body_q, device=self.device
-            )  # per-substep previous body pose (for velocity)
+            # Initialize to the current poses for the first step to avoid spurious finite-difference
+            # velocities/friction impulses.
+            self.body_q_prev = wp.clone(model.body_q).to(self.device)
             self.body_inertia_q = wp.zeros_like(model.body_q, device=self.device)  # inertial target poses for AVBD
 
             # Adjacency and dimensions
@@ -817,8 +815,8 @@ class SolverVBD(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
-                frequency=ModelAttributeFrequency.JOINT,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.5,
                 namespace="vbd",
@@ -827,8 +825,8 @@ class SolverVBD(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_tau",
-                frequency=ModelAttributeFrequency.JOINT,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1.0,
                 namespace="vbd",
@@ -998,7 +996,7 @@ class SolverVBD(SolverBase):
                 (
                     self.particle_vertex_triangle_contact_filtering_list,
                     self.particle_vertex_triangle_contact_filtering_list_offsets,
-                ) = _set_to_csr(v_tri_filter_sets)
+                ) = set_to_csr(v_tri_filter_sets)
                 self.particle_vertex_triangle_contact_filtering_list = wp.array(
                     self.particle_vertex_triangle_contact_filtering_list, dtype=int, device=self.device
                 )
@@ -1013,7 +1011,7 @@ class SolverVBD(SolverBase):
                 (
                     self.particle_edge_edge_contact_filtering_list,
                     self.particle_edge_edge_contact_filtering_list_offsets,
-                ) = _set_to_csr(edge_edge_filter_sets)
+                ) = set_to_csr(edge_edge_filter_sets)
                 self.particle_edge_edge_contact_filtering_list = wp.array(
                     self.particle_edge_edge_contact_filtering_list, dtype=int, device=self.device
                 )
@@ -1929,7 +1927,12 @@ class SolverVBD(SolverBase):
         # Velocity update (BDF1) after all iterations
         wp.launch(
             kernel=update_body_velocity,
-            inputs=[dt, state_out.body_q, self.body_q_prev, model.body_com],
+            inputs=[
+                dt,
+                state_out.body_q,
+                model.body_com,
+                self.body_q_prev,  # input/output
+            ],
             outputs=[state_out.body_qd],
             dim=model.body_count,
             device=self.device,
@@ -1951,8 +1954,6 @@ class SolverVBD(SolverBase):
                     model.body_q,
                     self.joint_dahl_eps_max,
                     self.joint_dahl_tau,
-                ],
-                outputs=[
                     self.joint_sigma_prev,  # input/output
                     self.joint_kappa_prev,  # input/output
                     self.joint_dkappa_prev,  # input/output

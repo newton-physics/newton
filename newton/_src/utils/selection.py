@@ -21,48 +21,107 @@ import warp as wp
 from warp.types import is_array
 
 from ..sim import Control, JointType, Model, State, eval_fk
-from ..sim.model import ModelAttributeFrequency
+
+AttributeFrequency = Model.AttributeFrequency
 
 
 @wp.kernel
 def set_model_articulation_mask_kernel(
-    view_mask: wp.array(dtype=bool),  # mask in ArticulationView
-    view_to_model_map: wp.array(dtype=int),  # maps index in ArticulationView to articulation index in Model
-    articulation_mask: wp.array(dtype=bool),  # output: mask of Model articulation indices
+    world_arti_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+    view_to_model_map: wp.array2d(dtype=int),  # map (world, arti) indices to Model articulation id
+    model_articulation_mask: wp.array(dtype=bool),  # output: mask of Model articulation indices
 ):
     """
-    Set Model articulation mask from a view mask in an ArticulationView.
+    Set Model articulation mask from a 2D (world, arti) mask in an ArticulationView.
     """
-    tid = wp.tid()
-    if view_mask[tid]:
-        articulation_mask[view_to_model_map[tid]] = True
+    world, arti = wp.tid()
+    if world_arti_mask[world, arti]:
+        model_articulation_mask[view_to_model_map[world, arti]] = True
 
 
 @wp.kernel
-def set_articulation_attribute_1d_kernel(
-    view_mask: wp.array(dtype=bool),  # mask in ArticulationView
-    values: Any,  # 1d array or indexedarray
-    attrib: Any,  # 1d array or indexedarray
+def set_model_articulation_mask_per_world_kernel(
+    world_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+    view_to_model_map: wp.array2d(dtype=int),  # map (world, arti) indices to Model articulation id
+    model_articulation_mask: wp.array(dtype=bool),  # output: mask of Model articulation indices
 ):
-    i = wp.tid()
-    if view_mask[i]:
-        attrib[i] = values[i]
+    """
+    Set Model articulation mask from a 1D world mask in an ArticulationView.
+    """
+    world, arti = wp.tid()
+    if world_mask[world]:
+        model_articulation_mask[view_to_model_map[world, arti]] = True
 
 
-@wp.kernel
-def set_articulation_attribute_2d_kernel(
-    view_mask: wp.array(dtype=bool),  # mask in ArticulationView
-    values: Any,  # 2d array or indexedarray
-    attrib: Any,  # 2d array or indexedarray
-):
-    i, j = wp.tid()
-    if view_mask[i]:
-        attrib[i, j] = values[i, j]
+# @wp.kernel
+# def set_articulation_attribute_1d_kernel(
+#     view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+#     values: Any,  # 1d array or indexedarray
+#     attrib: Any,  # 1d array or indexedarray
+# ):
+#     i = wp.tid()
+#     if view_mask[i]:
+#         attrib[i] = values[i]
+
+
+# @wp.kernel
+# def set_articulation_attribute_2d_kernel(
+#     view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+#     values: Any,  # 2d array or indexedarray
+#     attrib: Any,  # 2d array or indexedarray
+# ):
+#     i, j = wp.tid()
+#     if view_mask[i, j]:
+#         attrib[i, j] = values[i, j]
 
 
 @wp.kernel
 def set_articulation_attribute_3d_kernel(
-    view_mask: wp.array(dtype=bool),  # mask in ArticulationView
+    view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+    values: Any,  # 3d array or indexedarray
+    attrib: Any,  # 3d array or indexedarray
+):
+    i, j, k = wp.tid()
+    if view_mask[i, j]:
+        attrib[i, j, k] = values[i, j, k]
+
+
+@wp.kernel
+def set_articulation_attribute_4d_kernel(
+    view_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
+    values: Any,  # 4d array or indexedarray
+    attrib: Any,  # 4d array or indexedarray
+):
+    i, j, k, l = wp.tid()
+    if view_mask[i, j]:
+        attrib[i, j, k, l] = values[i, j, k, l]
+
+
+# @wp.kernel
+# def set_articulation_attribute_1d_per_world_kernel(
+#     view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+#     values: Any,  # 1d array or indexedarray
+#     attrib: Any,  # 1d array or indexedarray
+# ):
+#     i = wp.tid()
+#     if view_mask[i]:
+#         attrib[i] = values[i]
+
+
+# @wp.kernel
+# def set_articulation_attribute_2d_per_world_kernel(
+#     view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
+#     values: Any,  # 2d array or indexedarray
+#     attrib: Any,  # 2d array or indexedarray
+# ):
+#     i, j = wp.tid()
+#     if view_mask[i]:
+#         attrib[i, j] = values[i, j]
+
+
+@wp.kernel
+def set_articulation_attribute_3d_per_world_kernel(
+    view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
     values: Any,  # 3d array or indexedarray
     attrib: Any,  # 3d array or indexedarray
 ):
@@ -72,8 +131,8 @@ def set_articulation_attribute_3d_kernel(
 
 
 @wp.kernel
-def set_articulation_attribute_4d_kernel(
-    view_mask: wp.array(dtype=bool),  # mask in ArticulationView
+def set_articulation_attribute_4d_per_world_kernel(
+    view_mask: wp.array(dtype=bool),  # world mask in ArticulationView
     values: Any,  # 4d array or indexedarray
     attrib: Any,  # 4d array or indexedarray
 ):
@@ -86,20 +145,28 @@ def set_articulation_attribute_4d_kernel(
 for dtype in [float, int, wp.transform, wp.spatial_vector]:
     for src_array_type in [wp.array, wp.indexedarray]:
         for dst_array_type in [wp.array, wp.indexedarray]:
-            wp.overload(
-                set_articulation_attribute_1d_kernel,
-                {"values": src_array_type(dtype=dtype, ndim=1), "attrib": dst_array_type(dtype=dtype, ndim=1)},
-            )
-            wp.overload(
-                set_articulation_attribute_2d_kernel,
-                {"values": src_array_type(dtype=dtype, ndim=2), "attrib": dst_array_type(dtype=dtype, ndim=2)},
-            )
+            # wp.overload(
+            #     set_articulation_attribute_1d_kernel,
+            #     {"values": src_array_type(dtype=dtype, ndim=1), "attrib": dst_array_type(dtype=dtype, ndim=1)},
+            # )
+            # wp.overload(
+            #     set_articulation_attribute_2d_kernel,
+            #     {"values": src_array_type(dtype=dtype, ndim=2), "attrib": dst_array_type(dtype=dtype, ndim=2)},
+            # )
             wp.overload(
                 set_articulation_attribute_3d_kernel,
                 {"values": src_array_type(dtype=dtype, ndim=3), "attrib": dst_array_type(dtype=dtype, ndim=3)},
             )
             wp.overload(
                 set_articulation_attribute_4d_kernel,
+                {"values": src_array_type(dtype=dtype, ndim=4), "attrib": dst_array_type(dtype=dtype, ndim=4)},
+            )
+            wp.overload(
+                set_articulation_attribute_3d_per_world_kernel,
+                {"values": src_array_type(dtype=dtype, ndim=3), "attrib": dst_array_type(dtype=dtype, ndim=3)},
+            )
+            wp.overload(
+                set_articulation_attribute_4d_per_world_kernel,
                 {"values": src_array_type(dtype=dtype, ndim=4), "attrib": dst_array_type(dtype=dtype, ndim=4)},
             )
 
@@ -121,6 +188,88 @@ class Slice:
 
     def get(self):
         return slice(self.start, self.stop)
+
+
+class FrequencyLayout:
+    def __init__(
+        self,
+        offset: int,
+        stride_between_worlds: int,
+        stride_within_worlds: int,
+        value_count: int,
+        indices: list[int],
+        device,
+    ):
+        self.offset = offset  # number of values to skip at the beginning of attribute array
+        self.stride_between_worlds = stride_between_worlds
+        self.stride_within_worlds = stride_within_worlds
+        self.value_count = value_count
+        self.slice = None
+        self.indices = None
+        if len(indices) == 0:
+            self.slice = slice(0, 0)
+        elif is_contiguous_slice(indices):
+            self.slice = slice(indices[0], indices[-1] + 1)
+        else:
+            self.indices = wp.array(indices, dtype=int, device=device)
+
+    @property
+    def is_contiguous(self):
+        return self.slice is not None
+
+    @property
+    def selected_value_count(self):
+        if self.slice is not None:
+            return self.slice.stop - self.slice.start
+        else:
+            return len(self.indices)
+
+    def __str__(self):
+        indices = self.indices if self.indices is not None else self.slice
+        return f"FrequencyLayout(\n    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n)"
+
+
+def get_name_from_key(key: str):
+    return key.split("/")[-1]
+
+
+def find_matching_ids(pattern: str, keys: list[str], world_ids, num_worlds: int):
+    grouped_ids = [[] for _ in range(num_worlds)]  # ids grouped by world (exclude world -1)
+    global_ids = []  # ids in world -1
+    for id, key in enumerate(keys):
+        if fnmatch(key, pattern):
+            world = world_ids[id]
+            if world == -1:
+                global_ids.append(id)
+            elif world >= 0 and world < num_worlds:
+                grouped_ids[world].append(id)
+            else:
+                raise ValueError(f"World index out of range: {world}")
+    return grouped_ids, global_ids
+
+
+def all_equal(values):
+    return all(x == values[0] for x in values)
+
+
+def list_of_lists(n):
+    return [[] for _ in range(n)]
+
+
+def get_world_offset(world_ids):
+    for i in range(len(world_ids)):
+        if world_ids[i] > -1:
+            return i
+    return None
+
+
+def is_contiguous_slice(indices):
+    n = len(indices)
+    if n > 1:
+        for i in range(1, n):
+            if indices[i] != indices[i - 1] + 1:
+                return False
+    return True
 
 
 class ArticulationView:
@@ -160,51 +309,240 @@ class ArticulationView:
         if verbose is None:
             verbose = wp.config.verbose
 
-        articulation_ids = []
-        for id, key in enumerate(model.articulation_key):
-            if fnmatch(key, pattern):
-                articulation_ids.append(id)
-
-        articulation_count = len(articulation_ids)
-        if articulation_count == 0:
-            raise KeyError("No matching articulations")
-
         # FIXME: avoid/reduce this readback?
         model_articulation_start = model.articulation_start.numpy()
+        model_articulation_world = model.articulation_world.numpy()
         model_joint_type = model.joint_type.numpy()
         model_joint_child = model.joint_child.numpy()
         model_joint_q_start = model.joint_q_start.numpy()
         model_joint_qd_start = model.joint_qd_start.numpy()
-        model_shape_body = model.shape_body.numpy()
 
-        # FIXME:
-        # - this assumes homogeneous worlds with one selected articulation per world
-        # - we're going to have problems if there are any bodies or joints in the "global" world
+        # get articulation ids grouped by world
+        articulation_ids, global_articulation_ids = find_matching_ids(
+            pattern, model.articulation_key, model_articulation_world, model.num_worlds
+        )
 
-        arti_0 = articulation_ids[0]
+        # determine articulation counts per world
+        world_count = model.num_worlds
+        articulation_count = 0
+        counts_per_world = [0] * world_count
+        for world_id in range(world_count):
+            count = len(articulation_ids[world_id])
+            counts_per_world[world_id] += count
+            articulation_count += count
 
-        arti_joint_begin = model_articulation_start[arti_0]
-        arti_joint_end = model_articulation_start[arti_0 + 1]  # FIXME: is this always correct?
-        arti_joint_count = arti_joint_end - arti_joint_begin
-        arti_link_count = arti_joint_count
+        # can't mix global and per-world articulations in the same view
+        if articulation_count > 0 and global_articulation_ids:
+            raise ValueError(
+                f"Articulation pattern '{pattern}' matches global and per-world articulations, which is currently not supported"
+            )
+
+        # handle scenes with only global articulations
+        if articulation_count == 0 and global_articulation_ids:
+            world_count = 1
+            articulation_count = len(global_articulation_ids)
+            counts_per_world = [articulation_count]
+            articulation_ids = [global_articulation_ids]
+
+        if articulation_count == 0:
+            raise KeyError(f"No articulations matching pattern '{pattern}'")
+
+        if not all_equal(counts_per_world):
+            raise ValueError("Varying articulation counts per world are not supported")
+
+        count_per_world = counts_per_world[0]
+
+        # use the first articulation as a "template"
+        arti_0 = articulation_ids[0][0]
 
         arti_joint_ids = []
         arti_joint_names = []
         arti_joint_types = []
         arti_link_ids = []
         arti_link_names = []
+        arti_shape_ids = []
+        arti_shape_names = []
 
-        def get_name_from_key(key):
-            return key.split("/")[-1]
-
-        for idx in range(arti_joint_count):
-            joint_id = arti_joint_begin + idx
-            arti_joint_ids.append(int(joint_id))
+        # gather joint info
+        arti_joint_begin = int(model_articulation_start[arti_0])
+        arti_joint_end = int(model_articulation_start[arti_0 + 1])
+        arti_joint_count = arti_joint_end - arti_joint_begin
+        arti_joint_dof_begin = int(model_joint_qd_start[arti_joint_begin])
+        arti_joint_dof_end = int(model_joint_qd_start[arti_joint_end])
+        arti_joint_dof_count = arti_joint_dof_end - arti_joint_dof_begin
+        arti_joint_coord_begin = int(model_joint_q_start[arti_joint_begin])
+        arti_joint_coord_end = int(model_joint_q_start[arti_joint_end])
+        arti_joint_coord_count = arti_joint_coord_end - arti_joint_coord_begin
+        for joint_id in range(arti_joint_begin, arti_joint_end):
+            # joint_id = arti_joint_begin + idx
+            arti_joint_ids.append(joint_id)
             arti_joint_names.append(get_name_from_key(model.joint_key[joint_id]))
-            arti_joint_types.append(int(model_joint_type[joint_id]))
-            link_id = model_joint_child[joint_id]
-            arti_link_ids.append(int(link_id))
+            arti_joint_types.append(model_joint_type[joint_id])
+            link_id = int(model_joint_child[joint_id])
+            arti_link_ids.append(link_id)
+
+        # use link order as they appear in the model
+        arti_link_ids = sorted(arti_link_ids)
+        arti_link_count = len(arti_link_ids)
+        for link_id in arti_link_ids:
             arti_link_names.append(get_name_from_key(model.body_key[link_id]))
+            arti_shape_ids.extend(model.body_shapes[link_id])
+
+        # use shape order as they appear in the model
+        arti_shape_ids = sorted(arti_shape_ids)
+        arti_shape_count = len(arti_shape_ids)
+        for shape_id in arti_shape_ids:
+            arti_shape_names.append(get_name_from_key(model.shape_key[shape_id]))
+
+        # compute counts and offsets of joints, links, etc.
+        joint_starts = list_of_lists(world_count)
+        joint_counts = list_of_lists(world_count)
+        joint_dof_starts = list_of_lists(world_count)
+        joint_dof_counts = list_of_lists(world_count)
+        joint_coord_starts = list_of_lists(world_count)
+        joint_coord_counts = list_of_lists(world_count)
+        root_joint_types = list_of_lists(world_count)
+        link_starts = list_of_lists(world_count)
+        shape_starts = list_of_lists(world_count)
+        shape_counts = list_of_lists(world_count)
+        for world_id in range(world_count):
+            for arti_id in articulation_ids[world_id]:
+                # joints
+                joint_start = int(model_articulation_start[arti_id])
+                joint_end = int(model_articulation_start[arti_id + 1])
+                joint_starts[world_id].append(joint_start)
+                joint_counts[world_id].append(joint_end - joint_start)
+                # joint dofs
+                joint_dof_start = int(model_joint_qd_start[joint_start])
+                joint_dof_end = int(model_joint_qd_start[joint_end])
+                joint_dof_starts[world_id].append(joint_dof_start)
+                joint_dof_counts[world_id].append(joint_dof_end - joint_dof_start)
+                # joint coords
+                joint_coord_start = int(model_joint_q_start[joint_start])
+                joint_coord_end = int(model_joint_q_start[joint_end])
+                joint_coord_starts[world_id].append(joint_coord_start)
+                joint_coord_counts[world_id].append(joint_coord_end - joint_coord_start)
+                # root joint types
+                root_joint_types[world_id].append(int(model_joint_type[joint_start]))
+                # links and shapes
+                link_ids = []
+                shape_ids = []
+                for j in range(joint_start, joint_end):
+                    link_id = int(model_joint_child[j])
+                    link_ids.append(link_id)
+                    link_shapes = model.body_shapes.get(link_id, [])
+                    shape_ids.extend(link_shapes)
+                link_starts[world_id].append(min(link_ids))
+                num_shapes = len(shape_ids)
+                if num_shapes > 0:
+                    shape_starts[world_id].append(min(shape_ids))
+                else:
+                    shape_starts[world_id].append(-1)
+                shape_counts[world_id].append(num_shapes)
+
+        # make sure counts are the same for all articulations
+        # NOTE: we currently assume that link count is the same as joint count
+        if not (
+            all_equal(joint_counts)
+            and all_equal(joint_dof_counts)
+            and all_equal(joint_coord_counts)
+            and all_equal(root_joint_types)
+            and all_equal(shape_counts)
+        ):
+            raise ValueError("Articulations are not identical")
+
+        self.root_joint_type = root_joint_types[0][0]
+        # fixed base means that all linear and angular degrees of freedom are locked at the root
+        self.is_fixed_base = self.root_joint_type == JointType.FIXED
+        # floating base means that all linear and angular degrees of freedom are unlocked at the root
+        # (though there might be constraints like distance)
+        self.is_floating_base = self.root_joint_type in (JointType.FREE, JointType.DISTANCE)
+
+        joint_offset = joint_starts[0][0]
+        joint_dof_offset = joint_dof_starts[0][0]
+        joint_coord_offset = joint_coord_starts[0][0]
+        link_offset = link_starts[0][0]
+        if arti_shape_count > 0:
+            shape_offset = shape_starts[0][0]
+        else:
+            shape_offset = 0
+
+        # compute "outer" strides (strides between worlds)
+        if world_count > 1:
+            outer_joint_strides = []
+            outer_joint_dof_strides = []
+            outer_joint_coord_strides = []
+            outer_link_strides = []
+            outer_shape_strides = []
+            for world_id in range(1, world_count):
+                outer_joint_strides.append(joint_starts[world_id][0] - joint_starts[world_id - 1][0])
+                outer_joint_dof_strides.append(joint_dof_starts[world_id][0] - joint_dof_starts[world_id - 1][0])
+                outer_joint_coord_strides.append(joint_coord_starts[world_id][0] - joint_coord_starts[world_id - 1][0])
+                outer_link_strides.append(link_starts[world_id][0] - link_starts[world_id - 1][0])
+                outer_shape_strides.append(shape_starts[world_id][0] - shape_starts[world_id - 1][0])
+
+            # make sure outer strides are uniform
+            if not (
+                all_equal(outer_joint_strides)
+                and all_equal(outer_joint_dof_strides)
+                and all_equal(outer_joint_coord_strides)
+                and all_equal(outer_link_strides)
+                and all_equal(outer_shape_strides)
+            ):
+                raise ValueError("Non-uniform strides between worlds are not supported")
+
+            outer_joint_stride = outer_joint_strides[0]
+            outer_joint_dof_stride = outer_joint_dof_strides[0]
+            outer_joint_coord_stride = outer_joint_coord_strides[0]
+            outer_link_stride = outer_link_strides[0]
+            outer_shape_stride = outer_shape_strides[0]
+        else:
+            outer_joint_stride = arti_joint_count
+            outer_joint_dof_stride = arti_joint_dof_count
+            outer_joint_coord_stride = arti_joint_coord_count
+            outer_link_stride = arti_link_count
+            outer_shape_stride = arti_shape_count
+
+        # compute "inner" strides (strides within worlds)
+        if count_per_world > 1:
+            inner_joint_strides = list_of_lists(world_count)
+            inner_joint_dof_strides = list_of_lists(world_count)
+            inner_joint_coord_strides = list_of_lists(world_count)
+            inner_link_strides = list_of_lists(world_count)
+            inner_shape_strides = list_of_lists(world_count)
+            for world_id in range(world_count):
+                for i in range(1, count_per_world):
+                    inner_joint_strides[world_id].append(joint_starts[world_id][i] - joint_starts[world_id][i - 1])
+                    inner_joint_dof_strides[world_id].append(
+                        joint_dof_starts[world_id][i] - joint_dof_starts[world_id][i - 1]
+                    )
+                    inner_joint_coord_strides[world_id].append(
+                        joint_coord_starts[world_id][i] - joint_coord_starts[world_id][i - 1]
+                    )
+                    inner_link_strides[world_id].append(link_starts[world_id][i] - link_starts[world_id][i - 1])
+                    inner_shape_strides[world_id].append(shape_starts[world_id][i] - shape_starts[world_id][i - 1])
+
+            # make sure inner strides are uniform
+            if not (
+                all_equal(inner_joint_strides)
+                and all_equal(inner_joint_dof_strides)
+                and all_equal(inner_joint_coord_strides)
+                and all_equal(inner_link_strides)
+                and all_equal(inner_shape_strides)
+            ):
+                raise ValueError("Non-uniform strides within worlds are not supported")
+
+            inner_joint_stride = inner_joint_strides[0][0]
+            inner_joint_dof_stride = inner_joint_dof_strides[0][0]
+            inner_joint_coord_stride = inner_joint_coord_strides[0][0]
+            inner_link_stride = inner_link_strides[0][0]
+            inner_shape_stride = inner_shape_strides[0][0]
+        else:
+            inner_joint_stride = arti_joint_count
+            inner_joint_dof_stride = arti_joint_dof_count
+            inner_joint_coord_stride = arti_joint_coord_count
+            inner_link_stride = arti_link_count
+            inner_shape_stride = arti_shape_count
 
         # create joint inclusion set
         if include_joints is None and include_joint_types is None:
@@ -280,241 +618,181 @@ class ArticulationView:
         selected_joint_indices = sorted(joint_include_indices - joint_exclude_indices)
         selected_link_indices = sorted(link_include_indices - link_exclude_indices)
 
-        selected_joint_ids = []
-        selected_joint_dof_ids = []
-        selected_joint_coord_ids = []
-        selected_link_ids = []
-        selected_shape_ids = []
-
         self.joint_names = []
         self.joint_dof_names = []
         self.joint_dof_counts = []
         self.joint_coord_names = []
         self.joint_coord_counts = []
-        self.body_names = []
+        self.link_names = []
+        self.link_shapes = []
         self.shape_names = []
-        self.body_shapes = []
 
         # populate info for selected joints and dofs
-        for idx in selected_joint_indices:
-            # joint
-            joint_id = arti_joint_ids[idx]
-            selected_joint_ids.append(joint_id)
-            joint_name = get_name_from_key(model.joint_key[joint_id])
+        selected_joint_dof_indices = []
+        selected_joint_coord_indices = []
+        for joint_idx in selected_joint_indices:
+            joint_id = arti_joint_ids[joint_idx]
+            joint_name = arti_joint_names[joint_idx]
             self.joint_names.append(joint_name)
             # joint dofs
-            dof_begin = model_joint_qd_start[joint_id]
-            dof_end = model_joint_qd_start[joint_id + 1]
+            dof_begin = int(model_joint_qd_start[joint_id])
+            dof_end = int(model_joint_qd_start[joint_id + 1])
             dof_count = dof_end - dof_begin
+            self.joint_dof_counts.append(dof_count)
             if dof_count == 1:
                 self.joint_dof_names.append(joint_name)
-                selected_joint_dof_ids.append(int(dof_begin))
+                selected_joint_dof_indices.append(dof_begin - joint_dof_offset)
             elif dof_count > 1:
                 for dof in range(dof_count):
                     self.joint_dof_names.append(f"{joint_name}:{dof}")
-                    selected_joint_dof_ids.append(int(dof_begin + dof))
+                    selected_joint_dof_indices.append(dof_begin + dof - joint_dof_offset)
             # joint coords
-            coord_begin = model_joint_q_start[joint_id]
-            coord_end = model_joint_q_start[joint_id + 1]
+            coord_begin = int(model_joint_q_start[joint_id])
+            coord_end = int(model_joint_q_start[joint_id + 1])
             coord_count = coord_end - coord_begin
+            self.joint_coord_counts.append(coord_count)
             if coord_count == 1:
                 self.joint_coord_names.append(joint_name)
-                selected_joint_coord_ids.append(int(coord_begin))
+                selected_joint_coord_indices.append(coord_begin - joint_coord_offset)
             elif coord_count > 1:
                 for coord in range(coord_count):
                     self.joint_coord_names.append(f"{joint_name}:{coord}")
-                    selected_joint_coord_ids.append(int(coord_begin + coord))
-
-        # HACK: skip any leading and trailing static shapes
-        worlds_shape_start = 0
-        worlds_shape_end = model.shape_count
-        for i in range(model.shape_count):
-            if model_shape_body[i] > -1 and model_shape_body[-i - 1] > -1:
-                break
-            if model_shape_body[i] == -1:
-                worlds_shape_start += 1
-            if model_shape_body[-i - 1] == -1:
-                worlds_shape_end -= 1
-        self._worlds_shape_start = worlds_shape_start
-        self._worlds_shape_end = worlds_shape_end
-        self._worlds_shape_count = worlds_shape_end - worlds_shape_start
+                    selected_joint_coord_indices.append(coord_begin + coord - joint_coord_offset)
 
         # populate info for selected links and shapes
-        for idx in selected_link_indices:
-            body_id = arti_link_ids[idx]
-            selected_link_ids.append(body_id)
-            self.body_names.append(get_name_from_key(model.body_key[body_id]))
-
+        selected_shape_indices = []
+        shape_link_idx = {}  # map arti_shape_idx to local link index in the view
+        for link_idx, arti_link_idx in enumerate(selected_link_indices):
+            body_id = arti_link_ids[arti_link_idx]
+            self.link_names.append(arti_link_names[arti_link_idx])
             shape_ids = model.body_shapes[body_id]
-            shape_index_list = []
             for shape_id in shape_ids:
-                shape_index = len(selected_shape_ids)
-                shape_index_list.append(shape_index)
-                selected_shape_ids.append(shape_id)
-                self.shape_names.append(get_name_from_key(model.shape_key[shape_id]))
-            self.body_shapes.append(shape_index_list)
+                arti_shape_idx = arti_shape_ids.index(shape_id)
+                selected_shape_indices.append(arti_shape_idx)
+                shape_link_idx[arti_shape_idx] = link_idx
+            self.link_shapes.append([])
 
-        # selected counts
+        selected_shape_indices = sorted(selected_shape_indices)
+        for shape_idx, arti_shape_idx in enumerate(selected_shape_indices):
+            self.shape_names.append(arti_shape_names[arti_shape_idx])
+            link_idx = shape_link_idx[arti_shape_idx]
+            self.link_shapes[link_idx].append(shape_idx)
+
+        # selection counts
         self.count = articulation_count
-        self.joint_count = len(selected_joint_ids)
-        self.joint_dof_count = len(selected_joint_dof_ids)
-        self.joint_coord_count = len(selected_joint_coord_ids)
-        self.link_count = len(selected_link_ids)
-        self.shape_count = len(selected_shape_ids)
+        self.world_count = world_count
+        self.count_per_world = count_per_world
+        self.joint_count = len(selected_joint_indices)
+        self.joint_dof_count = len(selected_joint_dof_indices)
+        self.joint_coord_count = len(selected_joint_coord_indices)
+        self.link_count = len(selected_link_indices)
+        self.shape_count = len(selected_shape_indices)
 
-        # support custom slicing and indexing
-        self._arti_joint_begin = int(arti_joint_begin)
-        self._arti_joint_end = int(arti_joint_end)
-        self._arti_joint_dof_begin = int(model_joint_qd_start[arti_joint_begin])
-        self._arti_joint_dof_end = int(model_joint_qd_start[arti_joint_end])
-        self._arti_joint_coord_begin = int(model_joint_q_start[arti_joint_begin])
-        self._arti_joint_coord_end = int(model_joint_q_start[arti_joint_end])
-
-        root_joint_type = arti_joint_types[0]
-        # fixed base means that all linear and angular degrees of freedom are locked at the root
-        self.is_fixed_base = root_joint_type == JointType.FIXED
-        # floating base means that all linear and angular degrees of freedom are unlocked at the root
-        # (though there might be constraints like distance)
-        self.is_floating_base = root_joint_type in (JointType.FREE, JointType.DISTANCE)
-
-        def is_contiguous_slice(indices):
-            n = len(indices)
-            if n > 1:
-                for i in range(1, n):
-                    if indices[i] != indices[i - 1] + 1:
-                        return False
-            return True
-
-        self.joints_contiguous = is_contiguous_slice(selected_joint_ids)
-        self.joint_dofs_contiguous = is_contiguous_slice(selected_joint_dof_ids)
-        self.joint_coords_contiguous = is_contiguous_slice(selected_joint_coord_ids)
-        self.links_contiguous = is_contiguous_slice(selected_link_ids)
-        self.shapes_contiguous = is_contiguous_slice(selected_shape_ids)
-
-        # contiguous slices or indices by attribute frequency
+        # TODO: document the layout conventions and requirements
         #
-        # FIXME: guard against empty selections
+        # |ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|
+        # |  ^   ^   ^     |  ^   ^   ^     |  ^   ^   ^     |  ^   ^   ^     |
         #
-        self._frequency_slices = {}
-        self._frequency_indices = {}
+        self.frequency_layouts = {
+            AttributeFrequency.JOINT: FrequencyLayout(
+                joint_offset,
+                outer_joint_stride,
+                inner_joint_stride,
+                arti_joint_count,
+                selected_joint_indices,
+                self.device,
+            ),
+            AttributeFrequency.JOINT_DOF: FrequencyLayout(
+                joint_dof_offset,
+                outer_joint_dof_stride,
+                inner_joint_dof_stride,
+                arti_joint_dof_count,
+                selected_joint_dof_indices,
+                self.device,
+            ),
+            AttributeFrequency.JOINT_COORD: FrequencyLayout(
+                joint_coord_offset,
+                outer_joint_coord_stride,
+                inner_joint_coord_stride,
+                arti_joint_coord_count,
+                selected_joint_coord_indices,
+                self.device,
+            ),
+            AttributeFrequency.BODY: FrequencyLayout(
+                link_offset, outer_link_stride, inner_link_stride, arti_link_count, selected_link_indices, self.device
+            ),
+            AttributeFrequency.SHAPE: FrequencyLayout(
+                shape_offset,
+                outer_shape_stride,
+                inner_shape_stride,
+                arti_shape_count,
+                selected_shape_indices,
+                self.device,
+            ),
+        }
 
-        if len(selected_joint_ids) == 0:
-            self._frequency_slices[ModelAttributeFrequency.JOINT] = slice(0, 0)
-        else:
-            if self.joints_contiguous:
-                self._frequency_slices[ModelAttributeFrequency.JOINT] = slice(
-                    selected_joint_ids[0], selected_joint_ids[-1] + 1
-                )
-            else:
-                self._frequency_indices[ModelAttributeFrequency.JOINT] = wp.array(
-                    selected_joint_ids, dtype=int, device=self.device
-                )
+        self.joints_contiguous = self.frequency_layouts[AttributeFrequency.JOINT].is_contiguous
+        self.joint_dofs_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_DOF].is_contiguous
+        self.joint_coords_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_COORD].is_contiguous
+        self.links_contiguous = self.frequency_layouts[AttributeFrequency.BODY].is_contiguous
+        self.shapes_contiguous = self.frequency_layouts[AttributeFrequency.SHAPE].is_contiguous
 
-        if len(selected_joint_dof_ids) == 0:
-            self._frequency_slices[ModelAttributeFrequency.JOINT_DOF] = slice(0, 0)
-        else:
-            if self.joint_dofs_contiguous:
-                self._frequency_slices[ModelAttributeFrequency.JOINT_DOF] = slice(
-                    selected_joint_dof_ids[0], selected_joint_dof_ids[-1] + 1
-                )
-            else:
-                self._frequency_indices[ModelAttributeFrequency.JOINT_DOF] = wp.array(
-                    selected_joint_dof_ids, dtype=int, device=self.device
-                )
+        # articulation ids grouped by world
+        self.articulation_ids = wp.array(articulation_ids, dtype=int, device=self.device)
 
-        if len(selected_joint_coord_ids) == 0:
-            self._frequency_slices[ModelAttributeFrequency.JOINT_COORD] = slice(0, 0)
-        else:
-            if self.joint_coords_contiguous:
-                self._frequency_slices[ModelAttributeFrequency.JOINT_COORD] = slice(
-                    selected_joint_coord_ids[0], selected_joint_coord_ids[-1] + 1
-                )
-            else:
-                self._frequency_indices[ModelAttributeFrequency.JOINT_COORD] = wp.array(
-                    selected_joint_coord_ids, dtype=int, device=self.device
-                )
-
-        if len(selected_link_ids) == 0:
-            self._frequency_slices[ModelAttributeFrequency.BODY] = slice(0, 0)
-        else:
-            if self.links_contiguous:
-                self._frequency_slices[ModelAttributeFrequency.BODY] = slice(
-                    selected_link_ids[0], selected_link_ids[-1] + 1
-                )
-            else:
-                self._frequency_indices[ModelAttributeFrequency.BODY] = wp.array(
-                    selected_link_ids, dtype=int, device=self.device
-                )
-
-        if len(selected_shape_ids) == 0:
-            self._frequency_slices[ModelAttributeFrequency.SHAPE] = slice(0, 0)
-        else:
-            if self.shapes_contiguous:
-                # HACK: we need to skip leading static shapes
-                self._frequency_slices[ModelAttributeFrequency.SHAPE] = slice(
-                    selected_shape_ids[0] - worlds_shape_start, selected_shape_ids[-1] + 1 - worlds_shape_start
-                )
-            else:
-                self._frequency_indices[ModelAttributeFrequency.SHAPE] = wp.array(
-                    selected_shape_ids, dtype=int, device=self.device
-                )
-
-        self.articulation_indices = wp.array(articulation_ids, dtype=int, device=self.device)
-
-        # TODO: zero-stride mask would use less memory
-        self.full_mask = wp.full(articulation_count, True, dtype=bool, device=self.device)
+        # default mask includes all articulations in all worlds
+        self.full_mask = wp.full(world_count, True, dtype=bool, device=self.device)
 
         # create articulation mask
         self.articulation_mask = wp.zeros(model.articulation_count, dtype=bool, device=self.device)
         wp.launch(
-            set_model_articulation_mask_kernel,
-            dim=articulation_count,
-            inputs=[self.full_mask, self.articulation_indices, self.articulation_mask],
+            set_model_articulation_mask_per_world_kernel,
+            dim=self.articulation_ids.shape,
+            inputs=[self.full_mask, self.articulation_ids, self.articulation_mask],
             device=self.device,
         )
 
         if verbose:
             print(f"Articulation '{pattern}': {self.count}")
-            print(f"  Link count:     {self.link_count} ({'strided' if self.links_contiguous else 'indexed'})")
-            print(f"  Shape count:    {self.shape_count} ({'strided' if self.shapes_contiguous else 'indexed'})")
-            print(f"  Joint count:    {self.joint_count} ({'strided' if self.joints_contiguous else 'indexed'})")
+            print(f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)")
+            print(f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)")
+            print(f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)")
             print(
-                f"  DOF count:      {self.joint_dof_count} ({'strided' if self.joint_dofs_contiguous else 'indexed'})"
+                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)"
             )
             print(f"  Fixed base?     {self.is_fixed_base}")
             print(f"  Floating base?  {self.is_floating_base}")
             print("Link names:")
-            print(f"  {self.body_names}")
+            print(f"  {self.link_names}")
             print("Joint names:")
             print(f"  {self.joint_names}")
             print("Joint DOF names:")
             print(f"  {self.joint_dof_names}")
-
             print("Shapes:")
-            for body_idx in range(self.link_count):
-                body_shape_names = [self.shape_names[shape_idx] for shape_idx in self.body_shapes[body_idx]]
-                print(f"  Link '{self.body_names[body_idx]}': {body_shape_names}")
+            for link_idx in range(self.link_count):
+                shape_names = [self.shape_names[shape_idx] for shape_idx in self.link_shapes[link_idx]]
+                print(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+
+    @property
+    def body_names(self):
+        """Alias for `link_names`."""
+        return self.link_names
+
+    @property
+    def body_shapes(self):
+        """Alias for `link_shapes`."""
+        return self.link_shapes
 
     # ========================================================================================
     # Generic attribute API
 
     @functools.lru_cache(maxsize=None)  # noqa
     def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
-        # support structured attributes (e.g., "shape_material_mu")
-        name_components = name.split(".")
-        name = name_components[0]
-
         # get the attribute
         attrib = getattr(source, name)
-
-        # handle structures
-        if wp.types.is_struct(attrib):
-            if len(name_components) < 2:
-                raise AttributeError(f"Attribute '{name}' is a structure, use '{name}.attrib' to get an attribute")
-            attrib = getattr(attrib, name_components[1])
-
         assert isinstance(attrib, wp.array)
 
+        # get frequency info
         frequency = self.model.get_attribute_frequency(name)
 
         # Custom frequencies (custom entity types) are not supported in ArticulationView
@@ -526,46 +804,71 @@ class ArticulationView:
                 f"that are not part of articulations."
             )
 
-        # HACK: trim leading and trailing static shapes
-        if frequency == ModelAttributeFrequency.SHAPE:
-            attrib = attrib[self._worlds_shape_start : self._worlds_shape_end]
+        layout = self.frequency_layouts.get(frequency)
+        if layout is None:
+            raise AttributeError(
+                f"Unable to determine the layout of frequency '{frequency.name}' for attribute '{name}'"
+            )
 
-        # reshape with batch dim at front
-        assert attrib.shape[0] % self.count == 0
-        batched_shape = (self.count, attrib.shape[0] // self.count, *attrib.shape[1:])
-        attrib = attrib.reshape(batched_shape)
+        value_stride = attrib.strides[0]
+        is_indexed = layout.indices is not None
 
-        if _slice is None:
-            _slice = self._frequency_slices.get(frequency)
-        elif isinstance(_slice, Slice):
+        # handle custom slice
+        if isinstance(_slice, Slice):
             _slice = _slice.get()
         elif isinstance(_slice, int):
-            return attrib[:, _slice]
-        else:
-            raise TypeError(f"Invalid slice type: expected Slice or int, got {type(_slice)}")
+            _slice = slice(_slice, _slice + 1)
 
-        if _slice is not None:
-            # create strided array
-            if _slice.start == _slice.stop:
-                #! workaround for empty slice until this is fixed: https://github.com/NVIDIA/warp/issues/958
-                attrib = wp.array(
-                    ptr=attrib.ptr,
-                    dtype=attrib.dtype,
-                    shape=(attrib.shape[0], 0, *attrib.shape[2:]),
-                    strides=attrib.strides,
-                    device=attrib.device,
-                    pinned=attrib.pinned,
-                    copy=False,
-                )
+        if _slice is None:
+            value_count = layout.value_count
+            if is_indexed:
+                value_slice = layout.indices
             else:
-                attrib = attrib[:, _slice]
+                value_slice = layout.slice
         else:
-            # create indexed array + contiguous staging array
-            _indices = self._frequency_indices.get(frequency)
-            if _indices is None:
-                raise AttributeError(f"Unable to determine the frequency of attribute '{name}'")
-            attrib = wp.indexedarray(attrib, [None, _indices])
+            value_count = _slice.stop - _slice.start
+            if is_indexed:
+                value_slice = layout.indices[_slice]
+            else:
+                value_slice = _slice
+
+        shape = (self.world_count, self.count_per_world, value_count)
+        strides = (
+            layout.stride_between_worlds * value_stride,
+            layout.stride_within_worlds * value_stride,
+            value_stride,
+        )
+        slices = (slice(self.world_count), slice(self.count_per_world), value_slice)
+
+        # trailing dimensions for multidimensional attributes
+        trailing_shape = attrib.shape[1:]
+        trailing_strides = attrib.strides[1:]
+        trailing_slices = [slice(s) for s in trailing_shape]
+
+        shape = (*shape, *trailing_shape)
+        strides = (*strides, *trailing_strides)
+        slices = (*slices, *trailing_slices)
+
+        # construct reshaped attribute array
+        attrib = wp.array(
+            ptr=int(attrib.ptr) + layout.offset * value_stride,
+            dtype=attrib.dtype,
+            shape=shape,
+            strides=strides,
+            device=attrib.device,
+            copy=False,
+        )
+
+        # apply selection (slices or indices)
+        attrib = attrib[slices]
+
+        if is_indexed:
+            # create a contiguous staging array
             attrib._staging_array = wp.empty_like(attrib)
+        else:
+            # fixup for empty slices - FIXME: this should be handled by Warp, above
+            if attrib.size == 0:
+                attrib.ptr = None
 
         return attrib
 
@@ -577,7 +880,6 @@ class ArticulationView:
         else:
             return attrib
 
-    # def _set_attribute_values(self, attrib, values, mask=None):
     def _set_attribute_values(
         self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None
     ):
@@ -600,42 +902,44 @@ class ArticulationView:
         if mask is None:
             mask = self.full_mask
         else:
-            if not isinstance(mask, wp.array):
-                mask = wp.array(mask, dtype=bool, shape=(self.count,), device=self.device, copy=False)
-            assert mask.shape == (self.count,)
+            mask = self._resolve_mask(mask)
 
         # launch appropriate kernel based on attribute dimensionality
         # TODO: cache concrete overload per attribute?
-        if attrib.ndim == 1:
-            wp.launch(
-                set_articulation_attribute_1d_kernel,
-                dim=attrib.shape,
-                inputs=[mask, values, attrib],
-                device=self.device,
-            )
-        elif attrib.ndim == 2:
-            wp.launch(
-                set_articulation_attribute_2d_kernel,
-                dim=attrib.shape,
-                inputs=[mask, values, attrib],
-                device=self.device,
-            )
-        elif attrib.ndim == 3:
-            wp.launch(
-                set_articulation_attribute_3d_kernel,
-                dim=attrib.shape,
-                inputs=[mask, values, attrib],
-                device=self.device,
-            )
-        elif attrib.ndim == 4:
-            wp.launch(
-                set_articulation_attribute_4d_kernel,
-                dim=attrib.shape,
-                inputs=[mask, values, attrib],
-                device=self.device,
-            )
-        else:
-            raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
+        if mask.ndim == 1:
+            if attrib.ndim == 3:
+                wp.launch(
+                    set_articulation_attribute_3d_per_world_kernel,
+                    dim=attrib.shape,
+                    inputs=[mask, values, attrib],
+                    device=self.device,
+                )
+            elif attrib.ndim == 4:
+                wp.launch(
+                    set_articulation_attribute_4d_per_world_kernel,
+                    dim=attrib.shape,
+                    inputs=[mask, values, attrib],
+                    device=self.device,
+                )
+            else:
+                raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
+        else:  # mask.ndim == 2
+            if attrib.ndim == 3:
+                wp.launch(
+                    set_articulation_attribute_3d_kernel,
+                    dim=attrib.shape,
+                    inputs=[mask, values, attrib],
+                    device=self.device,
+                )
+            elif attrib.ndim == 4:
+                wp.launch(
+                    set_articulation_attribute_4d_kernel,
+                    dim=attrib.shape,
+                    inputs=[mask, values, attrib],
+                    device=self.device,
+                )
+            else:
+                raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
     def get_attribute(self, name: str, source: Model | State | Control):
         """
@@ -681,11 +985,9 @@ class ArticulationView:
             array: The root transforms (dtype=wp.transform).
         """
         if self.is_floating_base:
-            attrib_slice = Slice(self._arti_joint_coord_begin, self._arti_joint_coord_begin + 7)
-            attrib = self._get_attribute_values("joint_q", source, _slice=attrib_slice)
+            attrib = self._get_attribute_values("joint_q", source, _slice=Slice(0, 7))
         else:
-            attrib_slice = self._arti_joint_begin
-            attrib = self._get_attribute_values("joint_X_p", self.model, _slice=attrib_slice)
+            attrib = self._get_attribute_values("joint_X_p", self.model, _slice=0)
 
         if attrib.dtype is wp.transform:
             return attrib
@@ -703,11 +1005,9 @@ class ArticulationView:
             mask (array): Mask of articulations in this ArticulationView (all by default).
         """
         if self.is_floating_base:
-            attrib_slice = Slice(self._arti_joint_coord_begin, self._arti_joint_coord_begin + 7)
-            self._set_attribute_values("joint_q", target, values, mask=mask, _slice=attrib_slice)
+            self._set_attribute_values("joint_q", target, values, mask=mask, _slice=Slice(0, 7))
         else:
-            attrib_slice = self._arti_joint_begin
-            self._set_attribute_values("joint_X_p", self.model, values, mask=mask, _slice=attrib_slice)
+            self._set_attribute_values("joint_X_p", self.model, values, mask=mask, _slice=0)
 
     def get_root_velocities(self, source: Model | State):
         """
@@ -720,8 +1020,7 @@ class ArticulationView:
             array: The root velocities (dtype=wp.spatial_vector).
         """
         if self.is_floating_base:
-            attrib_slice = Slice(self._arti_joint_dof_begin, self._arti_joint_dof_begin + 6)
-            attrib = self._get_attribute_values("joint_qd", source, _slice=attrib_slice)
+            attrib = self._get_attribute_values("joint_qd", source, _slice=Slice(0, 6))
         else:
             # FIXME? Non-floating articulations have no root velocities.
             return None
@@ -741,8 +1040,7 @@ class ArticulationView:
             mask (array): Mask of articulations in this ArticulationView (all by default).
         """
         if self.is_floating_base:
-            attrib_slice = Slice(self._arti_joint_dof_begin, self._arti_joint_dof_begin + 6)
-            self._set_attribute_values("joint_qd", target, values, mask=mask, _slice=attrib_slice)
+            self._set_attribute_values("joint_qd", target, values, mask=mask, _slice=Slice(0, 6))
         else:
             return  # no-op
 
@@ -842,6 +1140,30 @@ class ArticulationView:
     # ========================================================================================
     # Utilities
 
+    def _resolve_mask(self, mask):
+        # accept 1D and 2D Boolean masks
+        if isinstance(mask, wp.array):
+            if mask.dtype is wp.bool and mask.ndim < 3:
+                return mask
+        else:
+            # try interpreting as a 1D world mask
+            try:
+                return wp.array(mask, dtype=bool, shape=self.world_count, device=self.device, copy=False)
+            except Exception:
+                pass
+            # try interpreting as a 2D (world, arti) mask
+            try:
+                return wp.array(
+                    mask, dtype=bool, shape=(self.world_count, self.count_per_world), device=self.device, copy=False
+                )
+            except Exception:
+                pass
+
+        # no match
+        raise ValueError(
+            f"Expected Boolean mask with shape ({self.world_count}, {self.count_per_world}) or ({self.world_count},)"
+        )
+
     def get_model_articulation_mask(self, mask=None):
         """
         Get Model articulation mask from a mask in this ArticulationView.
@@ -852,16 +1174,22 @@ class ArticulationView:
         if mask is None:
             return self.articulation_mask
         else:
-            if not isinstance(mask, wp.array):
-                mask = wp.array(mask, dtype=bool, device=self.device, copy=False)
-            assert mask.shape == (self.count,)
+            mask = self._resolve_mask(mask)
             articulation_mask = wp.zeros(self.model.articulation_count, dtype=bool, device=self.device)
-            wp.launch(
-                set_model_articulation_mask_kernel,
-                dim=mask.size,
-                inputs=[mask, self.articulation_indices, articulation_mask],
-                device=self.device,
-            )
+            if mask.ndim == 1:
+                wp.launch(
+                    set_model_articulation_mask_per_world_kernel,
+                    dim=self.articulation_ids.shape,
+                    inputs=[mask, self.articulation_ids, articulation_mask],
+                    device=self.device,
+                )
+            else:
+                wp.launch(
+                    set_model_articulation_mask_kernel,
+                    dim=self.articulation_ids.shape,
+                    inputs=[mask, self.articulation_ids, articulation_mask],
+                    device=self.device,
+                )
             return articulation_mask
 
     def eval_fk(self, target: Model | State, mask=None):

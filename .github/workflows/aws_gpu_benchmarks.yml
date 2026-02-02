@@ -1,7 +1,6 @@
 name: GPU Benchmarks on AWS EC2 (Reusable)
 
 # This is a reusable workflow that uses machulav/ec2-github-runner to run GPU benchmarks.
-# It replaces the old pr_aws_gpu_asv.yml workflow.
 # Called by:
 #   - pr_target_aws_gpu.yml (for pull requests)
 
@@ -9,7 +8,7 @@ name: GPU Benchmarks on AWS EC2 (Reusable)
 env:
   AWS_REGION: us-east-2
   AWS_INSTANCE_TYPE: g6e.2xlarge
-  AWS_VOLUME_SIZE: 150
+  AWS_VOLUME_SIZE: 92
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
@@ -73,6 +72,8 @@ jobs:
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           ec2-image-id: ${{ env.LATEST_AMI_ID }}
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
+          ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
+          ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
           subnet-id: subnet-051b9d2e71acf8047
           security-group-id: ${{ env.AWS_SECURITY_GROUP_IDS }}
           aws-resource-tags: >
@@ -111,6 +112,9 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      - name: Check disk space
+        run: df -h
+
       - name: Set up ASV environment
         run: uvx asv machine --yes
 
@@ -132,6 +136,10 @@ jobs:
         run: |
           uvx asv compare --split ${{ inputs.base_ref }} ${{ inputs.ref }}
           exit 2
+
+      - name: Check disk space (post-benchmark)
+        if: always()
+        run: df -h
 
       - name: Re-run instructions
         if: failure()

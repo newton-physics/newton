@@ -15,9 +15,8 @@
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-
 from . import ray_cast
+from .ray import MAXVAL
 
 
 @wp.func
@@ -26,7 +25,7 @@ def compute_lighting(
     enable_particles: wp.bool,
     enable_backface_culling: wp.bool,
     world_index: wp.int32,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     bvh_shapes_size: wp.int32,
     bvh_shapes_id: wp.uint64,
     bvh_shapes_group_roots: wp.array(dtype=wp.int32),
@@ -100,7 +99,7 @@ def compute_lighting(
             bvh_particles_id,
             bvh_particles_group_roots,
             world_index,
-            has_global_world,
+            enable_global_world,
             enable_particles,
             enable_backface_culling,
             shape_enabled,

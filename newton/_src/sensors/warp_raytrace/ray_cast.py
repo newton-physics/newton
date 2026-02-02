@@ -15,9 +15,8 @@
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-
 from . import ray
+from .ray import MAXVAL
 from .types import RenderShapeType
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
@@ -53,7 +52,7 @@ def closest_hit_shape(
     bvh_shapes_id: wp.uint64,
     bvh_shapes_group_roots: wp.array(dtype=wp.int32),
     world_index: wp.int32,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
     shape_mesh_indices: wp.array(dtype=wp.int32),
@@ -65,7 +64,7 @@ def closest_hit_shape(
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
     if bvh_shapes_size:
-        for i in range(2 if has_global_world else 1):
+        for i in range(2 if enable_global_world else 1):
             world_index, group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
             if group_root < 0:
                 continue
@@ -107,6 +106,13 @@ def closest_hit_shape(
                     hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
                         wp.transform_get_translation(shape_transforms[si]),
                         shape_sizes[si][0] * shape_sizes[si][0],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif shape_types[si] == RenderShapeType.ELLIPSOID:
+                    hit, hit_dist, hit_normal = ray.ray_ellipsoid_with_normal(
+                        shape_transforms[si],
+                        shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
@@ -158,14 +164,14 @@ def closest_hit_particles(
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
     world_index: wp.int32,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     ray_origin_world: wp.vec3f,
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
     if bvh_particles_size:
-        for i in range(2 if has_global_world else 1):
+        for i in range(2 if enable_global_world else 1):
             world_index, group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
             if group_root < 0:
                 continue
@@ -227,7 +233,7 @@ def closest_hit(
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
     world_index: wp.int32,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     enable_particles: wp.bool,
     enable_backface_culling: wp.bool,
     max_distance: wp.float32,
@@ -262,7 +268,7 @@ def closest_hit(
         bvh_shapes_id,
         bvh_shapes_group_roots,
         world_index,
-        has_global_world,
+        enable_global_world,
         shape_enabled,
         shape_types,
         shape_mesh_indices,
@@ -281,7 +287,7 @@ def closest_hit(
             bvh_particles_id,
             bvh_particles_group_roots,
             world_index,
-            has_global_world,
+            enable_global_world,
             particles_position,
             particles_radius,
             ray_origin_world,
@@ -297,7 +303,7 @@ def first_hit_shape(
     bvh_shapes_id: wp.uint64,
     bvh_shapes_group_roots: wp.array(dtype=wp.int32),
     world_index: wp.int32,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
     shape_mesh_indices: wp.array(dtype=wp.int32),
@@ -310,7 +316,7 @@ def first_hit_shape(
     max_dist: wp.float32,
 ) -> wp.bool:
     if bvh_shapes_size:
-        for i in range(2 if has_global_world else 1):
+        for i in range(2 if enable_global_world else 1):
             world_index, group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
             if group_root < 0:
                 continue
@@ -346,6 +352,13 @@ def first_hit_shape(
                     dist = ray.ray_sphere(
                         wp.transform_get_translation(shape_transforms[si]),
                         shape_sizes[si][0] * shape_sizes[si][0],
+                        ray_origin_world,
+                        ray_dir_world,
+                    )
+                elif shape_types[si] == RenderShapeType.ELLIPSOID:
+                    dist = ray.ray_ellipsoid(
+                        shape_transforms[si],
+                        shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
@@ -390,7 +403,7 @@ def first_hit_particles(
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
     world_index: wp.int32,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     particles_position: wp.array(dtype=wp.vec3f),
     particles_radius: wp.array(dtype=wp.float32),
     ray_origin_world: wp.vec3f,
@@ -398,7 +411,7 @@ def first_hit_particles(
     max_dist: wp.float32,
 ) -> wp.bool:
     if bvh_particles_size:
-        for i in range(2 if has_global_world else 1):
+        for i in range(2 if enable_global_world else 1):
             world_index, group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
             if group_root < 0:
                 continue
@@ -449,7 +462,7 @@ def first_hit(
     bvh_particles_id: wp.uint64,
     bvh_particles_group_roots: wp.array(dtype=wp.int32),
     world_index: wp.int32,
-    has_global_world: wp.bool,
+    enable_global_world: wp.bool,
     enable_particles: wp.bool,
     enable_backface_culling: wp.bool,
     shape_enabled: wp.array(dtype=wp.uint32),
@@ -473,7 +486,7 @@ def first_hit(
         bvh_shapes_id,
         bvh_shapes_group_roots,
         world_index,
-        has_global_world,
+        enable_global_world,
         shape_enabled,
         shape_types,
         shape_mesh_indices,
@@ -493,7 +506,7 @@ def first_hit(
             bvh_particles_id,
             bvh_particles_group_roots,
             world_index,
-            has_global_world,
+            enable_global_world,
             particles_position,
             particles_radius,
             ray_origin_world,

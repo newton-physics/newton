@@ -1141,9 +1141,6 @@ def forward_step_rigid_bodies(
     # Read current transform
     q_current = body_q[tid]
 
-    # Store previous transform for velocity computation
-    body_q_prev[tid] = q_current
-
     # Early exit for kinematic bodies (inv_mass == 0)
     inv_m = body_inv_mass[tid]
     if inv_m == 0.0:
@@ -2361,8 +2358,8 @@ def update_duals_body_particle_contacts(
 def update_body_velocity(
     dt: float,
     body_q: wp.array(dtype=wp.transform),
-    body_q_prev: wp.array(dtype=wp.transform),
     body_com: wp.array(dtype=wp.vec3),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
 ):
     """
@@ -2374,11 +2371,12 @@ def update_body_velocity(
     Angular: omega from quaternion difference dq = q * q_prev^-1
 
     Args:
-        dt: Time step
-        body_q: Current body transforms (world)
-        body_q_prev: Previous body transforms (world)
-        body_com: Center of mass offsets (local frame)
-        body_qd: Output body velocities (spatial vectors, world frame)
+        dt: Time step.
+        body_q: Current body transforms (world).
+        body_com: Center of mass offsets (local frame).
+        body_q_prev: Previous body transforms (world). This is also refreshed to the current
+            pose at the end of the kernel to serve as the "previous pose" for the next step.
+        body_qd: Output body velocities (spatial vectors, world frame).
     """
     tid = wp.tid()
 
@@ -2403,6 +2401,9 @@ def update_body_velocity(
     omega = quat_velocity(q, q_prev, dt)
 
     body_qd[tid] = wp.spatial_vector(v, omega)
+
+    # Refresh previous pose for the next step (including kinematics).
+    body_q_prev[tid] = pose
 
 
 @wp.kernel

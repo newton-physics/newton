@@ -299,9 +299,9 @@ UsdPhysics ``physics:filteredPairs`` relationships).
     body = builder.add_body()
     shape_a = builder.add_shape_sphere(body, radius=0.5)
     shape_b = builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
-    
+
     # Exclude this specific pair from collision detection
-    builder.shape_collision_filter_pairs.append((shape_a, shape_b))
+    builder.add_shape_collision_filter_pair(shape_a, shape_b)
 
 Filter pairs are automatically populated in several cases:
 
