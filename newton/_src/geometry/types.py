@@ -20,7 +20,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, Vec2, Vec3, nparray, override
-from ..utils.texture import normalize_texture_input
+from ..utils.texture import compute_texture_hash, normalize_texture_input
 
 
 class GeoType(enum.IntEnum):
@@ -274,21 +274,7 @@ class Mesh:
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
-            if self._texture is not None:
-                texture = np.ascontiguousarray(self._texture)
-                flat_size = texture.size
-                if flat_size == 0:
-                    sample_bytes = b""
-                else:
-                    # Only sample a small portion of the texture to avoid hashing large textures in full.
-                    flat = texture.ravel()
-                    max_samples = 1024
-                    step = max(1, flat.size // max_samples)
-                    sample = flat[::step]
-                    sample_bytes = sample.tobytes()
-                self._texture_hash = hash((texture.shape, texture.dtype.str, sample_bytes))
-            else:
-                self._texture_hash = 0
+            self._texture_hash = compute_texture_hash(self._texture)
         return self._texture_hash
 
     @property

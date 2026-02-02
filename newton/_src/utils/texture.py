@@ -106,3 +106,30 @@ def normalize_texture_input(texture: str | os.PathLike[str] | nparray | None) ->
         return np.ascontiguousarray(loaded)
 
     return np.ascontiguousarray(np.asarray(texture))
+
+
+def compute_texture_hash(texture: nparray | None) -> int:
+    """Compute a stable hash for a texture array.
+
+    Args:
+        texture: Texture image array (H, W, C) or None.
+
+    Returns:
+        Hash of the texture metadata and sampled contents, or 0 for None.
+    """
+    if texture is None:
+        return 0
+
+    texture = np.ascontiguousarray(texture)
+    flat_size = texture.size
+    if flat_size == 0:
+        sample_bytes = b""
+    else:
+        # Only sample a small portion of the texture to avoid hashing large textures in full.
+        flat = texture.ravel()
+        max_samples = 1024
+        step = max(1, flat.size // max_samples)
+        sample = flat[::step]
+        sample_bytes = sample.tobytes()
+
+    return hash((texture.shape, texture.dtype.str, sample_bytes))
