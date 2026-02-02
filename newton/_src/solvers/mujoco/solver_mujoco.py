@@ -612,11 +612,6 @@ class SolverMuJoCo(SolverBase):
         def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"none": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)
 
-        def parse_bool_int(s: str, _context: dict[str, Any] | None = None) -> int:
-            """Parse MJCF boolean values to int (0 or 1)."""
-            s = s.strip().lower()
-            return 1 if s in ("true", "1") else 0
-
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
             if isinstance(value, bool):
@@ -874,11 +869,11 @@ class SolverMuJoCo(SolverBase):
                 name="actuator_actearly",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=0,
+                dtype=wp.bool,
+                default=False,
                 namespace="mujoco",
                 mjcf_attribute_name="actearly",
-                mjcf_value_transformer=parse_bool_int,
+                mjcf_value_transformer=parse_bool,
                 usd_attribute_name="mjc:actEarly",
                 usd_value_transformer=parse_bool,
             )
