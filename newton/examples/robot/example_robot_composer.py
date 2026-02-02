@@ -102,6 +102,10 @@ class Example:
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_world_offsets(wp.vec3(4.0, 4.0, 0.0))
 
+        # Initialize joint target positions.
+        self.direct_control = wp.zeros_like(self.control.mujoco.ctrl)
+        self.gripper_target_pos = 0.0
+
         self.capture()
 
         # Store initial joint positions for pose verification test
@@ -163,15 +167,74 @@ class Example:
             print(f"  Could not download UR10: {e}")
             self.ur10_usd = None
 
+        # Download Robotiq 2F85 gripper
+        try:
+            robotiq_2f85_folder = download_git_folder(
+                git_url="https://github.com/google-deepmind/mujoco_menagerie.git",
+                folder_path="robotiq_2f85",
+            )
+            self.robotiq_2f85_path = robotiq_2f85_folder / "2f85.xml"
+            print(f"  Robotiq 2F85 gripper: {self.robotiq_2f85_path.exists()}")
+        except Exception as e:
+            print(f"  Could not download Robotiq 2F85 gripper: {e}")
+            self.robotiq_2f85_path = None
+
     def _build_scene(self, builder):
         # Small vertical offset to avoid collision with the ground plane
         z_offset = 0.01
+
+        self._build_ur5e_with_robotiq_gripper(builder, pos=wp.vec3(0.0, -2.0, z_offset))
 
         self._build_ur5e_mjcf_with_base_joint_and_leap_hand_mjcf(builder, pos=wp.vec3(0.0, -1.0, z_offset))
 
         self._build_franka_urdf_with_allegro_hand_mjcf(builder, pos=wp.vec3(0.0, 0.0, z_offset))
 
         self._build_ur10_usd_with_base_joint(builder, pos=wp.vec3(0.0, 1.0, z_offset))
+
+    def _build_ur5e_with_robotiq_gripper(self, builder, pos):
+        ur5e_with_robotiq_gripper = newton.ModelBuilder()
+
+        # Load UR5e with fixed base
+        ur5e_quat_base = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi)
+        ur5e_with_robotiq_gripper.add_mjcf(
+            str(self.ur5e_path),
+            xform=wp.transform(pos, ur5e_quat_base),
+            base_joint="px,py,rz",
+        )
+
+        # Base joints
+        ur5e_with_robotiq_gripper.joint_target_pos[:3] = [0.0, 0.0, 0.0]
+        ur5e_with_robotiq_gripper.joint_target_ke[:3] = [500.0] * 3
+        ur5e_with_robotiq_gripper.joint_target_kd[:3] = [50.0] * 3
+        ur5e_with_robotiq_gripper.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
+
+        init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
+        ur5e_with_robotiq_gripper.joint_q[-6:] = init_q[:6]
+        ur5e_with_robotiq_gripper.joint_target_pos[-6:] = init_q[:6]
+        ur5e_with_robotiq_gripper.joint_target_ke[-6:] = [4500.0] * 6
+        ur5e_with_robotiq_gripper.joint_target_kd[-6:] = [450.0] * 6
+        ur5e_with_robotiq_gripper.joint_effort_limit[-6:] = [100.0] * 6
+        ur5e_with_robotiq_gripper.joint_armature[-6:] = [0.2] * 6
+        ur5e_with_robotiq_gripper.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
+
+        # Find end effector body by searching body names
+        ee_name = "wrist_3_link"
+        ee_body_idx = ur5e_with_robotiq_gripper.body_key.index(ee_name)
+
+        # Attach LEAP hand left to end effector
+        # Rotate the hand to align with the arm
+        hand_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2)
+        ur5e_with_robotiq_gripper.add_mjcf(
+            str(self.robotiq_2f85_path),
+            xform=wp.transform((0.00, 0.1, 0.0), hand_quat),
+            parent_body=ee_body_idx,
+        )
+
+        # Set MuJoCo control source for the ur5e (first 6 actuators)
+        ur5e_ctrl_source = [SolverMuJoCo.CtrlSource.JOINT_TARGET] * 6
+        ur5e_with_robotiq_gripper.custom_attributes["mujoco:ctrl_source"].values[:6] = ur5e_ctrl_source
+
+        builder.add_builder(ur5e_with_robotiq_gripper)
 
     def _build_ur5e_mjcf_with_base_joint_and_leap_hand_mjcf(self, builder, pos):
         ur5e_with_hand = newton.ModelBuilder()
@@ -332,6 +395,9 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        # Set direct control from GUI
+        wp.copy(self.control.mujoco.ctrl, self.direct_control)
+
         if self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -345,6 +411,18 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+    def gui(self, imgui):
+        imgui.text("Gripper target")
+        # The first robot to be built is the UR5e with Robotiq 2F85 gripper.
+        # The gripper motor is the 7th actuator. So, the actuator index is 6.
+        actuator_idx = 6
+        changed, value = imgui.slider_float("gripper_target_pos", self.gripper_target_pos, 0.0, 255, format="%.3f")
+        if changed:
+            self.gripper_target_pos = value
+            direct_control = self.direct_control.reshape((self.num_worlds, -1)).numpy()
+            direct_control[:, actuator_idx] = value
+            wp.copy(self.direct_control, wp.array(direct_control.flatten(), dtype=wp.float32))
 
     def test_final(self):
         """Test that the composed model is valid and simulates correctly."""
