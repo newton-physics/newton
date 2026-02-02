@@ -5369,6 +5369,42 @@ class TestMuJoCoSolverInitialPositions(unittest.TestCase):
         self.assertAlmostEqual(tendon_length0_after[1, 0], 1.0, places=4)
         self.assertAlmostEqual(tendon_length0_after[2, 0], 2.0, places=4)
 
+    def test_qpos0_cpu_backend(self):
+        """Verify model.joint_q syncs to mj_model.qpos0 with CPU backend."""
+        # Create MJCF with a single hinge joint
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="root" pos="0 0 0">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link1" pos="0 0 0.5">
+                <joint name="hinge1" type="hinge" axis="0 1 0"/>
+                <geom type="box" size="0.05 0.05 0.05"/>
+                <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        # Create single-world model (CPU backend only supports 1 world)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, ls_iterations=1, use_mujoco_cpu=True)
+
+        # Set joint_q
+        joint_q_np = model.joint_q.numpy()
+        joint_q_np[0] = 0.75
+        model.joint_q.assign(joint_q_np)
+
+        # Notify solver to sync to qpos0
+        solver.notify_model_changed(SolverNotifyFlags.INITIAL_POSITIONS)
+
+        # Verify qpos0 in CPU mj_model
+        self.assertAlmostEqual(solver.mj_model.qpos0[0], 0.75, places=5)
+
 
 class TestMuJoCoSolverPairProperties(unittest.TestCase):
     """Test contact pair property conversion and runtime updates across multiple worlds."""

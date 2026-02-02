@@ -1864,11 +1864,16 @@ class SolverMuJoCo(SolverBase):
         default configuration), then calls set_const_0() to recompute derived
         quantities like tendon_length0.
         """
-        if self.mjw_model is None or self.model.joint_count == 0:
-            return
-
-        nworld = self.model.num_worlds
-        joints_per_world = self.model.joint_count // nworld
+        if self.use_mujoco_cpu:
+            # CPU mode - create temp warp array
+            qpos0 = wp.empty((1, self.mj_model.nq), dtype=wp.float32, device=self.model.device)
+            nworld = 1
+            joints_per_world = self.model.joint_count
+        else:
+            # MjWarp mode - write directly to mjw_model.qpos0
+            qpos0 = self.mjw_model.qpos0
+            nworld = self.model.num_worlds
+            joints_per_world = self.model.joint_count // nworld
 
         wp.launch(
             update_initial_positions_kernel,
@@ -1880,16 +1885,19 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_q_start,
                 self.model.joint_dof_dim,
             ],
-            outputs=[self.mjw_model.qpos0],
+            outputs=[qpos0],
             device=self.model.device,
         )
 
         # Recompute derived quantities after qpos0 changes.
-        # set_const_0 computes qpos0-dependent quantities:
+        # set_const_0/mj_setConst computes qpos0-dependent quantities:
         # - tendon_length0: tendon rest lengths (when springlength=-1)
         # - body_invweight0, dof_invweight0, tendon_invweight0: inverse inertias
-        # (set_const_fixed is not needed since we didn't change mass)
-        self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+        if self.use_mujoco_cpu:
+            self.mj_model.qpos0[:] = qpos0.numpy().flatten()[: len(self.mj_model.qpos0)]
+            self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+        else:
+            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
 
     def _create_inverse_shape_mapping(self):
         """
