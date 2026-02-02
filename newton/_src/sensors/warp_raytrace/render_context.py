@@ -57,17 +57,12 @@ class RenderContext:
 
     def __init__(
         self,
-        width: int = 512,
-        height: int = 512,
         num_worlds: int = 1,
-        num_cameras: int = 1,
         options: Options | None = None,
     ):
         self.utils = Utils(self)
         self.options = options if options else RenderContext.Options()
 
-        self.width = width
-        self.height = height
         self.num_worlds = num_worlds
 
         self.bvh_shapes: wp.Bvh = None
@@ -103,8 +98,6 @@ class RenderContext:
         self.texture_data: wp.array(dtype=wp.uint32) = None
         self.texture_width: wp.array(dtype=wp.int32) = None
         self.texture_height: wp.array(dtype=wp.int32) = None
-
-        self.num_cameras = num_cameras
 
         self.material_texture_ids: wp.array(dtype=wp.int32) = None
         self.material_texture_repeat: wp.array(dtype=wp.vec2f) = None
@@ -145,20 +138,20 @@ class RenderContext:
         if self.bvh_particles_group_roots is None:
             self.bvh_particles_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
 
-    def create_color_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+    def create_color_image_output(self, width: int, height: int, num_cameras: int = 1):
+        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.uint32)
 
-    def create_depth_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.float32)
+    def create_depth_image_output(self, width: int, height: int, num_cameras: int = 1):
+        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.float32)
 
-    def create_shape_index_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+    def create_shape_index_image_output(self, width: int, height: int, num_cameras: int = 1):
+        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.uint32)
 
-    def create_normal_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.vec3f)
+    def create_normal_image_output(self, width: int, height: int, num_cameras: int = 1):
+        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.vec3f)
 
-    def create_albedo_image_output(self):
-        return wp.zeros((self.num_worlds, self.num_cameras, self.width * self.height), dtype=wp.uint32)
+    def create_albedo_image_output(self, width: int, height: int, num_cameras: int = 1):
+        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.uint32)
 
     def refit_bvh(self):
         if self.num_shapes_enabled:
@@ -199,6 +192,9 @@ class RenderContext:
 
     def render(
         self,
+        width: int,
+        height: int,
+        num_cameras: int,
         camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
@@ -212,8 +208,12 @@ class RenderContext:
         if self.has_shapes or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
+
             render_megakernel(
                 self,
+                width,
+                height,
+                num_cameras,
                 camera_transforms,
                 camera_rays,
                 color_image,

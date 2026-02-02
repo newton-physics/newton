@@ -166,19 +166,19 @@ class Utils:
             inputs=[self.__render_context.mesh_ids, self.__render_context.mesh_bounds],
         )
 
-    def compute_pinhole_camera_rays(self, camera_fovs: wp.array(dtype=wp.float32)) -> wp.array(dtype=wp.vec3f, ndim=4):
+    def compute_pinhole_camera_rays(self, width: int, height: int, camera_fovs: wp.array(dtype=wp.float32)) -> wp.array(
+        dtype=wp.vec3f, ndim=4
+    ):
         num_cameras = camera_fovs.size
 
-        camera_rays = wp.empty(
-            (num_cameras, self.__render_context.height, self.__render_context.width, 2), dtype=wp.vec3f
-        )
+        camera_rays = wp.empty((num_cameras, height, width, 2), dtype=wp.vec3f)
 
         wp.launch(
             kernel=compute_pinhole_camera_rays,
-            dim=(num_cameras, self.__render_context.height, self.__render_context.width),
+            dim=(num_cameras, height, width),
             inputs=[
-                self.__render_context.width,
-                self.__render_context.height,
+                width,
+                height,
                 camera_fovs,
                 camera_rays,
             ],
@@ -188,26 +188,31 @@ class Utils:
 
     def flatten_color_image_to_rgba(
         self,
+        width: int,
+        height: int,
+        num_cameras: int,
         image: wp.array(dtype=wp.uint32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
-    ):
-        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
+    ) -> wp.array(dtype=wp.uint8, ndim=3):
+        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
+            width, height, num_cameras, out_buffer, num_worlds_per_row
+        )
 
         wp.launch(
             flatten_color_image,
             (
                 self.__render_context.num_worlds,
-                self.__render_context.num_cameras,
-                self.__render_context.height,
-                self.__render_context.width,
+                num_cameras,
+                height,
+                width,
             ),
             [
                 image,
                 out_buffer,
-                self.__render_context.width,
-                self.__render_context.height,
-                self.__render_context.num_cameras,
+                width,
+                height,
+                num_cameras,
                 num_worlds_per_row,
             ],
         )
@@ -215,26 +220,31 @@ class Utils:
 
     def flatten_normal_image_to_rgba(
         self,
+        width: int,
+        height: int,
+        num_cameras: int,
         image: wp.array(dtype=wp.vec3f, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
-    ):
-        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
+    ) -> wp.array(dtype=wp.uint8, ndim=3):
+        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
+            width, height, num_cameras, out_buffer, num_worlds_per_row
+        )
 
         wp.launch(
             flatten_normal_image,
             (
                 self.__render_context.num_worlds,
-                self.__render_context.num_cameras,
-                self.__render_context.height,
-                self.__render_context.width,
+                num_cameras,
+                height,
+                width,
             ),
             [
                 image,
                 out_buffer,
-                self.__render_context.width,
-                self.__render_context.height,
-                self.__render_context.num_cameras,
+                width,
+                height,
+                num_cameras,
                 num_worlds_per_row,
             ],
         )
@@ -242,12 +252,17 @@ class Utils:
 
     def flatten_depth_image_to_rgba(
         self,
+        width: int,
+        height: int,
+        num_cameras: int,
         image: wp.array(dtype=wp.float32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
         depth_range: wp.array(dtype=wp.float32) | None = None,
-    ):
-        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(out_buffer, num_worlds_per_row)
+    ) -> wp.array(dtype=wp.uint8, ndim=3):
+        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
+            width, height, num_cameras, out_buffer, num_worlds_per_row
+        )
 
         if depth_range is None:
             depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32)
@@ -257,17 +272,17 @@ class Utils:
             flatten_depth_image,
             (
                 self.__render_context.num_worlds,
-                self.__render_context.num_cameras,
-                self.__render_context.height,
-                self.__render_context.width,
+                num_cameras,
+                height,
+                width,
             ),
             [
                 image,
                 out_buffer,
                 depth_range,
-                self.__render_context.width,
-                self.__render_context.height,
-                self.__render_context.num_cameras,
+                width,
+                height,
+                num_cameras,
                 num_worlds_per_row,
             ],
         )
@@ -317,8 +332,15 @@ class Utils:
             np.full(self.__render_context.num_shapes_total, fill_value=0, dtype=np.int32), dtype=wp.int32
         )
 
-    def __reshape_buffer_for_flatten(self, out_buffer: wp.array | None = None, num_worlds_per_row: int | None = None):
-        num_worlds_and_cameras = self.__render_context.num_worlds * self.__render_context.num_cameras
+    def __reshape_buffer_for_flatten(
+        self,
+        width: int,
+        height: int,
+        num_cameras: int,
+        out_buffer: wp.array | None = None,
+        num_worlds_per_row: int | None = None,
+    ) -> wp.array():
+        num_worlds_and_cameras = self.__render_context.num_worlds * num_cameras
         if not num_worlds_per_row:
             num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
         num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
@@ -326,13 +348,11 @@ class Utils:
         if out_buffer is None:
             return wp.empty(
                 (
-                    num_worlds_per_col * self.__render_context.height,
-                    num_worlds_per_row * self.__render_context.width,
+                    num_worlds_per_col * height,
+                    num_worlds_per_row * width,
                     4,
                 ),
                 dtype=wp.uint8,
             ), num_worlds_per_row
 
-        return out_buffer.reshape(
-            (num_worlds_per_col * self.__render_context.height, num_worlds_per_row * self.__render_context.width, 4)
-        ), num_worlds_per_row
+        return out_buffer.reshape((num_worlds_per_col * height, num_worlds_per_row * width, 4)), num_worlds_per_row

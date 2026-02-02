@@ -97,24 +97,27 @@ class TestSensorTiledCamera(unittest.TestCase):
     def test_golden_image(self):
         model = self.__build_scene()
 
+        width = 320
+        height = 240
+        num_cameras = 1
+
         camera_transforms = wp.array(
             [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
         )
 
         tiled_camera_sensor = SensorTiledCamera(
             model=model,
-            num_cameras=1,
-            width=320,
-            height=240,
             options=SensorTiledCamera.Options(
                 default_light=True, default_light_shadows=True, colors_per_shape=True, checkerboard_texture=True
             ),
         )
-        camera_rays = tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
-        color_image = tiled_camera_sensor.create_color_image_output()
-        depth_image = tiled_camera_sensor.create_depth_image_output()
+        camera_rays = tiled_camera_sensor.compute_pinhole_camera_rays(width, height, math.radians(45.0))
+        color_image = tiled_camera_sensor.create_color_image_output(width, height, num_cameras)
+        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, num_cameras)
 
-        tiled_camera_sensor.render(model.state(), camera_transforms, camera_rays, color_image, depth_image)
+        tiled_camera_sensor.render(
+            model.state(), width, height, num_cameras, camera_transforms, camera_rays, color_image, depth_image
+        )
 
         golden_color_data = np.load(
             os.path.join(os.path.dirname(__file__), "golden_data", "test_sensor_tiled_camera", "color.npy")
@@ -130,34 +133,46 @@ class TestSensorTiledCamera(unittest.TestCase):
     def test_output_image_parameters(self):
         model = self.__build_scene()
 
+        width = 640
+        height = 480
+        num_cameras = 1
+
         camera_transforms = wp.array(
             [[wp.transformf(wp.vec3f(10.0, 0.0, 2.0), wp.quatf(0.5, 0.5, 0.5, 0.5))]], dtype=wp.transformf
         )
 
-        tiled_camera_sensor = SensorTiledCamera(model=model, num_cameras=1, width=640, height=460)
-        camera_rays = tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
+        tiled_camera_sensor = SensorTiledCamera(model=model)
+        camera_rays = tiled_camera_sensor.compute_pinhole_camera_rays(width, height, math.radians(45.0))
 
-        color_image = tiled_camera_sensor.create_color_image_output()
-        depth_image = tiled_camera_sensor.create_depth_image_output()
-        tiled_camera_sensor.render(model.state(), camera_transforms, camera_rays, color_image, depth_image)
+        color_image = tiled_camera_sensor.create_color_image_output(width, height, num_cameras)
+        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, num_cameras)
+        tiled_camera_sensor.render(
+            model.state(), width, height, num_cameras, camera_transforms, camera_rays, color_image, depth_image
+        )
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 
-        color_image = tiled_camera_sensor.create_color_image_output()
-        depth_image = tiled_camera_sensor.create_depth_image_output()
-        tiled_camera_sensor.render(model.state(), camera_transforms, camera_rays, color_image, None)
+        color_image = tiled_camera_sensor.create_color_image_output(width, height, num_cameras)
+        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, num_cameras)
+        tiled_camera_sensor.render(
+            model.state(), width, height, num_cameras, camera_transforms, camera_rays, color_image, None
+        )
         self.assertTrue(np.any(color_image.numpy() != 0), "Color image should contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 
-        color_image = tiled_camera_sensor.create_color_image_output()
-        depth_image = tiled_camera_sensor.create_depth_image_output()
-        tiled_camera_sensor.render(model.state(), camera_transforms, camera_rays, None, depth_image)
+        color_image = tiled_camera_sensor.create_color_image_output(width, height, num_cameras)
+        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, num_cameras)
+        tiled_camera_sensor.render(
+            model.state(), width, height, num_cameras, camera_transforms, camera_rays, None, depth_image
+        )
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertTrue(np.any(depth_image.numpy() != 0), "Depth image should contain rendered data")
 
-        color_image = tiled_camera_sensor.create_color_image_output()
-        depth_image = tiled_camera_sensor.create_depth_image_output()
-        tiled_camera_sensor.render(model.state(), camera_transforms, camera_rays, None, None)
+        color_image = tiled_camera_sensor.create_color_image_output(width, height, num_cameras)
+        depth_image = tiled_camera_sensor.create_depth_image_output(width, height, num_cameras)
+        tiled_camera_sensor.render(
+            model.state(), width, height, num_cameras, camera_transforms, camera_rays, None, None
+        )
         self.assertFalse(np.any(color_image.numpy() != 0), "Color image should NOT contain rendered data")
         self.assertFalse(np.any(depth_image.numpy() != 0), "Depth image should NOT contain rendered data")
 

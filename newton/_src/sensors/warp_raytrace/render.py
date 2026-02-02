@@ -350,6 +350,9 @@ def _render_megakernel(
 
 def render_megakernel(
     rc: RenderContext,
+    width: int,
+    height: int,
+    num_cameras: int,
     camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
     color_image: wp.array(dtype=wp.uint32, ndim=3) | None,
@@ -359,35 +362,40 @@ def render_megakernel(
     albedo_image: wp.array(dtype=wp.uint32, ndim=3) | None,
     clear_data: ClearData | None,
 ):
+    if color_image is not None:
+        if clear_data is not None and clear_data.clear_color is not None:
+            color_image.fill_(wp.uint32(clear_data.clear_color))
+
+    if depth_image is not None:
+        if clear_data is not None and clear_data.clear_depth is not None:
+            depth_image.fill_(wp.float32(clear_data.clear_depth))
+
+    if shape_index_image is not None:
+        if clear_data is not None and clear_data.clear_shape_index is not None:
+            shape_index_image.fill_(wp.uint32(clear_data.clear_shape_index))
+
+    if normal_image is not None:
+        if clear_data is not None and clear_data.clear_normal is not None:
+            normal_image.fill_(clear_data.clear_normal)
+
+    if albedo_image is not None:
+        if clear_data is not None and clear_data.clear_albedo is not None:
+            albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
+
     if rc.options.render_order == RenderOrder.TILED:
-        assert rc.width % rc.options.tile_width == 0, "render width must be a multiple of tile_width"
-        assert rc.height % rc.options.tile_height == 0, "render height must be a multiple of tile_height"
-
-    if clear_data is not None and clear_data.clear_color is not None and color_image is not None:
-        color_image.fill_(wp.uint32(clear_data.clear_color))
-
-    if clear_data is not None and clear_data.clear_depth is not None and depth_image is not None:
-        depth_image.fill_(wp.float32(clear_data.clear_depth))
-
-    if clear_data is not None and clear_data.clear_shape_index is not None and shape_index_image is not None:
-        shape_index_image.fill_(wp.uint32(clear_data.clear_shape_index))
-
-    if clear_data is not None and clear_data.clear_normal is not None and normal_image is not None:
-        normal_image.fill_(clear_data.clear_normal)
-
-    if clear_data is not None and clear_data.clear_albedo is not None and albedo_image is not None:
-        albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
+        assert width % rc.options.tile_width == 0, "render width must be a multiple of tile_width"
+        assert height % rc.options.tile_height == 0, "render height must be a multiple of tile_height"
 
     wp.launch(
         kernel=_render_megakernel,
-        dim=rc.num_worlds * rc.num_cameras * rc.width * rc.height,
+        dim=(rc.num_worlds * num_cameras * width * height),
         inputs=[
             # Model and Options
             rc.num_worlds,
-            rc.num_cameras,
+            num_cameras,
             rc.num_lights,
-            rc.width,
-            rc.height,
+            width,
+            height,
             rc.options.render_order,
             rc.options.tile_width,
             rc.options.tile_height,

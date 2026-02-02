@@ -61,14 +61,13 @@ class SensorTiledCameraBenchmark:
 
         self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
-            num_cameras=1,
-            width=resolution,
-            height=resolution,
             options=SensorTiledCamera.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
         )
-        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
-        self.color_image = self.tiled_camera_sensor.create_color_image_output()
-        self.depth_image = self.tiled_camera_sensor.create_depth_image_output()
+        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
+            resolution, resolution, math.radians(45.0)
+        )
+        self.color_image = self.tiled_camera_sensor.create_color_image_output(resolution, resolution)
+        self.depth_image = self.tiled_camera_sensor.create_depth_image_output(resolution, resolution)
 
         self.tiled_camera_sensor.update_from_state(self.state)
 
@@ -79,6 +78,9 @@ class SensorTiledCameraBenchmark:
         for _ in range(iterations):
             self.tiled_camera_sensor.render(
                 None,
+                resolution,
+                resolution,
+                1,
                 self.camera_transforms,
                 self.camera_rays,
                 self.color_image,
@@ -93,6 +95,9 @@ class SensorTiledCameraBenchmark:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(
                     None,
+                    resolution,
+                    resolution,
+                    1,
                     self.camera_transforms,
                     self.camera_rays,
                     self.color_image,
@@ -110,6 +115,9 @@ class SensorTiledCameraBenchmark:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(
                     None,
+                    resolution,
+                    resolution,
+                    1,
                     self.camera_transforms,
                     self.camera_rays,
                     self.color_image,
@@ -132,17 +140,22 @@ class SensorTiledCameraBenchmark:
         if os.environ.get("SAVE_IMAGES", "0") != "0":
             from PIL import Image  # noqa: PLC0415
 
-            color_image = self.tiled_camera_sensor.flatten_color_image_to_rgba(self.color_image)
-            depth_image = self.tiled_camera_sensor.flatten_depth_image_to_rgba(self.depth_image)
+            color_image = self.tiled_camera_sensor.flatten_color_image_to_rgba(
+                resolution, resolution, 1, self.color_image
+            )
+            depth_image = self.tiled_camera_sensor.flatten_depth_image_to_rgba(
+                resolution, resolution, 1, self.depth_image
+            )
             Image.fromarray(color_image.numpy()).save("benchmark_color.png")
             Image.fromarray(depth_image.numpy()).save("benchmark_depth.png")
 
     def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: SensorTiledCamera):
+        num_cameras = 1
         title = f"{name}"
         if iterations > 1:
             title += " average"
         average = f"{elapsed / iterations:.2f} ms"
-        fps = f"({(1000.0 / (elapsed / iterations) * (sensor.render_context.num_worlds * sensor.render_context.num_cameras)):,.2f} fps)"
+        fps = f"({(1000.0 / (elapsed / iterations) * (sensor.render_context.num_worlds * num_cameras)):,.2f} fps)"
 
         print(f"{title} {'.' * (40 - len(title) - len(average))} {average} {fps if iterations > 1 else ''}")
 
