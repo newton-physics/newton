@@ -33,7 +33,6 @@ from ..sim.builder import ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
-from ..utils.mesh import load_texture_from_file
 
 
 def parse_usd(
@@ -298,17 +297,17 @@ def parse_usd(
                     source = shader_input.GetConnectedSource()
                     if source:
                         source_shader = UsdShade.Shader(source[0].GetPrim())
-                        texture_path = _find_texture_in_shader(source_shader, prim)
-                        if texture_path:
-                            return texture_path
+                        texture = _find_texture_in_shader(source_shader, prim)
+                        if texture:
+                            return texture
         return None
 
-    def _extract_preview_surface_properties(shader: UsdShade.Shader, prim: Usd.Prim) -> dict[str, Any]:
+    def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
         properties: dict[str, Any] = {
             "color": None,
             "metallic": None,
             "roughness": None,
-            "texture_path": None,
+            "texture": None,
         }
         if shader is None:
             return properties
@@ -321,7 +320,7 @@ def parse_usd(
             source = color_input.GetConnectedSource()
             if source:
                 source_shader = UsdShade.Shader(source[0].GetPrim())
-                properties["texture_path"] = _find_texture_in_shader(source_shader, prim)
+                properties["texture"] = _find_texture_in_shader(source_shader, prim)
             else:
                 color_value = color_input.Get()
                 if color_value is not None:
@@ -394,27 +393,27 @@ def parse_usd(
                 ("reflection_roughness_constant", "roughness_constant", "roughness")
             )
 
-        if properties["texture_path"] is None:
+        if properties["texture"] is None:
             for inp in shader.GetInputs():
                 name = inp.GetBaseName()
                 if inp.HasConnectedSource():
                     source = inp.GetConnectedSource()
                     source_shader = UsdShade.Shader(source[0].GetPrim())
-                    texture_path = _find_texture_in_shader(source_shader, prim)
-                    if texture_path:
-                        properties["texture_path"] = texture_path
+                    texture = _find_texture_in_shader(source_shader, prim)
+                    if texture:
+                        properties["texture"] = texture
                         break
                 elif "file" in name or "texture" in name:
                     asset = inp.Get()
                     if asset:
-                        properties["texture_path"] = _resolve_asset_path(asset, prim)
+                        properties["texture"] = _resolve_asset_path(asset, prim)
                         break
 
         return properties
 
     def _resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         if not prim or not prim.IsValid():
-            return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
+            return {"color": None, "metallic": None, "roughness": None, "texture": None}
 
         def _get_bound_material(target_prim: Usd.Prim):
             if not target_prim or not target_prim.IsValid():
@@ -457,7 +456,7 @@ def parse_usd(
                 material = _get_bound_material(proto_prim)
 
         if not material:
-            return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
+            return {"color": None, "metallic": None, "roughness": None, "texture": None}
         surface_output = material.GetSurfaceOutput()
         if not surface_output:
             surface_output = material.GetOutput("surface")
@@ -478,7 +477,7 @@ def parse_usd(
                     break
 
         if source_shader is None:
-            return {"color": None, "metallic": None, "roughness": None, "texture_path": None}
+            return {"color": None, "metallic": None, "roughness": None, "texture": None}
 
         return _extract_shader_properties(source_shader, prim)
 
@@ -644,20 +643,15 @@ def parse_usd(
             elif type_name == "mesh":
                 mesh = usd.get_mesh(prim, load_uvs=True)
                 material_props = _resolve_material_properties_for_prim(prim)
-                texture_path = material_props.get("texture_path")
-                if texture_path:
-                    is_url = texture_path.startswith(("http://", "https://"))
-                    if is_url or os.path.exists(texture_path):
-                        mesh.texture_path = texture_path
-                        mesh.texture_image = load_texture_from_file(texture_path)
-                    elif verbose:
-                        print(f"Warning: texture file not found for {path_name}: {texture_path}")
-                if mesh.texture_image is not None and mesh.uvs is None:
+                texture = material_props.get("texture")
+                if texture:
+                    mesh.texture = texture
+                if mesh.texture is not None and mesh.uvs is None:
                     warnings.warn(
                         f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
                         stacklevel=2,
                     )
-                if material_props.get("color") is not None and mesh.texture_image is None:
+                if material_props.get("color") is not None and mesh.texture is None:
                     mesh._color = material_props["color"]
                 if material_props.get("roughness") is not None:
                     mesh.roughness = material_props["roughness"]

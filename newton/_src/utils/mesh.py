@@ -13,13 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import io
 import os
 import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from urllib.parse import unquote, urlparse
-from urllib.request import urlopen
 
 import numpy as np
 import warp as wp
@@ -375,65 +372,6 @@ def create_ellipsoid_mesh(
     return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
 
 
-_texture_url_cache: dict[str, bytes] = {}
-
-
-def _is_http_url(path: str) -> bool:
-    parsed = urlparse(path)
-    return parsed.scheme in ("http", "https")
-
-
-def _resolve_file_url(path: str) -> str:
-    parsed = urlparse(path)
-    if parsed.scheme != "file":
-        return path
-    return unquote(parsed.path)
-
-
-def _download_texture_from_file_bytes(url: str) -> bytes | None:
-    if url in _texture_url_cache:
-        return _texture_url_cache[url]
-    try:
-        with urlopen(url, timeout=10) as response:
-            data = response.read()
-        _texture_url_cache[url] = data
-        return data
-    except Exception as exc:
-        warnings.warn(f"Failed to download texture image: {url} ({exc})", stacklevel=2)
-        return None
-
-
-def load_texture_from_file(texture_path: str | None) -> np.ndarray | None:
-    """Load a texture image from disk or URL into a numpy array.
-
-    Args:
-        texture_path: Path or URL to the texture image.
-
-    Returns:
-        Texture image as uint8 numpy array (H, W, C), or None if load fails.
-    """
-    if texture_path is None:
-        return None
-    try:
-        from PIL import Image  # noqa: PLC0415
-
-        if _is_http_url(texture_path):
-            data = _download_texture_from_file_bytes(texture_path)
-            if data is None:
-                return None
-            with Image.open(io.BytesIO(data)) as source_img:
-                img = source_img.convert("RGBA")
-                return np.array(img)
-
-        texture_path = _resolve_file_url(texture_path)
-        with Image.open(texture_path) as source_img:
-            img = source_img.convert("RGBA")
-            return np.array(img)
-    except Exception as exc:
-        warnings.warn(f"Failed to load texture image: {texture_path} ({exc})", stacklevel=2)
-        return None
-
-
 def _normalize_color(color) -> tuple[float, float, float] | None:
     if color is None:
         return None
@@ -445,16 +383,13 @@ def _normalize_color(color) -> tuple[float, float, float] | None:
     return None
 
 
-def _extract_trimesh_texture(visual, base_dir: str) -> tuple[np.ndarray | None, str | None]:
-    texture_image = None
-    texture_path = None
-
+def _extract_trimesh_texture(visual, base_dir: str) -> np.ndarray | str | None:
     if visual is None or not hasattr(visual, "material"):
-        return None, None
+        return None
 
     material = visual.material
     if material is None:
-        return None, None
+        return None
 
     image = getattr(material, "image", None)
     image_path = getattr(material, "image_path", None)
@@ -467,17 +402,16 @@ def _extract_trimesh_texture(visual, base_dir: str) -> tuple[np.ndarray | None, 
 
     if image is not None:
         try:
-            texture_image = np.array(image)
+            return np.array(image)
         except Exception:
-            texture_image = None
+            pass
 
     if image_path:
         if not os.path.isabs(image_path):
-            texture_path = os.path.abspath(os.path.join(base_dir, image_path))
-        else:
-            texture_path = image_path
+            image_path = os.path.abspath(os.path.join(base_dir, image_path))
+        return image_path
 
-    return texture_image, texture_path
+    return None
 
 
 def _extract_trimesh_material_params(
@@ -531,8 +465,7 @@ def load_meshes_from_file(
     scale: np.ndarray | list[float] | tuple[float, ...] = (1.0, 1.0, 1.0),
     maxhullvert: int,
     override_color: np.ndarray | list[float] | tuple[float, float, float] | None = None,
-    override_texture_path: str | None = None,
-    override_texture_image: np.ndarray | None = None,
+    override_texture: np.ndarray | str | None = None,
 ) -> list[Mesh]:
     """Load meshes from a file using trimesh and capture texture data if present.
 
@@ -541,8 +474,7 @@ def load_meshes_from_file(
         scale: Per-axis scale to apply to vertices.
         maxhullvert: Maximum vertices for convex hull approximation.
         override_color: Optional base color override (RGB).
-        override_texture_path: Optional texture path override.
-        override_texture_image: Optional texture image override.
+        override_texture: Optional texture path/URL or image override.
 
     Returns:
         List of Mesh objects.
@@ -698,8 +630,7 @@ def load_meshes_from_file(
             uvs = np.array(tri_mesh.visual.uv, dtype=np.float32)
 
         color = _normalize_color(override_color) if override_color is not None else None
-        texture_image = override_texture_image
-        texture_path = override_texture_path
+        texture = override_texture
 
         def add_mesh_from_faces(
             face_indices,
@@ -710,8 +641,7 @@ def load_meshes_from_file(
             mesh_vertices=None,
             mesh_normals=None,
             mesh_uvs=None,
-            mesh_texture_path=None,
-            mesh_texture_image=None,
+            mesh_texture=None,
         ):
             used = np.unique(face_indices.flatten())
             remap = {int(old): i for i, old in enumerate(used)}
@@ -736,23 +666,21 @@ def load_meshes_from_file(
                     uvs=sub_uvs,
                     maxhullvert=maxhullvert,
                     color=mat_color,
-                    texture_path=mesh_texture_path,
-                    texture_image=mesh_texture_image,
+                    texture=mesh_texture,
                     roughness=mat_roughness,
                     metallic=mat_metallic,
                 )
             )
 
         # If a uniform override is provided, skip per-material splitting.
-        if color is not None or texture_image is not None or texture_path is not None:
+        if color is not None or texture is not None:
             add_mesh_from_faces(
                 faces,
                 mat_color=color,
                 mesh_vertices=vertices,
                 mesh_normals=normals,
                 mesh_uvs=uvs,
-                mesh_texture_path=texture_path,
-                mesh_texture_image=texture_image,
+                mesh_texture=texture,
             )
             continue
 
@@ -776,8 +704,7 @@ def load_meshes_from_file(
                     mesh_vertices=vertices,
                     mesh_normals=normals,
                     mesh_uvs=uvs,
-                    mesh_texture_path=texture_path,
-                    mesh_texture_image=texture_image,
+                    mesh_texture=texture,
                 )
             continue
 
@@ -798,8 +725,7 @@ def load_meshes_from_file(
                     mesh_vertices=vertices,
                     mesh_normals=normals,
                     mesh_uvs=uvs,
-                    mesh_texture_path=texture_path,
-                    mesh_texture_image=texture_image,
+                    mesh_texture=texture,
                 )
             continue
 
@@ -823,8 +749,7 @@ def load_meshes_from_file(
                         mesh_vertices=vertices,
                         mesh_normals=normals,
                         mesh_uvs=uvs,
-                        mesh_texture_path=texture_path,
-                        mesh_texture_image=texture_image,
+                        mesh_texture=texture,
                     )
                 continue
 
@@ -846,8 +771,7 @@ def load_meshes_from_file(
                     mesh_vertices=vertices,
                     mesh_normals=normals,
                     mesh_uvs=uvs,
-                    mesh_texture_path=texture_path,
-                    mesh_texture_image=texture_image,
+                    mesh_texture=texture,
                 )
             continue
 
@@ -857,9 +781,8 @@ def load_meshes_from_file(
         if color is None and hasattr(tri_mesh, "visual") and hasattr(tri_mesh.visual, "main_color"):
             color = _normalize_color(tri_mesh.visual.main_color)
 
-        if hasattr(tri_mesh, "visual"):
-            if texture_image is None and texture_path is None:
-                texture_image, texture_path = _extract_trimesh_texture(tri_mesh.visual, base_dir)
+        if hasattr(tri_mesh, "visual") and texture is None:
+            texture = _extract_trimesh_texture(tri_mesh.visual, base_dir)
             material = getattr(tri_mesh.visual, "material", None)
             roughness, metallic, base_color = _extract_trimesh_material_params(material)
             if color is None and base_color is not None:
@@ -873,8 +796,7 @@ def load_meshes_from_file(
                 uvs=uvs,
                 maxhullvert=maxhullvert,
                 color=color,
-                texture_path=texture_path,
-                texture_image=texture_image,
+                texture=texture,
                 roughness=roughness,
                 metallic=metallic,
             )

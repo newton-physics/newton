@@ -31,7 +31,8 @@ from ..geometry import MESH_MAXHULLVERT
 from ..sim import ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from .import_utils import parse_custom_attributes, sanitize_xml_content
-from .mesh import load_meshes_from_file, load_texture_from_file
+from .mesh import load_meshes_from_file
+from .texture import normalize_texture_input
 from .topology import topological_sort
 
 # Optional dependency for robust URI resolution
@@ -223,11 +224,10 @@ def parse_urdf(
 
     def _parse_material_properties(material_element):
         if material_element is None:
-            return None, None, None
+            return None, None
 
         color = None
-        texture_image = None
-        texture_path = None
+        texture = None
 
         color_el = material_element.find("color")
         if color_el is not None:
@@ -244,50 +244,41 @@ def parse_urdf(
                 resolved, tmpfile = resolve_urdf_asset(texture_name)
                 try:
                     if resolved is not None:
-                        texture_image = load_texture_from_file(resolved)
-                        if tmpfile is None:
-                            texture_path = resolved
+                        texture = normalize_texture_input(resolved)
                 finally:
                     if tmpfile is not None:
                         os.remove(tmpfile.name)
 
-        return color, texture_image, texture_path
+        return color, texture
 
-    materials: dict[str, dict[str, np.ndarray | str | None]] = {}
+    materials: dict[str, dict[str, np.ndarray | None]] = {}
     for material in urdf_root.findall("material"):
         mat_name = material.get("name")
         if not mat_name:
             continue
-        color, texture_image, texture_path = _parse_material_properties(material)
+        color, texture = _parse_material_properties(material)
         materials[mat_name] = {
             "color": color,
-            "texture_image": texture_image,
-            "texture_path": texture_path,
+            "texture": texture,
         }
 
     def resolve_material(material_element):
         if material_element is None:
-            return {"color": None, "texture_image": None, "texture_path": None}
+            return {"color": None, "texture": None}
         mat_name = material_element.get("name")
-        color, texture_image, texture_path = _parse_material_properties(material_element)
+        color, texture = _parse_material_properties(material_element)
 
         if mat_name and mat_name in materials:
             resolved = dict(materials[mat_name])
         else:
-            resolved = {"color": None, "texture_image": None, "texture_path": None}
+            resolved = {"color": None, "texture": None}
 
         if color is not None:
             resolved["color"] = color
-        if texture_image is not None:
-            resolved["texture_image"] = texture_image
-        if texture_path is not None:
-            resolved["texture_path"] = texture_path
+        if texture is not None:
+            resolved["texture"] = texture
 
-        if (
-            mat_name
-            and mat_name not in materials
-            and any(value is not None for value in (color, texture_image, texture_path))
-        ):
+        if mat_name and mat_name not in materials and any(value is not None for value in (color, texture)):
             materials[mat_name] = dict(resolved)
 
         return resolved
@@ -340,7 +331,7 @@ def parse_urdf(
             if incoming_xform is not None:
                 tf = incoming_xform * tf
 
-            material_info = {"color": None, "texture_image": None, "texture_path": None}
+            material_info = {"color": None, "texture": None}
             if just_visual:
                 material_info = resolve_material(geom_group.find("material"))
 
@@ -401,11 +392,10 @@ def parse_urdf(
                     scale=scaling,
                     maxhullvert=mesh_maxhullvert,
                     override_color=material_info["color"],
-                    override_texture_path=material_info["texture_path"],
-                    override_texture_image=material_info["texture_image"],
+                    override_texture=material_info["texture"],
                 )
                 for m_mesh in m_meshes:
-                    if m_mesh.texture_image is not None and m_mesh.uvs is None:
+                    if m_mesh.texture is not None and m_mesh.uvs is None:
                         warnings.warn(
                             f"Warning: mesh {resolved} has a texture but no UVs; texture will be ignored.",
                             stacklevel=2,

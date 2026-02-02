@@ -24,7 +24,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
-from ..utils.mesh import load_texture_from_file
+from ..utils.texture import normalize_texture_input
 from .viewer import ViewerBase, is_jupyter_notebook
 
 
@@ -171,8 +171,7 @@ class ViewerViser(ViewerBase):
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
-        texture_image: np.ndarray | None = None,
-        texture_path: str | None = None,
+        texture: np.ndarray | str | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -185,8 +184,7 @@ class ViewerViser(ViewerBase):
             indices (wp.array): Triangle indices (wp.uint32).
             normals (wp.array, optional): Vertex normals, unused in viser (wp.vec3).
             uvs (wp.array, optional): UV coordinates, used for textures if supported.
-            texture_image (np.ndarray, optional): Texture image array (H, W, C).
-            texture_path (str, optional): Texture image path (fallback if image is unavailable).
+            texture (np.ndarray | str, optional): Texture path/URL or image array (H, W, C).
             hidden (bool): Whether the mesh is hidden.
             backface_culling (bool): Whether to enable backface culling.
         """
@@ -197,9 +195,7 @@ class ViewerViser(ViewerBase):
         points_np = self._to_numpy(points).astype(np.float32)
         indices_np = self._to_numpy(indices).astype(np.uint32)
         uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
-        if texture_image is None and texture_path:
-            texture_image = load_texture_from_file(texture_path)
-        texture_image = self._normalize_texture_image(texture_image)
+        texture_image = self._normalize_texture_image(normalize_texture_input(texture))
 
         # Viser expects indices as (N, 3) for triangles
         if indices_np.ndim == 1:
@@ -210,8 +206,7 @@ class ViewerViser(ViewerBase):
             "points": points_np,
             "indices": indices_np,
             "uvs": uvs_np,
-            "texture_image": texture_image,
-            "texture_path": texture_path,
+            "texture": texture_image,
         }
 
         # Remove existing mesh if present
@@ -263,11 +258,7 @@ class ViewerViser(ViewerBase):
         base_points = mesh_data["points"]
         base_indices = mesh_data["indices"]
         base_uvs = mesh_data.get("uvs")
-        texture_image = mesh_data.get("texture_image")
-        texture_path = mesh_data.get("texture_path")
-        if texture_image is None and texture_path:
-            texture_image = load_texture_from_file(texture_path)
-        texture_image = self._normalize_texture_image(texture_image)
+        texture_image = self._normalize_texture_image(mesh_data.get("texture"))
 
         if hidden:
             # Remove existing instances if present

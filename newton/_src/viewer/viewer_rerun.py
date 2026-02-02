@@ -152,8 +152,7 @@ class ViewerRerun(ViewerBase):
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
-        texture_image=None,
-        texture_path=None,
+        texture=None,
         hidden=False,
         backface_culling=True,
     ):

@@ -268,7 +268,7 @@ class MeshGL:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, points, indices, normals, uvs, texture_image=None, texture_path=None):
+    def update(self, points, indices, normals, uvs, texture=None):
         """Update vertex positions in the VBO.
 
         Args:
@@ -319,7 +319,7 @@ class MeshGL:
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
-        self.update_texture(texture_image, texture_path)
+        self.update_texture(texture)
 
     def recompute_normals(self):
         if self._points is None or self.indices is None:
@@ -331,12 +331,13 @@ class MeshGL:
             device=self.device,
         )
 
-    def update_texture(self, texture_image=None, texture_path=None):
+    def update_texture(self, texture=None):
         gl = RendererGL.gl
-        if texture_image is None and texture_path:
-            from ...utils.mesh import load_texture_from_file  # noqa: PLC0415
+        texture_image = None
+        if texture is not None:
+            from ...utils.texture import normalize_texture_input  # noqa: PLC0415
 
-            texture_image = load_texture_from_file(texture_path)
+            texture_image = normalize_texture_input(texture)
 
         if texture_image is None:
             if self.texture_id is not None:
@@ -1671,7 +1672,7 @@ class RendererGL:
 
     def set_environment_map(self, path: str, intensity: float = 1.0) -> None:
         gl = RendererGL.gl
-        from ...utils.mesh import load_texture_from_file  # noqa: PLC0415
+        from ...utils.texture import load_texture_from_file  # noqa: PLC0415
 
         image = load_texture_from_file(path)
         if image is None:

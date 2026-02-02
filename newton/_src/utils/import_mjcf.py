@@ -31,7 +31,8 @@ from ..sim import JointType, ModelBuilder
 from ..sim.model import ModelAttributeFrequency
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import parse_custom_attributes, sanitize_xml_content
-from .mesh import load_meshes_from_file, load_texture_from_file
+from .mesh import load_meshes_from_file
+from .texture import normalize_texture_input
 
 
 def parse_mjcf(
@@ -375,17 +376,12 @@ def parse_mjcf(
                         float(rgba_values[2]),
                     )
 
-            texture_image = None
-            texture_path = None
+            texture = None
             texture_name = material_info.get("texture")
             if texture_name:
                 texture_asset = texture_assets.get(texture_name)
                 if texture_asset and "file" in texture_asset:
-                    texture_path = texture_asset["file"]
-                    if os.path.exists(texture_path):
-                        texture_image = load_texture_from_file(texture_path)
-                    else:
-                        texture_path = None
+                    texture = normalize_texture_input(texture_asset["file"])
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
@@ -432,15 +428,13 @@ def parse_mjcf(
                     scale=scaling,
                     maxhullvert=maxhullvert,
                     override_color=material_color,
-                    override_texture_path=texture_path,
-                    override_texture_image=texture_image,
+                    override_texture=texture,
                 )
                 for m_mesh in m_meshes:
-                    if m_mesh.texture_image is not None and m_mesh.uvs is None:
+                    if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
                             print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
-                        m_mesh.texture_image = None
-                        m_mesh.texture_path = None
+                        m_mesh.texture = None
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,

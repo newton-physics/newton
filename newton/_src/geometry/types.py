@@ -20,6 +20,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, Vec2, Vec3, nparray, override
+from ..utils.texture import normalize_texture_input
 
 
 class GeoType(enum.IntEnum):
@@ -69,6 +70,7 @@ class GeoType(enum.IntEnum):
 
 # Default maximum vertices for convex hull approximation
 MESH_MAXHULLVERT = 64
+TextureInput = str | nparray | None
 
 
 class SDF:
@@ -146,10 +148,9 @@ class Mesh:
         is_solid: bool = True,
         maxhullvert: int = MESH_MAXHULLVERT,
         color: Vec3 | None = None,
-        texture_path: str | None = None,
-        texture_image: nparray | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        texture: TextureInput = None,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -167,10 +168,9 @@ class Mesh:
             is_solid (bool, optional): If True, mesh is assumed solid for inertia computation (default: True).
             maxhullvert (int, optional): Max vertices for convex hull approximation (default: 64).
             color (Vec3 | None, optional): Optional per-mesh base color (values in [0, 1]).
-            texture_path (str | None, optional): Optional texture image path for the mesh.
-            texture_image (nparray | None, optional): Optional texture image data (H, W, C).
             roughness (float | None, optional): Optional mesh roughness in [0, 1].
             metallic (float | None, optional): Optional mesh metallic in [0, 1].
+            texture (TextureInput, optional): Optional texture path/URL or image data (H, W, C).
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
@@ -179,8 +179,7 @@ class Mesh:
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self._color = color
-        self._texture_path = texture_path
-        self._texture_image = np.array(texture_image) if texture_image is not None else None
+        self._texture = normalize_texture_input(texture)
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -227,8 +226,7 @@ class Mesh:
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
             color=self._color,
-            texture_path=self._texture_path,
-            texture_image=self._texture_image.copy() if self._texture_image is not None else None,
+            texture=self._texture.copy() if self._texture is not None else None,
             roughness=self._roughness,
             metallic=self._metallic,
         )
@@ -266,31 +264,19 @@ class Mesh:
         return self._uvs
 
     @property
-    def texture_path(self) -> str | None:
-        return self._texture_path
+    def texture(self) -> TextureInput:
+        return self._texture
 
-    @texture_path.setter
-    def texture_path(self, value: str | None):
-        self._texture_path = value
-        self._texture_hash = None
-        self._cached_hash = None
-
-    @property
-    def texture_image(self) -> nparray | None:
-        return self._texture_image
-
-    @texture_image.setter
-    def texture_image(self, value: nparray | None):
-        self._texture_image = np.asarray(value) if value is not None else None
+    @texture.setter
+    def texture(self, value: TextureInput):
+        self._texture = normalize_texture_input(value)
         self._texture_hash = None
         self._cached_hash = None
 
     def _compute_texture_hash(self) -> int:
         if self._texture_hash is None:
-            if self._texture_path:
-                self._texture_hash = hash(("path", self._texture_path))
-            elif self._texture_image is not None:
-                texture = np.asarray(self._texture_image)
+            if self._texture is not None:
+                texture = np.ascontiguousarray(self._texture)
                 flat_size = texture.size
                 if flat_size == 0:
                     sample_bytes = b""
