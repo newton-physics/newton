@@ -1203,8 +1203,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="young_modulus",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.MODEL,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1.0e15,
                 namespace="mpm",
@@ -1213,8 +1213,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="poisson_ratio",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.MODEL,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.3,
                 namespace="mpm",
@@ -1223,8 +1223,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="damping",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.MODEL,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mpm",
@@ -1233,8 +1233,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="hardening",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.MODEL,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mpm",
@@ -1243,8 +1243,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="friction",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.MODEL,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.5,
                 namespace="mpm",
@@ -1253,8 +1253,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="yield_pressure",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.MODEL,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1.0e15,
                 namespace="mpm",
@@ -1263,8 +1263,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="tensile_yield_ratio",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.MODEL,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mpm",
@@ -1273,8 +1273,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="yield_stress",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.MODEL,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mpm",
@@ -1286,8 +1286,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="particle_qd_grad",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.STATE,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.STATE,
                 dtype=wp.mat33,
                 default=wp.mat33(0.0),
                 namespace="mpm",
@@ -1296,8 +1296,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="particle_elastic_strain",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.STATE,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.STATE,
                 dtype=wp.mat33,
                 default=identity,
                 namespace="mpm",
@@ -1306,8 +1306,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="particle_Jp",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.STATE,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.STATE,
                 dtype=wp.float32,
                 default=1.0,
                 namespace="mpm",
@@ -1316,8 +1316,8 @@ class SolverImplicitMPM(SolverBase):
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
                 name="particle_transform",
-                frequency=newton.ModelAttributeFrequency.PARTICLE,
-                assignment=newton.ModelAttributeAssignment.STATE,
+                frequency=newton.Model.AttributeFrequency.PARTICLE,
+                assignment=newton.Model.AttributeAssignment.STATE,
                 dtype=wp.mat33,
                 default=identity,
                 namespace="mpm",
