@@ -427,6 +427,11 @@ class SensorTiledCamera:
         """
         Create a Warp array for color image output.
 
+        Args:
+            width: Image width.
+            height: Image height.
+            num_cameras: Number of cameras.
+
         Returns:
             wp.array of shape (num_worlds, num_cameras, width*height) with dtype uint32.
         """

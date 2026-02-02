@@ -409,11 +409,11 @@ class Example:
         self.render_sensors()
 
         color_image = self.tiled_camera_sensor_color_image.numpy()
-        assert color_image.shape == (24, 1, 64 * 64)
+        assert color_image.shape == (24, 1, self.sensor_render_width * self.sensor_render_height)
         assert color_image.min() < color_image.max()
 
         depth_image = self.tiled_camera_sensor_depth_image.numpy()
-        assert depth_image.shape == (24, 1, 64 * 64)
+        assert depth_image.shape == (24, 1, self.sensor_render_width * self.sensor_render_height)
         assert depth_image.min() < depth_image.max()
 
     def gui(self, ui):
