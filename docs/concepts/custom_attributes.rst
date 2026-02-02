@@ -520,7 +520,7 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 USD Parsing Support
 -------------------
 
-Custom frequencies can optionally support automatic USD parsing by providing a ``usd_prim_finder`` callback when registering the frequency. This callback is invoked during :func:`~newton.parse_usd` to find USD prims of that entity type.
+Custom frequencies can optionally support automatic USD parsing by providing a ``usd_prim_finder`` callback when registering the frequency. This callback is invoked during :meth:`~newton.ModelBuilder.add_usd` to find USD prims of that entity type.
 
 .. code-block:: python
 
@@ -542,12 +542,12 @@ When ``parse_usd()`` is called, it will:
 
 1. After parsing all standard entities (bodies, shapes, joints, etc.), iterate over registered custom frequencies
 2. For each frequency with a ``usd_prim_finder``, call the finder to discover prims
-3. For each discovered prim, extract custom attribute values and add them via ``add_custom_values()``
+3. For each discovered prim, extract custom attribute values and add them via :meth:`newton.ModelBuilder.add_custom_values`
 
 The ``usd_prim_finder`` callback receives:
 
-* ``stage``: The USD stage being parsed
-* ``context``: A dictionary with parsing results (path maps, units, etc.) that can be used to resolve references
+* ``stage``: The USD stage being parsed.
+* ``context``: A dictionary with parsing results (path maps, units, etc.) that can be used to resolve references. Note that this dictionary matches the results dictionary returned by :meth:`newton.ModelBuilder.add_usd`.
 
 This enables solvers like MuJoCo to define their own USD schemas and have them automatically parsed during model loading.
 
