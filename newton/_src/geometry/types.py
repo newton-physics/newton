@@ -137,6 +137,8 @@ class Mesh:
             mesh = newton.Mesh(mesh_points, mesh_indices)
     """
 
+    _color: Vec3 | None = None
+
     def __init__(
         self,
         vertices: Sequence[Vec3] | nparray,
@@ -177,7 +179,7 @@ class Mesh:
         self._indices = np.array(indices, dtype=np.int32).flatten()
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
-        self._color = color
+        self.color = color
         self._texture = normalize_texture_input(texture)
         self._roughness = roughness
         self._metallic = metallic
@@ -224,7 +226,7 @@ class Mesh:
             maxhullvert=self.maxhullvert,
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
-            color=self._color,
+            color=self.color,
             texture=self._texture.copy() if self._texture is not None else None,
             roughness=self._roughness,
             metallic=self._metallic,
@@ -261,6 +263,14 @@ class Mesh:
     @property
     def uvs(self):
         return self._uvs
+
+    @property
+    def color(self) -> Vec3 | None:
+        return self._color
+
+    @color.setter
+    def color(self, value: Vec3 | None):
+        self._color = value
 
     @property
     def texture(self) -> str | nparray | None:

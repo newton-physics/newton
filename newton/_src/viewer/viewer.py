@@ -1022,8 +1022,8 @@ class ViewerBase:
             if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
-                if geo_src._color is not None:
-                    color = wp.vec3(geo_src._color[0:3])
+                if geo_src.color is not None:
+                    color = wp.vec3(geo_src.color[0:3])
                 if getattr(geo_src, "roughness", None) is not None:
                     material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
                 if getattr(geo_src, "metallic", None) is not None:

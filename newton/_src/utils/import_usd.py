@@ -648,7 +648,7 @@ def parse_usd(
                     )
                     mesh.texture = None
                 if material_props.get("color") is not None and mesh.texture is None:
-                    mesh._color = material_props["color"]
+                    mesh.color = material_props["color"]
                 if material_props.get("roughness") is not None:
                     mesh.roughness = material_props["roughness"]
                 if material_props.get("metallic") is not None:
