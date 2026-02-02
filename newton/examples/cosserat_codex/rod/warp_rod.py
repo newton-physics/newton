@@ -31,7 +31,9 @@ from newton.examples.cosserat_codex.constants import (
     BLOCK_DIM,
     DIRECT_SOLVE_BACKENDS,
     DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
+    DIRECT_SOLVE_WARP_BLOCK_JACOBI,
     DIRECT_SOLVE_WARP_BLOCK_THOMAS,
+    DIRECT_SOLVE_WARP_SPLIT_THOMAS,
     TILE,
 )
 from newton.examples.cosserat_codex.kernels import (
@@ -39,11 +41,16 @@ from newton.examples.cosserat_codex.kernels import (
     _warp_apply_direct_corrections,
     _warp_apply_floor_collisions,
     _warp_apply_root_translation,
+    _warp_assemble_darboux_blocks,
     _warp_assemble_jmjt_banded,
     _warp_assemble_jmjt_blocks,
     _warp_assemble_jmjt_dense,
+    _warp_assemble_stretch_blocks,
     _warp_block_thomas_solve,
+    _warp_block_thomas_solve_3x3,
     _warp_build_rhs,
+    _warp_build_rhs_darboux,
+    _warp_build_rhs_stretch,
     _warp_cholesky_solve_tile,
     _warp_compute_corrections_parallel,
     _warp_compute_inv_inertia_world,
@@ -52,11 +59,13 @@ from newton.examples.cosserat_codex.kernels import (
     _warp_constraint_max_sequential,
     _warp_integrate_positions,
     _warp_integrate_rotations,
+    _warp_merge_delta_lambda,
     _warp_pad_diagonal,
     _warp_predict_positions,
     _warp_predict_rotations,
     _warp_prepare_compliance,
     _warp_set_root_orientation,
+    _warp_solve_blocks_jacobi,
     _warp_spbsv_u11_1rhs,
     _warp_spbsv_u11_1rhs_iter_ref,
     _warp_update_constraints_direct,
@@ -236,6 +245,22 @@ class WarpResidentRodState(RodStateBase):
         self._constraint_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._delta_lambda_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
         self._correction_max_wp = wp.zeros(1, dtype=wp.float32, device=self.device)
+
+        # Split Thomas solver workspace arrays (3x3 blocks instead of 6x6)
+        # These are allocated lazily for memory efficiency
+        self._split_stretch_diag_wp = None
+        self._split_stretch_offdiag_wp = None
+        self._split_stretch_rhs_wp = None
+        self._split_stretch_c_blocks_wp = None
+        self._split_stretch_d_prime_wp = None
+        self._split_stretch_delta_lambda_wp = None
+
+        self._split_darboux_diag_wp = None
+        self._split_darboux_offdiag_wp = None
+        self._split_darboux_rhs_wp = None
+        self._split_darboux_c_blocks_wp = None
+        self._split_darboux_d_prime_wp = None
+        self._split_darboux_delta_lambda_wp = None
 
     def _timer(self, name: str):
         """Create a scoped timer for profiling."""
@@ -626,7 +651,60 @@ class WarpResidentRodState(RodStateBase):
         self._record_timing("constraints_assembly", time.perf_counter() - start)
 
         n_dofs = self.n_dofs
-        if self.direct_solve_backend == DIRECT_SOLVE_WARP_BANDED_CHOLESKY:
+        if self.direct_solve_backend == DIRECT_SOLVE_WARP_SPLIT_THOMAS:
+            # Split Thomas solver: separate 3x3 block systems for stretch and darboux
+            start = time.perf_counter()
+            with self._timer("system_solve"):
+                delta_lambda = self._project_split_thomas()
+            self._record_timing("system_solve", time.perf_counter() - start)
+        elif self.direct_solve_backend == DIRECT_SOLVE_WARP_BLOCK_JACOBI:
+            # Block Jacobi: solve each 6x6 diagonal block independently in parallel
+            start = time.perf_counter()
+            with self._timer("constraints_assembly"):
+                wp.launch(
+                    _warp_assemble_jmjt_blocks,
+                    dim=self.num_edges,
+                    inputs=[
+                        self.jacobian_pos_wp,
+                        self.jacobian_rot_wp,
+                        self.compliance_wp,
+                        self.inv_masses_wp,
+                        self.inv_inertia_wp,
+                        int(self.num_edges),
+                        self.diag_blocks_wp,
+                        self.offdiag_blocks_wp,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    _warp_build_rhs,
+                    dim=n_dofs,
+                    inputs=[
+                        self.constraint_values_wp,
+                        self.compliance_wp,
+                        self.lambda_sum_wp,
+                        int(n_dofs),
+                        self.rhs_wp,
+                    ],
+                    device=self.device,
+                )
+            self._record_timing("constraints_assembly", time.perf_counter() - start)
+            start = time.perf_counter()
+            with self._timer("system_solve"):
+                wp.launch(
+                    _warp_solve_blocks_jacobi,
+                    dim=self.num_edges,
+                    inputs=[
+                        self.diag_blocks_wp,
+                        self.rhs_wp,
+                        self.delta_lambda_wp,
+                        int(self.num_edges),
+                    ],
+                    device=self.device,
+                )
+            self._record_timing("system_solve", time.perf_counter() - start)
+            delta_lambda = self.delta_lambda_wp
+        elif self.direct_solve_backend == DIRECT_SOLVE_WARP_BANDED_CHOLESKY:
             start = time.perf_counter()
             with self._timer("constraints_assembly"):
                 wp.launch(
@@ -891,6 +969,160 @@ class WarpResidentRodState(RodStateBase):
             self.last_constraint_max = float(self._constraint_max_wp.numpy()[0])
             self.last_delta_lambda_max = float(self._delta_lambda_max_wp.numpy()[0])
             self.last_correction_max = float(self._correction_max_wp.numpy()[0])
+
+    def _ensure_split_solver_arrays(self):
+        """Lazily allocate workspace arrays for split Thomas solver.
+
+        The split solver uses two independent 3x3 block-tridiagonal systems
+        (stretch and darboux) instead of one coupled 6x6 system. This enables
+        2x parallelism with simpler 3x3 block operations.
+        """
+        if self._split_stretch_diag_wp is not None:
+            return
+
+        n = self.num_edges
+        if n == 0:
+            return
+
+        device = self.device
+
+        # Stretch arrays (3x3 blocks = 9 floats per edge, 3-vectors)
+        self._split_stretch_diag_wp = wp.zeros(n * 9, dtype=wp.float32, device=device)
+        self._split_stretch_offdiag_wp = wp.zeros(n * 9, dtype=wp.float32, device=device)
+        self._split_stretch_rhs_wp = wp.zeros(n * 3, dtype=wp.float32, device=device)
+        self._split_stretch_c_blocks_wp = wp.zeros(n * 9, dtype=wp.float32, device=device)
+        self._split_stretch_d_prime_wp = wp.zeros(n * 3, dtype=wp.float32, device=device)
+        self._split_stretch_delta_lambda_wp = wp.zeros(n * 3, dtype=wp.float32, device=device)
+
+        # Darboux arrays (same sizes)
+        self._split_darboux_diag_wp = wp.zeros(n * 9, dtype=wp.float32, device=device)
+        self._split_darboux_offdiag_wp = wp.zeros(n * 9, dtype=wp.float32, device=device)
+        self._split_darboux_rhs_wp = wp.zeros(n * 3, dtype=wp.float32, device=device)
+        self._split_darboux_c_blocks_wp = wp.zeros(n * 9, dtype=wp.float32, device=device)
+        self._split_darboux_d_prime_wp = wp.zeros(n * 3, dtype=wp.float32, device=device)
+        self._split_darboux_delta_lambda_wp = wp.zeros(n * 3, dtype=wp.float32, device=device)
+
+    def _project_split_thomas(self):
+        """Project constraints using split 3x3 block Thomas solver.
+
+        This solver splits the coupled 6x6 block-tridiagonal system into two
+        independent 3x3 block-tridiagonal systems:
+        - Stretch system: Position-based inextensibility constraints (3 DOF/edge)
+        - Darboux system: Rotation-based bend/twist constraints (3 DOF/edge)
+
+        Both systems are solved in parallel (separate kernel launches that can
+        overlap on GPU), then the results are merged into the combined delta_lambda
+        format for correction application.
+        """
+        self._ensure_split_solver_arrays()
+        n = self.num_edges
+
+        # 1. Assemble both 3x3 block systems
+        # Note: Stretch assembly includes rotation coupling since stretch
+        # constraint depends on both position and orientation
+        wp.launch(
+            _warp_assemble_stretch_blocks,
+            dim=n,
+            inputs=[
+                self.jacobian_pos_wp,
+                self.jacobian_rot_wp,
+                self.compliance_wp,
+                self.inv_masses_wp,
+                self.inv_inertia_wp,
+                int(n),
+                self._split_stretch_diag_wp,
+                self._split_stretch_offdiag_wp,
+            ],
+            device=self.device,
+        )
+
+        wp.launch(
+            _warp_assemble_darboux_blocks,
+            dim=n,
+            inputs=[
+                self.jacobian_rot_wp,
+                self.compliance_wp,
+                self.inv_inertia_wp,
+                int(n),
+                self._split_darboux_diag_wp,
+                self._split_darboux_offdiag_wp,
+            ],
+            device=self.device,
+        )
+
+        # 2. Build both RHS vectors
+        wp.launch(
+            _warp_build_rhs_stretch,
+            dim=n,
+            inputs=[
+                self.constraint_values_wp,
+                self.compliance_wp,
+                self.lambda_sum_wp,
+                int(n),
+                self._split_stretch_rhs_wp,
+            ],
+            device=self.device,
+        )
+
+        wp.launch(
+            _warp_build_rhs_darboux,
+            dim=n,
+            inputs=[
+                self.constraint_values_wp,
+                self.compliance_wp,
+                self.lambda_sum_wp,
+                int(n),
+                self._split_darboux_rhs_wp,
+            ],
+            device=self.device,
+        )
+
+        # 3. Solve both 3x3 block-tridiagonal systems
+        # These can execute in parallel on GPU (separate CUDA streams)
+        wp.launch(
+            _warp_block_thomas_solve_3x3,
+            dim=1,
+            inputs=[
+                self._split_stretch_diag_wp,
+                self._split_stretch_offdiag_wp,
+                self._split_stretch_rhs_wp,
+                int(n),
+                self._split_stretch_c_blocks_wp,
+                self._split_stretch_d_prime_wp,
+                self._split_stretch_delta_lambda_wp,
+            ],
+            device=self.device,
+        )
+
+        wp.launch(
+            _warp_block_thomas_solve_3x3,
+            dim=1,
+            inputs=[
+                self._split_darboux_diag_wp,
+                self._split_darboux_offdiag_wp,
+                self._split_darboux_rhs_wp,
+                int(n),
+                self._split_darboux_c_blocks_wp,
+                self._split_darboux_d_prime_wp,
+                self._split_darboux_delta_lambda_wp,
+            ],
+            device=self.device,
+        )
+
+        # 4. Merge delta_lambda arrays into combined 6-vector format
+        wp.launch(
+            _warp_merge_delta_lambda,
+            dim=n,
+            inputs=[
+                self._split_stretch_delta_lambda_wp,
+                self._split_darboux_delta_lambda_wp,
+                self.delta_lambda_wp,
+                int(n),
+            ],
+            device=self.device,
+        )
+
+        return self.delta_lambda_wp
 
     def apply_floor_collisions(self, floor_z: float, restitution: float = 0.0):
         """Apply floor collision constraints."""

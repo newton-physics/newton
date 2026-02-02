@@ -36,7 +36,9 @@ from newton.examples.cosserat2.kernels.collision import (
 from newton.examples.cosserat_codex.cli import SolverType, build_rod_configs, parse_solver_types
 from newton.examples.cosserat_codex.constants import (
     DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
+    DIRECT_SOLVE_WARP_BLOCK_JACOBI,
     DIRECT_SOLVE_WARP_BLOCK_THOMAS,
+    DIRECT_SOLVE_WARP_SPLIT_THOMAS,
     TILE,
 )
 from newton.examples.cosserat_codex.kernels import (
@@ -351,9 +353,7 @@ class Example:
             )
             self.use_cuda_graph = self.gpu_state.set_use_cuda_graph(self.use_cuda_graph)
             self.use_batched_step = self.gpu_state.set_use_batched_step(self.use_batched_step)
-            self.use_batched_cuda_graph = self.gpu_state.set_batched_cuda_graph(
-                self.use_batched_cuda_graph
-            )
+            self.use_batched_cuda_graph = self.gpu_state.set_batched_cuda_graph(self.use_batched_cuda_graph)
             self.gpu_state.set_batched_timers(self.enable_batched_timers)
             self.gpu_solver = CosseratXPBDSolver(
                 self.gpu_batch,
@@ -1771,23 +1771,17 @@ class Example:
             )
             if changed_parallel:
                 self.gpu_state.set_parallel_kernels(self.use_parallel_kernels)
-            changed_batched, self.use_batched_step = ui.checkbox(
-                "Use Batched Step (Warp)", self.use_batched_step
-            )
+            changed_batched, self.use_batched_step = ui.checkbox("Use Batched Step (Warp)", self.use_batched_step)
             if changed_batched:
                 self.use_batched_step = self.gpu_state.set_use_batched_step(self.use_batched_step)
-            changed_sync, self.sync_batched_arrays = ui.checkbox(
-                "Sync Batched Arrays", self.sync_batched_arrays
-            )
+            changed_sync, self.sync_batched_arrays = ui.checkbox("Sync Batched Arrays", self.sync_batched_arrays)
             if changed_sync:
                 self.gpu_state.sync_batched_arrays = self.sync_batched_arrays
             changed_batched_graph, self.use_batched_cuda_graph = ui.checkbox(
                 "Batched CUDA Graph", self.use_batched_cuda_graph
             )
             if changed_batched_graph:
-                self.use_batched_cuda_graph = self.gpu_state.set_batched_cuda_graph(
-                    self.use_batched_cuda_graph
-                )
+                self.use_batched_cuda_graph = self.gpu_state.set_batched_cuda_graph(self.use_batched_cuda_graph)
             changed_batched_timers, self.enable_batched_timers = ui.checkbox(
                 "Batched Timers", self.enable_batched_timers
             )
@@ -1803,13 +1797,9 @@ class Example:
         # Warp profiling options (always visible)
         ui.separator()
         ui.text("Warp Profiling")
-        _changed, self.enable_warp_profiling = ui.checkbox(
-            "Enable Warp Profiling", self.enable_warp_profiling
-        )
+        _changed, self.enable_warp_profiling = ui.checkbox("Enable Warp Profiling", self.enable_warp_profiling)
         if self.enable_warp_profiling:
-            _changed, self.warp_profile_cuda = ui.checkbox(
-                "Profile CUDA Activities", self.warp_profile_cuda
-            )
+            _changed, self.warp_profile_cuda = ui.checkbox("Profile CUDA Activities", self.warp_profile_cuda)
         if changed_ref or changed_gpu:
             self._frame_times.clear()
             self._ref_times.clear()
@@ -1941,10 +1931,14 @@ class Example:
 
         gpu_backend_labels = [
             "Block Thomas",
+            "Split Thomas",
+            "Block Jacobi",
             "Banded Cholesky",
         ]
         gpu_backend_values = [
             DIRECT_SOLVE_WARP_BLOCK_THOMAS,
+            DIRECT_SOLVE_WARP_SPLIT_THOMAS,
+            DIRECT_SOLVE_WARP_BLOCK_JACOBI,
             DIRECT_SOLVE_WARP_BANDED_CHOLESKY,
         ]
         if self.gpu_state.rods:
@@ -1973,6 +1967,10 @@ class Example:
                     if changed_iter_ref or changed_iter_count:
                         for rod in self.gpu_state.rods:
                             rod.set_iterative_refinement(self.use_iterative_refinement, self.iterative_refinement_iters)
+                elif current_gpu_backend == DIRECT_SOLVE_WARP_SPLIT_THOMAS:
+                    ui.text("  Using Warp split 3x3 Thomas (stretch + darboux)")
+                elif current_gpu_backend == DIRECT_SOLVE_WARP_BLOCK_JACOBI:
+                    ui.text("  Using Warp block Jacobi (parallel 6x6 blocks)")
                 elif n_dofs <= TILE:
                     ui.text(f"  Using Warp dense tiled Cholesky (n_dofs={n_dofs} <= TILE={TILE})")
                 else:

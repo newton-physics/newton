@@ -29,20 +29,29 @@ from newton.examples.cosserat_codex.constants import BAND_KD, TILE
 
 from .math import (
     _block_column,
+    _block_column_3x3,
     _block_column_offset,
     _block_mul,
     _block_mul_vec,
-    _block_row,
     _block_set_column,
+    _block_set_column_3x3,
     _block_set_column_offset,
     _block_solve,
     _block_sub,
     _load_block,
+    _load_block_3x3,
     _load_block_offset,
     _load_vec,
+    _load_vec3_block,
     _load_vec_offset,
+    _mat33_cholesky,
+    _mat33_cholesky_solve,
+    _mat33_mul,
+    _mat33_mul_vec3,
+    _mat33_sub,
     _mat33_transpose,
     _store_vec,
+    _store_vec3_block,
     _store_vec_offset,
 )
 
@@ -54,9 +63,9 @@ def _warp_cholesky_solve_tile(
     x: wp.array(dtype=wp.float32),
 ):
     """Solve a system using tiled Cholesky decomposition.
-    
+
     Uses Warp's tile operations for efficient small matrix solves.
-    
+
     Args:
         A: Dense SPD matrix (TILE x TILE).
         b: RHS vector (TILE).
@@ -80,11 +89,11 @@ def _warp_block_thomas_solve(
     x: wp.array(dtype=wp.float32),
 ):
     """Solve a block-tridiagonal system using Thomas algorithm.
-    
+
     Solves (D - L - L^T) x = b where:
     - D is block diagonal (6x6 blocks)
     - L is block lower triangular
-    
+
     Args:
         diag_blocks: Diagonal blocks (36 floats per edge).
         offdiag_blocks: Off-diagonal blocks (36 floats per edge).
@@ -287,15 +296,234 @@ def _warp_block_thomas_solve_batched(
 
 
 @wp.kernel
+def _warp_block_thomas_solve_3x3(
+    diag_blocks: wp.array(dtype=wp.float32),
+    offdiag_blocks: wp.array(dtype=wp.float32),
+    rhs: wp.array(dtype=wp.float32),
+    n_edges: int,
+    c_blocks: wp.array(dtype=wp.float32),
+    d_prime: wp.array(dtype=wp.float32),
+    x: wp.array(dtype=wp.float32),
+):
+    """Solve a 3x3 block-tridiagonal system using Thomas algorithm.
+
+    This is a simplified version for the split Thomas solver that operates
+    on 3x3 blocks instead of 6x6 blocks. It can be used for either the
+    stretch or darboux subsystem independently.
+
+    Solves (D - L - L^T) x = b where:
+    - D is block diagonal (3x3 blocks)
+    - L is block lower triangular (3x3 blocks)
+
+    Args:
+        diag_blocks: Diagonal blocks (9 floats per edge).
+        offdiag_blocks: Off-diagonal blocks (9 floats per edge).
+        rhs: RHS vector (3 per edge).
+        n_edges: Number of edges (blocks).
+        c_blocks: Workspace for intermediate matrices (9 floats per edge).
+        d_prime: Workspace for intermediate RHS (3 floats per edge).
+        x: Output solution vector (3 floats per edge).
+    """
+    tid = wp.tid()
+    if tid != 0:
+        return
+    if n_edges <= 0:
+        return
+
+    # === Forward Elimination ===
+
+    # First block
+    D0 = _load_block_3x3(diag_blocks, 0)
+    b0 = _load_vec3_block(rhs, 0)
+    L0 = _mat33_cholesky(D0)
+
+    # Compute c_0 = D_0^{-1} * L_1^T (if more than one block)
+    if n_edges > 1:
+        # Solve D_0 * C_0 = L_1^T column by column
+        for col in range(3):
+            u = _block_column_3x3(offdiag_blocks, 1, col)
+            v = _mat33_cholesky_solve(L0, u)
+            _block_set_column_3x3(c_blocks, 0, col, v)
+    else:
+        zero = wp.vec3(0.0, 0.0, 0.0)
+        for col in range(3):
+            _block_set_column_3x3(c_blocks, 0, col, zero)
+
+    # d'_0 = D_0^{-1} * b_0
+    d0 = _mat33_cholesky_solve(L0, b0)
+    _store_vec3_block(d_prime, 0, d0)
+
+    # Forward pass for remaining blocks
+    for i in range(1, n_edges):
+        # Load D_i (diagonal block)
+        Di = _load_block_3x3(diag_blocks, i)
+        # Load L_i^T (stored in offdiag_blocks)
+        Lti = _load_block_3x3(offdiag_blocks, i)
+        # Load C_{i-1}
+        Cp = _load_block_3x3(c_blocks, i - 1)
+
+        # Transpose to get L_i
+        Li = _mat33_transpose(Lti)
+
+        # Schur complement: T_i = D_i - L_i * C_{i-1}
+        LC = _mat33_mul(Li, Cp)
+        Ti = _mat33_sub(Di, LC)
+
+        # Cholesky of T_i
+        Li_factor = _mat33_cholesky(Ti)
+
+        # RHS update: b'_i = b_i - L_i * d'_{i-1}
+        bi = _load_vec3_block(rhs, i)
+        dp = _load_vec3_block(d_prime, i - 1)
+        ld = _mat33_mul_vec3(Li, dp)
+        bi = bi - ld
+
+        # c_i = T_i^{-1} * L_{i+1}^T (if not last block)
+        if i < n_edges - 1:
+            for col in range(3):
+                u = _block_column_3x3(offdiag_blocks, i + 1, col)
+                v = _mat33_cholesky_solve(Li_factor, u)
+                _block_set_column_3x3(c_blocks, i, col, v)
+        else:
+            zero = wp.vec3(0.0, 0.0, 0.0)
+            for col in range(3):
+                _block_set_column_3x3(c_blocks, i, col, zero)
+
+        # d'_i = T_i^{-1} * b'_i
+        di = _mat33_cholesky_solve(Li_factor, bi)
+        _store_vec3_block(d_prime, i, di)
+
+    # === Back Substitution ===
+
+    # x_{n-1} = d'_{n-1}
+    xn = _load_vec3_block(d_prime, n_edges - 1)
+    _store_vec3_block(x, n_edges - 1, xn)
+
+    # x_i = d'_i - C_i * x_{i+1}
+    for i in range(n_edges - 2, -1, -1):
+        Ci = _load_block_3x3(c_blocks, i)
+        x_next = _load_vec3_block(x, i + 1)
+        cx = _mat33_mul_vec3(Ci, x_next)
+        di = _load_vec3_block(d_prime, i)
+        xi = di - cx
+        _store_vec3_block(x, i, xi)
+
+
+@wp.kernel
+def _warp_block_thomas_solve_3x3_batched(
+    diag_blocks: wp.array(dtype=wp.float32),
+    offdiag_blocks: wp.array(dtype=wp.float32),
+    rhs: wp.array(dtype=wp.float32),
+    edge_offsets: wp.array(dtype=wp.int32),
+    n_rods: int,
+    c_blocks: wp.array(dtype=wp.float32),
+    d_prime: wp.array(dtype=wp.float32),
+    x: wp.array(dtype=wp.float32),
+):
+    """Solve 3x3 block-tridiagonal systems for multiple rods in parallel.
+
+    This batched version launches with dim=n_rods, where each GPU thread
+    independently solves the Thomas algorithm for one rod.
+
+    Args:
+        diag_blocks: Concatenated diagonal blocks for all rods (9 floats per edge).
+        offdiag_blocks: Concatenated off-diagonal blocks for all rods (9 floats per edge).
+        rhs: Concatenated RHS vectors for all rods (3 per edge).
+        edge_offsets: Cumulative edge offsets [n_rods + 1].
+        n_rods: Number of rods to process.
+        c_blocks: Concatenated workspace for intermediate matrices (9 floats per edge).
+        d_prime: Concatenated workspace for intermediate RHS (3 floats per edge).
+        x: Concatenated output solution vector (3 floats per edge).
+    """
+    rod_id = wp.tid()
+    if rod_id >= n_rods:
+        return
+
+    # Get this rod's edge range
+    edge_start = edge_offsets[rod_id]
+    edge_end = edge_offsets[rod_id + 1]
+    n_edges = edge_end - edge_start
+
+    if n_edges <= 0:
+        return
+
+    # === Forward Elimination ===
+
+    # First block (local index 0, global index edge_start)
+    D0 = _load_block_3x3(diag_blocks, edge_start)
+    b0 = _load_vec3_block(rhs, edge_start)
+    L0 = _mat33_cholesky(D0)
+
+    if n_edges > 1:
+        for col in range(3):
+            u = _block_column_3x3(offdiag_blocks, edge_start + 1, col)
+            v = _mat33_cholesky_solve(L0, u)
+            _block_set_column_3x3(c_blocks, edge_start, col, v)
+    else:
+        zero = wp.vec3(0.0, 0.0, 0.0)
+        for col in range(3):
+            _block_set_column_3x3(c_blocks, edge_start, col, zero)
+
+    d0 = _mat33_cholesky_solve(L0, b0)
+    _store_vec3_block(d_prime, edge_start, d0)
+
+    # Forward pass for remaining blocks
+    for local_i in range(1, n_edges):
+        i = edge_start + local_i
+
+        Di = _load_block_3x3(diag_blocks, i)
+        Lti = _load_block_3x3(offdiag_blocks, i)
+        Cp = _load_block_3x3(c_blocks, i - 1)
+
+        Li = _mat33_transpose(Lti)
+        LC = _mat33_mul(Li, Cp)
+        Ti = _mat33_sub(Di, LC)
+
+        Li_factor = _mat33_cholesky(Ti)
+
+        bi = _load_vec3_block(rhs, i)
+        dp = _load_vec3_block(d_prime, i - 1)
+        ld = _mat33_mul_vec3(Li, dp)
+        bi = bi - ld
+
+        if local_i < n_edges - 1:
+            for col in range(3):
+                u = _block_column_3x3(offdiag_blocks, i + 1, col)
+                v = _mat33_cholesky_solve(Li_factor, u)
+                _block_set_column_3x3(c_blocks, i, col, v)
+        else:
+            zero = wp.vec3(0.0, 0.0, 0.0)
+            for col in range(3):
+                _block_set_column_3x3(c_blocks, i, col, zero)
+
+        di = _mat33_cholesky_solve(Li_factor, bi)
+        _store_vec3_block(d_prime, i, di)
+
+    # === Back Substitution ===
+
+    xn = _load_vec3_block(d_prime, edge_end - 1)
+    _store_vec3_block(x, edge_end - 1, xn)
+
+    for local_i in range(n_edges - 2, -1, -1):
+        i = edge_start + local_i
+        Ci = _load_block_3x3(c_blocks, i)
+        x_next = _load_vec3_block(x, i + 1)
+        cx = _mat33_mul_vec3(Ci, x_next)
+        di = _load_vec3_block(d_prime, i)
+        xi = di - cx
+        _store_vec3_block(x, i, xi)
+
+
+@wp.kernel
 def _warp_spbsv_u11_1rhs(
     n: int,
     ab: wp.array2d(dtype=wp.float32),
     b: wp.array(dtype=wp.float32),
 ):
     """Solve a banded SPD system using Cholesky decomposition.
-    
+
     In-place factorization and solve matching LAPACK spbsv.
-    
+
     Args:
         n: System size.
         ab: Banded matrix in LAPACK format (factored in-place).
@@ -308,7 +536,7 @@ def _warp_spbsv_u11_1rhs(
     # Relative tolerance for regularization
     REL_TOL = float(1.0e-8)
     ABS_FLOOR = float(1.0e-12)
-    
+
     # Track maximum diagonal for relative thresholding
     max_diag = float(0.0)
 
@@ -320,20 +548,20 @@ def _warp_spbsv_u11_1rhs(
             sum_val += u * u
 
         ajj = ab[BAND_KD, j] - sum_val
-        
+
         # Update max diagonal before any modification (use original diagonal for scaling reference)
         orig_diag = ab[BAND_KD, j]
         if orig_diag > max_diag:
             max_diag = orig_diag
-        
+
         # Relative thresholding: tolerance scales with matrix magnitude
         tol = REL_TOL * max_diag
         if tol < ABS_FLOOR:
             tol = ABS_FLOOR
-        
+
         if ajj <= tol:
             ajj = tol
-            
+
         ujj = wp.sqrt(ajj)
         ab[BAND_KD, j] = ujj
 
@@ -368,18 +596,18 @@ def _warp_spbsv_u11_1rhs(
 @wp.kernel
 def _warp_spbsv_u11_1rhs_iter_ref(
     n: int,
-    ab: wp.array2d(dtype=wp.float32),       # Will be overwritten with Cholesky factor U
-    b: wp.array(dtype=wp.float32),           # RHS, overwritten with solution x
+    ab: wp.array2d(dtype=wp.float32),  # Will be overwritten with Cholesky factor U
+    b: wp.array(dtype=wp.float32),  # RHS, overwritten with solution x
     ab_orig: wp.array2d(dtype=wp.float32),  # Original matrix (preserved for residual computation)
-    b_orig: wp.array(dtype=wp.float32),      # Original RHS (preserved for residual computation)
-    r: wp.array(dtype=wp.float32),           # Workspace for residual/correction
-    max_iters: int,                          # Number of refinement iterations (typically 1-3)
+    b_orig: wp.array(dtype=wp.float32),  # Original RHS (preserved for residual computation)
+    r: wp.array(dtype=wp.float32),  # Workspace for residual/correction
+    max_iters: int,  # Number of refinement iterations (typically 1-3)
 ):
     """Banded Cholesky solver with iterative refinement for improved accuracy.
-    
+
     Uses double-precision accumulation for residual computation to recover
     accuracy lost during single-precision factorization.
-    
+
     Args:
         n: System size.
         ab: Banded matrix (factored in-place).
@@ -396,7 +624,7 @@ def _warp_spbsv_u11_1rhs_iter_ref(
     # Relative tolerance for regularization
     REL_TOL = float(1.0e-8)
     ABS_FLOOR = float(1.0e-12)
-    
+
     # Track maximum diagonal for relative thresholding
     max_diag = float(0.0)
 
@@ -411,20 +639,20 @@ def _warp_spbsv_u11_1rhs_iter_ref(
             sum_val += u * u
 
         ajj = ab[BAND_KD, j] - sum_val
-        
+
         # Update max diagonal before any modification
         orig_diag = ab[BAND_KD, j]
         if orig_diag > max_diag:
             max_diag = orig_diag
-        
+
         # Relative thresholding
         tol = REL_TOL * max_diag
         if tol < ABS_FLOOR:
             tol = ABS_FLOOR
-        
+
         if ajj <= tol:
             ajj = tol
-            
+
         ujj = wp.sqrt(ajj)
         ab[BAND_KD, j] = ujj
 
@@ -472,28 +700,28 @@ def _warp_spbsv_u11_1rhs_iter_ref(
         for i in range(n):
             # Start with original RHS (cast to double for accumulation)
             acc = wp.float64(b_orig[i])
-            
+
             # Subtract A_orig[i,:] * x using banded structure
             # For symmetric banded matrix: A(i,j) = A(j,i)
             # Diagonal element
             acc -= wp.float64(ab_orig[BAND_KD, i]) * wp.float64(b[i])
-            
+
             # Off-diagonal elements (both upper and lower by symmetry)
             j_start = 0 if i < BAND_KD else i - BAND_KD
             j_end = i + BAND_KD + 1 if i + BAND_KD < n else n
-            
+
             for j in range(j_start, i):
                 # A(i,j) where j < i: stored at ab_orig[BAND_KD + j - i, i]
                 aij = wp.float64(ab_orig[BAND_KD + j - i, i])
                 acc -= aij * wp.float64(b[j])
-            
+
             for j in range(i + 1, j_end):
                 # A(i,j) where j > i: stored at ab_orig[BAND_KD + i - j, j]
                 aij = wp.float64(ab_orig[BAND_KD + i - j, j])
                 acc -= aij * wp.float64(b[j])
-            
+
             r[i] = wp.float32(acc)
-        
+
         # --------------------------------------------------------------------
         # 4b) Solve for correction: U^T U d = r (reuse factorization)
         # --------------------------------------------------------------------
@@ -520,10 +748,55 @@ def _warp_spbsv_u11_1rhs_iter_ref(
             b[i] = b[i] + r[i]
 
 
+@wp.kernel
+def _warp_solve_blocks_jacobi(
+    diag_blocks: wp.array(dtype=wp.float32),
+    rhs: wp.array(dtype=wp.float32),
+    delta_lambda: wp.array(dtype=wp.float32),
+    n_edges: int,
+):
+    """Solve each 6x6 diagonal block independently (Block Jacobi iteration).
+
+    This is a highly parallel solver that ignores off-diagonal coupling between
+    edges. Each thread solves one 6x6 block system: D_i * Δλ_i = b_i.
+
+    Advantages:
+    - Maximum parallelism (one thread per edge)
+    - Simple implementation
+    - Good for GPUs with many cores
+
+    Disadvantages:
+    - Ignores coupling between adjacent edges
+    - May require more XPBD iterations to converge
+
+    Args:
+        diag_blocks: Diagonal blocks (36 floats per edge).
+        rhs: RHS vector (6 per edge).
+        delta_lambda: Output solution vector (6 per edge).
+        n_edges: Number of edges (blocks).
+    """
+    edge = wp.tid()
+    if edge >= n_edges:
+        return
+
+    # Load diagonal block and RHS for this edge
+    A, B, C, D = _load_block(diag_blocks, edge)
+    b0, b1 = _load_vec(rhs, edge)
+
+    # Solve 6x6 block system using Cholesky
+    x0, x1 = _block_solve(A, B, C, D, b0, b1)
+
+    # Store result
+    _store_vec(delta_lambda, edge, x0, x1)
+
+
 __all__ = [
-    "_warp_cholesky_solve_tile",
     "_warp_block_thomas_solve",
+    "_warp_block_thomas_solve_3x3",
+    "_warp_block_thomas_solve_3x3_batched",
     "_warp_block_thomas_solve_batched",
+    "_warp_cholesky_solve_tile",
+    "_warp_solve_blocks_jacobi",
     "_warp_spbsv_u11_1rhs",
     "_warp_spbsv_u11_1rhs_iter_ref",
 ]

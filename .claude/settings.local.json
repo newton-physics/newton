@@ -10,7 +10,8 @@
       "Bash(tree:*)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:nvidia.github.io)"
+      "WebFetch(domain:nvidia.github.io)",
+      "WebSearch"
     ]
   },
   "sandbox": {

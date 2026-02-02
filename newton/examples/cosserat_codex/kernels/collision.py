@@ -1485,6 +1485,43 @@ def _warp_compute_inv_inertia_world(
     inv_inertia_out[base + 8] = r20 * d0 * r20 + r21 * d1 * r21 + r22 * d2 * r22  # [2,2]
 
 
+# ==============================================================================
+# Split Thomas solver utilities
+# ==============================================================================
+
+
+@wp.kernel
+def _warp_merge_delta_lambda(
+    stretch_dl: wp.array(dtype=wp.float32),
+    darboux_dl: wp.array(dtype=wp.float32),
+    combined_dl: wp.array(dtype=wp.float32),
+    n_edges: int,
+):
+    """Merge split delta_lambda arrays into combined 6-vector format.
+
+    After solving the stretch and darboux systems separately, this kernel
+    combines the two 3-vector solutions per edge into a single 6-vector
+    format for the constraint correction application.
+
+    Args:
+        stretch_dl: Stretch delta_lambda (3 floats per edge).
+        darboux_dl: Darboux delta_lambda (3 floats per edge).
+        combined_dl: Combined delta_lambda output (6 floats per edge).
+        n_edges: Number of edges.
+    """
+    edge = wp.tid()
+    if edge >= n_edges:
+        return
+
+    # Copy stretch (first 3 components)
+    for i in range(3):
+        combined_dl[edge * 6 + i] = stretch_dl[edge * 3 + i]
+
+    # Copy darboux (last 3 components)
+    for i in range(3):
+        combined_dl[edge * 6 + i + 3] = darboux_dl[edge * 3 + i]
+
+
 __all__ = [
     "_warp_apply_accumulated_corrections",
     "_warp_apply_concentric_constraint",
@@ -1509,6 +1546,7 @@ __all__ = [
     "_warp_copy_vec3_to_batched",
     "_warp_copy_with_offset",
     "_warp_copy_with_offset_batched",
+    "_warp_merge_delta_lambda",
     "_warp_set_root_on_track",
     "_warp_set_root_orientation",
     "_warp_update_velocities_from_positions",

@@ -41,9 +41,9 @@ def _warp_prepare_compliance(
     compliance: wp.array(dtype=wp.float32),
 ):
     """Compute compliance values for XPBD constraints.
-    
+
     Computes compliance = 1/(stiffness * dt^2) for each constraint DOF.
-    
+
     Args:
         rest_lengths: Rest length for each edge.
         bend_stiffness: Bend/twist stiffness coefficients per edge.
@@ -85,9 +85,9 @@ def _warp_update_constraints_direct(
     constraint_values: wp.array(dtype=wp.float32),
 ):
     """Compute constraint values for direct solve.
-    
+
     Computes stretch constraint (3 DOF) and Darboux constraint (3 DOF) per edge.
-    
+
     Args:
         positions: Particle positions.
         orientations: Particle orientations.
@@ -130,9 +130,9 @@ def _warp_compute_jacobians_direct(
     jacobian_rot: wp.array(dtype=wp.float32),
 ):
     """Compute Jacobians for direct solve.
-    
+
     Computes position and rotation Jacobians for stretch and Darboux constraints.
-    
+
     Args:
         orientations: Particle orientations.
         rest_lengths: Rest length for each edge.
@@ -236,9 +236,9 @@ def _warp_build_rhs(
     rhs: wp.array(dtype=wp.float32),
 ):
     """Build the RHS vector for the linear system.
-    
+
     Computes: rhs = -constraint - compliance * lambda_sum
-    
+
     Args:
         constraint_values: Current constraint values.
         compliance: Compliance values.
@@ -335,7 +335,9 @@ def _warp_update_constraints_batched(
     # Get global particle indices for this edge
     rod_start = rod_offsets[rod_id]
     # Local edge index within this rod
-    local_edge = global_edge - (rod_offsets[rod_id + 1] - (rod_offsets[rod_id + 1] - rod_offsets[rod_id]) + rod_offsets[rod_id])
+    local_edge = global_edge - (
+        rod_offsets[rod_id + 1] - (rod_offsets[rod_id + 1] - rod_offsets[rod_id]) + rod_offsets[rod_id]
+    )
 
     # Compute which edge within this rod (need edge_offsets for proper computation)
     # For now, we compute based on the difference from rod_start
@@ -546,13 +548,73 @@ def _warp_compute_jacobians_batched(
     jacobian_rot[_warp_jacobian_index(i, 5, 5)] = wp.dot(j1_r2, g1_c2)
 
 
+@wp.kernel
+def _warp_build_rhs_stretch(
+    constraint_values: wp.array(dtype=wp.float32),
+    compliance: wp.array(dtype=wp.float32),
+    lambda_sum: wp.array(dtype=wp.float32),
+    n_edges: int,
+    rhs: wp.array(dtype=wp.float32),
+):
+    """Build the RHS vector for stretch constraints only.
+
+    Computes: rhs[3*edge + i] = -constraint[6*edge + i] - compliance[6*edge + i] * lambda_sum[6*edge + i]
+    for i in 0, 1, 2 (stretch components).
+
+    Args:
+        constraint_values: Current constraint values (6 per edge).
+        compliance: Compliance values (6 per edge).
+        lambda_sum: Accumulated Lagrange multipliers (6 per edge).
+        n_edges: Number of edges.
+        rhs: Output RHS vector (3 floats per edge for stretch only).
+    """
+    edge = wp.tid()
+    if edge >= n_edges:
+        return
+
+    for i in range(3):
+        idx = edge * 6 + i  # Stretch = first 3 components
+        rhs[edge * 3 + i] = -constraint_values[idx] - compliance[idx] * lambda_sum[idx]
+
+
+@wp.kernel
+def _warp_build_rhs_darboux(
+    constraint_values: wp.array(dtype=wp.float32),
+    compliance: wp.array(dtype=wp.float32),
+    lambda_sum: wp.array(dtype=wp.float32),
+    n_edges: int,
+    rhs: wp.array(dtype=wp.float32),
+):
+    """Build the RHS vector for darboux constraints only.
+
+    Computes: rhs[3*edge + i] = -constraint[6*edge + i + 3] - compliance[6*edge + i + 3] * lambda_sum[6*edge + i + 3]
+    for i in 0, 1, 2 (darboux components).
+
+    Args:
+        constraint_values: Current constraint values (6 per edge).
+        compliance: Compliance values (6 per edge).
+        lambda_sum: Accumulated Lagrange multipliers (6 per edge).
+        n_edges: Number of edges.
+        rhs: Output RHS vector (3 floats per edge for darboux only).
+    """
+    edge = wp.tid()
+    if edge >= n_edges:
+        return
+
+    for i in range(3):
+        idx = edge * 6 + i + 3  # Darboux = last 3 components
+        rhs[edge * 3 + i] = -constraint_values[idx] - compliance[idx] * lambda_sum[idx]
+
+
 __all__ = [
+    "_warp_build_rhs",
+    "_warp_build_rhs_darboux",
+    "_warp_build_rhs_stretch",
+    "_warp_compute_jacobians_batched",
+    "_warp_compute_jacobians_direct",
     "_warp_prepare_compliance",
     "_warp_prepare_compliance_batched",
-    "_warp_update_constraints_direct",
     "_warp_update_constraints_batched",
     "_warp_update_constraints_batched_v2",
-    "_warp_compute_jacobians_direct",
-    "_warp_compute_jacobians_batched",
-    "_warp_build_rhs",
+    "_warp_update_constraints_direct",
 ]
