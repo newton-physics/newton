@@ -617,7 +617,7 @@ class SolverMuJoCo(SolverBase):
             s = s.strip().lower()
             return 1 if s in ("true", "1") else 0
 
-        def parse_bool(value: Any, context: dict[str, Any]) -> bool:
+        def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
             if isinstance(value, bool):
                 return value
@@ -722,11 +722,11 @@ class SolverMuJoCo(SolverBase):
                 name="actuator_ctrllimited",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=0,
+                dtype=wp.bool,
+                default=False,
                 namespace="mujoco",
                 mjcf_attribute_name="ctrllimited",
-                mjcf_value_transformer=parse_bool_int,
+                mjcf_value_transformer=parse_bool,
                 usd_attribute_name="mjc:ctrlLimited",
                 usd_value_transformer=parse_bool,
             )
@@ -736,11 +736,11 @@ class SolverMuJoCo(SolverBase):
                 name="actuator_forcelimited",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=0,
+                dtype=wp.bool,
+                default=False,
                 namespace="mujoco",
                 mjcf_attribute_name="forcelimited",
-                mjcf_value_transformer=parse_bool_int,
+                mjcf_value_transformer=parse_bool,
                 usd_attribute_name="mjc:forceLimited",
                 usd_value_transformer=parse_bool,
             )
@@ -832,11 +832,11 @@ class SolverMuJoCo(SolverBase):
                 name="actuator_actlimited",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=0,
+                dtype=wp.bool,
+                default=False,
                 namespace="mujoco",
                 mjcf_attribute_name="actlimited",
-                mjcf_value_transformer=parse_bool_int,
+                mjcf_value_transformer=parse_bool,
                 usd_attribute_name="mjc:actLimited",
                 usd_value_transformer=parse_bool,
             )
@@ -880,6 +880,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="actearly",
                 mjcf_value_transformer=parse_bool_int,
                 usd_attribute_name="mjc:actEarly",
+                usd_value_transformer=parse_bool,
             )
         )
 
