@@ -103,10 +103,10 @@ class Axis(IntEnum):
         Convert a string representation of an axis ("x", "y", or "z") to the corresponding Axis enum member.
 
         Args:
-            axis_str (str): The axis as a string. Should be "x", "y", or "z" (case-insensitive).
+            axis_str: The axis as a string. Should be "x", "y", or "z" (case-insensitive).
 
         Returns:
-            Axis: The corresponding Axis enum member.
+            The corresponding Axis enum member.
 
         Raises:
             ValueError: If the input string does not correspond to a valid axis.
@@ -126,10 +126,10 @@ class Axis(IntEnum):
         Convert a value of various types to an Axis enum member.
 
         Args:
-            value (AxisType): The value to convert. Can be an Axis, str, or int-like.
+            value: The value to convert. Can be an Axis, str, or int-like.
 
         Returns:
-            Axis: The corresponding Axis enum member.
+            The corresponding Axis enum member.
 
         Raises:
             TypeError: If the value cannot be converted to an Axis.
@@ -168,7 +168,7 @@ class Axis(IntEnum):
         Return the axis as a 3D unit vector.
 
         Returns:
-            tuple[float, float, float]: The unit vector corresponding to the axis.
+            The unit vector corresponding to the axis.
         """
         if self == Axis.X:
             return (1.0, 0.0, 0.0)
@@ -182,7 +182,7 @@ class Axis(IntEnum):
         Return the axis as a warp.vec3 unit vector.
 
         Returns:
-            wp.vec3: The unit vector corresponding to the axis.
+            The unit vector corresponding to the axis.
         """
         return wp.vec3(*self.to_vector())
 

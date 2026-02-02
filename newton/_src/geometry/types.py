@@ -19,7 +19,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from ..core.types import Devicelike, Vec2, Vec3, nparray, override
+from ..core.types import Devicelike, Mat33, Vec2, Vec3, nparray, override
 from ..utils.texture import compute_texture_hash, load_texture
 
 
@@ -81,15 +81,21 @@ class SDF:
     SDF volume and its physical properties for use in simulation.
     """
 
-    def __init__(self, volume: wp.Volume | None = None, I=None, mass=1.0, com=None):
+    def __init__(
+        self,
+        volume: wp.Volume | None = None,
+        I: Mat33 | None = None,
+        mass: float = 1.0,
+        com: Vec3 | None = None,
+    ):
         """
         Initialize an SDF object.
 
         Args:
-            volume (wp.Volume | None): The Warp volume object representing the SDF.
-            I (Mat33, optional): 3x3 inertia matrix. Defaults to identity.
-            mass (float, optional): Total mass. Defaults to 1.0.
-            com (Vec3, optional): Center of mass. Defaults to zero vector.
+            volume: The Warp volume object representing the SDF.
+            I: 3x3 inertia matrix. Defaults to identity.
+            mass: Total mass. Defaults to 1.0.
+            com: Center of mass. Defaults to zero vector.
         """
         self.volume = volume
         self.I = I if I is not None else wp.mat33(np.eye(3))
@@ -105,7 +111,7 @@ class SDF:
         Returns the ID of the underlying SDF volume.
 
         Returns:
-            wp.uint64: The unique identifier of the SDF volume.
+            The unique identifier of the SDF volume.
         """
         return self.volume.id
 
@@ -161,17 +167,17 @@ class Mesh:
         if the mesh is closed (two-manifold).
 
         Args:
-            vertices (Sequence[Vec3] | nparray): List or array of mesh vertices, shape (N, 3).
-            indices (Sequence[int] | nparray): Flattened list or array of triangle indices (3 per triangle).
-            normals (Sequence[Vec3] | nparray | None, optional): Optional per-vertex normals, shape (N, 3).
-            uvs (Sequence[Vec2] | nparray | None, optional): Optional per-vertex UVs, shape (N, 2).
-            compute_inertia (bool, optional): If True, compute mass, inertia tensor, and center of mass (default: True).
-            is_solid (bool, optional): If True, mesh is assumed solid for inertia computation (default: True).
-            maxhullvert (int, optional): Max vertices for convex hull approximation (default: 64).
-            color (Vec3 | None, optional): Optional per-mesh base color (values in [0, 1]).
-            roughness (float | None, optional): Optional mesh roughness in [0, 1].
-            metallic (float | None, optional): Optional mesh metallic in [0, 1].
-            texture (str | nparray | None, optional): Optional texture path/URL or image data (H, W, C).
+            vertices: List or array of mesh vertices, shape (N, 3).
+            indices: Flattened list or array of triangle indices (3 per triangle).
+            normals: Optional per-vertex normals, shape (N, 3).
+            uvs: Optional per-vertex UVs, shape (N, 2).
+            compute_inertia: If True, compute mass, inertia tensor, and center of mass (default: True).
+            is_solid: If True, mesh is assumed solid for inertia computation (default: True).
+            maxhullvert: Max vertices for convex hull approximation (default: 64).
+            color: Optional per-mesh base color (values in [0, 1]).
+            roughness: Optional mesh roughness in [0, 1].
+            metallic: Optional mesh metallic in [0, 1].
+            texture: Optional texture path/URL or image data (H, W, C).
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
@@ -207,12 +213,12 @@ class Mesh:
         Create a copy of this mesh, optionally with new vertices or indices.
 
         Args:
-            vertices (Sequence[Vec3] | nparray | None, optional): New vertices to use (default: current vertices).
-            indices (Sequence[int] | nparray | None, optional): New indices to use (default: current indices).
-            recompute_inertia (bool, optional): If True, recompute inertia properties (default: False).
+            vertices: New vertices to use (default: current vertices).
+            indices: New indices to use (default: current indices).
+            recompute_inertia: If True, recompute inertia properties (default: False).
 
         Returns:
-            Mesh: A new Mesh object with the specified properties.
+            A new Mesh object with the specified properties.
         """
         if vertices is None:
             vertices = self.vertices.copy()
@@ -311,11 +317,11 @@ class Mesh:
         Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
         Args:
-            device (Devicelike, optional): Device on which to allocate mesh buffers.
-            requires_grad (bool, optional): If True, mesh points and velocities are allocated with gradient tracking.
+            device: Device on which to allocate mesh buffers.
+            requires_grad: If True, mesh points and velocities are allocated with gradient tracking.
 
         Returns:
-            wp.uint64: The ID of the simulation-ready Warp Mesh.
+            The ID of the simulation-ready Warp Mesh.
         """
         with wp.ScopedDevice(device):
             pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
@@ -330,11 +336,11 @@ class Mesh:
         Compute and return the convex hull of this mesh.
 
         Args:
-            replace (bool, optional): If True, replace this mesh's vertices/indices with the convex hull (in-place).
-                                      If False, return a new Mesh for the convex hull.
+            replace: If True, replace this mesh's vertices/indices with the convex hull (in-place).
+                If False, return a new Mesh for the convex hull.
 
         Returns:
-            Mesh: The convex hull mesh (either new or self, depending on `replace`).
+            The convex hull mesh (either new or self, depending on `replace`).
         """
         from .utils import remesh_convex_hull  # noqa: PLC0415
 
@@ -363,7 +369,7 @@ class Mesh:
         Uses a cached hash if available, otherwise computes and caches the hash.
 
         Returns:
-            int: The hash value for the mesh.
+            The hash value for the mesh.
         """
         if self._cached_hash is None:
             self._cached_hash = hash(
