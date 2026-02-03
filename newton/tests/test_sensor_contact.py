@@ -53,7 +53,7 @@ def create_contacts(device, pairs, naconmax, normals=None, forces=None):
     normals_padded = normals + [[0.0, 0.0, 0.0]] * padding
 
     # Build spatial force vectors: linear force = magnitude * normal, angular = 0
-    forces_spatial = [(f * n[0], f * n[1], f * n[2], 0.0, 0.0, 0.0) for f, n in zip(forces, normals)] + [
+    forces_spatial = [(f * n[0], f * n[1], f * n[2], 0.0, 0.0, 0.0) for f, n in zip(forces, normals, strict=True)] + [
         (0.0,) * 6
     ] * padding
 
