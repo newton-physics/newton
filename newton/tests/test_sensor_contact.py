@@ -188,7 +188,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         sensor = SensorContact(model, sensing_obj_bodies=["a", "b"])
         contacts = newton.Contacts(
-            solver.max_contact_count(),
+            solver.get_max_contact_count(),
             0,
             device=model.device,
             requested_attributes=model.get_requested_contact_attributes(),
@@ -233,7 +233,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         sensor_abc = SensorContact(model, sensing_obj_bodies=["a", "b", "c"])
         sensor_base = SensorContact(model, sensing_obj_shapes=["base"])
         contacts = newton.Contacts(
-            solver.max_contact_count(),
+            solver.get_max_contact_count(),
             0,
             device=model.device,
             requested_attributes=model.get_requested_contact_attributes(),

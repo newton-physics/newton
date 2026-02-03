@@ -33,6 +33,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton import Contacts
 from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
@@ -81,7 +82,8 @@ class Example:
             impratio=1,
         )
 
-        self.contacts = self.model.collide(collision_pipeline=self.solver)
+        # used for storing contact info required by contact sensor
+        self.contacts = Contacts(self.solver.get_max_contact_count(), 0)
 
         self.viewer.set_model(self.model)
 
@@ -95,7 +97,7 @@ class Example:
         }
         self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
 
-        self.state_0 = self.model.state(contacts=self.contacts)
+        self.state_0 = self.model.state()
 
         self.control = self.model.control()
         hinge_joint_idx = self.model.joint_key.index("/env/Hinge")
@@ -122,7 +124,7 @@ class Example:
     def simulate(self):
         self.state_0.clear_forces()
         self.viewer.apply_forces(self.state_0)
-        self.solver.step(self.state_0, self.state_0, self.control, self.contacts, self.sim_dt)
+        self.solver.step(self.state_0, self.state_0, self.control, None, self.sim_dt)
 
     def step(self):
         if self.sim_time >= self.next_reset:
