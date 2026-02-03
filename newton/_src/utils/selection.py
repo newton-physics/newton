@@ -731,6 +731,147 @@ class ArticulationView:
             ),
         }
 
+        # ========================================================================================
+        # Tendon discovery (for MuJoCo fixed tendons)
+        # Tendons are associated with articulations by checking which articulation owns all their joints
+
+        self.tendon_count = 0
+        self.tendon_names = []
+
+        # Check if model has MuJoCo tendon attributes
+        if hasattr(model, "mujoco") and hasattr(model.mujoco, "tendon_joint"):
+            mujoco_attrs = model.mujoco
+            tendon_world_arr = mujoco_attrs.tendon_world.numpy()
+            tendon_joint_adr_arr = mujoco_attrs.tendon_joint_adr.numpy()
+            tendon_joint_num_arr = mujoco_attrs.tendon_joint_num.numpy()
+            tendon_joint_arr = mujoco_attrs.tendon_joint.numpy()
+            total_tendon_count = len(tendon_world_arr)
+
+            if total_tendon_count > 0:
+                # Build a mapping from joint index to articulation index
+                joint_to_articulation = {}
+                for arti_idx in range(len(model_articulation_start) - 1):
+                    joint_begin = int(model_articulation_start[arti_idx])
+                    joint_end = int(model_articulation_start[arti_idx + 1])
+                    for j in range(joint_begin, joint_end):
+                        joint_to_articulation[j] = arti_idx
+
+                # For each articulation, find its tendons
+                # A tendon belongs to an articulation if ALL its joints belong to that articulation
+                tendon_to_articulation = {}
+                for tendon_idx in range(total_tendon_count):
+                    joint_adr = int(tendon_joint_adr_arr[tendon_idx])
+                    joint_num = int(tendon_joint_num_arr[tendon_idx])
+
+                    if joint_num == 0:
+                        continue  # Skip empty tendons
+
+                    articulations_in_tendon = set()
+                    for j in range(joint_adr, joint_adr + joint_num):
+                        joint_id = int(tendon_joint_arr[j])
+                        if joint_id in joint_to_articulation:
+                            articulations_in_tendon.add(joint_to_articulation[joint_id])
+
+                    if len(articulations_in_tendon) > 1:
+                        raise ValueError(
+                            f"Tendon {tendon_idx} spans multiple articulations {articulations_in_tendon}, "
+                            f"which is not supported by ArticulationView"
+                        )
+
+                    if len(articulations_in_tendon) == 1:
+                        tendon_to_articulation[tendon_idx] = articulations_in_tendon.pop()
+
+                # Group tendons by (world, articulation) and filter for selected articulations
+                # Build a set of selected articulation IDs for fast lookup
+                selected_arti_set = set()
+                for world_artis in articulation_ids:
+                    for arti_id in world_artis:
+                        selected_arti_set.add(arti_id)
+
+                # Find tendons belonging to the template articulation (first selected articulation)
+                template_arti_id = articulation_ids[0][0]
+                arti_tendon_ids = []  # Tendon indices belonging to the template articulation
+                for tendon_idx, arti_id in tendon_to_articulation.items():
+                    if arti_id == template_arti_id:
+                        arti_tendon_ids.append(tendon_idx)
+
+                arti_tendon_ids = sorted(arti_tendon_ids)
+                arti_tendon_count = len(arti_tendon_ids)
+
+                if arti_tendon_count > 0:
+                    # Compute tendon layout similar to joints
+                    # Group tendons by world and articulation to compute strides
+                    tendon_starts = list_of_lists(world_count)
+                    tendon_counts = list_of_lists(world_count)
+
+                    for world_id in range(world_count):
+                        for arti_id in articulation_ids[world_id]:
+                            arti_tendons = [t for t, a in tendon_to_articulation.items() if a == arti_id]
+                            arti_tendons = sorted(arti_tendons)
+                            if len(arti_tendons) > 0:
+                                tendon_starts[world_id].append(min(arti_tendons))
+                            else:
+                                tendon_starts[world_id].append(-1)
+                            tendon_counts[world_id].append(len(arti_tendons))
+
+                    # Validate uniform tendon counts
+                    if not all_equal(tendon_counts):
+                        raise ValueError("Articulations have different tendon counts, which is not supported")
+
+                    tendon_offset = arti_tendon_ids[0] if arti_tendon_ids else 0
+
+                    # Compute outer stride (between worlds)
+                    if world_count > 1:
+                        outer_tendon_strides = []
+                        for world_id in range(1, world_count):
+                            if tendon_starts[world_id][0] >= 0 and tendon_starts[world_id - 1][0] >= 0:
+                                outer_tendon_strides.append(tendon_starts[world_id][0] - tendon_starts[world_id - 1][0])
+                        if outer_tendon_strides and not all_equal(outer_tendon_strides):
+                            raise ValueError("Non-uniform tendon strides between worlds are not supported")
+                        outer_tendon_stride = outer_tendon_strides[0] if outer_tendon_strides else arti_tendon_count
+                    else:
+                        outer_tendon_stride = arti_tendon_count
+
+                    # Compute inner stride (within worlds)
+                    if count_per_world > 1:
+                        inner_tendon_strides = list_of_lists(world_count)
+                        for world_id in range(world_count):
+                            for i in range(1, count_per_world):
+                                if tendon_starts[world_id][i] >= 0 and tendon_starts[world_id][i - 1] >= 0:
+                                    inner_tendon_strides[world_id].append(
+                                        tendon_starts[world_id][i] - tendon_starts[world_id][i - 1]
+                                    )
+                        # Flatten and check uniformity
+                        flat_inner = [s for lst in inner_tendon_strides for s in lst]
+                        if flat_inner and not all_equal(flat_inner):
+                            raise ValueError("Non-uniform tendon strides within worlds are not supported")
+                        inner_tendon_stride = flat_inner[0] if flat_inner else arti_tendon_count
+                    else:
+                        inner_tendon_stride = arti_tendon_count
+
+                    # Selected tendon indices relative to the template articulation
+                    selected_tendon_indices = list(range(arti_tendon_count))
+
+                    # Store with the full namespaced frequency key (mujoco:tendon)
+                    self.frequency_layouts["mujoco:tendon"] = FrequencyLayout(
+                        tendon_offset,
+                        outer_tendon_stride,
+                        inner_tendon_stride,
+                        arti_tendon_count,
+                        selected_tendon_indices,
+                        self.device,
+                    )
+
+                    self.tendon_count = arti_tendon_count
+
+                    # Populate tendon_names from model.mujoco.tendon_key if available
+                    if hasattr(mujoco_attrs, "tendon_key"):
+                        for tendon_idx in arti_tendon_ids:
+                            if tendon_idx < len(mujoco_attrs.tendon_key):
+                                self.tendon_names.append(mujoco_attrs.tendon_key[tendon_idx])
+                            else:
+                                self.tendon_names.append(f"tendon_{tendon_idx}")
+
         self.joints_contiguous = self.frequency_layouts[AttributeFrequency.JOINT].is_contiguous
         self.joint_dofs_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_DOF].is_contiguous
         self.joint_coords_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_COORD].is_contiguous
@@ -788,27 +929,47 @@ class ArticulationView:
 
     @functools.lru_cache(maxsize=None)  # noqa
     def _get_attribute_array(self, name: str, source: Model | State | Control, _slice: Slice | int | None = None):
-        # get the attribute
-        attrib = getattr(source, name)
+        # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
+        # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
+        # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
+        if "." in name:
+            parts = name.split(".")
+            attrib = source
+            for part in parts:
+                attrib = getattr(attrib, part)
+            # Convert dot notation to colon notation for frequency lookup
+            frequency_name = ":".join(parts)
+        else:
+            attrib = getattr(source, name)
+            frequency_name = name
         assert isinstance(attrib, wp.array)
 
         # get frequency info
-        frequency = self.model.get_attribute_frequency(name)
+        frequency = self.model.get_attribute_frequency(frequency_name)
 
-        # Custom frequencies (custom entity types) are not supported in ArticulationView
-        # They represent solver-specific data that is not per-articulation
+        # Handle custom frequencies (string frequencies)
         if isinstance(frequency, str):
-            raise AttributeError(
-                f"Attribute '{name}' has custom frequency '{frequency}' which is not "
-                f"supported by ArticulationView. Custom frequencies are for custom entity types "
-                f"that are not part of articulations."
-            )
-
-        layout = self.frequency_layouts.get(frequency)
-        if layout is None:
-            raise AttributeError(
-                f"Unable to determine the layout of frequency '{frequency.name}' for attribute '{name}'"
-            )
+            # Check if this is a supported custom frequency
+            # Tendon frequency can be "tendon" or "mujoco:tendon" (with namespace prefix)
+            if frequency == "tendon" or frequency.endswith(":tendon"):
+                layout = self.frequency_layouts.get(frequency)
+                if layout is None:
+                    raise AttributeError(
+                        f"Attribute '{name}' has frequency '{frequency}' but no tendons were found "
+                        f"in the selected articulations"
+                    )
+            else:
+                raise AttributeError(
+                    f"Attribute '{name}' has custom frequency '{frequency}' which is not "
+                    f"supported by ArticulationView. Custom frequencies are for custom entity types "
+                    f"that are not part of articulations."
+                )
+        else:
+            layout = self.frequency_layouts.get(frequency)
+            if layout is None:
+                raise AttributeError(
+                    f"Unable to determine the layout of frequency '{frequency.name}' for attribute '{name}'"
+                )
 
         value_stride = attrib.strides[0]
         is_indexed = layout.indices is not None
@@ -1136,6 +1297,161 @@ class ArticulationView:
             mask (array, optional): Mask of articulations in this ArticulationView (all by default).
         """
         self._set_attribute_values("joint_f", target, values, mask=mask)
+
+    # ========================================================================================
+    # Fixed Tendon convenience methods (for MuJoCo fixed tendons)
+
+    def get_fixed_tendon_stiffness(self, source: "Model"):
+        """
+        Get the stiffness of fixed tendons for the selected articulations.
+
+        Args:
+            source (Model): The model containing tendon data.
+
+        Returns:
+            array: The tendon stiffness values. Shape is (world_count, count_per_world, tendon_count).
+        """
+        return self._get_attribute_values("mujoco.tendon_stiffness", source)
+
+    def set_fixed_tendon_stiffness(self, target: "Model", values, mask=None):
+        """
+        Set the stiffness of fixed tendons for the selected articulations.
+
+        Args:
+            target (Model): The model to update.
+            values (array): The stiffness values to set.
+            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+        """
+        self._set_attribute_values("mujoco.tendon_stiffness", target, values, mask=mask)
+
+    def get_fixed_tendon_damping(self, source: "Model"):
+        """
+        Get the damping of fixed tendons for the selected articulations.
+
+        Args:
+            source (Model): The model containing tendon data.
+
+        Returns:
+            array: The tendon damping values. Shape is (world_count, count_per_world, tendon_count).
+        """
+        return self._get_attribute_values("mujoco.tendon_damping", source)
+
+    def set_fixed_tendon_damping(self, target: "Model", values, mask=None):
+        """
+        Set the damping of fixed tendons for the selected articulations.
+
+        Args:
+            target (Model): The model to update.
+            values (array): The damping values to set.
+            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+        """
+        self._set_attribute_values("mujoco.tendon_damping", target, values, mask=mask)
+
+    def get_fixed_tendon_limit_stiffness(self, source: "Model"):
+        """
+        Get the limit stiffness of fixed tendons for the selected articulations.
+
+        Args:
+            source (Model): The model containing tendon data.
+
+        Returns:
+            array: The tendon limit stiffness values. Shape is (world_count, count_per_world, tendon_count).
+
+        Note:
+            Not yet implemented. MuJoCo uses constraint-based limits (solref_limit/solimp_limit)
+            rather than a separate stiffness parameter.
+        """
+        raise NotImplementedError("fixed_tendon_limit_stiffness is not yet implemented for MuJoCo solver")
+
+    def set_fixed_tendon_limit_stiffness(self, target: "Model", values, mask=None):
+        """
+        Set the limit stiffness of fixed tendons for the selected articulations.
+
+        Args:
+            target (Model): The model to update.
+            values (array): The limit stiffness values to set.
+            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+
+        Note:
+            Not yet implemented. MuJoCo uses constraint-based limits (solref_limit/solimp_limit)
+            rather than a separate stiffness parameter.
+        """
+        raise NotImplementedError("fixed_tendon_limit_stiffness is not yet implemented for MuJoCo solver")
+
+    def get_fixed_tendon_rest_length(self, source: "Model"):
+        """
+        Get the rest length (springlength) of fixed tendons for the selected articulations.
+
+        Args:
+            source (Model): The model containing tendon data.
+
+        Returns:
+            array: The tendon rest length values (vec2). Shape is (world_count, count_per_world, tendon_count).
+        """
+        return self._get_attribute_values("mujoco.tendon_springlength", source)
+
+    def set_fixed_tendon_rest_length(self, target: "Model", values, mask=None):
+        """
+        Set the rest length (springlength) of fixed tendons for the selected articulations.
+
+        Args:
+            target (Model): The model to update.
+            values (array): The rest length values to set (vec2).
+            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+        """
+        self._set_attribute_values("mujoco.tendon_springlength", target, values, mask=mask)
+
+    def get_fixed_tendon_offset(self, source: "Model"):
+        """
+        Get the offset of fixed tendons for the selected articulations.
+
+        Args:
+            source (Model): The model containing tendon data.
+
+        Returns:
+            array: The tendon offset values. Shape is (world_count, count_per_world, tendon_count).
+
+        Note:
+            Not yet implemented. Could potentially be implemented by adjusting MuJoCo's springlength.
+        """
+        raise NotImplementedError("fixed_tendon_offset is not yet implemented for MuJoCo solver")
+
+    def set_fixed_tendon_offset(self, target: "Model", values, mask=None):
+        """
+        Set the offset of fixed tendons for the selected articulations.
+
+        Args:
+            target (Model): The model to update.
+            values (array): The offset values to set.
+            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+
+        Note:
+            Not yet implemented. Could potentially be implemented by adjusting MuJoCo's springlength.
+        """
+        raise NotImplementedError("fixed_tendon_offset is not yet implemented for MuJoCo solver")
+
+    def get_fixed_tendon_pos_limits(self, source: "Model"):
+        """
+        Get the position limits (range) of fixed tendons for the selected articulations.
+
+        Args:
+            source (Model): The model containing tendon data.
+
+        Returns:
+            array: The tendon position limits (vec2). Shape is (world_count, count_per_world, tendon_count).
+        """
+        return self._get_attribute_values("mujoco.tendon_range", source)
+
+    def set_fixed_tendon_pos_limits(self, target: "Model", values, mask=None):
+        """
+        Set the position limits (range) of fixed tendons for the selected articulations.
+
+        Args:
+            target (Model): The model to update.
+            values (array): The position limits to set (vec2).
+            mask (array, optional): Mask of articulations in this ArticulationView (all by default).
+        """
+        self._set_attribute_values("mujoco.tendon_range", target, values, mask=mask)
 
     # ========================================================================================
     # Utilities

@@ -1701,9 +1701,9 @@ def parse_mjcf(
 
             builder.add_custom_values(**tendon_values)
 
-            # Track tendon name for actuator resolution
-            if tendon_name:
-                tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
+            # Track tendon name for actuator resolution and index-to-name mapping
+            sanitized_name = sanitize_name(tendon_name) if tendon_name else f"tendon_{tendon_idx}"
+            tendon_name_to_idx[sanitized_name] = tendon_idx
 
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
@@ -1917,6 +1917,16 @@ def parse_mjcf(
         tendon_counter = 0
         for tendon_section in tendon_sections:
             tendon_counter = parse_tendons(tendon_section, tendon_counter)
+
+        # Store tendon names on builder.mujoco.tendon_key for transfer to model during finalize()
+        # (Custom attributes don't support string types, so we store as a plain list)
+        if tendon_name_to_idx:
+            tendon_key = [name for name, _ in sorted(tendon_name_to_idx.items(), key=lambda x: x[1])]
+            if not hasattr(builder, "mujoco"):
+                builder.mujoco = Model.AttributeNamespace("mujoco")
+            if not hasattr(builder.mujoco, "tendon_key"):
+                builder.mujoco.tendon_key = []
+            builder.mujoco.tendon_key.extend(tendon_key)
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:

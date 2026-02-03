@@ -21,6 +21,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton.selection import ArticulationView
+from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -189,6 +190,170 @@ class TestSelection(unittest.TestCase):
         model_mask = view.get_model_articulation_mask(mask=m)
         expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
         assert_np_equal(model_mask.numpy(), expected)
+
+
+class TestSelectionFixedTendons(unittest.TestCase):
+    """Tests for fixed tendon support in ArticulationView."""
+
+    TENDON_MJCF = """<?xml version="1.0" ?>
+<mujoco model="two_prismatic_links">
+  <compiler angle="degree"/>
+  <option timestep="0.002" gravity="0 0 0"/>
+
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1" rgba="0.5 0.5 0.5 1"/>
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="1 0 0 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025" rgba="0 0 1 1" euler="0 90 0"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <fixed name="coupling_tendon" stiffness="2.0" damping="1.0" springlength="0.0">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>
+</mujoco>
+"""
+
+    def test_tendon_count(self):
+        """Test that tendon count is correctly detected."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(self.TENDON_MJCF)
+        model = builder.finalize()
+
+        view = ArticulationView(model, "two_prismatic_links")
+        self.assertEqual(view.tendon_count, 1)
+
+    def test_tendon_selection_shapes(self):
+        """Test that tendon selection API returns correct shapes."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(self.TENDON_MJCF)
+        model = builder.finalize()
+
+        view = ArticulationView(model, "two_prismatic_links")
+        T = 1  # num tendons
+
+        # Test generic attribute access
+        stiffness = view.get_attribute("mujoco.tendon_stiffness", model)
+        self.assertEqual(stiffness.shape, (1, 1, T))
+
+        damping = view.get_attribute("mujoco.tendon_damping", model)
+        self.assertEqual(damping.shape, (1, 1, T))
+
+        tendon_range = view.get_attribute("mujoco.tendon_range", model)
+        self.assertEqual(tendon_range.shape, (1, 1, T))  # vec2 trailing dim
+
+    def test_tendon_convenience_methods(self):
+        """Test that tendon convenience methods work correctly."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(self.TENDON_MJCF)
+        model = builder.finalize()
+
+        view = ArticulationView(model, "two_prismatic_links")
+        T = 1
+
+        # Test getters
+        stiffness = view.get_fixed_tendon_stiffness(model)
+        self.assertEqual(stiffness.shape, (1, 1, T))
+        assert_np_equal(stiffness.numpy(), np.array([[[2.0]]]))
+
+        damping = view.get_fixed_tendon_damping(model)
+        self.assertEqual(damping.shape, (1, 1, T))
+        assert_np_equal(damping.numpy(), np.array([[[1.0]]]))
+
+    def test_tendon_multi_world(self):
+        """Test that tendon selection works with multiple worlds."""
+        individual_builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(self.TENDON_MJCF)
+
+        W = 4  # num worlds
+        scene = newton.ModelBuilder(gravity=0.0)
+        scene.replicate(individual_builder, num_worlds=W)
+        model = scene.finalize()
+
+        view = ArticulationView(model, "two_prismatic_links")
+        T = 1
+
+        self.assertEqual(view.world_count, W)
+        self.assertEqual(view.count_per_world, 1)
+        self.assertEqual(view.tendon_count, T)
+
+        stiffness = view.get_fixed_tendon_stiffness(model)
+        self.assertEqual(stiffness.shape, (W, 1, T))
+
+        # Verify values are correct across all worlds
+        expected = np.full((W, 1, T), 2.0)
+        assert_np_equal(stiffness.numpy(), expected)
+
+    def test_tendon_set_values(self):
+        """Test that setting tendon values works correctly."""
+        individual_builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(self.TENDON_MJCF)
+
+        W = 2  # num worlds
+        scene = newton.ModelBuilder(gravity=0.0)
+        scene.replicate(individual_builder, num_worlds=W)
+        model = scene.finalize()
+
+        view = ArticulationView(model, "two_prismatic_links")
+
+        # Set new stiffness values
+        new_stiffness = np.array([[[5.0]], [[10.0]]])
+        view.set_fixed_tendon_stiffness(model, new_stiffness)
+
+        # Verify values were set
+        stiffness = view.get_fixed_tendon_stiffness(model)
+        assert_np_equal(stiffness.numpy(), new_stiffness)
+
+    def test_tendon_names(self):
+        """Test that tendon names are correctly populated."""
+        builder = newton.ModelBuilder(gravity=0.0)
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(self.TENDON_MJCF)
+        model = builder.finalize()
+
+        view = ArticulationView(model, "two_prismatic_links")
+
+        # Check tendon_names is populated
+        self.assertEqual(len(view.tendon_names), 1)
+        self.assertEqual(view.tendon_names[0], "coupling_tendon")
+
+        # Check that we can look up index from name
+        idx = view.tendon_names.index("coupling_tendon")
+        self.assertEqual(idx, 0)
+
+    def test_no_tendons_in_articulation(self):
+        """Test that articulations without tendons have tendon_count=0."""
+        # Use nv_ant.xml which has no tendons
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            newton.examples.get_asset("nv_ant.xml"),
+            ignore_names=["floor", "ground"],
+        )
+        model = builder.finalize()
+
+        view = ArticulationView(model, "ant")
+        self.assertEqual(view.tendon_count, 0)
+        self.assertEqual(len(view.tendon_names), 0)
+
+        # Attempting to access tendon attributes should raise an error
+        with self.assertRaises(AttributeError):
+            view.get_fixed_tendon_stiffness(model)
 
 
 if __name__ == "__main__":

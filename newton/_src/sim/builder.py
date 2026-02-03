@@ -7272,6 +7272,10 @@ class ModelBuilder:
                 wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 m.add_attribute(custom_attr.name, wp_arr, freq_key, custom_attr.assignment, custom_attr.namespace)
 
+            # Copy MuJoCo tendon names to model if present (set during MJCF import)
+            if hasattr(self, "mujoco") and hasattr(self.mujoco, "tendon_key") and hasattr(m, "mujoco"):
+                m.mujoco.tendon_key = self.mujoco.tendon_key
+
             return m
 
     def _test_group_pair(self, group_a: int, group_b: int) -> bool:
