@@ -83,7 +83,11 @@ class Example:
         )
 
         # used for storing contact info required by contact sensor
-        self.contacts = Contacts(self.solver.get_max_contact_count(), 0)
+        self.contacts = Contacts(
+            self.solver.get_max_contact_count(),
+            0,
+            requested_attributes=self.model.get_requested_contact_attributes(),
+        )
 
         self.viewer.set_model(self.model)
 
