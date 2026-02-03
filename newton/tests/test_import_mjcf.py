@@ -2115,6 +2115,7 @@ class TestImportMjcf(unittest.TestCase):
     def test_joint_stiffness_damping(self):
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="stiffness_damping_comprehensive_test">
+    <compiler angle="radian"/>
     <worldbody>
         <body name="body1" pos="0 0 1">
             <joint name="joint1" type="hinge" axis="0 0 1" stiffness="0.05" damping="0.5" range="-45 45"/>
@@ -2760,14 +2761,15 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(model.mujoco.impratio.numpy()[0], 1.0, places=4)
 
     def test_ref_attribute_parsing(self):
-        """Test that 'ref' attribute is parsed"""
+        """Test that 'ref' attribute is parsed."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
+    <compiler angle="radian"/>
     <worldbody>
         <body name="base">
             <geom type="box" size="0.1 0.1 0.1"/>
             <body name="child1" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 1 0" ref="90"/>
+                <joint name="hinge" type="hinge" axis="0 1 0" ref="1.5708"/>
                 <geom type="box" size="0.1 0.1 0.1"/>
                 <body name="child2" pos="0 0 1">
                     <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
@@ -2787,7 +2789,7 @@ class TestImportMjcf(unittest.TestCase):
         dof_ref = model.mujoco.dof_ref.numpy()
 
         hinge_idx = model.joint_key.index("hinge")
-        self.assertAlmostEqual(dof_ref[qd_start[hinge_idx]], 90.0, places=4)
+        self.assertAlmostEqual(dof_ref[qd_start[hinge_idx]], 1.5708, places=4)
 
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(dof_ref[qd_start[slide_idx]], 0.5, places=4)
@@ -2796,11 +2798,12 @@ class TestImportMjcf(unittest.TestCase):
         """Test that 'springref' attribute is parsed for hinge and slide joints."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test">
+    <compiler angle="radian"/>
     <worldbody>
         <body name="base">
             <geom type="box" size="0.1 0.1 0.1"/>
             <body name="child1" pos="0 0 1">
-                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="100" springref="30"/>
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="100" springref="0.5236"/>
                 <geom type="box" size="0.1 0.1 0.1"/>
                 <body name="child2" pos="0 0 1">
                     <joint name="slide" type="slide" axis="0 0 1" stiffness="50" springref="0.25"/>
@@ -2818,7 +2821,7 @@ class TestImportMjcf(unittest.TestCase):
         qd_start = model.joint_qd_start.numpy()
 
         hinge_idx = model.joint_key.index("hinge")
-        self.assertAlmostEqual(springref[qd_start[hinge_idx]], 30.0, places=4)
+        self.assertAlmostEqual(springref[qd_start[hinge_idx]], 0.5236, places=4)
         slide_idx = model.joint_key.index("slide")
         self.assertAlmostEqual(springref[qd_start[slide_idx]], 0.25, places=4)
 
@@ -2877,6 +2880,70 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[0], 0.5, places=5)
         self.assertAlmostEqual(geom_xform[1], 5.0, places=5)
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
+
+    def test_actuator_mode_inference_from_actuator_type(self):
+        """Test that ActuatorMode is correctly inferred from MJCF actuator types."""
+        from newton._src.sim.joints import ActuatorMode  # noqa: PLC0415
+
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_actuator_modes">
+    <worldbody>
+        <body name="base" pos="0 0 1">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="link_motor" pos="0.2 0 0">
+                <joint name="joint_motor" axis="0 0 1" type="hinge"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="link_position" pos="0.2 0 0">
+                    <joint name="joint_position" axis="0 0 1" type="hinge"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="link_velocity" pos="0.2 0 0">
+                        <joint name="joint_velocity" axis="0 0 1" type="hinge"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                        <body name="link_pos_vel" pos="0.2 0 0">
+                            <joint name="joint_pos_vel" axis="0 0 1" type="hinge"/>
+                            <geom type="box" size="0.1 0.1 0.1"/>
+                            <body name="link_passive" pos="0.2 0 0">
+                                <joint name="joint_passive" axis="0 0 1" type="hinge"/>
+                                <geom type="box" size="0.1 0.1 0.1"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+    <actuator>
+        <motor name="motor1" joint="joint_motor"/>
+        <position name="pos1" joint="joint_position" kp="100"/>
+        <velocity name="vel1" joint="joint_velocity" kv="10"/>
+        <position name="pos2" joint="joint_pos_vel" kp="100"/>
+        <velocity name="vel2" joint="joint_pos_vel" kv="10"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, ctrl_direct=False)
+
+        def get_qd_start(b, joint_name):
+            joint_idx = b.joint_key.index(joint_name)
+            return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
+
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_position")], int(ActuatorMode.POSITION))
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_velocity")], int(ActuatorMode.VELOCITY))
+        self.assertEqual(
+            builder.joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.POSITION_VELOCITY)
+        )
+        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_passive")], int(ActuatorMode.NONE))
+
+        builder2 = newton.ModelBuilder()
+        builder2.add_mjcf(mjcf_content, ctrl_direct=True)
+
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_motor")], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_position")], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_velocity")], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_pos_vel")], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, "joint_passive")], int(ActuatorMode.NONE))
 
     def test_frame_transform_composition_geoms(self):
         """Test that frame transforms are correctly composed with child geom positions.
@@ -4134,6 +4201,98 @@ class TestMjcfIncludeCallback(unittest.TestCase):
         self.assertEqual(len(received_base_dirs), 1)
         self.assertIsNone(received_base_dirs[0])
 
+    def test_dof_angle_conversion_radians(self):
+        """Test DOF attributes pass through unchanged when compiler.angle='radian'."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_radians">
+    <compiler angle="radian"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="10" damping="5" springref="0.785" ref="0.524"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        hinge_idx = model.joint_key.index("hinge")
+        dof_idx = qd_start[hinge_idx]
+
+        # No conversion when angle="radian" - values pass through unchanged
+        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.785, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.524, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10.0, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5.0, places=4)
+
+    def test_dof_angle_conversion_slide_joint(self):
+        """Test DOF attributes for slide joints are not converted regardless of angle setting."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_slide">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="slide" type="slide" axis="0 0 1" stiffness="100" damping="10" springref="0.5" ref="0.1"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        slide_idx = model.joint_key.index("slide")
+        dof_idx = qd_start[slide_idx]
+
+        # Slide joints: values pass through unchanged (linear, not angular)
+        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], 0.5, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], 0.1, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 100.0, places=4)
+        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 10.0, places=4)
+
+    def test_dof_angle_conversion_degrees(self):
+        """Test DOF attributes are converted from degrees when compiler.angle='degree' (default)."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_degrees">
+    <compiler angle="degree"/>
+    <worldbody>
+        <body name="base">
+            <geom type="box" size="0.1 0.1 0.1"/>
+            <body name="child1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 0 1" stiffness="10" damping="5" springref="45" ref="30"/>
+                <geom type="box" size="0.1 0.1 0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        qd_start = model.joint_qd_start.numpy()
+        hinge_idx = model.joint_key.index("hinge")
+        dof_idx = qd_start[hinge_idx]
+
+        # springref/ref: converted from deg to rad (45 deg -> 45 * pi/180 rad)
+        self.assertAlmostEqual(model.mujoco.dof_springref.numpy()[dof_idx], np.deg2rad(45), places=4)
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[dof_idx], np.deg2rad(30), places=4)
+
+        # stiffness/damping: converted from Nm/deg to Nm/rad (10 Nm/deg -> 10 * 180/pi Nm/rad)
+        self.assertAlmostEqual(model.mujoco.dof_passive_stiffness.numpy()[dof_idx], 10 * (180 / np.pi), places=2)
+        self.assertAlmostEqual(model.mujoco.dof_passive_damping.numpy()[dof_idx], 5 * (180 / np.pi), places=2)
+
 
 class TestMjcfMultipleWorldbody(unittest.TestCase):
     """Test that multiple worldbody elements are handled correctly.
@@ -4239,6 +4398,129 @@ class TestMjcfMultipleWorldbody(unittest.TestCase):
         self.assertIn("included_geom", builder.shape_key)
         self.assertIn("main_floor", builder.shape_key)
         self.assertIn("main_geom", builder.shape_key)
+
+
+class TestMjcfActuatorClassDefaults(unittest.TestCase):
+    """Test that actuator elements properly inherit from default classes."""
+
+    def test_general_actuator_inherits_biasprm_from_class(self):
+        """Test that general actuators inherit biasprm from default class."""
+        # This MJCF mirrors the pattern used in UR5e and other menagerie robots
+        mjcf_content = """
+        <mujoco>
+            <default>
+                <default class="robot">
+                    <general gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400"/>
+                    <default class="small">
+                        <general gainprm="500" biasprm="0 -500 -100"/>
+                    </default>
+                </default>
+            </default>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="link1" pos="0.2 0 0">
+                        <joint name="joint2" type="hinge" axis="0 0 1"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                        <body name="link2" pos="0.2 0 0">
+                            <joint name="joint3" type="hinge" axis="0 0 1"/>
+                            <geom type="box" size="0.1 0.1 0.1"/>
+                        </body>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <general class="robot" name="act1" joint="joint1"/>
+                <general class="robot" name="act2" joint="joint2"/>
+                <general class="small" name="act3" joint="joint3"/>
+            </actuator>
+        </mujoco>
+        """
+        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Get biasprm values from the finalized model
+        biasprm_values = model.mujoco.actuator_biasprm.numpy()
+
+        # Should have 3 actuators
+        self.assertEqual(biasprm_values.shape[0], 3)
+
+        # act1 and act2 should inherit from "robot" class: biasprm="0 -2000 -400"
+        np.testing.assert_allclose(biasprm_values[0, :3], [0.0, -2000.0, -400.0], atol=1.0)
+        np.testing.assert_allclose(biasprm_values[1, :3], [0.0, -2000.0, -400.0], atol=1.0)
+
+        # act3 should inherit from "small" class (child of "robot"): biasprm="0 -500 -100"
+        np.testing.assert_allclose(biasprm_values[2, :3], [0.0, -500.0, -100.0], atol=1.0)
+
+    def test_general_actuator_inherits_gainprm_from_class(self):
+        """Test that general actuators inherit gainprm from default class."""
+        mjcf_content = """
+        <mujoco>
+            <default>
+                <default class="strong">
+                    <general gainprm="5000"/>
+                </default>
+            </default>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general class="strong" name="act1" joint="joint1"/>
+            </actuator>
+        </mujoco>
+        """
+        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        gainprm_values = model.mujoco.actuator_gainprm.numpy()
+
+        self.assertEqual(gainprm_values.shape[0], 1)
+        self.assertAlmostEqual(gainprm_values[0, 0], 5000.0, places=1)
+
+    def test_position_actuator_inherits_kp_from_class(self):
+        """Test that position actuators inherit kp from default class."""
+        mjcf_content = """
+        <mujoco>
+            <default>
+                <default class="stiff">
+                    <position kp="1000"/>
+                </default>
+            </default>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <position class="stiff" name="pos1" joint="joint1"/>
+            </actuator>
+        </mujoco>
+        """
+        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf_content, ctrl_direct=True)
+        model = builder.finalize()
+
+        # For position actuators with ctrl_direct, gainprm[0] = kp
+        gainprm_values = model.mujoco.actuator_gainprm.numpy()
+
+        self.assertEqual(gainprm_values.shape[0], 1)
+        self.assertAlmostEqual(gainprm_values[0, 0], 1000.0, places=1)
 
 
 if __name__ == "__main__":

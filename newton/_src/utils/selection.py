@@ -21,7 +21,8 @@ import warp as wp
 from warp.types import is_array
 
 from ..sim import Control, JointType, Model, State, eval_fk
-from ..sim.model import ModelAttributeFrequency
+
+AttributeFrequency = Model.AttributeFrequency
 
 
 @wp.kernel
@@ -692,9 +693,8 @@ class ArticulationView:
         # |ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|ooXXXoXXXoXXXooo|
         # |  ^   ^   ^     |  ^   ^   ^     |  ^   ^   ^     |  ^   ^   ^     |
         #
-
         self.frequency_layouts = {
-            ModelAttributeFrequency.JOINT: FrequencyLayout(
+            AttributeFrequency.JOINT: FrequencyLayout(
                 joint_offset,
                 outer_joint_stride,
                 inner_joint_stride,
@@ -702,7 +702,7 @@ class ArticulationView:
                 selected_joint_indices,
                 self.device,
             ),
-            ModelAttributeFrequency.JOINT_DOF: FrequencyLayout(
+            AttributeFrequency.JOINT_DOF: FrequencyLayout(
                 joint_dof_offset,
                 outer_joint_dof_stride,
                 inner_joint_dof_stride,
@@ -710,7 +710,7 @@ class ArticulationView:
                 selected_joint_dof_indices,
                 self.device,
             ),
-            ModelAttributeFrequency.JOINT_COORD: FrequencyLayout(
+            AttributeFrequency.JOINT_COORD: FrequencyLayout(
                 joint_coord_offset,
                 outer_joint_coord_stride,
                 inner_joint_coord_stride,
@@ -718,10 +718,10 @@ class ArticulationView:
                 selected_joint_coord_indices,
                 self.device,
             ),
-            ModelAttributeFrequency.BODY: FrequencyLayout(
+            AttributeFrequency.BODY: FrequencyLayout(
                 link_offset, outer_link_stride, inner_link_stride, arti_link_count, selected_link_indices, self.device
             ),
-            ModelAttributeFrequency.SHAPE: FrequencyLayout(
+            AttributeFrequency.SHAPE: FrequencyLayout(
                 shape_offset,
                 outer_shape_stride,
                 inner_shape_stride,
@@ -731,11 +731,11 @@ class ArticulationView:
             ),
         }
 
-        self.joints_contiguous = self.frequency_layouts[ModelAttributeFrequency.JOINT].is_contiguous
-        self.joint_dofs_contiguous = self.frequency_layouts[ModelAttributeFrequency.JOINT_DOF].is_contiguous
-        self.joint_coords_contiguous = self.frequency_layouts[ModelAttributeFrequency.JOINT_COORD].is_contiguous
-        self.links_contiguous = self.frequency_layouts[ModelAttributeFrequency.BODY].is_contiguous
-        self.shapes_contiguous = self.frequency_layouts[ModelAttributeFrequency.SHAPE].is_contiguous
+        self.joints_contiguous = self.frequency_layouts[AttributeFrequency.JOINT].is_contiguous
+        self.joint_dofs_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_DOF].is_contiguous
+        self.joint_coords_contiguous = self.frequency_layouts[AttributeFrequency.JOINT_COORD].is_contiguous
+        self.links_contiguous = self.frequency_layouts[AttributeFrequency.BODY].is_contiguous
+        self.shapes_contiguous = self.frequency_layouts[AttributeFrequency.SHAPE].is_contiguous
 
         # articulation ids grouped by world
         self.articulation_ids = wp.array(articulation_ids, dtype=int, device=self.device)

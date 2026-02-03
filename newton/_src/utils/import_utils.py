@@ -107,6 +107,7 @@ def parse_custom_attributes(
     dictlike: dict[str, str],
     custom_attributes: Sequence[ModelBuilder.CustomAttribute],
     parsing_mode: Literal["usd", "mjcf", "urdf"],
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Parse custom attributes from a dictionary.
@@ -115,6 +116,7 @@ def parse_custom_attributes(
         dictlike: The dictionary (or XML element) to parse the custom attributes from. This object behaves like a string-valued dictionary that implements the ``get`` method and returns the value for the given key.
         custom_attributes: The custom attributes to parse. This is a sequence of :class:`ModelBuilder.CustomAttribute` objects.
         parsing_mode: The parsing mode to use. This can be "usd", "mjcf", or "urdf". It determines which attribute name and value transformer to use.
+        context: Optional context dictionary passed to the value transformer. Can contain parsing-time information such as ``use_degrees`` or ``joint_type``.
 
     Returns:
         A dictionary of the parsed custom attributes. The keys are the custom attribute keys :attr:`ModelBuilder.CustomAttribute.key`
@@ -136,7 +138,9 @@ def parse_custom_attributes(
             transformer = attr.usd_value_transformer
         if transformer is None:
 
-            def transform(x: str, dtype: Any = attr.dtype, default: Any = attr.default) -> Any:
+            def transform(
+                x: str, _context: dict[str, Any] | None, dtype: Any = attr.dtype, default: Any = attr.default
+            ) -> Any:
                 return parse_warp_value_from_string(x, dtype, default)
 
             transformer = transform
@@ -145,7 +149,7 @@ def parse_custom_attributes(
             name = attr.name
         dict_value = dictlike.get(name)
         if dict_value is not None:
-            out[attr.key] = transformer(dict_value)
+            out[attr.key] = transformer(dict_value, context)
     return out
 
 
@@ -164,6 +168,20 @@ def sanitize_xml_content(source: str) -> str:
             break
     xml_content = xml_content.strip()
     return xml_content
+
+
+def sanitize_name(name: str) -> str:
+    """Sanitize a name for use as a key in the ModelBuilder.
+
+    Replaces characters that are invalid in USD paths (e.g., "-") with underscores.
+
+    Args:
+        name: The name string to sanitize.
+
+    Returns:
+        The sanitized name with invalid characters replaced by underscores.
+    """
+    return name.replace("-", "_")
 
 
 def is_xml_content(source: str) -> bool:
