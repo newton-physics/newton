@@ -1763,8 +1763,9 @@ def parse_usd(
         frequencies_with_filters.append((freq_key, freq_obj, freq_attrs))
 
     # Traverse stage once and check all filters for each prim
+    # Use TraverseInstanceProxies to include prims under instanceable prims
     if frequencies_with_filters:
-        for prim in stage.Traverse():
+        for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
             for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
                 if not freq_obj.usd_prim_filter(prim, result):
                     continue

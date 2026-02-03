@@ -539,8 +539,11 @@ Custom frequencies can optionally support automatic USD parsing by providing a `
 When :meth:`~newton.ModelBuilder.add_usd` is called, it will:
 
 1. After parsing all standard entities (bodies, shapes, joints, etc.), iterate over registered custom frequencies
-2. For each frequency with a ``usd_prim_filter``, traverse all prims in the stage
+2. For each frequency with a ``usd_prim_filter``, traverse all prims in the stage (including instance proxies under instanceable prims)
 3. For each prim where the filter returns ``True``, extract custom attribute values and add them via :meth:`newton.ModelBuilder.add_custom_values`
+
+.. note::
+   The traversal uses ``Usd.TraverseInstanceProxies()`` so that prims under instanceable prims are visited. This allows custom frequencies to be parsed from instanced geometry.
 
 The ``usd_prim_filter`` callback receives:
 

@@ -3726,6 +3726,76 @@ def Xform "Articulation" (
         self.assertAlmostEqual(item_values[0], default_value, places=5)
         self.assertAlmostEqual(item_values[1], default_value, places=5)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_instance_proxy_traversal(self):
+        """Test that custom frequency parsing traverses instance proxy prims.
+
+        Regression test: prims under instanceable prims should be visited during
+        custom frequency USD parsing via TraverseInstanceProxies predicate.
+        """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create a prototype prim with a child that will be matched by our filter
+        _proto_root = UsdGeom.Xform.Define(stage, "/Prototypes/MyProto")
+        proto_child = UsdGeom.Xform.Define(stage, "/Prototypes/MyProto/CustomChild")
+        proto_child_prim = proto_child.GetPrim()
+        # Author a custom attribute on the prototype child
+        # The USD attribute name defaults to "newton:<namespace>:<name>" = "newton:test:child_value"
+        proto_child_prim.CreateAttribute("newton:test:child_value", Sdf.ValueTypeNames.Float).Set(99.0)
+
+        # Create two instanceable prims that reference the prototype
+        for i in range(2):
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{i}")
+            instance_prim = instance.GetPrim()
+            instance_prim.GetReferences().AddInternalReference("/Prototypes/MyProto")
+            instance_prim.SetInstanceable(True)
+
+        # Define a filter that matches prims named "CustomChild" (excluding the prototype)
+        def is_custom_child(prim, context):
+            path = prim.GetPath().pathString
+            return prim.GetName() == "CustomChild" and not path.startswith("/Prototypes")
+
+        builder = newton.ModelBuilder()
+
+        # Register custom frequency with the prim filter
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="child",
+                namespace="test",
+                usd_prim_filter=is_custom_child,
+            )
+        )
+
+        # Add a custom attribute
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="child_value",
+                frequency="test:child",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        # Parse the USD stage - should find CustomChild under each instance proxy
+        builder.add_usd(stage)
+
+        # Finalize and verify
+        model = builder.finalize()
+
+        # Should have 2 entries (one per instance proxy)
+        self.assertEqual(model.get_custom_frequency_count("test:child"), 2)
+
+        child_values = model.test.child_value.numpy()
+        self.assertEqual(len(child_values), 2)
+        # Both should have the authored value from the prototype
+        self.assertAlmostEqual(child_values[0], 99.0, places=5)
+        self.assertAlmostEqual(child_values[1], 99.0, places=5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
