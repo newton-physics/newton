@@ -34,7 +34,11 @@ class MockModel:
 
 
 def create_contacts(device, pairs, naconmax, normals=None, forces=None):
-    """Helper to create Contacts with specified contacts"""
+    """Helper to create Contacts with specified contacts.
+
+    The force spatial vectors are computed as (magnitude * normal, 0, 0, 0) to match
+    the convention that contacts.force stores the force on body0 from body1.
+    """
     contacts = newton.Contacts(naconmax, 0, device=device, requested_attributes={"force"})
     n_contacts = len(pairs)
 
@@ -43,10 +47,15 @@ def create_contacts(device, pairs, naconmax, normals=None, forces=None):
     if forces is None:
         forces = [0.1] * n_contacts
 
-    shapes0 = [p[0] for p in pairs] + [-1] * (naconmax - n_contacts)
-    shapes1 = [p[1] for p in pairs] + [-1] * (naconmax - n_contacts)
-    normals_padded = normals + [[0.0, 0.0, 0.0]] * (naconmax - n_contacts)
-    forces_spatial = [(*([f] + [0.0] * 2), 0.0, 0.0, 0.0) for f in forces] + [(0.0,) * 6] * (naconmax - n_contacts)
+    padding = naconmax - n_contacts
+    shapes0 = [p[0] for p in pairs] + [-1] * padding
+    shapes1 = [p[1] for p in pairs] + [-1] * padding
+    normals_padded = normals + [[0.0, 0.0, 0.0]] * padding
+
+    # Build spatial force vectors: linear force = magnitude * normal, angular = 0
+    forces_spatial = [(f * n[0], f * n[1], f * n[2], 0.0, 0.0, 0.0) for f, n in zip(forces, normals)] + [
+        (0.0,) * 6
+    ] * padding
 
     with wp.ScopedDevice(device):
         contacts.rigid_contact_shape0 = wp.array(shapes0, dtype=wp.int32)
@@ -197,7 +206,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
         for _ in range(240 * 2):
-            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+            solver.step(state_in, state_out, control, None, 1.0 / 240.0)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
         sensor.eval(contacts)
@@ -242,7 +251,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
         for _ in range(240 * 2):
-            solver.step(state_in, state_out, control, contacts, 1.0 / 240.0)
+            solver.step(state_in, state_out, control, None, 1.0 / 240.0)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
         sensor_abc.eval(contacts)
