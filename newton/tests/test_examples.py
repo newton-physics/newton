@@ -282,7 +282,7 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_bending",
     devices=test_devices,
-    test_options={"num-frames": 200},
+    test_options={"num-frames": 400},
     use_viewer=True,
 )
 add_example_test(
