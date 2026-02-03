@@ -117,6 +117,9 @@ class Example:
             builder.joint_target_ke[i] = 150
             builder.joint_target_kd[i] = 5
 
+        # Register MPM custom attributes before adding particles
+        SolverImplicitMPM.register_custom_attributes(builder)
+
         # add sand particles
         density = 2500.0
         particle_lo = np.array([-0.5, -0.5, 0.0])  # emission lower bound
@@ -130,9 +133,6 @@ class Example:
         # finalize model
         self.model = builder.finalize()
 
-        self.model.particle_mu = 0.48
-        self.model.particle_ke = 1.0e15
-
         # setup mpm solver
         mpm_options = SolverImplicitMPM.Options()
         mpm_options.voxel_size = voxel_size
@@ -145,16 +145,11 @@ class Example:
 
         mpm_options.strain_basis = "P0"
         mpm_options.max_iterations = 50
-        mpm_options.hardening = 0.0
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
 
-        mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
-
-        # Select and merge meshes for robot/sand collisions
-        mpm_model.setup_collider(
-            body_mass=wp.zeros_like(self.model.body_mass),  # so that the robot bodies are considered as kinematic
-        )
+        # Set per-particle hardening via custom attributes
+        self.model.mpm.hardening.fill_(0.0)
 
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(
@@ -163,14 +158,16 @@ class Example:
             ls_iterations=50,
             njmax=50,  # ls_iterations=50 for determinism
         )
-        self.mpm_solver = SolverImplicitMPM(mpm_model, mpm_options)
+        self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
+
+        # Configure collider: treat robot bodies as kinematic
+        self.mpm_solver.setup_collider(
+            body_mass=wp.zeros_like(self.model.body_mass),
+        )
 
         # simulation state
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-
-        self.mpm_solver.enrich_state(self.state_0)
-        self.mpm_solver.enrich_state(self.state_1)
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
@@ -304,7 +301,7 @@ class Example:
             lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
-        voxel_size = self.mpm_solver.mpm_model.voxel_size
+        voxel_size = self.mpm_solver.voxel_size
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
