@@ -1770,14 +1770,14 @@ def parse_usd(
             # Use None for missing values so add_custom_values can apply defaults
             values_dict = {}
             for attr in freq_attrs:
-                if attr.key in prim_custom_attrs:
-                    values_dict[attr.key] = prim_custom_attrs[attr.key]
+                # Use authored value if present, otherwise None (defaults applied at finalize)
+                values_dict[attr.key] = prim_custom_attrs.get(attr.key, None)
 
-            # Add values for this prim (increments the frequency count)
-            if values_dict:
-                builder.add_custom_values(**values_dict)
-                if verbose:
-                    print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+            # Always add values for this prim to increment the frequency count,
+            # even if all values are None (defaults will be applied during finalization)
+            builder.add_custom_values(**values_dict)
+            if verbose:
+                print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
     return result
 
 

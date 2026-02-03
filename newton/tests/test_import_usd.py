@@ -3662,6 +3662,72 @@ def Xform "Articulation" (
         # the authored value should override the builder value
         self.assertEqual(builder.shape_source[0].maxhullvert, 32)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_defaults_when_no_authored_attrs(self):
+        """Test that custom frequency counts increment for prims with no authored custom attributes.
+
+        Regression test: when a usd_prim_finder yields prims that have no authored custom attributes,
+        the frequency count should still increment for each prim, and default values should be applied.
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        # Create a minimal USD stage with physics scene and two custom prims
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Define two Xform prims that will be discovered by our custom finder
+        # These prims have NO authored custom attributes
+        UsdGeom.Xform.Define(stage, "/World/CustomItem0")
+        UsdGeom.Xform.Define(stage, "/World/CustomItem1")
+
+        # Define a prim finder that yields these custom items
+        def find_custom_items(usd_stage, context):
+            for prim in usd_stage.Traverse():
+                if prim.GetPath().pathString.startswith("/World/CustomItem"):
+                    yield prim
+
+        builder = newton.ModelBuilder()
+
+        # Register custom frequency with the prim finder
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_finder=find_custom_items,
+            )
+        )
+
+        # Add a custom attribute with a non-zero default value
+        default_value = 42.0
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=default_value,
+                namespace="test",
+            )
+        )
+
+        # Parse the USD stage - this should find the 2 prims and increment count
+        builder.add_usd(stage)
+
+        # Finalize and verify
+        model = builder.finalize()
+
+        # Verify the custom frequency count equals the number of prims found
+        self.assertEqual(model.get_custom_frequency_count("test:item"), 2)
+
+        # Verify the attribute array has the correct length and default values
+        self.assertTrue(hasattr(model, "test"), "Model should have 'test' namespace")
+        self.assertTrue(hasattr(model.test, "item_value"), "Model should have 'item_value' attribute")
+
+        item_values = model.test.item_value.numpy()
+        self.assertEqual(len(item_values), 2)
+        self.assertAlmostEqual(item_values[0], default_value, places=5)
+        self.assertAlmostEqual(item_values[1], default_value, places=5)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
