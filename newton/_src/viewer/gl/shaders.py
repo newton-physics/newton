@@ -273,8 +273,8 @@ vec3 sample_env_map(vec3 dir, float lod)
 void main()
 {
     // material properties from vertex shader
-    float roughness = Material.x;
-    float metallic = Material.y;
+    float roughness = clamp(Material.x, 0.0, 1.0);
+    float metallic = clamp(Material.y, 0.0, 1.0);
     float checker_enable = Material.z;
     float texture_enable = Material.w;
     float checker_scale = 1.0;
@@ -332,6 +332,9 @@ void main()
     if (up_axis == 2) up = vec3(0.0, 0.0, 1.0);
     float sky_fac = dot(N, up) * 0.5 + 0.5;
     vec3 ambient = mix(ground_color, sky_color, sky_fac) * albedo;
+    // Slight boost for metallics to avoid overly dark mid-roughness metals.
+    float metal_ambient_boost = mix(1.0, 1.25, metallic * (1.0 - 0.5 * roughness));
+    ambient *= metal_ambient_boost;
 
     // shadows
     float shadow = ShadowCalculation();
@@ -348,7 +351,7 @@ void main()
     vec3 R = reflect(-V, N);
     vec3 env_color = sample_env_map(R, env_lod);
     env_color = pow(env_color, vec3(2.2)); // to linear
-    float reflection_strength = clamp(metallic * (1.0 - roughness), 0.0, 1.0);
+    float reflection_strength = clamp(metallic * pow(1.0 - roughness, 2.0), 0.0, 1.0);
     vec3 env_tint = mix(vec3(1.0), albedo, metallic);
     vec3 env_reflection = env_color * env_tint * env_intensity;
     color = mix(color, env_reflection, reflection_strength);
