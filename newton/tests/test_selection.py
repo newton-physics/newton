@@ -255,8 +255,8 @@ class TestSelectionFixedTendons(unittest.TestCase):
         tendon_range = view.get_attribute("mujoco.tendon_range", model)
         self.assertEqual(tendon_range.shape, (1, 1, T))  # vec2 trailing dim
 
-    def test_tendon_convenience_methods(self):
-        """Test that tendon convenience methods work correctly."""
+    def test_tendon_generic_api(self):
+        """Test that tendon attributes are accessible via generic get/set_attribute."""
         builder = newton.ModelBuilder(gravity=0.0)
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_mjcf(self.TENDON_MJCF)
@@ -265,38 +265,25 @@ class TestSelectionFixedTendons(unittest.TestCase):
         view = ArticulationView(model, "two_prismatic_links")
         T = 1
 
-        # Test getters for implemented properties
-        stiffness = view.get_fixed_tendon_stiffness(model)
+        # Test getters via generic API
+        stiffness = view.get_attribute("mujoco.tendon_stiffness", model)
         self.assertEqual(stiffness.shape, (1, 1, T))
         assert_np_equal(stiffness.numpy(), np.array([[[2.0]]]))
 
-        damping = view.get_fixed_tendon_damping(model)
+        damping = view.get_attribute("mujoco.tendon_damping", model)
         self.assertEqual(damping.shape, (1, 1, T))
         assert_np_equal(damping.numpy(), np.array([[[1.0]]]))
 
-        rest_length = view.get_fixed_tendon_rest_length(model)
-        self.assertEqual(rest_length.shape, (1, 1, T))
+        springlength = view.get_attribute("mujoco.tendon_springlength", model)
+        self.assertEqual(springlength.shape, (1, 1, T))
 
-        pos_limits = view.get_fixed_tendon_pos_limits(model)
-        self.assertEqual(pos_limits.shape, (1, 1, T))
+        tendon_range = view.get_attribute("mujoco.tendon_range", model)
+        self.assertEqual(tendon_range.shape, (1, 1, T))
 
-        # Test setters for implemented properties
-        view.set_fixed_tendon_damping(model, np.array([[[2.5]]]))
-        damping = view.get_fixed_tendon_damping(model)
+        # Test setters via generic API
+        view.set_attribute("mujoco.tendon_damping", model, np.array([[[2.5]]]))
+        damping = view.get_attribute("mujoco.tendon_damping", model)
         assert_np_equal(damping.numpy(), np.array([[[2.5]]]))
-
-        view.set_fixed_tendon_rest_length(model, np.array([[[[0.1, 0.2]]]]))
-        view.set_fixed_tendon_pos_limits(model, np.array([[[[-1.0, 1.0]]]]))
-
-        # Test that unimplemented methods raise NotImplementedError
-        with self.assertRaises(NotImplementedError):
-            view.get_fixed_tendon_limit_stiffness(model)
-        with self.assertRaises(NotImplementedError):
-            view.set_fixed_tendon_limit_stiffness(model, np.array([[[1.0]]]))
-        with self.assertRaises(NotImplementedError):
-            view.get_fixed_tendon_offset(model)
-        with self.assertRaises(NotImplementedError):
-            view.set_fixed_tendon_offset(model, np.array([[[0.0]]]))
 
     def test_tendon_multi_world(self):
         """Test that tendon selection works with multiple worlds."""
@@ -316,7 +303,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
         self.assertEqual(view.count_per_world, 1)
         self.assertEqual(view.tendon_count, T)
 
-        stiffness = view.get_fixed_tendon_stiffness(model)
+        stiffness = view.get_attribute("mujoco.tendon_stiffness", model)
         self.assertEqual(stiffness.shape, (W, 1, T))
 
         # Verify values are correct across all worlds
@@ -336,12 +323,12 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         view = ArticulationView(model, "two_prismatic_links")
 
-        # Set new stiffness values
+        # Set new stiffness values via generic API
         new_stiffness = np.array([[[5.0]], [[10.0]]])
-        view.set_fixed_tendon_stiffness(model, new_stiffness)
+        view.set_attribute("mujoco.tendon_stiffness", model, new_stiffness)
 
         # Verify values were set
-        stiffness = view.get_fixed_tendon_stiffness(model)
+        stiffness = view.get_attribute("mujoco.tendon_stiffness", model)
         assert_np_equal(stiffness.numpy(), new_stiffness)
 
     def test_tendon_names(self):
@@ -377,7 +364,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         # Attempting to access tendon attributes should raise an error
         with self.assertRaises(AttributeError):
-            view.get_fixed_tendon_stiffness(model)
+            view.get_attribute("mujoco.tendon_stiffness", model)
 
 
 if __name__ == "__main__":
