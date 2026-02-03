@@ -90,8 +90,7 @@ def select_aggregate_net_force(
     sp_flip = normalized_pair[0] != shape0
     sp_ord = bisect_shape_pairs(sp_sorted, num_sp, normalized_pair)
 
-    normal_force = wp.spatial_top(contact_force[con_idx])[0]
-    force = -normal_force * contact_normal[con_idx]
+    force = -wp.spatial_top(contact_force[con_idx])
     if sp_ord < num_sp:
         if sp_sorted[sp_ord] == normalized_pair:
             # add the force to the pair's force accumulators

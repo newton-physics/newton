@@ -610,7 +610,7 @@ def convert_mjw_contacts_to_newton_kernel(
                 dim = mj_contact_dim[contact_idx]
                 for i in range(1, 2 * (dim - 1)):
                     normalforce += mj_efc_force[world, mj_contact_efc_address[contact_idx, i]]
-        force = wp.where(normalforce > 0, wp.vec3(normalforce, 0.0, 0.0), wp.vec3(0.0))
+        force = wp.where(normalforce > 0.0, -normalforce * normal, wp.vec3(0.0))
         # TODO: preserve force directions
         contact_force[contact_idx] = wp.spatial_vector(force, wp.vec3(0.0))
 
