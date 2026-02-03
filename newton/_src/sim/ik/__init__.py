@@ -23,13 +23,13 @@ from .ik_solver import IKOptimizer, IKSampler, IKSolver
 
 __all__ = [
     "IKJacobianType",
-    "IKObjectiveJointLimit",
-    "IKOptimizerLBFGS",
-    "IKOptimizerLM",
     "IKObjective",
-    "IKOptimizer",
+    "IKObjectiveJointLimit",
     "IKObjectivePosition",
     "IKObjectiveRotation",
+    "IKOptimizer",
+    "IKOptimizerLBFGS",
+    "IKOptimizerLM",
     "IKSampler",
     "IKSolver",
 ]
