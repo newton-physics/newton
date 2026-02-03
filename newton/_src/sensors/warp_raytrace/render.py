@@ -343,11 +343,7 @@ def _render_megakernel(
         out_color = out_color + base_color * light_contribution
 
     out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
-
-    out_pixels[out_index] = pack_rgba_to_uint32(
-        out_color,
-        1.0,
-    )
+    out_pixels[out_index] = pack_rgba_to_uint32(out_color, 1.0)
 
 
 def render_megakernel(
