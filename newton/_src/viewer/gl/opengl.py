@@ -939,14 +939,9 @@ class RendererGL:
         self._pending_env_map = None
         self._env_texture_obj = None
 
-        try:
-            import newton.examples  # noqa: PLC0415
-
-            default_env = newton.examples.get_asset("studio_small_03_1k.jpg")
-            if os.path.exists(default_env):
-                self._pending_env_map = default_env
-        except Exception:
-            pass
+        default_env = os.path.join(os.path.dirname(__file__), "newton_envmap.jpg")
+        if os.path.exists(default_env):
+            self._pending_env_map = default_env
         self._mouse_drag_callbacks = []
         self._mouse_press_callbacks = []
         self._mouse_release_callbacks = []

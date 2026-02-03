@@ -939,6 +939,16 @@ class ViewerGL(ViewerBase):
         self.camera.fov -= fov_delta
         self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
 
+    def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
+        """Convert window coordinates to framebuffer coordinates."""
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        win_w, win_h = self.renderer.window.get_size()
+        if win_w <= 0 or win_h <= 0:
+            return float(x), float(y)
+        scale_x = fb_w / win_w
+        scale_y = fb_h / win_h
+        return float(x) * scale_x, float(y) * scale_y
+
     def on_mouse_press(self, x, y, button, modifiers):
         """
         Handle mouse press events (object picking).
@@ -955,7 +965,8 @@ class ViewerGL(ViewerBase):
 
         # Handle right-click for picking
         if button == pyglet.window.mouse.RIGHT and self.picking_enabled:
-            ray_start, ray_dir = self.camera.get_world_ray(x, y)
+            fb_x, fb_y = self._to_framebuffer_coords(x, y)
+            ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
             if self._last_state is not None:
                 self.picking.pick(self._last_state, ray_start, ray_dir)
 
@@ -996,7 +1007,8 @@ class ViewerGL(ViewerBase):
             self.camera.pitch += dy
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
-            ray_start, ray_dir = self.camera.get_world_ray(x, y)
+            fb_x, fb_y = self._to_framebuffer_coords(x, y)
+            ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
 
             if self.picking.is_picking():
                 self.picking.update(ray_start, ray_dir)

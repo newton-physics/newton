@@ -258,8 +258,15 @@ float SpotlightAttenuation()
 vec3 sample_env_map(vec3 dir, float lod)
 {
     // dir assumed normalized
-    float u = atan(dir.z, dir.x) / (2.0 * PI) + 0.5;
-    float v = asin(clamp(dir.y, -1.0, 1.0)) / PI + 0.5;
+    // Convert to a Y-up reference frame before equirect sampling.
+    vec3 dir_up = dir;
+    if (up_axis == 0) {
+        dir_up = vec3(-dir.y, dir.x, dir.z); // X-up -> Y-up
+    } else if (up_axis == 2) {
+        dir_up = vec3(dir.x, dir.z, -dir.y); // Z-up -> Y-up
+    }
+    float u = atan(dir_up.z, dir_up.x) / (2.0 * PI) + 0.5;
+    float v = asin(clamp(dir_up.y, -1.0, 1.0)) / PI + 0.5;
     return textureLod(env_map, vec2(u, v), lod).rgb;
 }
 
