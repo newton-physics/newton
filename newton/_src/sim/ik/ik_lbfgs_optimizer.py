@@ -23,7 +23,7 @@ from typing import ClassVar
 import numpy as np
 import warp as wp
 
-from .ik_common import IKJacobianType, _compute_costs, _eval_fk_batched, _fk_accum
+from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
 
 
 @wp.kernel
@@ -703,7 +703,7 @@ class IKOptimizerLBFGS:
         )
 
     def _residuals_autodiff(self, ctx: BatchCtx):
-        _eval_fk_batched(
+        eval_fk_batched(
             self.model,
             ctx.joint_q,
             ctx.joint_qd,
@@ -804,7 +804,7 @@ class IKOptimizerLBFGS:
     def compute_costs(self, joint_q):
         self._compute_residuals(joint_q)
         wp.launch(
-            _compute_costs,
+            compute_costs,
             dim=self.n_batch,
             inputs=[self.residuals, self.n_residuals],
             outputs=[self.costs],
@@ -1009,7 +1009,7 @@ class IKOptimizerLBFGS:
         self._gradient_at(cand_ctx, candidate_gradients_flat)
 
         wp.launch(
-            _compute_costs,
+            compute_costs,
             dim=B,
             inputs=[cand_ctx.residuals, self.n_residuals],
             outputs=[self.candidate_costs.flatten()],
@@ -1491,7 +1491,7 @@ class IKOptimizerLBFGS:
             )
 
             wp.launch(
-                _fk_accum,
+                fk_accum,
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_parent,

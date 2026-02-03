@@ -23,7 +23,7 @@ import warp as wp
 
 import newton
 import newton.ik as ik
-from newton._src.sim.ik.ik_common import _eval_fk_batched
+from newton._src.sim.ik.ik_common import eval_fk_batched
 from newton.tests.unittest_utils import (
     add_function_test,
     assert_np_equal,
@@ -191,13 +191,13 @@ def _convergence_test_planar(test, device, mode: ik.IKJacobianType):
         solver = ik.IKSolver(model, n_problems, [pos_obj], lambda_initial=1e-3, jacobian_mode=mode)
 
         # Run initial FK
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
 
         solver.step(joint_q_2d, joint_q_2d, iterations=40, step_size=1.0)
 
         # Run final FK
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
 
         for prob in range(n_problems):
@@ -242,12 +242,12 @@ def _convergence_test_free(test, device, mode: ik.IKJacobianType):
 
         solver = ik.IKSolver(model, n_problems, [pos_obj], lambda_initial=1e-3, jacobian_mode=mode)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
 
         solver.step(joint_q_2d, joint_q_2d, iterations=60, step_size=1.0)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
 
         for prob in range(n_problems):
@@ -296,12 +296,12 @@ def _convergence_test_d6(test, device, mode: ik.IKJacobianType):
 
         solver = ik.IKSolver(model, n_problems, [pos_obj, rot_obj], lambda_initial=1e-3, jacobian_mode=mode)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(model, body_q_2d, n_problems, 0, wp.vec3(0.0, 0.0, 0.0))
 
         solver.step(joint_q_2d, joint_q_2d, iterations=80, step_size=1.0)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(model, body_q_2d, n_problems, 0, wp.vec3(0.0, 0.0, 0.0))
 
         for prob in range(n_problems):

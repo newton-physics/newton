@@ -23,7 +23,7 @@ from typing import ClassVar
 import numpy as np
 import warp as wp
 
-from .ik_common import IKJacobianType, _compute_costs, _eval_fk_batched, _fk_accum
+from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
 
 
 @dataclass(slots=True)
@@ -342,7 +342,7 @@ class IKOptimizerLM:
         )
 
     def _residuals_autodiff(self, ctx: BatchCtx) -> None:
-        _eval_fk_batched(
+        eval_fk_batched(
             self.model,
             ctx.joint_q,
             ctx.joint_qd,
@@ -542,7 +542,7 @@ class IKOptimizerLM:
                 self._residuals_analytic(ctx_curr)
 
         wp.launch(
-            _compute_costs,
+            compute_costs,
             dim=self.n_batch,
             inputs=[ctx_curr.residuals, self.n_residuals],
             outputs=[self.costs],
@@ -575,7 +575,7 @@ class IKOptimizerLM:
             self._residuals_analytic(ctx_prop)
 
         wp.launch(
-            _compute_costs,
+            compute_costs,
             dim=self.n_batch,
             inputs=[self.residuals_proposed, self.n_residuals],
             outputs=[self.costs_proposed],
@@ -615,7 +615,7 @@ class IKOptimizerLM:
     def compute_costs(self, joint_q):
         self._compute_residuals(joint_q)
         wp.launch(
-            _compute_costs,
+            compute_costs,
             dim=self.n_batch,
             inputs=[self.residuals, self.n_residuals],
             outputs=[self.costs],
@@ -850,7 +850,7 @@ class IKOptimizerLM:
             )
 
             wp.launch(
-                _fk_accum,
+                fk_accum,
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_parent,
