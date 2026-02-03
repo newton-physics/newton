@@ -18,7 +18,7 @@
 import numpy as np
 import warp as wp
 
-from .ik_common import IKJacobianMode
+from .ik_common import IKJacobianType
 
 
 class IKObjective:
@@ -140,7 +140,7 @@ class IKObjective:
 
         Args:
             model (newton.Model): The kinematic model.
-            jacobian_mode (IKJacobianMode): The Jacobian computation mode (analytic or autodiff).
+            jacobian_mode (IKJacobianType): The Jacobian computation mode (analytic or autodiff).
         """
         pass
 
@@ -257,7 +257,7 @@ def _pos_jac_analytic(
     jacobian[problem_idx, start_idx + 2, dof_idx] = -weight * v_ee[2]
 
 
-class IKPositionObjective(IKObjective):
+class IKObjectivePosition(IKObjective):
     """
     End-effector positional target for one link.
 
@@ -281,7 +281,7 @@ class IKPositionObjective(IKObjective):
     def init_buffers(self, model, jacobian_mode):
         """Precompute lookup tables for analytic jacobian computation."""
         self._require_batch_layout()
-        if jacobian_mode == IKJacobianMode.ANALYTIC:
+        if jacobian_mode == IKJacobianType.ANALYTIC:
             joint_qd_start_np = model.joint_qd_start.numpy()
             dof_to_joint_np = np.empty(joint_qd_start_np[-1], dtype=np.int32)
             for j in range(len(joint_qd_start_np) - 1):
@@ -306,7 +306,7 @@ class IKPositionObjective(IKObjective):
                 body = joint_parent_np[j] if j != -1 else -1
             affects_dof_np = ancestors[dof_to_joint_np]
             self.affects_dof = wp.array(affects_dof_np.astype(np.uint8), device=self.device)
-        elif jacobian_mode == IKJacobianMode.AUTODIFF:
+        elif jacobian_mode == IKJacobianType.AUTODIFF:
             self.e_arrays = []
             for component in range(3):
                 e = np.zeros((self.n_batch, self.total_residuals), dtype=np.float32)
@@ -485,7 +485,7 @@ def _limit_jac_analytic(
     jacobian[problem, start_idx + dof_idx, dof_idx] = grad
 
 
-class IKJointLimitObjective(IKObjective):
+class IKObjectiveJointLimit(IKObjective):
     """
     Joint limit constraint objective.
 
@@ -513,7 +513,7 @@ class IKJointLimitObjective(IKObjective):
 
     def init_buffers(self, model, jacobian_mode):
         self._require_batch_layout()
-        if jacobian_mode == IKJacobianMode.AUTODIFF:
+        if jacobian_mode == IKJacobianType.AUTODIFF:
             e = np.zeros((self.n_batch, self.total_residuals), dtype=np.float32)
             for prob_idx in range(self.n_batch):
                 for dof_idx in range(self.n_dofs):
@@ -703,7 +703,7 @@ def _rot_jac_analytic(
     jacobian[problem_idx, start_idx + 2, dof_idx] = weight * omega[2]
 
 
-class IKRotationObjective(IKObjective):
+class IKObjectiveRotation(IKObjective):
     """
     End-effector rotational target for one link.
 
@@ -738,7 +738,7 @@ class IKRotationObjective(IKObjective):
     def init_buffers(self, model, jacobian_mode):
         """Precompute lookup tables for analytic jacobian computation."""
         self._require_batch_layout()
-        if jacobian_mode == IKJacobianMode.ANALYTIC:
+        if jacobian_mode == IKJacobianType.ANALYTIC:
             joint_qd_start_np = model.joint_qd_start.numpy()
             dof_to_joint_np = np.empty(joint_qd_start_np[-1], dtype=np.int32)
             for j in range(len(joint_qd_start_np) - 1):
@@ -763,7 +763,7 @@ class IKRotationObjective(IKObjective):
                 body = joint_parent_np[j] if j != -1 else -1
             affects_dof_np = ancestors[dof_to_joint_np]
             self.affects_dof = wp.array(affects_dof_np.astype(np.uint8), device=self.device)
-        elif jacobian_mode == IKJacobianMode.AUTODIFF:
+        elif jacobian_mode == IKJacobianType.AUTODIFF:
             self.e_arrays = []
             for component in range(3):
                 e = np.zeros((self.n_batch, self.total_residuals), dtype=np.float32)

@@ -23,7 +23,7 @@ from typing import ClassVar
 import numpy as np
 import warp as wp
 
-from .ik_common import IKJacobianMode, _compute_costs, _eval_fk_batched, _fk_accum
+from .ik_common import IKJacobianType, _compute_costs, _eval_fk_batched, _fk_accum
 
 
 @dataclass(slots=True)
@@ -89,7 +89,7 @@ def _update_lm_state(
         lambda_values[row] = wp.clamp(new_lambda, lambda_min, lambda_max)
 
 
-class IKLMOptimizer:
+class IKOptimizerLM:
     """
     Modular inverse-kinematics solver.
 
@@ -104,7 +104,7 @@ class IKLMOptimizer:
         model (newton.Model): Singleton articulation shared by all problems.
         n_batch (int): Number of rows processed in parallel (e.g., `n_problems * n_seeds`).
         objectives (Sequence[IKObjective]): Ordered list of objectives shared by all problems. Each `IKObjective` instance can carry arrays of per-problem parameters (sized by the true problem count) and should dereference them via `problem_idx`.
-        jacobian_mode (IKJacobianMode, optional): Backend used in `compute_jacobian`. Defaults to IKJacobianMode.AUTODIFF.
+        jacobian_mode (IKJacobianType, optional): Backend used in `compute_jacobian`. Defaults to IKJacobianType.AUTODIFF.
         lambda_initial (float, optional): Initial LM damping per problem. Defaults to 0.1.
         lambda_factor (float, optional): Multiplicative update factor for λ. Defaults to 2.0.
         lambda_min (float, optional): Lower clamp for λ. Defaults to 1e-5.
@@ -139,7 +139,7 @@ class IKLMOptimizer:
         n_batch,
         objectives,
         lambda_initial=0.1,
-        jacobian_mode=IKJacobianMode.AUTODIFF,
+        jacobian_mode=IKJacobianType.AUTODIFF,
         lambda_factor=2.0,
         lambda_min=1e-5,
         lambda_max=1e10,
@@ -176,7 +176,7 @@ class IKLMOptimizer:
         if self.TILE_N_RESIDUALS is not None:
             assert self.n_residuals == self.TILE_N_RESIDUALS
 
-        grad = jacobian_mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED)
+        grad = jacobian_mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED)
 
         self._alloc_solver_buffers(grad)
         self.problem_idx = problem_idx if problem_idx is not None else self.problem_idx_identity
@@ -192,8 +192,8 @@ class IKLMOptimizer:
         for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
             obj.set_batch_layout(self.n_residuals, offset, self.n_batch)
             obj.bind_device(self.device)
-            if self.jacobian_mode == IKJacobianMode.MIXED:
-                mode = IKJacobianMode.ANALYTIC if obj.supports_analytic() else IKJacobianMode.AUTODIFF
+            if self.jacobian_mode == IKJacobianType.MIXED:
+                mode = IKJacobianType.ANALYTIC if obj.supports_analytic() else IKJacobianType.AUTODIFF
             else:
                 mode = self.jacobian_mode
             obj.init_buffers(model=self.model, jacobian_mode=mode)
@@ -265,7 +265,7 @@ class IKLMOptimizer:
         self.X_local = wp.zeros((self.n_batch, model.joint_count), dtype=wp.transform, device=device)
         self.joint_S_s = (
             wp.zeros((self.n_batch, self.n_dofs), dtype=wp.spatial_vector, device=device)
-            if self.jacobian_mode != IKJacobianMode.AUTODIFF and self.has_analytic_objective
+            if self.jacobian_mode != IKJacobianType.AUTODIFF and self.has_analytic_objective
             else None
         )
 
@@ -303,13 +303,13 @@ class IKLMOptimizer:
                 missing.append(name)
 
         mode = self.jacobian_mode
-        if mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED):
+        if mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED):
             for name in ("fk_body_qd", "dq_dof", "joint_q_proposed", "joint_qd"):
                 if getattr(ctx, name) is None:
                     missing.append(name)
 
-        needs_analytic = mode == IKJacobianMode.ANALYTIC or (
-            mode == IKJacobianMode.MIXED and self.has_analytic_objective
+        needs_analytic = mode == IKJacobianType.ANALYTIC or (
+            mode == IKJacobianType.MIXED and self.has_analytic_objective
         )
         if needs_analytic:
             for name in ("jacobian_out", "motion_subspace", "fk_qd_zero"):
@@ -368,11 +368,11 @@ class IKLMOptimizer:
     def _jacobian_at(self, ctx: BatchCtx) -> wp.array3d:
         mode = self.jacobian_mode
 
-        if mode == IKJacobianMode.AUTODIFF:
+        if mode == IKJacobianType.AUTODIFF:
             self._jacobian_autodiff(ctx)
             return ctx.jacobian_out
 
-        if mode == IKJacobianMode.ANALYTIC:
+        if mode == IKJacobianType.ANALYTIC:
             self._jacobian_analytic(ctx, accumulate=False)
             return ctx.jacobian_out
 
@@ -418,7 +418,7 @@ class IKLMOptimizer:
         self.tape.outputs = [residuals_flat]
 
         for obj, offset in zip(self.objectives, self.residual_offsets, strict=False):
-            if self.jacobian_mode == IKJacobianMode.MIXED and obj.supports_analytic():
+            if self.jacobian_mode == IKJacobianType.MIXED and obj.supports_analytic():
                 continue
             obj.compute_jacobian_autodiff(self.tape, self.model, ctx.jacobian_out, offset, ctx.dq_dof)
             self.tape.zero()
@@ -469,7 +469,7 @@ class IKLMOptimizer:
         buffer = output_residuals or self.residuals
         ctx = self._ctx_solver(joint_q, residuals=buffer)
 
-        if self.jacobian_mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED):
+        if self.jacobian_mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED):
             self._residuals_autodiff(ctx)
         else:
             self._residuals_analytic(ctx)
@@ -536,7 +536,7 @@ class IKLMOptimizer:
         ctx_curr = self._ctx_solver(joint_q)
 
         if iteration == 0:
-            if self.jacobian_mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED):
+            if self.jacobian_mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED):
                 self._residuals_autodiff(ctx_curr)
             else:
                 self._residuals_analytic(ctx_curr)
@@ -569,7 +569,7 @@ class IKLMOptimizer:
         )
 
         ctx_prop = self._ctx_solver(self.joint_q_proposed, residuals=self.residuals_proposed)
-        if self.jacobian_mode in (IKJacobianMode.AUTODIFF, IKJacobianMode.MIXED):
+        if self.jacobian_mode in (IKJacobianType.AUTODIFF, IKJacobianType.MIXED):
             self._residuals_autodiff(ctx_prop)
         else:
             self._residuals_analytic(ctx_prop)
@@ -628,7 +628,7 @@ class IKLMOptimizer:
 
     @classmethod
     def _build_specialized(cls, key):
-        """Build a specialized IKLMOptimizer subclass with tiled solver for given dimensions."""
+        """Build a specialized IKOptimizerLM subclass with tiled solver for given dimensions."""
         C, R, _ = key
 
         def _template(
@@ -862,7 +862,7 @@ class IKLMOptimizer:
                 device=model.device,
             )
 
-        class _Specialized(IKLMOptimizer):
+        class _Specialized(IKOptimizerLM):
             TILE_N_DOFS = wp.constant(C)
             TILE_N_RESIDUALS = wp.constant(R)
             TILE_THREADS = wp.constant(32)

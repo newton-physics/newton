@@ -22,7 +22,7 @@ import warp as wp
 from ..articulation import eval_single_articulation_fk
 
 
-class IKJacobianMode(Enum):
+class IKJacobianType(Enum):
     """
     Specifies the backend used for Jacobian computation in inverse kinematics.
     """
