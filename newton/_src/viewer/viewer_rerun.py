@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import subprocess
 
 import numpy as np
@@ -23,6 +24,7 @@ from newton.utils import create_plane_mesh
 
 from ..core.types import override
 from ..utils.mesh import compute_vertex_normals_wp
+from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
 
 try:
@@ -51,6 +53,71 @@ class ViewerRerun(ViewerBase):
         if hasattr(x, "numpy"):
             return x.numpy()
         return np.asarray(x)
+
+    @staticmethod
+    def _call_rr_constructor(ctor, **kwargs):
+        """Call a rerun constructor with only supported keyword args."""
+        try:
+            signature = inspect.signature(ctor)
+            allowed = {k: v for k, v in kwargs.items() if k in signature.parameters}
+            return ctor(**allowed)
+        except Exception:
+            return ctor(**kwargs)
+
+    @staticmethod
+    def _prepare_texture(texture: np.ndarray | str | None) -> np.ndarray | None:
+        """Load and normalize texture data for rerun."""
+        return normalize_texture(
+            load_texture(texture),
+            flip_vertical=False,
+            require_channels=True,
+            scale_unit_range=True,
+        )
+
+    @staticmethod
+    def _flip_uvs_for_rerun(uvs: np.ndarray) -> np.ndarray:
+        """Rerun uses top-left UV origin; flip V from OpenGL-style UVs."""
+        uvs = np.asarray(uvs, dtype=np.float32)
+        if uvs.size == 0:
+            return uvs
+        flipped = uvs.copy()
+        flipped[:, 1] = 1.0 - flipped[:, 1]
+        return flipped
+
+    @staticmethod
+    def _build_texture_components(texture_image: np.ndarray):
+        """Create rerun ImageBuffer/ImageFormat components from a texture."""
+        if texture_image is None:
+            return None, None
+        if rr is None:
+            return None, None
+
+        height, width, channels = texture_image.shape
+        texture_image = np.ascontiguousarray(texture_image)
+
+        try:
+            color_model = rr.datatypes.ColorModel.RGBA if channels == 4 else rr.datatypes.ColorModel.RGB
+        except Exception:
+            color_model = "RGBA" if channels == 4 else "RGB"
+
+        try:
+            channel_dtype = rr.datatypes.ChannelDatatype.U8
+        except Exception:
+            channel_dtype = "U8"
+
+        texture_buffer = rr.components.ImageBuffer(texture_image.tobytes())
+        texture_format = rr.components.ImageFormat(
+            width=int(width),
+            height=int(height),
+            color_model=color_model,
+            channel_datatype=channel_dtype,
+        )
+        return texture_buffer, texture_format
+
+    def _mesh3d_supports(self, field_name: str) -> bool:
+        if not self._mesh3d_params:
+            return True
+        return field_name in self._mesh3d_params
 
     def __init__(
         self,
@@ -114,6 +181,11 @@ class ViewerRerun(ViewerBase):
 
         if record_to_rrd is not None:
             rr.save(record_to_rrd, default_blueprint=blueprint)
+
+        try:
+            self._mesh3d_params = set(inspect.signature(rr.Mesh3D).parameters)
+        except Exception:
+            self._mesh3d_params = set()
 
         self._grpc_server_uri = None
 
@@ -187,6 +259,23 @@ class ViewerRerun(ViewerBase):
         else:
             normals_np = self._to_numpy(normals)
 
+        uvs_np = self._to_numpy(uvs).astype(np.float32) if uvs is not None else None
+        texture_image = self._prepare_texture(texture)
+
+        if uvs_np is not None and len(uvs_np) != len(points_np):
+            uvs_np = None
+            texture_image = None
+        if texture_image is not None and uvs_np is None:
+            texture_image = None
+
+        if uvs_np is not None:
+            uvs_np = self._flip_uvs_for_rerun(uvs_np)
+
+        texture_buffer = None
+        texture_format = None
+        if texture_image is not None and self._mesh3d_supports("albedo_texture_buffer"):
+            texture_buffer, texture_format = self._build_texture_components(texture_image)
+
         # make sure deformable mesh updates are not kept in the viewer if desired
         static = name in self._meshes and not self.keep_historical_data
 
@@ -195,15 +284,27 @@ class ViewerRerun(ViewerBase):
             "points": points_np,
             "indices": indices_np,
             "normals": normals_np,
-            "uvs": self._to_numpy(uvs).astype(np.float32) if uvs is not None else None,
+            "uvs": uvs_np,
+            "texture_image": texture_image,
+            "texture_buffer": texture_buffer,
+            "texture_format": texture_format,
         }
 
+        mesh_kwargs = {
+            "vertex_positions": points_np,
+            "triangle_indices": indices_np,
+            "vertex_normals": self._meshes[name]["normals"],
+        }
+        if uvs_np is not None and self._mesh3d_supports("vertex_texcoords"):
+            mesh_kwargs["vertex_texcoords"] = uvs_np
+        if texture_buffer is not None and texture_format is not None:
+            mesh_kwargs["albedo_texture_buffer"] = texture_buffer
+            mesh_kwargs["albedo_texture_format"] = texture_format
+        elif texture_image is not None and self._mesh3d_supports("albedo_texture"):
+            mesh_kwargs["albedo_texture"] = texture_image
+
         # Log the mesh as a static asset
-        mesh_3d = rr.Mesh3D(
-            vertex_positions=points_np,
-            triangle_indices=indices_np,
-            vertex_normals=self._meshes[name]["normals"],
-        )
+        mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
 
         rr.log(name, mesh_3d, static=static)
 
@@ -228,10 +329,14 @@ class ViewerRerun(ViewerBase):
         # re-run needs to generate a new mesh for each instancer
         if name not in self._instances:
             mesh_data = self._meshes[mesh]
+            has_texture = (
+                mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None
+            ) or mesh_data.get("texture_image") is not None
 
             # Handle colors - ReRun doesn't support per-instance colors
             # so we just use the first instance's color for all instances
-            if colors is not None:
+            vertex_colors = None
+            if colors is not None and not has_texture:
                 colors_np = self._to_numpy(colors).astype(np.float32)
                 # Take the first instance's color and apply to all vertices
                 first_color = colors_np[0]
@@ -240,12 +345,22 @@ class ViewerRerun(ViewerBase):
                 vertex_colors = np.tile(color_rgb, (num_vertices, 1))
 
             # Log the base mesh with optional colors
-            mesh_3d = rr.Mesh3D(
-                vertex_positions=mesh_data["points"],
-                triangle_indices=mesh_data["indices"],
-                vertex_normals=mesh_data["normals"],
-                vertex_colors=vertex_colors,
-            )
+            mesh_kwargs = {
+                "vertex_positions": mesh_data["points"],
+                "triangle_indices": mesh_data["indices"],
+                "vertex_normals": mesh_data["normals"],
+            }
+            if vertex_colors is not None:
+                mesh_kwargs["vertex_colors"] = vertex_colors
+            if mesh_data.get("uvs") is not None and self._mesh3d_supports("vertex_texcoords"):
+                mesh_kwargs["vertex_texcoords"] = mesh_data["uvs"]
+            if mesh_data.get("texture_buffer") is not None and mesh_data.get("texture_format") is not None:
+                mesh_kwargs["albedo_texture_buffer"] = mesh_data["texture_buffer"]
+                mesh_kwargs["albedo_texture_format"] = mesh_data["texture_format"]
+            elif mesh_data.get("texture_image") is not None and self._mesh3d_supports("albedo_texture"):
+                mesh_kwargs["albedo_texture"] = mesh_data["texture_image"]
+
+            mesh_3d = self._call_rr_constructor(rr.Mesh3D, **mesh_kwargs)
             rr.log(name, mesh_3d)
 
             # save reference
