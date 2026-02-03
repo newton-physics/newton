@@ -793,6 +793,9 @@ def get_mesh(
 
     uvs = None
     uvs_interpolation = None
+    # Tracks whether we already duplicated vertices (and per-vertex UVs) during
+    # faceVarying normal conversion, so we don't split again in the UV pass.
+    did_split_vertices = False
     if load_uvs:
         uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
         if uv_primvar:
@@ -926,6 +929,10 @@ def get_mesh(
                 indices = new_indices
                 normals = new_vertex_normals
                 uvs = new_uvs
+                # Vertex splitting creates a new per-vertex layout (and UVs
+                # if available). Skip the later faceVarying UV split to avoid
+                # dropping/duplicating UVs.
+                did_split_vertices = True
             elif face_varying_normal_conversion == "vertex_averaging":
                 # basic averaging
                 for c, v in enumerate(indices):
@@ -966,22 +973,76 @@ def get_mesh(
 
     if uvs is not None:
         uvs = np.array(uvs, dtype=np.float32)
+        # If vertices were already split for faceVarying normals, UVs (if any)
+        # were converted to per-vertex. Avoid a second split here.
+        if uvs_interpolation == "faceVarying" and not did_split_vertices:
+            if len(uvs) != len(indices):
+                warnings.warn(
+                    f"UV primvar length ({len(uvs)}) does not match indices length ({len(indices)}) for mesh {prim.GetPath()}; "
+                    "dropping UVs.",
+                    stacklevel=2,
+                )
+                uvs = None
+            else:
+                counts_i32 = np.asarray(counts, dtype=np.int32)
+                num_tris = int(np.sum(counts_i32 - 2))
+                if num_tris > 0:
+                    tri_face_ids = np.repeat(np.arange(len(counts_i32), dtype=np.int32), counts_i32 - 2)
+                    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts_i32])
+                    face_bases = np.concatenate([[0], np.cumsum(counts_i32[:-1], dtype=np.int32)])
+                    corner_faces = np.empty((num_tris, 3), dtype=np.int32)
+                    corner_faces[:, 0] = face_bases[tri_face_ids]
+                    corner_faces[:, 1] = face_bases[tri_face_ids] + tri_local_ids + 1
+                    corner_faces[:, 2] = face_bases[tri_face_ids] + tri_local_ids + 2
+                    if flip_winding:
+                        corner_faces = corner_faces[:, ::-1]
+                    corner_flat = corner_faces.reshape(-1)
+                    points_original = points
+                    points = points_original[indices[corner_flat]]
+                    if normals is not None:
+                        if len(normals) == len(points_original):
+                            normals = normals[indices[corner_flat]]
+                        elif len(normals) == len(corner_flat):
+                            normals = normals[corner_flat]
+                        else:
+                            warnings.warn(
+                                f"Normals length ({len(normals)}) does not match vertices after UV splitting for mesh {prim.GetPath()}; "
+                                "dropping normals.",
+                                stacklevel=2,
+                            )
+                            normals = None
+                    uvs = uvs[corner_flat]
+                    faces = np.arange(len(corner_flat), dtype=np.int32).reshape(-1, 3)
 
     return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
 
 
-def _resolve_asset_path(asset: Sdf.AssetPath | str | os.PathLike[str] | None, prim: Usd.Prim) -> str | None:
+def _resolve_asset_path(
+    asset: Sdf.AssetPath | str | os.PathLike[str] | None,
+    prim: Usd.Prim,
+    asset_attr: Any | None = None,
+) -> str | None:
     """Resolve a USD asset reference to a usable path or URL.
 
     Args:
         asset: The asset value or asset path authored on a shader input.
         prim: The prim providing the stage context for relative paths.
+        asset_attr: Optional USD attribute providing authored layer resolution.
 
     Returns:
         Absolute path or URL to the asset, or ``None`` when missing.
     """
     if asset is None:
         return None
+
+    if asset_attr is not None:
+        try:
+            resolved_attr_path = asset_attr.GetResolvedPath()
+        except Exception:
+            resolved_attr_path = None
+        if resolved_attr_path:
+            return resolved_attr_path
+
     if isinstance(asset, Sdf.AssetPath):
         if asset.resolvedPath:
             return asset.resolvedPath
@@ -993,18 +1054,52 @@ def _resolve_asset_path(asset: Sdf.AssetPath | str | os.PathLike[str] | None, pr
     else:
         # Ignore non-path inputs (e.g. numeric shader parameters).
         return None
+
     if not asset_path:
         return None
-    if asset_path.startswith(("http://", "https://")):
+    if asset_path.startswith(("http://", "https://", "file:")):
         return asset_path
     if os.path.isabs(asset_path):
         return asset_path
+
+    source_layer = None
+    if asset_attr is not None:
+        try:
+            resolve_info = asset_attr.GetResolveInfo()
+        except Exception:
+            resolve_info = None
+        if resolve_info is not None:
+            for getter_name in ("GetSourceLayer", "GetLayer"):
+                getter = getattr(resolve_info, getter_name, None)
+                if getter is None:
+                    continue
+                try:
+                    source_layer = getter()
+                except Exception:
+                    source_layer = None
+                if source_layer is not None:
+                    break
+        if source_layer is None:
+            try:
+                spec = asset_attr.GetSpec()
+            except Exception:
+                spec = None
+            if spec is not None:
+                source_layer = getattr(spec, "layer", None)
+
     root_layer = prim.GetStage().GetRootLayer()
-    base_dir = None
-    if root_layer is not None:
-        base_dir = os.path.dirname(root_layer.realPath or root_layer.identifier or "")
-    if base_dir:
-        return os.path.abspath(os.path.join(base_dir, asset_path))
+    base_layer = source_layer or root_layer
+    if base_layer is not None:
+        try:
+            resolved = Sdf.ComputeAssetPathRelativeToLayer(base_layer, asset_path)
+        except Exception:
+            resolved = None
+        if resolved:
+            return resolved
+        base_dir = os.path.dirname(base_layer.realPath or base_layer.identifier or "")
+        if base_dir:
+            return os.path.abspath(os.path.join(base_dir, asset_path))
+
     return asset_path
 
 
@@ -1025,7 +1120,7 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
         file_input = shader.GetInput("file")
         if file_input:
             asset = file_input.Get()
-            return _resolve_asset_path(asset, prim)
+            return _resolve_asset_path(asset, prim, file_input.GetAttr())
         return None
     if shader_id == "UsdPreviewSurface":
         for input_name in ("diffuseColor", "baseColor"):
@@ -1247,8 +1342,87 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
             elif "file" in name or "texture" in name:
                 asset = inp.Get()
                 if asset:
-                    properties["texture"] = _resolve_asset_path(asset, prim)
+                    properties["texture"] = _resolve_asset_path(asset, prim, inp.GetAttr())
                     break
+
+    return properties
+
+
+def _extract_material_input_properties(material: UsdShade.Material | None, prim: Usd.Prim) -> dict[str, Any]:
+    """Extract material properties from inputs on a UsdShade.Material prim.
+
+    This supports assets that author texture references directly on the Material,
+    without creating a shader network.
+    """
+    properties: dict[str, Any] = {
+        "color": None,
+        "metallic": None,
+        "roughness": None,
+        "texture": None,
+    }
+    if material is None:
+        return properties
+
+    def _coerce_color(value: Any) -> tuple[float, float, float] | None:
+        if value is None:
+            return None
+        color_np = np.array(value, dtype=np.float32).reshape(-1)
+        if color_np.size >= 3:
+            return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+        return None
+
+    def _coerce_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    for inp in material.GetInputs():
+        name = inp.GetBaseName()
+        name_lower = name.lower()
+        try:
+            if inp.HasConnectedSource():
+                continue
+        except Exception:
+            continue
+        value = inp.Get()
+        if value is None:
+            continue
+
+        if properties["texture"] is None and ("texture" in name_lower or "file" in name_lower):
+            texture = _resolve_asset_path(value, prim, inp.GetAttr())
+            if texture:
+                properties["texture"] = texture
+                continue
+
+        if properties["color"] is None and name_lower in (
+            "diffusecolor",
+            "basecolor",
+            "diffuse_color",
+            "base_color",
+            "displaycolor",
+        ):
+            color = _coerce_color(value)
+            if color is not None:
+                properties["color"] = color
+                continue
+
+        if properties["metallic"] is None and name_lower in ("metallic", "metallic_constant"):
+            metallic = _coerce_float(value)
+            if metallic is not None:
+                properties["metallic"] = metallic
+                continue
+
+        if properties["roughness"] is None and name_lower in (
+            "roughness",
+            "roughness_constant",
+            "reflection_roughness_constant",
+        ):
+            roughness = _coerce_float(value)
+            if roughness is not None:
+                properties["roughness"] = roughness
 
     return properties
 
@@ -1292,51 +1466,99 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
                     return UsdShade.Material(mat_prim)
         return None
 
-    material = _get_bound_material(prim)
-    if not material:
+    def _resolve_properties(target_prim: Usd.Prim) -> dict[str, Any] | None:
+        material = _get_bound_material(target_prim)
+        if not material:
+            return None
+
+        surface_output = material.GetSurfaceOutput()
+        if not surface_output:
+            surface_output = material.GetOutput("surface")
+        if not surface_output:
+            surface_output = material.GetOutput("mdl:surface")
+
+        source_shader = None
+        if surface_output:
+            source = surface_output.GetConnectedSource()
+            if source:
+                source_shader = UsdShade.Shader(source[0].GetPrim())
+
+        if source_shader is None:
+            # Fallback: scan material children for a shader node (MDL-style materials).
+            for child in material.GetPrim().GetChildren():
+                if child.IsA(UsdShade.Shader):
+                    source_shader = UsdShade.Shader(child)
+                    break
+
+        if source_shader is not None:
+            try:
+                shader_id = source_shader.GetIdAttr().Get()
+            except Exception:
+                shader_id = None
+            if not shader_id:
+                source_shader = None
+
+        if source_shader is None:
+            material_props = _extract_material_input_properties(material, target_prim)
+            if any(value is not None for value in material_props.values()):
+                return material_props
+            return None
+
+        properties = _extract_shader_properties(source_shader, target_prim)
+        material_props = _extract_material_input_properties(material, target_prim)
+        for key in ("texture", "color", "metallic", "roughness"):
+            if properties.get(key) is None and material_props.get(key) is not None:
+                properties[key] = material_props[key]
+        if properties["color"] is None and properties["texture"] is None:
+            display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
+            if display_color:
+                color_value = display_color.Get()
+                if color_value is not None:
+                    color_np = np.array(color_value, dtype=np.float32).reshape(-1)
+                    if color_np.size >= 3:
+                        properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+
+        return properties
+
+    properties = _resolve_properties(prim)
+    if properties is not None:
+        return properties
+
+    proto_prim = None
+    try:
+        if prim.IsInstanceProxy():
+            proto_prim = prim.GetPrimInPrototype()
+        elif prim.IsInstance():
+            proto_prim = prim.GetPrototype()
+    except Exception:
         proto_prim = None
+    if proto_prim and proto_prim.IsValid():
+        properties = _resolve_properties(proto_prim)
+        if properties is not None:
+            return properties
+
+    if UsdGeom is not None:
         try:
-            if prim.IsInstanceProxy():
-                proto_prim = prim.GetPrimInPrototype()
-            elif prim.IsInstance():
-                proto_prim = prim.GetPrototype()
+            is_mesh = prim.IsA(UsdGeom.Mesh)
         except Exception:
-            proto_prim = None
-        if proto_prim and proto_prim.IsValid():
-            material = _get_bound_material(proto_prim)
+            is_mesh = False
+        if is_mesh:
+            fallback_props = None
+            for child in prim.GetChildren():
+                try:
+                    is_subset = child.IsA(UsdGeom.Subset)
+                except Exception:
+                    is_subset = False
+                if not is_subset:
+                    continue
+                subset_props = _resolve_properties(child)
+                if subset_props is None:
+                    continue
+                if subset_props.get("texture") is not None or subset_props.get("color") is not None:
+                    return subset_props
+                if fallback_props is None:
+                    fallback_props = subset_props
+            if fallback_props is not None:
+                return fallback_props
 
-    if not material:
-        return {"color": None, "metallic": None, "roughness": None, "texture": None}
-    surface_output = material.GetSurfaceOutput()
-    if not surface_output:
-        surface_output = material.GetOutput("surface")
-    if not surface_output:
-        surface_output = material.GetOutput("mdl:surface")
-
-    source_shader = None
-    if surface_output:
-        source = surface_output.GetConnectedSource()
-        if source:
-            source_shader = UsdShade.Shader(source[0].GetPrim())
-
-    if source_shader is None:
-        # Fallback: scan material children for a shader node (MDL-style materials).
-        for child in material.GetPrim().GetChildren():
-            if child.IsA(UsdShade.Shader):
-                source_shader = UsdShade.Shader(child)
-                break
-
-    if source_shader is None:
-        return {"color": None, "metallic": None, "roughness": None, "texture": None}
-
-    properties = _extract_shader_properties(source_shader, prim)
-    if properties["color"] is None and properties["texture"] is None:
-        display_color = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayColor")
-        if display_color:
-            color_value = display_color.Get()
-            if color_value is not None:
-                color_np = np.array(color_value, dtype=np.float32).reshape(-1)
-                if color_np.size >= 3:
-                    properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
-
-    return properties
+    return {"color": None, "metallic": None, "roughness": None, "texture": None}
