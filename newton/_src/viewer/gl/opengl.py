@@ -23,7 +23,7 @@ import warp as wp
 
 from newton.utils import create_sphere_mesh
 
-from ...utils.mesh import compute_vertex_normals_wp
+from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from .shaders import (
     FrameShader,
@@ -323,7 +323,7 @@ class MeshGL:
     def recompute_normals(self):
         if self._points is None or self.indices is None:
             return
-        self.normals = compute_vertex_normals_wp(
+        self.normals = compute_vertex_normals(
             self._points,
             self.indices,
             normals=self.normals,

@@ -23,7 +23,7 @@ import newton
 from newton.utils import create_plane_mesh
 
 from ..core.types import override
-from ..utils.mesh import compute_vertex_normals_wp
+from ..utils.mesh import compute_vertex_normals
 from ..utils.texture import load_texture, normalize_texture
 from .viewer import ViewerBase, is_jupyter_notebook
 
@@ -254,7 +254,7 @@ class ViewerRerun(ViewerBase):
             indices_np = indices_np.reshape(-1, 3)
 
         if normals is None:
-            normals = compute_vertex_normals_wp(points, indices, device=self.device)
+            normals = compute_vertex_normals(points, indices, device=self.device)
             normals_np = normals.numpy()
         else:
             normals_np = self._to_numpy(normals)

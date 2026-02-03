@@ -17,6 +17,7 @@ import os
 import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from typing import cast, overload
 
 import numpy as np
 import warp as wp
@@ -39,7 +40,7 @@ def accumulate_vertex_normals(
     v0 = points[i0]
     v1 = points[i1]
     v2 = points[i2]
-    normal = wp.normalize(wp.cross(v1 - v0, v2 - v0))
+    normal = wp.cross(v1 - v0, v2 - v0)
     wp.atomic_add(normals, i0, normal)
     wp.atomic_add(normals, i1, normal)
     wp.atomic_add(normals, i2, normal)
@@ -52,72 +53,127 @@ def normalize_vertex_normals(normals: wp.array(dtype=wp.vec3)):
     normals[tid] = wp.normalize(normals[tid])
 
 
-def compute_vertex_normals_wp(
+@overload
+def compute_vertex_normals(
     points: wp.array,
-    indices: wp.array,
+    indices: wp.array | np.ndarray,
     normals: wp.array | None = None,
     *,
-    device: wp.context.Device | None = None,
+    device: wp.context.Device | str | None = None,
     normalize: bool = True,
-) -> wp.array:
-    """Compute per-vertex normals from triangle indices on a Warp device.
+) -> wp.array: ...
+
+
+@overload
+def compute_vertex_normals(
+    points: np.ndarray,
+    indices: np.ndarray,
+    normals: np.ndarray | None = None,
+    *,
+    device: wp.context.Device | str | None = None,
+    normalize: bool = True,
+) -> np.ndarray: ...
+
+
+def compute_vertex_normals(
+    points: wp.array | np.ndarray,
+    indices: wp.array | np.ndarray,
+    normals: wp.array | np.ndarray | None = None,
+    *,
+    device: wp.context.Device | str | None = None,
+    normalize: bool = True,
+) -> wp.array | np.ndarray:
+    """Compute per-vertex normals from triangle indices.
+
+    Supports Warp and NumPy arrays. NumPy inputs run on the CPU via Warp and return
+    NumPy output.
 
     Args:
-        points: Warp array of vertex positions (wp.vec3).
-        indices: Warp array of triangle indices (int32/uint32, flattened).
-        normals: Optional output array to reuse; if None, a new array is created.
-        device: Warp device to run on (defaults to points.device).
+        points: Vertex positions (wp.vec3 array or Nx3 NumPy array).
+        indices: Triangle indices (flattened or Nx3). Warp arrays are expected to be flattened.
+        normals: Optional output array to reuse (Warp or NumPy to match ``points``).
+        device: Warp device to run on. NumPy inputs default to CPU.
         normalize: Whether to normalize the accumulated normals.
 
     Returns:
-        Warp array of per-vertex normals.
+        Per-vertex normals as a Warp array or NumPy array matching the input type.
     """
-    if device is None:
-        device = points.device
-    if normals is None:
-        normals = wp.zeros_like(points)
+    if isinstance(points, wp.array):
+        if normals is not None and not isinstance(normals, wp.array):
+            raise TypeError("normals must be a Warp array when points is a Warp array.")
+        device_obj = points.device if device is None else wp.get_device(device)
+        indices_wp = indices
+        if isinstance(indices, np.ndarray):
+            indices_np = np.asarray(indices, dtype=np.int32)
+            if indices_np.ndim == 2:
+                indices_np = indices_np.reshape(-1)
+            elif indices_np.ndim != 1:
+                raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
+            indices_wp = wp.array(indices_np, dtype=wp.int32, device=device_obj)
+        indices_wp = cast(wp.array, indices_wp)
+        if normals is None:
+            normals_wp = wp.zeros_like(points)
+        else:
+            normals_wp = cast(wp.array, normals)
+            normals_wp.zero_()
+        if len(indices_wp) == 0 or len(points) == 0:
+            return normals_wp
+        indices_i32 = indices_wp if indices_wp.dtype == wp.int32 else indices_wp.view(dtype=wp.int32)
+        wp.launch(
+            accumulate_vertex_normals,
+            dim=len(indices_i32) // 3,
+            inputs=[points, indices_i32],
+            outputs=[normals_wp],
+            device=device_obj,
+        )
+        if normalize:
+            wp.launch(normalize_vertex_normals, dim=len(normals_wp), inputs=[normals_wp], device=device_obj)
+        return normals_wp
+
+    points_np = np.asarray(points, dtype=np.float32).reshape(-1, 3)
+    indices_np = np.asarray(indices, dtype=np.int32)
+    if indices_np.ndim == 2:
+        indices_np = indices_np.reshape(-1)
+    elif indices_np.ndim != 1:
+        raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
+
+    normals_np = None
+    if normals is not None:
+        normals_np = np.asarray(normals, dtype=np.float32).reshape(points_np.shape)
+    device_obj = wp.get_device("cpu") if device is None else wp.get_device(device)
+    points_wp = wp.array(points_np, dtype=wp.vec3, device=device_obj)
+    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device_obj)
+    if normals_np is None:
+        normals_wp = wp.zeros_like(points_wp)
     else:
-        normals.zero_()
-    if len(indices) == 0:
-        return normals
-    indices_i32 = indices
-    if indices.dtype != wp.int32:
-        indices_i32 = indices.view(dtype=wp.int32)
+        normals_wp = wp.array(normals_np, dtype=wp.vec3, device=device_obj)
+        normals_wp.zero_()
+    if len(points_wp) == 0 or len(indices_wp) == 0:
+        if normals_np is None:
+            return np.zeros_like(points_np, dtype=np.float32)
+        normals_np[...] = 0.0
+        return normals_np
     wp.launch(
         accumulate_vertex_normals,
-        dim=len(indices_i32) // 3,
-        inputs=[points, indices_i32],
-        outputs=[normals],
-        device=device,
+        dim=len(indices_wp) // 3,
+        inputs=[points_wp, indices_wp],
+        outputs=[normals_wp],
+        device=device_obj,
     )
     if normalize:
-        wp.launch(normalize_vertex_normals, dim=len(normals), inputs=[normals], device=device)
-    return normals
-
-
-def compute_vertex_normals_numpy(mesh_vertices: np.ndarray, mesh_faces: np.ndarray) -> np.ndarray:
-    """Compute per-vertex normals from triangle indices using NumPy."""
-    normals = np.zeros_like(mesh_vertices, dtype=np.float32)
-    v0 = mesh_vertices[mesh_faces[:, 0]]
-    v1 = mesh_vertices[mesh_faces[:, 1]]
-    v2 = mesh_vertices[mesh_faces[:, 2]]
-    face_normals = np.cross(v1 - v0, v2 - v0)
-    # Accumulate face normals per vertex (area-weighted).
-    np.add.at(normals, mesh_faces[:, 0], face_normals)
-    np.add.at(normals, mesh_faces[:, 1], face_normals)
-    np.add.at(normals, mesh_faces[:, 2], face_normals)
-    # Normalize with safe epsilon.
-    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
-    lengths = np.maximum(lengths, 1.0e-8)
-    normals = normals / lengths
-    return normals.astype(np.float32)
+        wp.launch(normalize_vertex_normals, dim=len(normals_wp), inputs=[normals_wp], device=device_obj)
+    normals_out = normals_wp.numpy()
+    if normals_np is not None:
+        normals_np[...] = normals_out
+        return normals_np
+    return normals_out
 
 
 def smooth_vertex_normals_by_position(
     mesh_vertices: np.ndarray, mesh_faces: np.ndarray, eps: float = 1.0e-6
 ) -> np.ndarray:
     """Smooth vertex normals by averaging normals of vertices with shared positions."""
-    normals = compute_vertex_normals_numpy(mesh_vertices, mesh_faces)
+    normals = compute_vertex_normals(mesh_vertices, mesh_faces)
     if len(mesh_vertices) == 0:
         return normals
     keys = np.round(mesh_vertices / eps).astype(np.int64)
@@ -623,7 +679,7 @@ def load_meshes_from_file(
         faces = np.array(tri_mesh.faces, dtype=np.int32)
         normals = np.array(tri_mesh.vertex_normals, dtype=np.float32) if tri_mesh.vertex_normals is not None else None
         if normals is None or not np.isfinite(normals).all() or np.allclose(normals, 0.0):
-            normals = compute_vertex_normals_numpy(vertices, faces)
+            normals = compute_vertex_normals(vertices, faces)
 
         uvs = None
         if hasattr(tri_mesh, "visual") and getattr(tri_mesh.visual, "uv", None) is not None:
