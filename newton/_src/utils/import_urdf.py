@@ -30,9 +30,11 @@ from ..core.types import Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import ModelBuilder
 from ..sim.joints import ActuatorMode
-from ..sim.model import ModelAttributeFrequency
+from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .topology import topological_sort
+
+AttributeFrequency = Model.AttributeFrequency
 
 # Optional dependency for robust URI resolution
 try:
@@ -154,16 +156,16 @@ def parse_urdf(
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.SHAPE]
+        [AttributeFrequency.SHAPE]
     )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.BODY]
+        [AttributeFrequency.BODY]
     )
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT]
+        [AttributeFrequency.JOINT]
     )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.ARTICULATION]
+        [AttributeFrequency.ARTICULATION]
     )
 
     def parse_transform(element):

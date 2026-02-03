@@ -29,9 +29,8 @@ from .joints import (
     get_joint_dof_count,
     infer_actuator_mode,
 )
-from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
+from .model import Model
 from .state import State
-from .style3d import Style3DModel, Style3DModelBuilder
 
 __all__ = [
     "ActuatorMode",
@@ -43,12 +42,8 @@ __all__ = [
     "EqType",
     "JointType",
     "Model",
-    "ModelAttributeAssignment",
-    "ModelAttributeFrequency",
     "ModelBuilder",
     "State",
-    "Style3DModel",
-    "Style3DModelBuilder",
     "color_graph",
     "count_rigid_contact_points",
     "eval_fk",

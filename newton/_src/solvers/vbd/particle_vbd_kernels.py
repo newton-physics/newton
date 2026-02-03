@@ -2093,15 +2093,17 @@ def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
     return vals[offs[i] : offs[i + 1]]
 
 
-def _set_to_csr(list_of_sets, dtype=np.int32, sort=True):
+def set_to_csr(
+    list_of_sets: list[set[int]], dtype: np.dtype = np.int32, sort: bool = True
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Convert a list of integer sets into CSR (Compressed Sparse Row) structure.
     Args:
         list_of_sets: Iterable where each entry is a set of ints.
         dtype: Output dtype for the flattened arrays.
-        sort: Whether to sort each row when writing into `flat`.
+        sort: Whether to sort each row when writing into ``flat``.
     Returns:
-        A tuple `(flat, offsets)` representing the CSR values and offsets.
+        A tuple ``(flat, offsets)`` representing the CSR values and offsets.
     """
     offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
     sizes = np.fromiter((len(s) for s in list_of_sets), count=len(list_of_sets), dtype=dtype)

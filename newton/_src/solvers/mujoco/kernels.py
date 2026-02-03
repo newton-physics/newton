@@ -1518,7 +1518,7 @@ def update_geom_properties_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _create_inverse_shape_mapping_kernel(
+def create_inverse_shape_mapping_kernel(
     mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
     # output
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),

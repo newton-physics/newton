@@ -32,8 +32,6 @@ from ...sim import (
     EqType,
     JointType,
     Model,
-    ModelAttributeAssignment,
-    ModelAttributeFrequency,
     ModelBuilder,
     State,
     color_graph,
@@ -41,10 +39,10 @@ from ...sim import (
 )
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
+from ...utils.import_utils import parse_warp_value_from_string
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
-    _create_inverse_shape_mapping_kernel,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
@@ -56,6 +54,7 @@ from .kernels import (
     convert_rigid_forces_from_mj_kernel,
     convert_solref,
     convert_warp_coords_to_mj_kernel,
+    create_inverse_shape_mapping_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
     update_axis_properties_kernel,
@@ -85,6 +84,9 @@ else:
     MjData = object
     MjWarpModel = object
     MjWarpData = object
+
+AttributeAssignment = Model.AttributeAssignment
+AttributeFrequency = Model.AttributeFrequency
 
 
 class SolverMuJoCo(SolverBase):
@@ -195,6 +197,38 @@ class SolverMuJoCo(SolverBase):
                 ) from e
         return cls._mujoco, cls._mujoco_warp
 
+    @staticmethod
+    def _angle_value_transformer(value: str, context: dict[str, Any] | None) -> float:
+        """Transform angle values from MJCF, converting deg to rad for angular joints.
+
+        For attributes like springref and ref that represent angles,
+        parses the string value and multiplies by pi/180 when use_degrees=True and joint is angular.
+        """
+        parsed = parse_warp_value_from_string(value, wp.float32, 0.0)
+        if context is not None:
+            joint_type = context.get("joint_type")
+            use_degrees = context.get("use_degrees", False)
+            is_angular = joint_type in ["hinge", "ball"]
+            if is_angular and use_degrees:
+                return parsed * (np.pi / 180)
+        return parsed
+
+    @staticmethod
+    def _per_angle_value_transformer(value: str, context: dict[str, Any] | None) -> float:
+        """Transform per-angle values from MJCF, converting Nm/deg to Nm/rad for angular joints.
+
+        For attributes like stiffness (Nm/rad) and damping (Nm·s/rad) that have angle in the denominator,
+        parses the string value and multiplies by 180/pi when use_degrees=True and joint is angular.
+        """
+        parsed = parse_warp_value_from_string(value, wp.float32, 0.0)
+        if context is not None:
+            joint_type = context.get("joint_type")
+            use_degrees = context.get("use_degrees", False)
+            is_angular = joint_type in ["hinge", "ball"]
+            if is_angular and use_degrees:
+                return parsed * (180 / np.pi)
+        return parsed
+
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
@@ -206,8 +240,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="condim",
-                frequency=ModelAttributeFrequency.SHAPE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=3,
                 namespace="mujoco",
@@ -217,8 +251,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_priority",
-                frequency=ModelAttributeFrequency.SHAPE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -229,8 +263,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_solimp",
-                frequency=ModelAttributeFrequency.SHAPE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -241,8 +275,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_solmix",
-                frequency=ModelAttributeFrequency.SHAPE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1.0,
                 namespace="mujoco",
@@ -253,8 +287,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="geom_gap",
-                frequency=ModelAttributeFrequency.SHAPE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -265,8 +299,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="limit_margin",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -277,8 +311,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solimplimit",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -288,8 +322,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solreffriction",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -299,8 +333,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solimpfriction",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -310,8 +344,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="gravcomp",
-                frequency=ModelAttributeFrequency.BODY,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.BODY,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -322,56 +356,60 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dof_passive_stiffness",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
                 usd_attribute_name="mjc:stiffness",
                 mjcf_attribute_name="stiffness",
+                mjcf_value_transformer=cls._per_angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dof_passive_damping",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
                 usd_attribute_name="mjc:damping",
                 mjcf_attribute_name="damping",
+                mjcf_value_transformer=cls._per_angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dof_springref",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
                 usd_attribute_name="mjc:springref",
                 mjcf_attribute_name="springref",
+                mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dof_ref",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
                 usd_attribute_name="mjc:ref",
                 mjcf_attribute_name="ref",
+                mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="jnt_actgravcomp",
-                frequency=ModelAttributeFrequency.JOINT_DOF,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.bool,
                 default=False,
                 namespace="mujoco",
@@ -382,8 +420,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="eq_solref",
-                frequency=ModelAttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
@@ -394,8 +432,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="eq_solimp",
-                frequency=ModelAttributeFrequency.EQUALITY_CONSTRAINT,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.EQUALITY_CONSTRAINT,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec5,
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
@@ -407,8 +445,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="impratio",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1.0,
                 namespace="mujoco",
@@ -528,21 +566,21 @@ class SolverMuJoCo(SolverBase):
         # These are used for general/motor actuators parsed from MJCF
         # All actuator attributes share the "actuator" custom frequency (resolves to "mujoco:actuator" via namespace)
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
-        def parse_trntype(s: str) -> int:
+        def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5}.get(
                 s.lower(), 0
             )
 
-        def parse_dyntype(s: str) -> int:
+        def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4, "user": 5}.get(s.lower(), 0)
 
-        def parse_gaintype(s: str) -> int:
+        def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"fixed": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)
 
-        def parse_biastype(s: str) -> int:
+        def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
             return {"none": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)
 
-        def parse_bool_int(s: str) -> int:
+        def parse_bool_int(s: str, _context: dict[str, Any] | None = None) -> int:
             """Parse MJCF boolean values to int (0 or 1)."""
             s = s.strip().lower()
             return 1 if s in ("true", "1") else 0
@@ -551,7 +589,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_trntype",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # TrnType.JOINT
                 namespace="mujoco",
@@ -563,7 +601,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_dyntype",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # DynType.NONE
                 namespace="mujoco",
@@ -575,7 +613,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_gaintype",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # GainType.FIXED
                 namespace="mujoco",
@@ -587,7 +625,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_biastype",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # BiasType.NONE
                 namespace="mujoco",
@@ -600,7 +638,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_trnid",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2i,
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
@@ -611,7 +649,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_world",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -622,7 +660,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_ctrllimited",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -634,7 +672,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_forcelimited",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -646,7 +684,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_ctrlrange",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
@@ -657,7 +695,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_forcerange",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
@@ -668,7 +706,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_gear",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.types.vector(length=6, dtype=wp.float32),
                 default=wp.types.vector(length=6, dtype=wp.float32)(1.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -680,7 +718,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_dynprm",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -692,7 +730,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_gainprm",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -704,7 +742,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_biasprm",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=vec10,
                 default=vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -716,7 +754,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_actlimited",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -729,7 +767,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_actrange",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec2,
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
@@ -741,7 +779,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_actdim",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=-1,
                 namespace="mujoco",
@@ -753,7 +791,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="actuator_actearly",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
@@ -766,7 +804,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="ctrl",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.CONTROL,
+                assignment=AttributeAssignment.CONTROL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -777,7 +815,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomAttribute(
                 name="ctrl_source",
                 frequency="actuator",
-                assignment=ModelAttributeAssignment.MODEL,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=int(SolverMuJoCo.CtrlSource.CTRL_DIRECT),
                 namespace="mujoco",
@@ -830,7 +868,7 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        def parse_limited(value: str) -> int:
+        def parse_limited(value: str, context: dict[str, Any] | None = None) -> int:
             """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
             v = value.lower().strip()
             if v in ("false", "0"):
@@ -1829,7 +1867,7 @@ class SolverMuJoCo(SolverBase):
 
         # Launch kernel to populate the inverse mapping
         wp.launch(
-            _create_inverse_shape_mapping_kernel,
+            create_inverse_shape_mapping_kernel,
             dim=(nworld, ngeom),
             inputs=[
                 self.mjc_geom_to_newton_shape,
@@ -3002,9 +3040,9 @@ class SolverMuJoCo(SolverBase):
                     if joint_dof_limit_margin is not None:
                         joint_params["margin"] = joint_dof_limit_margin[ai]
                     if joint_stiffness is not None:
-                        joint_params["stiffness"] = joint_stiffness[ai]
+                        joint_params["stiffness"] = joint_stiffness[ai] * (np.pi / 180)
                     if joint_damping is not None:
-                        joint_params["damping"] = joint_damping[ai]
+                        joint_params["damping"] = joint_damping[ai] * (np.pi / 180)
                     if joint_actgravcomp is not None:
                         joint_params["actgravcomp"] = joint_actgravcomp[ai]
                     lower, upper = joint_limit_lower[ai], joint_limit_upper[ai]
@@ -3031,9 +3069,9 @@ class SolverMuJoCo(SolverBase):
                         joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
                     if joint_springref is not None:
-                        joint_params["springref"] = joint_springref[ai]
+                        joint_params["springref"] = np.rad2deg(joint_springref[ai])
                     if joint_ref is not None:
-                        joint_params["ref"] = joint_ref[ai]
+                        joint_params["ref"] = np.rad2deg(joint_ref[ai])
 
                     axname = name
                     if lin_axis_count > 1 or ang_axis_count > 1:
