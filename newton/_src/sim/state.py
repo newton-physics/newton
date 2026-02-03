@@ -49,6 +49,12 @@ class State:
         """Validate names passed to request_state_attributes().
 
         Only extended state attributes listed in :attr:`EXTENDED_ATTRIBUTES` are accepted.
+
+        Args:
+            attributes: Tuple of attribute names to validate.
+
+        Raises:
+            ValueError: If any attribute name is not in :attr:`EXTENDED_ATTRIBUTES`.
         """
         if not attributes:
             return
@@ -57,7 +63,7 @@ class State:
         if invalid:
             allowed = ", ".join(sorted(cls.EXTENDED_ATTRIBUTES))
             bad = ", ".join(invalid)
-            raise ValueError(f"Unknown extended State attribute(s): {bad}. Allowed extended attributes: {allowed}.")
+            raise ValueError(f"Unknown extended state attribute(s): {bad}. Allowed: {allowed}.")
 
     def __init__(self) -> None:
         """

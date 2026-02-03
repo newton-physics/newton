@@ -7,6 +7,7 @@ Newton's :class:`~newton.State` and :class:`~newton.Contacts` objects can option
 These *extended attributes* are allocated on demand when explicitly requested, reducing memory usage for simulations that don't need them.
 
 .. _extended_contact_attributes:
+
 Extended Contact Attributes
 ---------------------------
 
@@ -39,6 +40,7 @@ The canonical list is :attr:`Contacts.EXTENDED_ATTRIBUTES <newton.Contacts.EXTEN
 
 
 .. _extended_state_attributes:
+
 Extended State Attributes
 -------------------------
 

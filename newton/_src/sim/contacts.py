@@ -37,8 +37,9 @@ class Contacts:
     Names of optional extended contact attributes that are not allocated by default.
 
     These can be requested via :meth:`newton.ModelBuilder.request_contact_attributes` or
-    :meth:`newton.Model.request_contact_attributes` before calling :meth:`newton.Model.collide`
-    or the solver's ``contacts()`` method.
+    :meth:`newton.Model.request_contact_attributes` before calling :meth:`newton.Model.collide`.
+
+    See :ref:`extended_contact_attributes` for details and usage.
     """
 
     @classmethod
