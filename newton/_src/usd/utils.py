@@ -1160,6 +1160,31 @@ def _get_unconnected_input_value(shader: UsdShade.Shader | None, names: tuple[st
     return None
 
 
+def _empty_material_properties() -> dict[str, Any]:
+    """Return an empty material properties dictionary."""
+    return {"color": None, "metallic": None, "roughness": None, "texture": None}
+
+
+def _coerce_color(value: Any) -> tuple[float, float, float] | None:
+    """Coerce a value to an RGB color tuple, or None if not possible."""
+    if value is None:
+        return None
+    color_np = np.array(value, dtype=np.float32).reshape(-1)
+    if color_np.size >= 3:
+        return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+    return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    """Coerce a value to a float, or None if not possible."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract material properties from a UsdPreviewSurface shader.
 
@@ -1170,12 +1195,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
     Returns:
         Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
     """
-    properties: dict[str, Any] = {
-        "color": None,
-        "metallic": None,
-        "roughness": None,
-        "texture": None,
-    }
+    properties = _empty_material_properties()
     if shader is None:
         return properties
     shader_id = shader.GetIdAttr().Get()
@@ -1200,16 +1220,9 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                         "displayColor",
                     ),
                 )
-                if color_value is not None:
-                    color_np = np.array(color_value, dtype=np.float32)
-                    if color_np.size >= 3:
-                        properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+                properties["color"] = _coerce_color(color_value)
         else:
-            color_value = color_input.Get()
-            if color_value is not None:
-                color_np = np.array(color_value, dtype=np.float32)
-                if color_np.size >= 3:
-                    properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+            properties["color"] = _coerce_color(color_input.Get())
 
     metallic_input = shader.GetInput("metallic")
     if metallic_input:
@@ -1221,17 +1234,14 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             source = metallic_input.GetConnectedSource()
             source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
             metallic_value = _get_unconnected_input_value(source_shader, ("metallic", "metallic_constant"))
-            if metallic_value is not None:
-                properties["metallic"] = float(metallic_value)
-            else:
+            properties["metallic"] = _coerce_float(metallic_value)
+            if properties["metallic"] is None:
                 warnings.warn(
                     "Metallic texture inputs are not yet supported; using scalar fallback.",
                     stacklevel=2,
                 )
         else:
-            metallic_value = metallic_input.Get()
-            if metallic_value is not None:
-                properties["metallic"] = float(metallic_value)
+            properties["metallic"] = _coerce_float(metallic_input.Get())
 
     roughness_input = shader.GetInput("roughness")
     if roughness_input:
@@ -1246,17 +1256,14 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                 source_shader,
                 ("roughness", "roughness_constant", "reflection_roughness_constant"),
             )
-            if roughness_value is not None:
-                properties["roughness"] = float(roughness_value)
-            else:
+            properties["roughness"] = _coerce_float(roughness_value)
+            if properties["roughness"] is None:
                 warnings.warn(
                     "Roughness texture inputs are not yet supported; using scalar fallback.",
                     stacklevel=2,
                 )
         else:
-            roughness_value = roughness_input.Get()
-            if roughness_value is not None:
-                properties["roughness"] = float(roughness_value)
+            properties["roughness"] = _coerce_float(roughness_input.Get())
 
     return properties
 
@@ -1283,38 +1290,9 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
     except Exception:
         return properties
 
-    def _get_input_value(name: str):
-        inp = shader.GetInput(name)
-        if inp is None:
-            return None
-        try:
-            if inp.HasConnectedSource():
-                return None
-        except Exception:
-            return None
-        return inp.Get()
-
-    def _get_input_color(names: tuple[str, ...]):
-        for name in names:
-            value = _get_input_value(name)
-            if value is not None:
-                color_np = np.array(value, dtype=np.float32)
-                if color_np.size >= 3:
-                    return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
-        return None
-
-    def _get_input_float(names: tuple[str, ...]):
-        for name in names:
-            value = _get_input_value(name)
-            if value is not None:
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    continue
-        return None
-
     if properties["color"] is None:
-        properties["color"] = _get_input_color(
+        color_value = _get_unconnected_input_value(
+            shader,
             (
                 "diffuse_color_constant",
                 "diffuse_color",
@@ -1322,12 +1300,17 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
                 "base_color",
                 "baseColor",
                 "displayColor",
-            )
+            ),
         )
+        properties["color"] = _coerce_color(color_value)
     if properties["metallic"] is None:
-        properties["metallic"] = _get_input_float(("metallic_constant", "metallic"))
+        metallic_value = _get_unconnected_input_value(shader, ("metallic_constant", "metallic"))
+        properties["metallic"] = _coerce_float(metallic_value)
     if properties["roughness"] is None:
-        properties["roughness"] = _get_input_float(("reflection_roughness_constant", "roughness_constant", "roughness"))
+        roughness_value = _get_unconnected_input_value(
+            shader, ("reflection_roughness_constant", "roughness_constant", "roughness")
+        )
+        properties["roughness"] = _coerce_float(roughness_value)
 
     if properties["texture"] is None:
         for inp in shader.GetInputs():
@@ -1354,30 +1337,9 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
     This supports assets that author texture references directly on the Material,
     without creating a shader network.
     """
-    properties: dict[str, Any] = {
-        "color": None,
-        "metallic": None,
-        "roughness": None,
-        "texture": None,
-    }
+    properties = _empty_material_properties()
     if material is None:
         return properties
-
-    def _coerce_color(value: Any) -> tuple[float, float, float] | None:
-        if value is None:
-            return None
-        color_np = np.array(value, dtype=np.float32).reshape(-1)
-        if color_np.size >= 3:
-            return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
-        return None
-
-    def _coerce_float(value: Any) -> float | None:
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
 
     for inp in material.GetInputs():
         name = inp.GetBaseName()
@@ -1427,6 +1389,90 @@ def _extract_material_input_properties(material: UsdShade.Material | None, prim:
     return properties
 
 
+def _get_bound_material(target_prim: Usd.Prim) -> UsdShade.Material | None:
+    """Get the material bound to a prim."""
+    if not target_prim or not target_prim.IsValid():
+        return None
+    if target_prim.HasAPI(UsdShade.MaterialBindingAPI):
+        binding_api = UsdShade.MaterialBindingAPI(target_prim)
+        bound_material, _ = binding_api.ComputeBoundMaterial()
+        return bound_material
+
+    # Some assets author material:binding relationships without applying MaterialBindingAPI.
+    rels = [rel for rel in target_prim.GetRelationships() if rel.GetName().startswith("material:binding")]
+    if not rels:
+        return None
+    rels.sort(
+        key=lambda rel: 0
+        if rel.GetName() == "material:binding"
+        else 1
+        if rel.GetName() == "material:binding:preview"
+        else 2
+    )
+    for rel in rels:
+        targets = rel.GetTargets()
+        if targets:
+            mat_prim = target_prim.GetStage().GetPrimAtPath(targets[0])
+            if mat_prim and mat_prim.IsValid():
+                return UsdShade.Material(mat_prim)
+    return None
+
+
+def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] | None:
+    """Resolve material properties from a prim's bound material.
+
+    Returns None if no material is bound or no properties could be extracted.
+    """
+    material = _get_bound_material(target_prim)
+    if not material:
+        return None
+
+    surface_output = material.GetSurfaceOutput()
+    if not surface_output:
+        surface_output = material.GetOutput("surface")
+    if not surface_output:
+        surface_output = material.GetOutput("mdl:surface")
+
+    source_shader = None
+    if surface_output:
+        source = surface_output.GetConnectedSource()
+        if source:
+            source_shader = UsdShade.Shader(source[0].GetPrim())
+
+    if source_shader is None:
+        # Fallback: scan material children for a shader node (MDL-style materials).
+        for child in material.GetPrim().GetChildren():
+            if child.IsA(UsdShade.Shader):
+                source_shader = UsdShade.Shader(child)
+                break
+
+    if source_shader is not None:
+        try:
+            shader_id = source_shader.GetIdAttr().Get()
+        except Exception:
+            shader_id = None
+        if not shader_id:
+            source_shader = None
+
+    if source_shader is None:
+        material_props = _extract_material_input_properties(material, target_prim)
+        if any(value is not None for value in material_props.values()):
+            return material_props
+        return None
+
+    properties = _extract_shader_properties(source_shader, target_prim)
+    material_props = _extract_material_input_properties(material, target_prim)
+    for key in ("texture", "color", "metallic", "roughness"):
+        if properties.get(key) is None and material_props.get(key) is not None:
+            properties[key] = material_props[key]
+    if properties["color"] is None and properties["texture"] is None:
+        display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
+        if display_color:
+            properties["color"] = _coerce_color(display_color.Get())
+
+    return properties
+
+
 def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
     """Resolve surface material properties bound to a prim.
 
@@ -1437,90 +1483,9 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
         Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
     """
     if not prim or not prim.IsValid():
-        return {"color": None, "metallic": None, "roughness": None, "texture": None}
+        return _empty_material_properties()
 
-    def _get_bound_material(target_prim: Usd.Prim):
-        if not target_prim or not target_prim.IsValid():
-            return None
-        if target_prim.HasAPI(UsdShade.MaterialBindingAPI):
-            binding_api = UsdShade.MaterialBindingAPI(target_prim)
-            bound_material, _ = binding_api.ComputeBoundMaterial()
-            return bound_material
-
-        # Some assets author material:binding relationships without applying MaterialBindingAPI.
-        rels = [rel for rel in target_prim.GetRelationships() if rel.GetName().startswith("material:binding")]
-        if not rels:
-            return None
-        rels.sort(
-            key=lambda rel: 0
-            if rel.GetName() == "material:binding"
-            else 1
-            if rel.GetName() == "material:binding:preview"
-            else 2
-        )
-        for rel in rels:
-            targets = rel.GetTargets()
-            if targets:
-                mat_prim = target_prim.GetStage().GetPrimAtPath(targets[0])
-                if mat_prim and mat_prim.IsValid():
-                    return UsdShade.Material(mat_prim)
-        return None
-
-    def _resolve_properties(target_prim: Usd.Prim) -> dict[str, Any] | None:
-        material = _get_bound_material(target_prim)
-        if not material:
-            return None
-
-        surface_output = material.GetSurfaceOutput()
-        if not surface_output:
-            surface_output = material.GetOutput("surface")
-        if not surface_output:
-            surface_output = material.GetOutput("mdl:surface")
-
-        source_shader = None
-        if surface_output:
-            source = surface_output.GetConnectedSource()
-            if source:
-                source_shader = UsdShade.Shader(source[0].GetPrim())
-
-        if source_shader is None:
-            # Fallback: scan material children for a shader node (MDL-style materials).
-            for child in material.GetPrim().GetChildren():
-                if child.IsA(UsdShade.Shader):
-                    source_shader = UsdShade.Shader(child)
-                    break
-
-        if source_shader is not None:
-            try:
-                shader_id = source_shader.GetIdAttr().Get()
-            except Exception:
-                shader_id = None
-            if not shader_id:
-                source_shader = None
-
-        if source_shader is None:
-            material_props = _extract_material_input_properties(material, target_prim)
-            if any(value is not None for value in material_props.values()):
-                return material_props
-            return None
-
-        properties = _extract_shader_properties(source_shader, target_prim)
-        material_props = _extract_material_input_properties(material, target_prim)
-        for key in ("texture", "color", "metallic", "roughness"):
-            if properties.get(key) is None and material_props.get(key) is not None:
-                properties[key] = material_props[key]
-        if properties["color"] is None and properties["texture"] is None:
-            display_color = UsdGeom.PrimvarsAPI(target_prim).GetPrimvar("displayColor")
-            if display_color:
-                color_value = display_color.Get()
-                if color_value is not None:
-                    color_np = np.array(color_value, dtype=np.float32).reshape(-1)
-                    if color_np.size >= 3:
-                        properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
-
-        return properties
-
-    properties = _resolve_properties(prim)
+    properties = _resolve_prim_material_properties(prim)
     if properties is not None:
         return properties
 
@@ -1533,7 +1498,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
     except Exception:
         proto_prim = None
     if proto_prim and proto_prim.IsValid():
-        properties = _resolve_properties(proto_prim)
+        properties = _resolve_prim_material_properties(proto_prim)
         if properties is not None:
             return properties
 
@@ -1551,7 +1516,7 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
                     is_subset = False
                 if not is_subset:
                     continue
-                subset_props = _resolve_properties(child)
+                subset_props = _resolve_prim_material_properties(child)
                 if subset_props is None:
                     continue
                 if subset_props.get("texture") is not None or subset_props.get("color") is not None:
@@ -1561,4 +1526,4 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
             if fallback_props is not None:
                 return fallback_props
 
-    return {"color": None, "metallic": None, "roughness": None, "texture": None}
+    return _empty_material_properties()
