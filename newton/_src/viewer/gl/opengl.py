@@ -936,12 +936,12 @@ class RendererGL:
 
         self._env_texture = None
         self._env_intensity = 1.0
-        self._pending_env_map = None
+        self._env_path = None
         self._env_texture_obj = None
 
         default_env = os.path.join(os.path.dirname(__file__), "newton_envmap.jpg")
         if os.path.exists(default_env):
-            self._pending_env_map = default_env
+            self._env_path = default_env
         self._mouse_drag_callbacks = []
         self._mouse_press_callbacks = []
         self._mouse_release_callbacks = []
@@ -1034,12 +1034,12 @@ class RendererGL:
         self._projection_matrix = self.camera.get_projection_matrix()
 
         # Lazy-load environment map after a valid GL context is active
-        if self._pending_env_map is not None and self._env_texture is None:
+        if self._env_path is not None and self._env_texture is None:
             try:
-                self.set_environment_map(self._pending_env_map)
+                self.set_environment_map(self._env_path)
             except Exception:
                 pass
-            self._pending_env_map = None
+            self._env_path = None
 
         # 1. render depth of scene to texture (from light's perspective)
         gl.glViewport(0, 0, self._shadow_width, self._shadow_height)
