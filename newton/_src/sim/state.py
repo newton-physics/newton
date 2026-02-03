@@ -29,7 +29,7 @@ class State:
     store and update the simulation's current configuration and derived data.
     """
 
-    EXTENDED_STATE_ATTRIBUTES: frozenset[str] = frozenset(
+    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(
         (
             "body_qdd",
             "body_parent_f",
@@ -45,17 +45,17 @@ class State:
     """
 
     @classmethod
-    def validate_extended_state_attributes(cls, attributes: tuple[str, ...]) -> None:
+    def validate_extended_attributes(cls, attributes: tuple[str, ...]) -> None:
         """Validate names passed to request_state_attributes().
 
-        Only extended state attributes listed in :attr:`EXTENDED_STATE_ATTRIBUTES` are accepted.
+        Only extended state attributes listed in :attr:`EXTENDED_ATTRIBUTES` are accepted.
         """
         if not attributes:
             return
 
-        invalid = sorted(set(attributes).difference(cls.EXTENDED_STATE_ATTRIBUTES))
+        invalid = sorted(set(attributes).difference(cls.EXTENDED_ATTRIBUTES))
         if invalid:
-            allowed = ", ".join(sorted(cls.EXTENDED_STATE_ATTRIBUTES))
+            allowed = ", ".join(sorted(cls.EXTENDED_ATTRIBUTES))
             bad = ", ".join(invalid)
             raise ValueError(f"Unknown extended State attribute(s): {bad}. Allowed extended attributes: {allowed}.")
 

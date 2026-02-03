@@ -769,7 +769,7 @@ class Model:
         Args:
             *attributes: Variable number of attribute names (strings).
         """
-        State.validate_extended_state_attributes(attributes)
+        State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def request_contact_attributes(self, *attributes: str) -> None:
@@ -779,7 +779,7 @@ class Model:
         Args:
             *attributes: Variable number of attribute names (strings).
         """
-        Contacts.validate_extended_contact_attributes(attributes)
+        Contacts.validate_extended_attributes(attributes)
         self._requested_contact_attributes.update(attributes)
 
     def get_requested_contact_attributes(self) -> set[str]:

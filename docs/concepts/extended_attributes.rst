@@ -26,7 +26,7 @@ Request them via :meth:`Model.request_contact_attributes <newton.Model.request_c
        requested_attributes=model.get_requested_contact_attributes(),
    )
 
-The canonical list is :attr:`Contacts.EXTENDED_CONTACT_ATTRIBUTES <newton.Contacts.EXTENDED_CONTACT_ATTRIBUTES>`:
+The canonical list is :attr:`Contacts.EXTENDED_ATTRIBUTES <newton.Contacts.EXTENDED_ATTRIBUTES>`:
 
 .. list-table::
    :header-rows: 1
@@ -54,7 +54,7 @@ Request them via :meth:`Model.request_state_attributes <newton.Model.request_sta
 
    state = model.state()  # state.body_qdd is now allocated
 
-The canonical list is :attr:`State.EXTENDED_STATE_ATTRIBUTES <newton.State.EXTENDED_STATE_ATTRIBUTES>`:
+The canonical list is :attr:`State.EXTENDED_ATTRIBUTES <newton.State.EXTENDED_ATTRIBUTES>`:
 
 .. list-table::
    :header-rows: 1

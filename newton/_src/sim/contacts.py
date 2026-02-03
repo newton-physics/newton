@@ -32,7 +32,7 @@ class Contacts:
         This class is a temporary solution and its interface may change in the future.
     """
 
-    EXTENDED_CONTACT_ATTRIBUTES: frozenset[str] = frozenset(("force",))
+    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(("force",))
     """
     Names of optional extended contact attributes that are not allocated by default.
 
@@ -42,23 +42,23 @@ class Contacts:
     """
 
     @classmethod
-    def validate_extended_contact_attributes(cls, attributes: tuple[str, ...]) -> None:
+    def validate_extended_attributes(cls, attributes: tuple[str, ...]) -> None:
         """Validate names passed to request_contact_attributes().
 
-        Only extended contact attributes listed in :attr:`EXTENDED_CONTACT_ATTRIBUTES` are accepted.
+        Only extended contact attributes listed in :attr:`EXTENDED_ATTRIBUTES` are accepted.
 
         Args:
             attributes: Tuple of attribute names to validate.
 
         Raises:
-            ValueError: If any attribute name is not in :attr:`EXTENDED_CONTACT_ATTRIBUTES`.
+            ValueError: If any attribute name is not in :attr:`EXTENDED_ATTRIBUTES`.
         """
         if not attributes:
             return
 
-        invalid = sorted(set(attributes).difference(cls.EXTENDED_CONTACT_ATTRIBUTES))
+        invalid = sorted(set(attributes).difference(cls.EXTENDED_ATTRIBUTES))
         if invalid:
-            allowed = ", ".join(sorted(cls.EXTENDED_CONTACT_ATTRIBUTES))
+            allowed = ", ".join(sorted(cls.EXTENDED_ATTRIBUTES))
             bad = ", ".join(invalid)
             raise ValueError(f"Unknown extended contact attribute(s): {bad}. Allowed: {allowed}.")
 
@@ -86,7 +86,7 @@ class Contacts:
                 to overwrite active contacts. This is much faster (86-90% fewer kernel launches)
                 and safe since solvers only read up to contact_count.
             requested_attributes: Set of extended contact attribute names to allocate.
-                See :attr:`EXTENDED_CONTACT_ATTRIBUTES` for available options.
+                See :attr:`EXTENDED_ATTRIBUTES` for available options.
         """
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
@@ -139,8 +139,7 @@ class Contacts:
             First three entries: normal force magnitude, tangent force components; last three: torques.
             When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
 
-            This is an extended contact attribute and is only allocated when requested via
-            :meth:`newton.Model.request_contact_attributes` or :meth:`newton.ModelBuilder.request_contact_attributes`.
+            This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
             """
             if requested_attributes and "force" in requested_attributes:
                 total_contacts = rigid_contact_max + soft_contact_max
