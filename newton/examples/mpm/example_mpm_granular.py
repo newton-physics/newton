@@ -388,6 +388,7 @@ if __name__ == "__main__":
     parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.0)
     parser.add_argument("--yield-stress", "-ys", type=float, default=0.0)
     parser.add_argument("--hardening", type=float, default=0.0)
+    parser.add_argument("--dilatancy", type=float, default=0.0)
 
     parser.add_argument("--grid-type", "-gt", type=str, default="sparse", choices=["sparse", "fixed", "dense"])
     parser.add_argument("--grid-padding", "-gp", type=int, default=0)

@@ -25,14 +25,17 @@ from warp.fem.linalg import array_axpy, symmetric_eigenvalues_qr
 from warp.optim.linear import cg, LinearOperator
 
 
-_DELASSUS_PROXIMAL_REG = wp.constant(1.0e-9)
+_DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
 
-__SLIDING_NEWTON_TOL = wp.constant(1.0e-12)
+__SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
 
 _INCLUDE_LEFTOVER_STRAIN = wp.constant(False)
 "Whether to include leftover strain (due to not fully-converged implicit solve) in the elastic strain. More accurate, but less stable for stiff materials"
+
+_USE_CAM_CLAY = wp.constant(False)
+"""Use Modified Cam-Clay flow rule instead of our custom one"""
 
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 
@@ -45,7 +48,7 @@ mat31 = wp.vec3
 wp.set_module_options({"enable_backward": False})
 
 
-class YieldParamVec(wp.vec4):
+class YieldParamVec(wp.types.vector(length=5, dtype=wp.float32)):
     """Compact yield surface definition in an interpolation-friendly format:
     [p_max sqrt_3_2, -p_min sqrt_3_2, s_max, mu p_max] in scaled units.
 
@@ -54,13 +57,20 @@ class YieldParamVec(wp.vec4):
     """
 
     @wp.func
-    def from_values(friction_coeff: float, yield_pressure: float, tensile_yield_ratio: float, yield_stress: float):
+    def from_values(
+        friction_coeff: float,
+        yield_pressure: float,
+        tensile_yield_ratio: float,
+        yield_stress: float,
+        dilatancy: float,
+    ):
         pressure_scale = wp.sqrt(3.0 / 2.0)
         return YieldParamVec(
             yield_pressure * pressure_scale,
             tensile_yield_ratio * yield_pressure * pressure_scale,
             yield_stress,
             friction_coeff * yield_pressure,
+            dilatancy,
         )
 
 
@@ -71,13 +81,36 @@ def normal_yield_bounds(yield_params: YieldParamVec):
 
 
 @wp.func
-def shear_yield_stress(yield_params: YieldParamVec, r_N: float):
+def shear_yield_stress_camclay(yield_params: YieldParamVec, r_N: float):
+    r_N_min, r_N_max = normal_yield_bounds(yield_params)
+
+    mu = wp.where(r_N_max > 0.0, wp.max(0.0, yield_params[3] / r_N_max), 0.0)
+
+    r_N = wp.clamp(r_N, r_N_min, r_N_max)
+
+    beta_sq = mu * mu / (1.0 - 2.0 * (r_N_min / r_N_max))
+    y_sq = beta_sq * (r_N - r_N_min) * (r_N_max - r_N)
+
+    return wp.sqrt(y_sq), 0.0, r_N_min, r_N_max
+
+
+@wp.func
+def shear_yield_stress_v2(yield_params: YieldParamVec, r_N: float):
     """Maximum deviatoric stress for a given value of the normal stress."""
     p_min, p_max = normal_yield_bounds(yield_params)
 
     mu = wp.where(p_max > 0.0, wp.max(0.0, yield_params[3] / p_max), 0.0)
     s = wp.max(yield_params[2], 0.0)
-    return s + wp.min(0.5 * yield_params[3], mu * wp.min(r_N - p_min, p_max - r_N))
+
+    r_N = wp.clamp(r_N, p_min, p_max)
+    p1 = p_min + 0.5 * p_max
+    p2 = 0.5 * p_max
+    if r_N < p1:
+        return s + mu * (r_N - p_min), mu, p_min, p1
+    elif r_N > p2:
+        return s + mu * (p_max - r_N), -mu, p2, p_max
+    else:
+        return s + mu * p2, 0.0, p1, p2
 
 
 @wp.func
@@ -178,7 +211,9 @@ def compute_delassus_diagonal(
 
 
 @wp.kernel
-def project_initial_stress(
+def preprocess_stress_and_strain(
+    unilateral_strain_offset: wp.array(dtype=float),
+    strain_rhs: wp.array(dtype=vec6),
     stress: wp.array(dtype=vec6),
     yield_stress: wp.array(dtype=YieldParamVec),
 ):
@@ -187,17 +222,19 @@ def project_initial_stress(
     tau_i = wp.tid()
 
     yield_params = yield_stress[tau_i]
+    offset = unilateral_strain_offset[tau_i]
+
+    if offset > 0.0:
+        # add unilateral strain offset to strain rhs
+        # will be removed in postprocess_stress_and_strain
+        b = strain_rhs[tau_i]
+        b += fem.SymmetricTensorMapper.value_to_dof_3d(offset / 3.0 * wp.identity(n=3, dtype=float))
+        strain_rhs[tau_i] = b
+
+        yield_params[1] = 0.0  # disable cohesion if offset > 0 (not compact)
+        yield_stress[tau_i] = yield_params
 
     sig = stress[tau_i]
-
-    # Only accept initial stress guesses when there's no adhesion
-    # Otherwise there's risk of amplifying instabilities in the stress space
-    # (e.g. checkerboard patterns)
-    # TODO find a more focused way to do this
-    # p_min, _p_max = normal_yield_bounds(yield_params)
-    # if p_min < 0.0:
-    #     sig = vec6(0.0)
-
     stress[tau_i] = project_stress(sig, yield_params)
 
 
@@ -226,6 +263,9 @@ def postprocess_stress_and_strain(
     tau_i = wp.tid()
 
     minus_elastic_strain = strain_rhs[tau_i]
+    minus_elastic_strain -= fem.SymmetricTensorMapper.value_to_dof_3d(
+        unilateral_strain_offset[tau_i] / 3.0 * wp.identity(n=3, dtype=float)
+    )
     comp_block_beg = compliance_mat_offsets[tau_i]
     comp_block_end = compliance_mat_offsets[tau_i + 1]
     for b in range(comp_block_beg, comp_block_end):
@@ -246,11 +286,26 @@ def postprocess_stress_and_strain(
     diag = delassus_diagonal[tau_i]
 
     loc_plastic_strain = _world_to_local(world_plastic_strain, rot)
-    loc_stress = wp.cw_mul(_world_to_local(stress[tau_i], rot), diag)
+    loc_stress = _world_to_local(stress[tau_i], rot)
 
+    yp = yield_params[tau_i]
     loc_plastic_strain_new = solve_flow_rule_aniso(
-        diag, loc_plastic_strain - loc_stress, unilateral_strain_offset[tau_i], yield_params[tau_i]
+        diag, loc_plastic_strain - wp.cw_mul(loc_stress, diag), loc_stress, yp
     )
+    loc_stress += wp.cw_div(loc_plastic_strain_new - loc_plastic_strain, diag)
+
+    # p_min, p_max = normal_yield_bounds(yp)
+    # mu = wp.where(p_max > 0.0, wp.max(0.0, yp[3] / p_max), 0.0)
+    # loc_plastic_strain_t = loc_plastic_strain_new
+    # loc_plastic_strain_t[0] = 0.0
+
+    # if loc_stress[0] < 0.5 * (p_max + p_min):
+    #     r = 1.0 - (loc_stress[0] - p_min) / (0.5 * (p_max - p_min))
+    #     loc_plastic_strain_new[0] += mu * r * wp.length(loc_plastic_strain_t)
+    # if loc_stress[0] > 0.5 * (p_max + p_min):
+    #     r = 1.0 - (p_max - loc_stress[0]) / (0.5 * (p_max - p_min))
+    #     loc_plastic_strain_new[0] -= mu * r * wp.length(loc_plastic_strain_t)
+
     world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot)
 
     if _INCLUDE_LEFTOVER_STRAIN:
@@ -261,11 +316,119 @@ def postprocess_stress_and_strain(
 
 
 @wp.func
-def eval_sliding_residual(alpha: float, D: vec6, b_T: vec6):
+def eval_sliding_residual_v2(alpha: float, D: Any, b_T: Any, gamma: float, mu_rn: float):
     """Evaluates the value and gradient of the residual of the
     sliding velocity-to-force ratio
     """
-    d_alpha = D + vec6(alpha)
+    d_alpha = D + type(D)(alpha)
+
+    r_alpha = wp.cw_div(b_T, d_alpha)
+    r_alpha_norm = wp.length(r_alpha)
+    dr_dalpha = -wp.cw_div(r_alpha, d_alpha * r_alpha_norm)
+
+    g = 1.0 - gamma * alpha
+
+    f = r_alpha_norm * g - mu_rn
+    df_dalpha = wp.dot(r_alpha, dr_dalpha) * g - r_alpha_norm * gamma
+
+    return f, df_dalpha
+
+
+@wp.func
+def solve_sliding_aniso_v2(
+    D: Any,
+    b: Any,
+    yield_stress: float,
+    yield_stress_deriv: float,
+    theta: float,
+):
+    """Solves for the tangential component of the relative velocity in the 'sliding' case
+    of the frictional contact model.
+
+    Returns:
+        Tangential component of the relative velocity u_T such that
+        u_T = -alpha r_T = D r_T + b_T and |r_T| = yield_stress
+    """
+
+    # yield_stress = f_yield( r_N0 )
+    # r_N0 = ( u_N0 - b_N )/ D[0]
+    # |r_T| = yield_stress + yield_stress_deriv * (r_N - r_N0)
+    # |r_T| = yield_stress + yield_stress_deriv * (u_N - u_N0) / D[0]
+    # |r_T| = yield_stress_0 + yield_stress_deriv^2 * theta * |u_T| / D[0]
+    # |r_T| = yield_stress_0 + yield_stress_deriv^2 * theta / D[0] * alpha * |r_T|
+    # (1.0 - yield_stress_deriv^2 * theta / D[0] * alpha) |r_T| = yield_stress
+
+    yield_stress -= yield_stress_deriv * b[0] / D[0]
+
+    b_T = b
+    b_T[0] = 0.0
+    alpha_0 = wp.length(b_T)
+
+    gamma = theta * yield_stress_deriv * yield_stress_deriv / D[0]
+    ref_stress = yield_stress + gamma * alpha_0
+
+    if ref_stress <= 0.0:
+        return b_T
+
+    # (1.0 - gamma * alpha) |r_T| = yield_stress
+    # (1.0 - gamma * alpha) |(D + alpha I)^{-1} b_t| = yield_stress
+    # (1.0 - gamma * alpha) |(D ys + alpha ys I)^{-1} b_t| = 1
+
+    # change of var: alpha -> alpha /yield_stress
+    # (1.0 - gamma * alpha) |(D ys + alpha I)^{-1} b_t| = yield_stress/ref_stress
+    Dmu_rn = D * ref_stress
+    gamma = gamma / ref_stress
+    target = yield_stress / ref_stress
+
+    # Viscous shear opposite to tangential stress, zero divergence
+    # find alpha, r_t,  mu_rn, (D + alpha/(mu r_n) I) r_t + b_t = 0, |r_t| = mu r_n
+    # find alpha,  |(D mu r_n + alpha I)^{-1} b_t|^2 = 1.0
+
+    # |b_T| = tg * (Dz + alpha) / (1 - gamma * alpha)
+    # |b_T| (1 - gamma alpha) = tg * (Dz + alpha)
+    # |b_T| = (Dz tg + alpha (tg + gamma |b_T|)
+    # |b_T| = (Dz tg + alpha) as tg + gamma |b_T| = 1 for def of ref_stress
+
+    alpha_Dmin = alpha_0 - wp.max(Dmu_rn) * target
+    alpha_Dmax = alpha_0 - wp.min(Dmu_rn) * target
+    alpha_root = 1.0 / gamma
+
+    if target > 0.0:
+        alpha_min = wp.max(0.0, alpha_Dmin)
+        alpha_max = wp.min(alpha_Dmax, alpha_root)
+    elif target < 0.0:
+        alpha_min = wp.max(alpha_Dmax, alpha_root)
+        alpha_max = alpha_Dmin
+    else:
+        alpha_max = alpha_root
+        alpha_min = alpha_root
+
+    # We're looking for the root of an hyperbola, approach using Newton from the left
+    alpha_cur = alpha_min
+
+    for _k in range(24):
+        f_cur, df_dalpha = eval_sliding_residual_v2(alpha_cur, Dmu_rn, b_T, gamma, target)
+
+        # wp.printf("alpha_cur: %f, f_cur: %f, df_dalpha: %f\n", alpha_cur, f_cur, df_dalpha)
+        delta_alpha = wp.min(-f_cur / df_dalpha, alpha_max - alpha_cur)
+
+        if delta_alpha < __SLIDING_NEWTON_TOL * alpha_max:
+            break
+
+        alpha_cur += delta_alpha
+
+    u = wp.cw_div(b_T * alpha_cur, Dmu_rn + type(D)(alpha_cur))
+    u[0] = theta * yield_stress_deriv * wp.length(u)
+
+    return u
+
+
+@wp.func
+def eval_sliding_residual(alpha: float, D: Any, b_T: Any):
+    """Evaluates the value and gradient of the residual of the
+    sliding velocity-to-force ratio
+    """
+    d_alpha = D + type(D)(alpha)
 
     r_alpha = wp.cw_div(b_T, d_alpha)
     dr_dalpha = -wp.cw_div(r_alpha, d_alpha)
@@ -276,13 +439,13 @@ def eval_sliding_residual(alpha: float, D: vec6, b_T: vec6):
 
 
 @wp.func
-def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
+def solve_sliding_aniso(D: Any, b_T: Any, yield_stress: float):
     """Solves for the tangential component of the relative velocity in the 'sliding' case
     of the frictional contact model.
 
     Returns:
         Tangential component of the relative velocity u_T such that
-        u_T = alpha r_T = D r_T + b_T and |r_T| = yield_stress
+        u_T = -alpha r_T = D r_T + b_T and |r_T| = yield_stress
     """
 
     if yield_stress <= 0.0:
@@ -311,16 +474,174 @@ def solve_sliding_aniso(D: vec6, b_T: vec6, yield_stress: float):
 
         alpha_cur = wp.clamp(alpha_cur + delta_alpha, alpha_min, alpha_max)
 
-    u_T = wp.cw_div(b_T * alpha_cur, Dmu_rn + vec6(alpha_cur))
+    u_T = wp.cw_div(b_T * alpha_cur, Dmu_rn + type(D)(alpha_cur))
 
     return u_T
+
+
+@wp.func
+def get_dilatancy(yield_params: YieldParamVec):
+    return wp.clamp(yield_params[4], 0.0, 1.0)
+
+
+@wp.func
+def solve_flow_rule_camclay(
+    D: vec6,
+    b: vec6,
+    r: vec6,
+    yield_params: YieldParamVec,
+):
+    use_nacc = get_dilatancy(yield_params) == 0.0
+
+    if use_nacc:
+        r_0 = -wp.cw_div(b, D)
+    else:
+        u = wp.cw_mul(r, D) + b
+        r_0 = r - u / wp.max(D)
+
+    r_N0 = r_0[0]
+    r_T = r_0
+    r_T[0] = 0.0
+
+    ys, dys, r_N_min, r_N_max = shear_yield_stress_camclay(yield_params, r_N0)
+
+
+    if r_N_max <= 0.0:
+        return b
+
+    if wp.length_sq(r_T) < ys * ys:
+        return vec6(0.0)
+
+    if use_nacc:
+        # Non-Associated Cam Clay
+        b_T = b
+        b_T[0] = 0.0
+        u = solve_sliding_aniso(D, b_T, ys)
+        r_N = wp.clamp(r_N0, r_N_min, r_N_max)
+        u[0] = D[0] * r_N + b[0]
+        return u
+
+    # Associated yield surface: project on 2d ellipse
+
+    mu = wp.where(r_N_max > 0.0, wp.max(0.0, yield_params[3] / r_N_max), 0.0)
+    beta_sq = mu * mu / (1.0 - 2.0 * (r_N_min / r_N_max))
+
+    # z = y^2 = beta_sq (r_N_max - r_N) (r_N - r_N_min) = - beta_sq (r_N - r_N_mid)^2 + c^2
+    # with c2 = beta_sq * (r_N_mid^2 - r_N_min * r_N_max)
+    r_mid = 0.5 * (r_N_min + r_N_max)
+    beta = wp.sqrt(beta_sq)
+    c_sq = beta_sq * (r_mid * r_mid - r_N_min * r_N_max)
+    c = wp.sqrt(c_sq)
+
+    # x = r_N - r_mid
+    # y^2 + beta_sq x^2 = c^2
+
+    y = wp.length(r_T)
+    x = r_N0 - r_mid
+
+    W = wp.vec2(beta, 1.0)
+    W_sq = wp.vec2(beta_sq, 1.0)
+    W_sq_inv = wp.vec2(1.0 / beta_sq, 1.0)
+
+    X0 = wp.vec2(x, y)
+    WinvX0 = wp.cw_div(X0, W)
+
+    # |Y| = c = |W X|
+    # W_inv Y + alpha W Y = X0
+    # W^-2 Y - W_inv X0 = - alpha Y = Z
+
+    Z = solve_sliding_aniso(W_sq_inv, -WinvX0, c)
+    Y = wp.cw_mul(W_sq, Z + WinvX0)
+
+    # rr = wp.abs(wp.length_sq(Y) - c_sq)
+    # if rr > 1.0e-2*c_sq or not (rr < 1.e16):
+    #     wp.printf("rr: %f, Y: %f, c_sq: %f\n", rr/c_sq, wp.length_sq(Y), c_sq)
+
+    # Y = wp.cw_mul(W_sq, WinvX0)
+    # Y = c * wp.normalize(Y)
+
+    X = wp.cw_div(Y, W)
+
+    r_N = r_mid + X[0]
+    murn = wp.abs(X[1])
+
+    r = wp.normalize(r_T) * murn
+    r[0] = r_N
+    u = wp.cw_mul(r, D) + b
+    return u
+
+    # u_N = r_N * D[0] + b[0]
+
+    # b_T = b
+    # b_T[0] = 0.0
+
+    # u = solve_sliding_aniso(D, b_T, murn)
+    # u[0] = u_N
+    # return u
+
+
+@wp.func
+def solve_flow_rule_aniso_v3(
+    D: vec6,
+    b: vec6,
+    r: vec6,
+    yield_params: YieldParamVec,
+):
+    dilatancy = get_dilatancy(yield_params)
+
+    r_0 = -wp.cw_div(b, D)
+    r_N0 = r_0[0]
+
+    ys, dys, pmin, pmax = shear_yield_stress_v2(yield_params, r_N0)
+
+    u_N0 = D[0] * (wp.clamp(r_N0, pmin, pmax) - r_N0)
+
+    # u_T = 0 ok
+    r_T = r_0
+    r_T[0] = 0.0
+    r_T_n = wp.length(r_T)
+    if r_T_n <= ys:
+        u = vec6(0.0)
+        u[0] = u_N0
+        return u
+
+    # r = r_T * (ys / r_T_n)
+    # r[0] =
+
+    # # r in {p_min, p_max} ok
+    # if r_N0 <= pmin or r_N0 >= pmax:
+    #     u = wp.cw_mul(r, D) + b
+    #     if wp.length_sq(u) * theta * theta < (u[0] * u[0]) * (1.0 + theta * theta):
+    #         u = solve_sliding_aniso_v2(D, b, ys, 0.0, dilatancy)
+    #         u[0] = D[0] * r[0] + b[0]
+    #         return u
+
+    # sliding
+    u = b
+    u[0] = u_N0
+    u = solve_sliding_aniso_v2(D, u, ys, dys, dilatancy)
+
+    # check for change of linear region
+    r_N_new = (u[0] - b[0]) / D[0]
+    r_N_clamp = wp.clamp(r_N_new, pmin, pmax)
+    if r_N_clamp == r_N_new:
+        return u
+
+    # wp.printf("r_N: %f, r_N_clamp: %f\n", r_N_new, r_N_clamp)
+
+    # moved from conic part to constant part. clamp and resolve tangent part
+    ys, dys, pmin, pmax = shear_yield_stress_v2(yield_params, r_N_clamp)
+    u = solve_sliding_aniso_v2(D, b, ys, 0.0, dilatancy)
+    u[0] = D[0] * (r_N_clamp - r_N0)
+
+    return u
 
 
 @wp.func
 def solve_flow_rule_aniso(
     D: vec6,
     b: vec6,
-    off: float,
+    r_guess: vec6,
     yield_params: YieldParamVec,
 ):
     """Solves the local non-associated flow-rule problem.
@@ -333,27 +654,10 @@ def solve_flow_rule_aniso(
     u_T in NC(|r_T| <= alpha s(r_N))
     """
 
-    r_0 = -wp.cw_div(b, D)
-    r_N0 = r_0[0]
-    r_N_min, r_N_max = normal_yield_bounds(yield_params)
-
-    r_N = wp.clamp(r_N0, r_N_min, 0.0) + wp.clamp(r_N0 - off / D[0], 0.0, r_N_max)
-
-    # u_N = r_N * D[0] + b_N
-    u = vec6(0.0)
-    u[0] = r_N * D[0] + b[0]
-
-    # Static friction, zero shear
-    mu_rn = shear_yield_stress(yield_params, r_N)
-    r_T = r_0
-    r_T[0] = 0.0
-
-    if wp.length_sq(r_T) > mu_rn * mu_rn:
-        # Sliding case
-        b[0] = 0.0
-        u += solve_sliding_aniso(D, b, mu_rn)
-
-    return u
+    if wp.static(_USE_CAM_CLAY):
+        return solve_flow_rule_camclay(D, b, r_guess, yield_params)
+    else:
+        return solve_flow_rule_aniso_v3(D, b, r_guess, yield_params)
 
 
 @wp.func
@@ -361,22 +665,23 @@ def project_stress(
     r: vec6,
     yield_params: YieldParamVec,
 ):
-    """Projects a stress vector onto the yield surface."""
+    """Projects a stress vector onto the yield surface (non-orthogonally)."""
 
     r_N = r[0]
     r_T = r
     r_T[0] = 0.0
 
-    r_N_min, r_N_max = normal_yield_bounds(yield_params)
-    r_N = wp.clamp(r_N, r_N_min, r_N_max)
-    mu_rn = shear_yield_stress(yield_params, r_N)
+    if wp.static(_USE_CAM_CLAY):
+        ys, dys, pmin, pmax = shear_yield_stress_camclay(yield_params, r_N)
+    else:
+        ys, dys, pmin, pmax = shear_yield_stress_v2(yield_params, r_N)
 
     r_T_n2 = wp.length_sq(r_T)
-    if r_T_n2 > mu_rn * mu_rn:
-        r_T *= mu_rn / wp.sqrt(r_T_n2)
+    if r_T_n2 > ys * ys:
+        r_T *= ys / wp.sqrt(r_T_n2)
 
     r = r_T
-    r[0] = r_N
+    r[0] = wp.clamp(r_N, pmin, pmax)
     return r
 
 
@@ -440,7 +745,6 @@ def solve_local_stress(
     yield_params: wp.array(dtype=YieldParamVec),
     delassus_diagonal: wp.array(dtype=vec6),
     delassus_rotation: wp.array(dtype=mat55),
-    unilateral_strain_offset: wp.array(dtype=float),
     cur_stress: wp.array(dtype=vec6),
 ):
     """Computes the stress delta required to satisfy the local flow rule."""
@@ -449,12 +753,12 @@ def solve_local_stress(
     local_strain = _world_to_local(strain_rhs, rot)
 
     D = delassus_diagonal[tau_i]
-    local_stress = wp.cw_mul(_world_to_local(cur_stress[tau_i], rot), D)
+    local_stress = _world_to_local(cur_stress[tau_i], rot)
 
     tau_new = solve_flow_rule_aniso(
         D,
-        local_strain - local_stress,
-        unilateral_strain_offset[tau_i],
+        local_strain - wp.cw_mul(local_stress, D),
+        local_stress,
         yield_params[tau_i],
     )
 
@@ -473,7 +777,6 @@ def solve_local_stress_jacobi(
     delassus_diagonal: wp.array(dtype=vec6),
     delassus_rotation: wp.array(dtype=mat55),
     local_strain_rhs: wp.array(dtype=vec6),
-    unilateral_strain_offset: wp.array(dtype=float),
     velocities: wp.array(dtype=wp.vec3),
     local_stress: wp.array(dtype=vec6),
     delta_correction: wp.array(dtype=vec6),
@@ -502,7 +805,6 @@ def solve_local_stress_jacobi(
         yield_params,
         delassus_diagonal,
         delassus_rotation,
-        unilateral_strain_offset,
         local_stress,
     )
 
@@ -642,7 +944,6 @@ def solve_local_stress_gs(
     delassus_rotation: wp.array(dtype=mat55),
     inv_mass_matrix: wp.array(dtype=float),  # Note: Likely inv_volume in context
     local_strain_rhs: wp.array(dtype=vec6),
-    unilateral_strain_offset: wp.array(dtype=float),
     velocities: wp.array(dtype=wp.vec3),
     local_stress: wp.array(dtype=vec6),
     delta_correction: wp.array(dtype=vec6),
@@ -679,7 +980,6 @@ def solve_local_stress_gs(
                 yield_params,
                 delassus_diagonal,
                 delassus_rotation,
-                unilateral_strain_offset,
                 local_stress,
             )
 
@@ -1181,6 +1481,8 @@ class _DelassusOperator:
 
         self._has_strain_mat_transpose = False
 
+        self.preprocess_stress_and_strain()
+
     def compute_diagonal_factorization(self, split_mass: bool):
         if self._computed and self._split_mass == split_mass:
             return
@@ -1216,6 +1518,19 @@ class _DelassusOperator:
         if not self._has_strain_mat_transpose:
             sp.bsr_set_transpose(dest=self.rheology.transposed_strain_mat, src=self.rheology.strain_mat)
             self._has_strain_mat_transpose = True
+
+    def preprocess_stress_and_strain(self):
+        # Project initial stress on yield surface
+        wp.launch(
+            kernel=preprocess_stress_and_strain,
+            dim=self.size,
+            inputs=[
+                self.rheology.unilateral_strain_offset,
+                self.rheology.elastic_strain_delta,
+                self.rheology.stress,
+                self.rheology.yield_params,
+            ],
+        )
 
     @property
     def size(self):
@@ -1315,7 +1630,6 @@ class _RheologySolver:
         )
         self.strain_residual.zero_()
 
-        self.project_initial_stress()
         self.delassus_operator.compute_diagonal_factorization(split_mass)
 
         self._evaluate_strain_residual_launch = wp.launch(
@@ -1342,17 +1656,6 @@ class _RheologySolver:
     @property
     def size(self):
         return self.rheology.stress.shape[0]
-
-    def project_initial_stress(self):
-        # Project initial stress on yield surface
-        wp.launch(
-            kernel=project_initial_stress,
-            dim=self.size,
-            inputs=[
-                self.rheology.stress,
-                self.rheology.yield_params,
-            ],
-        )
 
     def eval_residual(self):
         self._evaluate_strain_residual_launch.launch()
@@ -1423,7 +1726,6 @@ class _GaussSeidelSolver(_RheologySolver):
                 self.delassus_operator.delassus_rotation,
                 self.momentum.inv_volume,
                 self.rheology.elastic_strain_delta,
-                self.rheology.unilateral_strain_offset,
             ],
             outputs=[
                 self.momentum.velocity,
@@ -1485,7 +1787,6 @@ class _JacobiSolver(_RheologySolver):
                 self.delassus_operator.delassus_diagonal,
                 self.delassus_operator.delassus_rotation,
                 self.rheology.elastic_strain_delta,
-                self.rheology.unilateral_strain_offset,
                 self.momentum.velocity,
                 self.rheology.stress,
             ],
