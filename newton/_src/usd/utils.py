@@ -970,7 +970,9 @@ def get_mesh(
     return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
 
 
-def _resolve_asset_path(asset: Sdf.AssetPath | str | None, prim: Usd.Prim) -> str | None:
+def _resolve_asset_path(
+    asset: Sdf.AssetPath | str | os.PathLike[str] | None, prim: Usd.Prim
+) -> str | None:
     """Resolve a USD asset reference to a usable path or URL.
 
     Args:
@@ -986,8 +988,13 @@ def _resolve_asset_path(asset: Sdf.AssetPath | str | None, prim: Usd.Prim) -> st
         if asset.resolvedPath:
             return asset.resolvedPath
         asset_path = asset.path
+    elif isinstance(asset, os.PathLike):
+        asset_path = os.fspath(asset)
+    elif isinstance(asset, str):
+        asset_path = asset
     else:
-        asset_path = str(asset)
+        # Ignore non-path inputs (e.g. numeric shader parameters).
+        return None
     if not asset_path:
         return None
     if asset_path.startswith(("http://", "https://")):
