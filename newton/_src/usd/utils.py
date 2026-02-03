@@ -970,9 +970,7 @@ def get_mesh(
     return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
 
 
-def _resolve_asset_path(
-    asset: Sdf.AssetPath | str | os.PathLike[str] | None, prim: Usd.Prim
-) -> str | None:
+def _resolve_asset_path(asset: Sdf.AssetPath | str | os.PathLike[str] | None, prim: Usd.Prim) -> str | None:
     """Resolve a USD asset reference to a usable path or URL.
 
     Args:
@@ -1155,15 +1153,11 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         return None
 
     if properties["color"] is None:
-        properties["color"] = _get_input_color(
-            ("diffuse_color_constant", "diffuse_color", "base_color", "baseColor")
-        )
+        properties["color"] = _get_input_color(("diffuse_color_constant", "diffuse_color", "base_color", "baseColor"))
     if properties["metallic"] is None:
         properties["metallic"] = _get_input_float(("metallic_constant", "metallic"))
     if properties["roughness"] is None:
-        properties["roughness"] = _get_input_float(
-            ("reflection_roughness_constant", "roughness_constant", "roughness")
-        )
+        properties["roughness"] = _get_input_float(("reflection_roughness_constant", "roughness_constant", "roughness"))
 
     if properties["texture"] is None:
         for inp in shader.GetInputs():
