@@ -81,7 +81,7 @@ class Example:
             impratio=1,
         )
 
-        self.contacts = self.model.contacts(collision_pipeline=self.solver)
+        self.contacts = self.model.collide(collision_pipeline=self.solver)
 
         self.viewer.set_model(self.model)
 

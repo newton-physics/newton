@@ -46,6 +46,12 @@ class Contacts:
         """Validate names passed to request_contact_attributes().
 
         Only extended contact attributes listed in :attr:`EXTENDED_CONTACT_ATTRIBUTES` are accepted.
+
+        Args:
+            attributes: Tuple of attribute names to validate.
+
+        Raises:
+            ValueError: If any attribute name is not in :attr:`EXTENDED_CONTACT_ATTRIBUTES`.
         """
         if not attributes:
             return

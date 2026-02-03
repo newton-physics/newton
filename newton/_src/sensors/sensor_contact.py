@@ -260,7 +260,7 @@ class SensorContact:
         """
         if contacts.force is None:
             raise ValueError(
-                "SensorContact requires a ``Contacts`` object with ``force`` allocated."
+                "SensorContact requires a ``Contacts`` object with ``force`` allocated. "
                 "Create ``SensorContact`` before ``Contacts`` for automatically requesting it."
             )
         self._eval_net_force(contacts)
