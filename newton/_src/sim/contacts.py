@@ -136,7 +136,8 @@ class Contacts:
             # Extended contact attributes (optional, allocated on demand)
             self.force: wp.array | None = None
             """Contact forces (spatial), shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
-            First three entries: normal force magnitude, tangent force components; last three: torques.
+            Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
+            First three entries: linear force; last three entries: torque (moment).
             When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
 
             This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
