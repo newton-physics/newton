@@ -849,7 +849,17 @@ class ArticulationView:
                     else:
                         inner_tendon_stride = arti_tendon_count
 
-                    # Selected tendon indices relative to the template articulation
+                    # Validate that tendon indices are contiguous
+                    # Non-contiguous tendons (e.g., interleaved with other articulations) are not supported
+                    expected_contiguous = list(range(tendon_offset, tendon_offset + arti_tendon_count))
+                    if arti_tendon_ids != expected_contiguous:
+                        raise ValueError(
+                            f"Tendons for articulation are not contiguous (indices {arti_tendon_ids}, "
+                            f"expected {expected_contiguous}). Non-contiguous tendons are not supported "
+                            f"by ArticulationView."
+                        )
+
+                    # Tendons are contiguous, use range-based indexing
                     selected_tendon_indices = list(range(arti_tendon_count))
 
                     # Store with the full namespaced frequency key (mujoco:tendon)
@@ -952,7 +962,9 @@ class ArticulationView:
             # Check if this is a supported custom frequency
             # Tendon frequency can be "tendon" or "mujoco:tendon" (with namespace prefix)
             if frequency == "tendon" or frequency.endswith(":tendon"):
-                layout = self.frequency_layouts.get(frequency)
+                # Normalize to the stored key format "mujoco:tendon"
+                normalized_frequency = "mujoco:tendon"
+                layout = self.frequency_layouts.get(normalized_frequency)
                 if layout is None:
                     raise AttributeError(
                         f"Attribute '{name}' has frequency '{frequency}' but no tendons were found "

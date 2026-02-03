@@ -1912,9 +1912,13 @@ def parse_mjcf(
     # Only parse tendons if custom tendon attributes are registered
     has_tendon_attrs = "mujoco:tendon_world" in builder.custom_attributes
     if has_tendon_attrs:
+        # Compute base index from existing tendons (for multiple add_mjcf calls)
+        tendon_world_attr = builder.custom_attributes.get("mujoco:tendon_world")
+        tendon_base_idx = len(tendon_world_attr.values) if tendon_world_attr and tendon_world_attr.values else 0
+
         # Find all sections marked <tendon></tendon>
         tendon_sections = root.findall(".//tendon")
-        tendon_counter = 0
+        tendon_counter = tendon_base_idx
         for tendon_section in tendon_sections:
             tendon_counter = parse_tendons(tendon_section, tendon_counter)
 

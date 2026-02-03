@@ -7181,6 +7181,15 @@ class ModelBuilder:
                 requires_grad=requires_grad,
             )
 
+            # Copy MuJoCo tendon names to model if present (set during MJCF import)
+            # This must happen before the early return below, and we copy the list
+            # to avoid mutations to builder.mujoco.tendon_key affecting the model
+            if hasattr(self, "mujoco") and hasattr(self.mujoco, "tendon_key"):
+                # Ensure model has mujoco namespace (may not exist if no custom attrs)
+                if not hasattr(m, "mujoco"):
+                    m.mujoco = Model.AttributeNamespace("mujoco")
+                m.mujoco.tendon_key = list(self.mujoco.tendon_key)
+
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
             if not self.custom_attributes:
@@ -7271,10 +7280,6 @@ class ModelBuilder:
 
                 wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
                 m.add_attribute(custom_attr.name, wp_arr, freq_key, custom_attr.assignment, custom_attr.namespace)
-
-            # Copy MuJoCo tendon names to model if present (set during MJCF import)
-            if hasattr(self, "mujoco") and hasattr(self.mujoco, "tendon_key") and hasattr(m, "mujoco"):
-                m.mujoco.tendon_key = self.mujoco.tendon_key
 
             return m
 

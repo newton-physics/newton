@@ -265,7 +265,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
         view = ArticulationView(model, "two_prismatic_links")
         T = 1
 
-        # Test getters
+        # Test getters for implemented properties
         stiffness = view.get_fixed_tendon_stiffness(model)
         self.assertEqual(stiffness.shape, (1, 1, T))
         assert_np_equal(stiffness.numpy(), np.array([[[2.0]]]))
@@ -273,6 +273,30 @@ class TestSelectionFixedTendons(unittest.TestCase):
         damping = view.get_fixed_tendon_damping(model)
         self.assertEqual(damping.shape, (1, 1, T))
         assert_np_equal(damping.numpy(), np.array([[[1.0]]]))
+
+        rest_length = view.get_fixed_tendon_rest_length(model)
+        self.assertEqual(rest_length.shape, (1, 1, T))
+
+        pos_limits = view.get_fixed_tendon_pos_limits(model)
+        self.assertEqual(pos_limits.shape, (1, 1, T))
+
+        # Test setters for implemented properties
+        view.set_fixed_tendon_damping(model, np.array([[[2.5]]]))
+        damping = view.get_fixed_tendon_damping(model)
+        assert_np_equal(damping.numpy(), np.array([[[2.5]]]))
+
+        view.set_fixed_tendon_rest_length(model, np.array([[[[0.1, 0.2]]]]))
+        view.set_fixed_tendon_pos_limits(model, np.array([[[[-1.0, 1.0]]]]))
+
+        # Test that unimplemented methods raise NotImplementedError
+        with self.assertRaises(NotImplementedError):
+            view.get_fixed_tendon_limit_stiffness(model)
+        with self.assertRaises(NotImplementedError):
+            view.set_fixed_tendon_limit_stiffness(model, np.array([[[1.0]]]))
+        with self.assertRaises(NotImplementedError):
+            view.get_fixed_tendon_offset(model)
+        with self.assertRaises(NotImplementedError):
+            view.set_fixed_tendon_offset(model, np.array([[[0.0]]]))
 
     def test_tendon_multi_world(self):
         """Test that tendon selection works with multiple worlds."""
