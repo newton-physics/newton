@@ -120,10 +120,9 @@ mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia" }
 mujoco = { index = "mujoco" }
 torch = [{ index = "pytorch-cu128", extra = "torch-cu12" }]
-newton-actuators = { path = "newton-actuators", editable = true }
 
 [dependency-groups]
-dev = ["asv>=0.6.4"]
+dev = ["asv>=0.6.4", "newton-actuators"]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"
