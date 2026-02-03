@@ -21,7 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -5219,11 +5219,11 @@ class ModelBuilder:
         flags: list[int] | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ):
-        """Adds a group particles to the model.
+        """Adds a group of particles to the model.
 
         Args:
-            pos: The initial positions of the particle.
-            vel: The initial velocities of the particle.
+            pos: The initial positions of the particles.
+            vel: The initial velocities of the particles.
             mass: The mass of the particles.
             radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
             flags: The flags that control the dynamical behavior of the particles, see :class:`newton.ParticleFlags`.
@@ -5239,13 +5239,13 @@ class ModelBuilder:
         self.particle_qd.extend(vel)
         self.particle_mass.extend(mass)
         if radius is None:
-            radius = [self.default_particle_radius] * len(pos)
+            radius = [self.default_particle_radius] * particle_count
         if flags is None:
-            flags = [ParticleFlags.ACTIVE] * len(pos)
+            flags = [ParticleFlags.ACTIVE] * particle_count
         self.particle_radius.extend(radius)
         self.particle_flags.extend(flags)
         # Maintain world assignment for bulk particle creation
-        self.particle_world.extend([self.current_world] * len(pos))
+        self.particle_world.extend([self.current_world] * particle_count)
 
         # Process custom attributes
         if custom_attributes and particle_count:
@@ -6060,13 +6060,34 @@ class ModelBuilder:
         if flags is not None:
             flags = [flags] * points.shape[0]
 
+        # Broadcast scalar custom attribute values to all particles
+        num_particles = points.shape[0]
+        broadcast_custom_attrs = None
+        if custom_attributes:
+            broadcast_custom_attrs = {}
+            for key, value in custom_attributes.items():
+                # Check if value is a sequence (but not string/bytes) or numpy array
+                is_array = isinstance(value, np.ndarray)
+                is_sequence = isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+                if is_array or is_sequence:
+                    # Value is already a sequence/array - validate length
+                    if len(value) != num_particles:
+                        raise ValueError(
+                            f"Custom attribute '{key}' has {len(value)} values but {num_particles} particles in grid"
+                        )
+                    broadcast_custom_attrs[key] = list(value) if is_array else value
+                else:
+                    # Scalar value - broadcast to all particles
+                    broadcast_custom_attrs[key] = [value] * num_particles
+
         self.add_particles(
             pos=points.tolist(),
             vel=velocity.tolist(),
             mass=masses,
             radius=radii.tolist(),
             flags=flags,
-            custom_attributes=custom_attributes,
+            custom_attributes=broadcast_custom_attrs,
         )
 
     def add_soft_grid(
