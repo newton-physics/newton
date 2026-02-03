@@ -64,7 +64,7 @@ def compute_pinhole_camera_rays(
 
 @wp.kernel(enable_backward=False)
 def flatten_color_image(
-    color_image: wp.array(dtype=wp.uint32, ndim=3),
+    color_image: wp.array(dtype=wp.uint32, ndim=4),
     buffer: wp.array(dtype=wp.uint8, ndim=3),
     width: wp.int32,
     height: wp.int32,
@@ -80,7 +80,7 @@ def flatten_color_image(
 
     px = col * width + x
     py = row * height + y
-    color = color_image[world_id, camera_id, y * width + x]
+    color = color_image[world_id, camera_id, y, x]
 
     buffer[py, px, 0] = wp.uint8((color >> wp.uint32(0)) & wp.uint32(0xFF))
     buffer[py, px, 1] = wp.uint8((color >> wp.uint32(8)) & wp.uint32(0xFF))
@@ -90,7 +90,7 @@ def flatten_color_image(
 
 @wp.kernel(enable_backward=False)
 def flatten_normal_image(
-    normal_image: wp.array(dtype=wp.vec3f, ndim=3),
+    normal_image: wp.array(dtype=wp.vec3f, ndim=4),
     buffer: wp.array(dtype=wp.uint8, ndim=3),
     width: wp.int32,
     height: wp.int32,
@@ -106,7 +106,7 @@ def flatten_normal_image(
 
     px = col * width + x
     py = row * height + y
-    normal = normal_image[world_id, camera_id, y * width + x] * 0.5 + wp.vec3f(0.5)
+    normal = normal_image[world_id, camera_id, y, x] * 0.5 + wp.vec3f(0.5)
 
     buffer[py, px, 0] = wp.uint8(normal[0] * 255.0)
     buffer[py, px, 1] = wp.uint8(normal[1] * 255.0)
@@ -125,7 +125,7 @@ def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=3), depth_rang
 
 @wp.kernel(enable_backward=False)
 def flatten_depth_image(
-    depth_image: wp.array(dtype=wp.float32, ndim=3),
+    depth_image: wp.array(dtype=wp.float32, ndim=4),
     buffer: wp.array(dtype=wp.uint8, ndim=3),
     depth_range: wp.array(dtype=wp.float32),
     width: wp.int32,
@@ -144,7 +144,7 @@ def flatten_depth_image(
     py = row * height + y
 
     value = wp.uint8(0)
-    depth = depth_image[world_id, camera_id, y * width + x]
+    depth = depth_image[world_id, camera_id, y, x]
     if depth > 0:
         denom = wp.max(depth_range[1] - depth_range[0], 1e-6)
         value = wp.uint8(255.0 - ((depth - depth_range[0]) / denom) * 205.0)
@@ -188,13 +188,13 @@ class Utils:
 
     def flatten_color_image_to_rgba(
         self,
-        width: int,
-        height: int,
-        image: wp.array(dtype=wp.uint32, ndim=3),
+        image: wp.array(dtype=wp.uint32, ndim=4),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
         num_cameras = image.shape[1]
+        height = image.shape[2]
+        width = image.shape[3]
 
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
             width, height, num_cameras, out_buffer, num_worlds_per_row
@@ -221,13 +221,13 @@ class Utils:
 
     def flatten_normal_image_to_rgba(
         self,
-        width: int,
-        height: int,
-        image: wp.array(dtype=wp.vec3f, ndim=3),
+        image: wp.array(dtype=wp.vec3f, ndim=4),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
         num_cameras = image.shape[1]
+        height = image.shape[2]
+        width = image.shape[3]
 
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
             width, height, num_cameras, out_buffer, num_worlds_per_row
@@ -254,14 +254,14 @@ class Utils:
 
     def flatten_depth_image_to_rgba(
         self,
-        width: int,
-        height: int,
-        image: wp.array(dtype=wp.float32, ndim=3),
+        image: wp.array(dtype=wp.float32, ndim=4),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
         depth_range: wp.array(dtype=wp.float32) | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
         num_cameras = image.shape[1]
+        height = image.shape[2]
+        width = image.shape[3]
 
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
             width, height, num_cameras, out_buffer, num_worlds_per_row

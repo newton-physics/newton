@@ -71,7 +71,9 @@ class TestSensorTiledCamera(unittest.TestCase):
 
     def __compare_images(self, test_image: np.ndarray, gold_image: np.ndarray, allowed_difference: float = 0.0):
         self.assertEqual(test_image.dtype, gold_image.dtype, "Images have different data types")
-        self.assertEqual(test_image.shape, gold_image.shape, "Images have different data shapes")
+        self.assertEqual(test_image.size, gold_image.size, "Images have different data shapes")
+
+        gold_image = gold_image.reshape(test_image.shape)
 
         def _absdiff(x, y):
             if x > y:

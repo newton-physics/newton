@@ -138,20 +138,30 @@ class RenderContext:
         if self.bvh_particles_group_roots is None:
             self.bvh_particles_group_roots = wp.zeros((self.num_worlds_total), dtype=wp.int32)
 
-    def create_color_image_output(self, width: int, height: int, num_cameras: int = 1):
-        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.uint32)
+    def create_color_image_output(self, width: int, height: int, num_cameras: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        return wp.zeros((self.num_worlds, num_cameras, height, width), dtype=wp.uint32)
 
-    def create_depth_image_output(self, width: int, height: int, num_cameras: int = 1):
-        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.float32)
+    def create_depth_image_output(self, width: int, height: int, num_cameras: int = 1) -> wp.array(
+        dtype=wp.float32, ndim=4
+    ):
+        return wp.zeros((self.num_worlds, num_cameras, height, width), dtype=wp.float32)
 
-    def create_shape_index_image_output(self, width: int, height: int, num_cameras: int = 1):
-        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.uint32)
+    def create_shape_index_image_output(self, width: int, height: int, num_cameras: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        return wp.zeros((self.num_worlds, num_cameras, height, width), dtype=wp.uint32)
 
-    def create_normal_image_output(self, width: int, height: int, num_cameras: int = 1):
-        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.vec3f)
+    def create_normal_image_output(self, width: int, height: int, num_cameras: int = 1) -> wp.array(
+        dtype=wp.vec3f, ndim=4
+    ):
+        return wp.zeros((self.num_worlds, num_cameras, height, width), dtype=wp.vec3f)
 
-    def create_albedo_image_output(self, width: int, height: int, num_cameras: int = 1):
-        return wp.zeros((self.num_worlds, num_cameras, width * height), dtype=wp.uint32)
+    def create_albedo_image_output(self, width: int, height: int, num_cameras: int = 1) -> wp.array(
+        dtype=wp.uint32, ndim=4
+    ):
+        return wp.zeros((self.num_worlds, num_cameras, height, width), dtype=wp.uint32)
 
     def refit_bvh(self):
         if self.num_shapes_enabled:
@@ -194,11 +204,11 @@ class RenderContext:
         self,
         camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-        color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
-        depth_image: wp.array(dtype=wp.float32, ndim=3) | None = None,
-        shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
-        normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None = None,
-        albedo_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
+        color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
+        depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
+        shape_index_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
+        normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None = None,
+        albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         refit_bvh: bool = True,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
     ):

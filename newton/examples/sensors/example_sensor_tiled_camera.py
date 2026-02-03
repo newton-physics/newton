@@ -76,27 +76,27 @@ def animate_franka(
 
 @wp.kernel
 def shape_index_to_semantic_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=3),
+    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
     colors: wp.array(dtype=wp.uint32),
-    rgba: wp.array(dtype=wp.uint32, ndim=3),
+    rgba: wp.array(dtype=wp.uint32, ndim=4),
 ):
-    world_id, camera_id, pixel_id = wp.tid()
-    shape_index = shape_indices[world_id, camera_id, pixel_id]
+    world_id, camera_id, y, x = wp.tid()
+    shape_index = shape_indices[world_id, camera_id, y, x]
     if shape_index < colors.shape[0]:
-        rgba[world_id, camera_id, pixel_id] = colors[shape_index]
+        rgba[world_id, camera_id, y, x] = colors[shape_index]
     else:
-        rgba[world_id, camera_id, pixel_id] = wp.uint32(0xFF000000)
+        rgba[world_id, camera_id, y, x] = wp.uint32(0xFF000000)
 
 
 @wp.kernel
 def shape_index_to_random_rgb(
-    shape_indices: wp.array(dtype=wp.uint32, ndim=3),
-    rgba: wp.array(dtype=wp.uint32, ndim=3),
+    shape_indices: wp.array(dtype=wp.uint32, ndim=4),
+    rgba: wp.array(dtype=wp.uint32, ndim=4),
 ):
-    world_id, camera_id, pixel_id = wp.tid()
-    shape_index = shape_indices[world_id, camera_id, pixel_id]
+    world_id, camera_id, y, x = wp.tid()
+    shape_index = shape_indices[world_id, camera_id, y, x]
     random_color = wp.randi(wp.rand_init(12345, wp.int32(shape_index)))
-    rgba[world_id, camera_id, pixel_id] = wp.uint32(random_color) | wp.uint32(0xFF000000)
+    rgba[world_id, camera_id, y, x] = wp.uint32(random_color) | wp.uint32(0xFF000000)
 
 
 class Example:
@@ -319,24 +319,18 @@ class Example:
         )
         if self.image_output == 0:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.sensor_render_width,
-                self.sensor_render_height,
                 self.tiled_camera_sensor_color_image,
                 texture_buffer,
                 self.num_worlds_per_row,
             )
         elif self.image_output == 1:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.sensor_render_width,
-                self.sensor_render_height,
                 self.tiled_camera_sensor_albedo_image,
                 texture_buffer,
                 self.num_worlds_per_row,
             )
         elif self.image_output == 2:
             self.tiled_camera_sensor.flatten_depth_image_to_rgba(
-                self.sensor_render_width,
-                self.sensor_render_height,
                 self.tiled_camera_sensor_depth_image,
                 texture_buffer,
                 self.num_worlds_per_row,
@@ -344,8 +338,6 @@ class Example:
             )
         elif self.image_output == 3:
             self.tiled_camera_sensor.flatten_normal_image_to_rgba(
-                self.sensor_render_width,
-                self.sensor_render_height,
                 self.tiled_camera_sensor_normal_image,
                 texture_buffer,
                 self.num_worlds_per_row,
@@ -358,8 +350,6 @@ class Example:
                 [self.tiled_camera_sensor_shape_index_image],
             )
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.sensor_render_width,
-                self.sensor_render_height,
                 self.tiled_camera_sensor_shape_index_image,
                 texture_buffer,
                 self.num_worlds_per_row,
@@ -372,8 +362,6 @@ class Example:
                 [self.tiled_camera_sensor_shape_index_image],
             )
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
-                self.sensor_render_width,
-                self.sensor_render_height,
                 self.tiled_camera_sensor_shape_index_image,
                 texture_buffer,
                 self.num_worlds_per_row,

@@ -131,8 +131,8 @@ class SensorTiledCameraBenchmark:
         if os.environ.get("SAVE_IMAGES", "0") != "0":
             from PIL import Image  # noqa: PLC0415
 
-            color_image = self.tiled_camera_sensor.flatten_color_image_to_rgba(resolution, resolution, self.color_image)
-            depth_image = self.tiled_camera_sensor.flatten_depth_image_to_rgba(resolution, resolution, self.depth_image)
+            color_image = self.tiled_camera_sensor.flatten_color_image_to_rgba(self.color_image)
+            depth_image = self.tiled_camera_sensor.flatten_depth_image_to_rgba(self.depth_image)
             Image.fromarray(color_image.numpy()).save("benchmark_color.png")
             Image.fromarray(depth_image.numpy()).save("benchmark_depth.png")
 
