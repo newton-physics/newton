@@ -20,19 +20,75 @@ import time
 
 import numpy as np
 import warp as wp
-import warp.render.render_opengl
 
 import newton as nt
 from newton.selection import ArticulationView
 from newton.utils import create_sphere_mesh
 
 from ..core.types import override
+from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind
+
+
+@wp.kernel
+def _capsule_duplicate_vec3(in_values: wp.array(dtype=wp.vec3), out_values: wp.array(dtype=wp.vec3)):
+    # Duplicate N values into 2N values (two caps per capsule).
+    tid = wp.tid()
+    out_values[tid] = in_values[tid // 2]
+
+
+@wp.kernel
+def _capsule_duplicate_vec4(in_values: wp.array(dtype=wp.vec4), out_values: wp.array(dtype=wp.vec4)):
+    # Duplicate N values into 2N values (two caps per capsule).
+    tid = wp.tid()
+    out_values[tid] = in_values[tid // 2]
+
+
+@wp.kernel
+def _capsule_build_body_scales(
+    shape_scale: wp.array(dtype=wp.vec3),
+    shape_indices: wp.array(dtype=wp.int32),
+    out_scales: wp.array(dtype=wp.vec3),
+):
+    # model.shape_scale stores capsule params as (radius, half_height, _unused).
+    # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
+    # (radius, radius, half_height) for the cylinder body.
+    tid = wp.tid()
+    s = shape_indices[tid]
+    scale = shape_scale[s]
+    r = scale[0]
+    half_height = scale[1]
+    out_scales[tid] = wp.vec3(r, r, half_height)
+
+
+@wp.kernel
+def _capsule_build_cap_xforms_and_scales(
+    capsule_xforms: wp.array(dtype=wp.transform),
+    capsule_scales: wp.array(dtype=wp.vec3),
+    out_xforms: wp.array(dtype=wp.transform),
+    out_scales: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    i = tid // 2
+    # Each capsule has two caps; even tid is the +Z end, odd tid is the -Z end.
+    is_plus_end = (tid % 2) == 0
+
+    t = capsule_xforms[i]
+    p = wp.transform_get_translation(t)
+    q = wp.transform_get_rotation(t)
+
+    r = capsule_scales[i][0]
+    half_height = capsule_scales[i][2]
+    offset_local = wp.vec3(0.0, 0.0, half_height if is_plus_end else -half_height)
+    p2 = p + wp.quat_rotate(q, offset_local)
+
+    out_xforms[tid] = wp.transform(p2, q)
+    out_scales[tid] = wp.vec3(r, r, r)
 
 
 class ViewerGL(ViewerBase):
@@ -140,6 +196,24 @@ class ViewerGL(ViewerBase):
 
         self.set_model(None)
 
+    def _hash_geometry(self, geo_type: int, geo_scale, thickness: float, is_solid: bool, geo_src=None) -> int:
+        # For capsules, ignore (radius, half_height) in the geometry hash so varying-length capsules batch together.
+        # Capsule dimensions are stored per-shape in model.shape_scale as (radius, half_height, _unused) and
+        # are remapped in set_model() to per-instance render scales (radius, radius, half_height).
+        if geo_type == nt.GeoType.CAPSULE:
+            geo_scale = (1.0, 1.0)
+        return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src)
+
+    def _invalidate_pbo(self):
+        """Invalidate PBO resources, forcing reallocation on next get_frame() call."""
+        if self._wp_pbo is not None:
+            self._wp_pbo = None  # Let Python garbage collect the RegisteredGLBuffer
+        if self._pbo is not None:
+            gl = RendererGL.gl
+            pbo_id = (gl.GLuint * 1)(self._pbo)
+            gl.glDeleteBuffers(1, pbo_id)
+            self._pbo = None
+
     def register_ui_callback(self, callback, position="side"):
         """
         Register a UI callback to be rendered during the UI phase.
@@ -185,14 +259,51 @@ class ViewerGL(ViewerBase):
         self._gizmo_log[name] = transform
 
     @override
-    def set_model(self, model):
+    def set_model(self, model, max_worlds: int | None = None):
         """
         Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
+            max_worlds: Maximum number of worlds to render (None = all).
         """
-        super().set_model(model)
+        super().set_model(model, max_worlds=max_worlds)
+
+        if self.model is not None:
+            # For capsule batches, replace per-instance scales with (radius, radius, half_height)
+            # so the capsule instancer path has the needed parameters.
+            shape_scale = self.model.shape_scale
+            if shape_scale.device != self.device:
+                # Defensive: ensure inputs are on the launch device.
+                shape_scale = wp.clone(shape_scale, device=self.device)
+
+            def _ensure_indices_wp(model_shapes) -> wp.array:
+                # Return shape indices as a Warp array on the viewer device
+                if isinstance(model_shapes, wp.array):
+                    if model_shapes.device == self.device:
+                        return model_shapes
+                    return wp.array(model_shapes.numpy().astype(np.int32), dtype=wp.int32, device=self.device)
+                return wp.array(model_shapes, dtype=wp.int32, device=self.device)
+
+            for batch in self._shape_instances.values():
+                if batch.geo_type != nt.GeoType.CAPSULE:
+                    continue
+
+                shape_indices = _ensure_indices_wp(batch.model_shapes)
+                num_shapes = len(shape_indices)
+                out_scales = wp.empty(num_shapes, dtype=wp.vec3, device=self.device)
+                if num_shapes == 0:
+                    batch.scales = out_scales
+                    continue
+                wp.launch(
+                    _capsule_build_body_scales,
+                    dim=num_shapes,
+                    inputs=[shape_scale, shape_indices],
+                    outputs=[out_scales],
+                    device=self.device,
+                    record_tape=False,
+                )
+                batch.scales = out_scales
 
         self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0, world_offsets=self.world_offsets)
         self.wind = Wind(model)
@@ -304,6 +415,89 @@ class ViewerGL(ViewerBase):
             self.objects[name].update_from_transforms(xforms, scales, colors, materials)
 
         self.objects[name].hidden = hidden
+
+    @override
+    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+        """
+        Render capsules using instanced cylinder bodies + instanced sphere end caps.
+
+        This specialized path improves batching for varying-length capsules by reusing two
+        prototype meshes (unit cylinder + unit sphere) and applying per-instance transforms/scales.
+
+        Args:
+            name (str): Unique name for the capsule instancer group.
+            mesh: Capsule prototype mesh path from ViewerBase (unused in this backend).
+            xforms: Capsule instance transforms (wp.transform), length N.
+            scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
+            colors: Capsule instance colors (wp.vec3), length N or None (no update).
+            materials: Capsule instance materials (wp.vec4), length N or None (no update).
+            hidden (bool): Whether the instances are hidden.
+        """
+        # Render capsules via instanced cylinder body + instanced sphere caps.
+        sphere_mesh = "/geometry/_capsule_instancer/sphere"
+        cylinder_mesh = "/geometry/_capsule_instancer/cylinder"
+
+        if sphere_mesh not in self.objects:
+            self.log_geo(sphere_mesh, nt.GeoType.SPHERE, (1.0,), 0.0, True, hidden=True)
+        if cylinder_mesh not in self.objects:
+            self.log_geo(cylinder_mesh, nt.GeoType.CYLINDER, (1.0, 1.0), 0.0, True, hidden=True)
+
+        # Cylinder body uses the capsule transforms and (radius, radius, half_height) scaling.
+        cyl_name = f"{name}/capsule_cylinder"
+        cap_name = f"{name}/capsule_caps"
+
+        # If hidden, just hide the instancers (skip all per-frame cap buffer work).
+        if hidden:
+            self.log_instances(cyl_name, cylinder_mesh, None, None, None, None, hidden=True)
+            self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
+            return
+
+        self.log_instances(cyl_name, cylinder_mesh, xforms, scales, colors, materials, hidden=hidden)
+
+        # Sphere caps: two spheres per capsule, offset by ±half_height along local +Z.
+        n = len(xforms) if xforms is not None else 0
+        if n == 0:
+            self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
+            return
+
+        cap_count = n * 2
+        cap_xforms = wp.empty(cap_count, dtype=wp.transform, device=self.device)
+        cap_scales = wp.empty(cap_count, dtype=wp.vec3, device=self.device)
+
+        wp.launch(
+            _capsule_build_cap_xforms_and_scales,
+            dim=cap_count,
+            inputs=[xforms, scales],
+            outputs=[cap_xforms, cap_scales],
+            device=self.device,
+            record_tape=False,
+        )
+
+        cap_colors = None
+        if colors is not None:
+            cap_colors = wp.empty(cap_count, dtype=wp.vec3, device=self.device)
+            wp.launch(
+                _capsule_duplicate_vec3,
+                dim=cap_count,
+                inputs=[colors],
+                outputs=[cap_colors],
+                device=self.device,
+                record_tape=False,
+            )
+
+        cap_materials = None
+        if materials is not None:
+            cap_materials = wp.empty(cap_count, dtype=wp.vec4, device=self.device)
+            wp.launch(
+                _capsule_duplicate_vec4,
+                dim=cap_count,
+                inputs=[materials],
+                outputs=[cap_materials],
+                device=self.device,
+                record_tape=False,
+            )
+
+        self.log_instances(cap_name, sphere_mesh, cap_xforms, cap_scales, cap_colors, cap_materials, hidden=hidden)
 
     @override
     def log_lines(
@@ -609,7 +803,7 @@ class ViewerGL(ViewerBase):
 
         # Launch the RGB kernel.
         wp.launch(
-            warp.render.render_opengl.copy_rgb_frame_uint8,
+            copy_rgb_frame_uint8,
             dim=(w, h),
             inputs=[buf, w, h],
             outputs=[target_image],
@@ -965,6 +1159,7 @@ class ViewerGL(ViewerBase):
         """
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera.update_screen_size(fb_w, fb_h)
+        self._invalidate_pbo()
 
         if self.ui:
             self.ui.resize(width, height)
@@ -1196,8 +1391,8 @@ class ViewerGL(ViewerBase):
                 pos_text = f"Position: ({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})"
                 imgui.text(pos_text)
                 imgui.text(f"FOV: {self.camera.fov:.1f}°")
-                imgui.text(f"Yaw: {self.camera.yaw:.1f}°")
                 imgui.text(f"Pitch: {self.camera.pitch:.1f}°")
+                imgui.text(f"Yaw: {self.camera.yaw:.1f}°")
 
                 # Camera controls hint
                 imgui.separator()

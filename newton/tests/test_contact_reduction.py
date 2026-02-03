@@ -107,13 +107,13 @@ def test_constants(test, device):
 
 def test_compute_num_reduction_slots(test, device):
     """Test compute_num_reduction_slots calculation."""
-    # Formula: 20 + (20 bins * 6 directions * num_betas) = 20 + 120 * num_betas
-    # With 1 beta: 20 + 120 = 140
-    test.assertEqual(compute_num_reduction_slots(1), 140)
-    # With default 2 betas: 20 + 240 = 260
-    test.assertEqual(compute_num_reduction_slots(2), 260)
-    # With 3 betas: 20 + 360 = 380
-    test.assertEqual(compute_num_reduction_slots(3), 380)
+    # Formula: 20 bins * (6 directions * num_betas + 1 max-depth) + 100 voxel slots
+    # With 1 beta: 20 * (6 + 1) + 100 = 140 + 100 = 240
+    test.assertEqual(compute_num_reduction_slots(1), 240)
+    # With 2 betas: 20 * (12 + 1) + 100 = 260 + 100 = 360
+    test.assertEqual(compute_num_reduction_slots(2), 360)
+    # With 3 betas: 20 * (18 + 1) + 100 = 380 + 100 = 480
+    test.assertEqual(compute_num_reduction_slots(3), 480)
 
 
 def test_create_betas_array(test, device):
@@ -204,7 +204,7 @@ def _generate_test_contact(t: int) -> ContactStruct:
     c.position = wp.vec3(wp.sin(ft * 0.1) * ft * 0.01, 0.0, wp.cos(ft * 0.1) * ft * 0.01)
     c.normal = wp.vec3(0.0, 1.0, 0.0)
     c.depth = 0.1
-    c.mode = t % 10  # Assign features 0-9 cyclically
+    c.feature = t % 10  # Assign features 0-9 cyclically
     c.projection = 0.0
     return c
 
@@ -213,7 +213,7 @@ def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
     """Create a test kernel for contact reduction with shared memory."""
     num_slots = reduction_funcs.num_reduction_slots
     store_reduced_contact = reduction_funcs.store_reduced_contact
-    collect_active_contacts = reduction_funcs.collect_active_contacts
+    filter_unique_contacts = reduction_funcs.filter_unique_contacts
 
     @wp.kernel(enable_backward=False)
     def reduction_test_kernel(
@@ -247,10 +247,12 @@ def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
         has_contact = t % 2 == 0
         c = _generate_test_contact(t)
 
-        store_reduced_contact(t, has_contact, c, buffer, active_ids, betas_arr, empty_marker)
+        # Use thread_id as voxel_index for testing (mod NUM_VOXEL_DEPTH_SLOTS)
+        voxel_idx = t % 100
+        store_reduced_contact(t, has_contact, c, buffer, active_ids, betas_arr, empty_marker, voxel_idx)
 
-        # Collect active contacts
-        collect_active_contacts(t, buffer, active_ids, empty_marker)
+        # Filter duplicates
+        filter_unique_contacts(t, buffer, active_ids, empty_marker)
 
         # Write output
         num_contacts = active_ids[wp.static(num_slots)]
@@ -266,26 +268,26 @@ def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
 
 def test_reduction_functions_initialization(test, device):
     """Test that ContactReductionFunctions initializes correctly."""
-    funcs = ContactReductionFunctions(betas=(10.0, 1000000.0))
-
-    test.assertEqual(funcs.num_betas, 2)
-    test.assertEqual(funcs.betas, (10.0, 1000000.0))
-    # 20 + (20 bins * 6 directions * 2 betas) = 260
-    test.assertEqual(funcs.num_reduction_slots, 260)
-
-
-def test_reduction_functions_single_beta(test, device):
-    """Test ContactReductionFunctions with single beta value."""
-    funcs = ContactReductionFunctions(betas=(100.0,))
+    funcs = ContactReductionFunctions()
 
     test.assertEqual(funcs.num_betas, 1)
-    # 20 + (20 bins * 6 directions * 1 beta) = 140
-    test.assertEqual(funcs.num_reduction_slots, 140)
+    test.assertEqual(funcs.betas, (ContactReductionFunctions.BETA_THRESHOLD,))
+    # 20 bins * (6 directions * 1 beta + 1 max-depth) + 100 voxel slots = 140 + 100 = 240
+    test.assertEqual(funcs.num_reduction_slots, 240)
+
+
+def test_reduction_functions_slot_count(test, device):
+    """Test ContactReductionFunctions slot count calculation."""
+    funcs = ContactReductionFunctions()
+
+    test.assertEqual(funcs.num_betas, 1)
+    # 20 bins * (6 directions * 1 beta + 1 max-depth) + 100 voxel slots = 140 + 100 = 240
+    test.assertEqual(funcs.num_reduction_slots, 240)
 
 
 def test_contact_reduction_produces_valid_output(test, device):
     """Test that contact reduction kernel produces valid output."""
-    reduction_funcs = ContactReductionFunctions(betas=(10.0, 1000000.0))
+    reduction_funcs = ContactReductionFunctions()
     num_slots = reduction_funcs.num_reduction_slots
 
     # Create test kernel
@@ -324,7 +326,7 @@ def test_contact_reduction_produces_valid_output(test, device):
 
 def test_contact_reduction_reduces_count(test, device):
     """Test that contact reduction reduces the number of contacts."""
-    reduction_funcs = ContactReductionFunctions(betas=(10.0,))
+    reduction_funcs = ContactReductionFunctions()
     num_slots = reduction_funcs.num_reduction_slots
 
     kernel = _create_reduction_test_kernel(reduction_funcs)
@@ -393,8 +395,8 @@ for device in cuda_devices:
     )
     add_function_test(
         TestContactReduction,
-        "test_reduction_functions_single_beta",
-        test_reduction_functions_single_beta,
+        "test_reduction_functions_slot_count",
+        test_reduction_functions_slot_count,
         devices=[device],
     )
     add_function_test(

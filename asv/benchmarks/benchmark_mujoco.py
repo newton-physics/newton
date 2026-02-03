@@ -59,12 +59,12 @@ ROBOT_CONFIGS = {
         "ls_parallel": True,
         "cone": "pyramidal",
     },
-    "cartpole": {  # TODO: use the Lab version of cartpole and revert param value
+    "cartpole": {
         "solver": "newton",
         "integrator": "implicitfast",
-        "njmax": 24,  # 5
-        "nconmax": 6,  # 5
-        "ls_parallel": False,
+        "njmax": 5,
+        "nconmax": 0,
+        "ls_parallel": True,
         "cone": "pyramidal",
     },
     "ant": {
@@ -110,6 +110,7 @@ def _setup_humanoid(articulation_builder):
         ignore_names=["floor", "ground"],
         up_axis="Z",
         parse_sites=False,  # AD: remove once asset is fixed
+        enable_self_collisions=False,  # Keep False for consistent benchmark performance
     )
 
     # Setting root pose
@@ -186,7 +187,7 @@ def _setup_cartpole(articulation_builder):
     articulation_builder.default_body_armature = 0.1
 
     articulation_builder.add_usd(
-        newton.examples.get_asset("cartpole.usda"),
+        newton.examples.get_asset("cartpole_single_pendulum.usda"),
         enable_self_collisions=False,
         collapse_fixed_joints=True,
     )
@@ -257,6 +258,7 @@ def _setup_kitchen(articulation_builder):
     articulation_builder.add_mjcf(
         asset_file,
         collapse_fixed_joints=True,
+        enable_self_collisions=False,  # Keep False for consistent benchmark performance
     )
 
     # Change pose of the robot to minimize overlap
@@ -267,7 +269,6 @@ def _setup_tabletop(articulation_builder):
     articulation_builder.add_mjcf(
         newton.examples.get_asset("tabletop.xml"),
         collapse_fixed_joints=True,
-        enable_self_collisions=True,
     )
 
 
@@ -426,7 +427,9 @@ class Example:
                 ).tolist()
         builder.default_shape_cfg.ke = 1.0e3
         builder.default_shape_cfg.kd = 1.0e2
-        builder.add_ground_plane()
+        if robot != "cartpole":
+            # Disable all collisions for the cartpole benchmark
+            builder.add_ground_plane()
         return builder
 
     @staticmethod

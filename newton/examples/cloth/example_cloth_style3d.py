@@ -22,10 +22,11 @@ import newton.examples
 import newton.usd
 import newton.utils
 from newton import Mesh, ParticleFlags
+from newton.solvers import style3d
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         # setup simulation parameters first
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -38,7 +39,8 @@ class Example:
         self.iterations = 4
 
         self.viewer = viewer
-        builder = newton.Style3DModelBuilder(up_axis=newton.Axis.Z)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        newton.solvers.SolverStyle3D.register_custom_attributes(builder)
 
         use_cloth_mesh = True
         if use_cloth_mesh:
@@ -68,12 +70,11 @@ class Example:
             avatar_mesh_indices = avatar_mesh.indices
             avatar_mesh_points = avatar_mesh.vertices
 
-            builder.add_aniso_cloth_mesh(
+            style3d.add_cloth_mesh(
+                builder,
                 pos=wp.vec3(0, 0, 0),
                 rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
-                edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
                 panel_verts=garment_mesh_uv.tolist(),
                 panel_indices=garment_mesh_uv_indices.tolist(),
                 vertices=garment_mesh_points.tolist(),
@@ -81,6 +82,8 @@ class Example:
                 density=0.3,
                 scale=1.0,
                 particle_radius=5.0e-3,
+                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
+                edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
             )
             builder.add_shape_mesh(
                 body=builder.add_body(),
@@ -96,7 +99,8 @@ class Example:
             grid_dim = 100
             grid_width = 1.0
             cloth_density = 0.3
-            builder.add_aniso_cloth_grid(
+            style3d.add_cloth_grid(
+                builder,
                 pos=wp.vec3(-0.5, 0.0, 2.0),
                 rot=wp.quat_from_axis_angle(axis=wp.vec3(1, 0, 0), angle=wp.pi / 2.0),
                 dim_x=grid_dim,
@@ -140,9 +144,13 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(0.0, -1.7, 1.4), 0.0, -270.0)
 
         self.capture()
 
@@ -155,7 +163,7 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -194,6 +202,6 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init()
 
     # Create example and run
-    example = Example(viewer)
+    example = Example(viewer, args)
 
     newton.examples.run(example, args)

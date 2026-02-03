@@ -28,6 +28,8 @@ jobs:
     name: Check for new warp-lang nightly build
     if: github.repository == 'newton-physics/newton'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       warp-updated: ${{ steps.check-update.outputs.warp-updated }}
     steps:
@@ -95,6 +97,8 @@ jobs:
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           ec2-image-id: ${{ env.LATEST_AMI_ID }}
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
+          ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
+          ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
           subnet-id: subnet-051b9d2e71acf8047
           security-group-id: ${{ env.AWS_SECURITY_GROUP_IDS }}
           aws-resource-tags: >
@@ -108,6 +112,8 @@ jobs:
     name: Run Tests with Warp Nightly Build
     needs: start-runner
     runs-on: ${{ needs.start-runner.outputs.label }}
+    permissions:
+      contents: read
     env:
       HOME: /actions-runner
     steps:

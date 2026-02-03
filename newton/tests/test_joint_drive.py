@@ -123,6 +123,7 @@ class TestJointDrive(unittest.TestCase):
                     effort_limit=1000000000000.0,
                     velocity_limit=100000000000000000.0,
                     friction=0.0,
+                    actuator_mode=newton.ActuatorMode.POSITION_VELOCITY,
                 )
             else:
                 world_builder.add_joint_revolute(
@@ -137,6 +138,7 @@ class TestJointDrive(unittest.TestCase):
                     effort_limit=1000000000000.0,
                     velocity_limit=100000000000000000.0,
                     friction=0.0,
+                    actuator_mode=newton.ActuatorMode.POSITION_VELOCITY,
                 )
 
             # Add the joint to an articulation

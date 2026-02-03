@@ -27,12 +27,14 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.solvers import style3d
 
 
 class Example:
     def __init__(
         self,
         viewer,
+        args=None,
         solver_type: str = "vbd",
         height=32,
         width=64,
@@ -60,7 +62,8 @@ class Example:
         self.viewer = viewer
 
         if self.solver_type == "style3d":
-            builder = newton.Style3DModelBuilder()
+            builder = newton.ModelBuilder()
+            newton.solvers.SolverStyle3D.register_custom_attributes(builder)
         else:
             builder = newton.ModelBuilder()
 
@@ -118,7 +121,7 @@ class Example:
             }
 
         if self.solver_type == "style3d":
-            builder.add_aniso_cloth_grid(**common_params, **solver_params)
+            style3d.add_cloth_grid(builder, **common_params, **solver_params)
         else:
             builder.add_cloth_grid(**common_params, **solver_params)
 
@@ -149,7 +152,10 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
 
@@ -170,7 +176,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -229,6 +235,7 @@ if __name__ == "__main__":
     # Create example and run
     example = Example(
         viewer=viewer,
+        args=args,
         solver_type=args.solver,
         height=args.height,
         width=args.width,

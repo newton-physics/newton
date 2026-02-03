@@ -1,113 +1,19 @@
 #usda 1.0
 (
-    customLayerData = {
-        dictionary cameraSettings = {
-            dictionary Front = {
-                double3 position = (0, 0, 500)
-                double radius = 500
-                double3 target = (0, 0, 0)
-            }
-            dictionary Perspective = {
-                double3 position = (7.141110459035105, 6.319068178485043, 3.961214639147775)
-                double3 target = (0.5828208599951852, 0.02439307236932642, 1.4548276148958035)
-            }
-            dictionary Right = {
-                double3 position = (-500, 0, 0)
-                double radius = 500
-                double3 target = (0, 0, 0)
-            }
-            dictionary Top = {
-                double3 position = (0, 500, 0)
-                double radius = 500
-                double3 target = (0, 0, 0)
-            }
-            string boundCamera = "/OmniverseKit_Persp"
-        }
-        dictionary omni_layer = {
-            string authoring_layer = "./Ant-warp.usda"
-            dictionary locked = {
-            }
-            dictionary muteness = {
-            }
-        }
-        dictionary renderSettings = {
-            float3 "rtx:debugView:pixelDebug:textColor" = (0, 1e18, 0)
-            float3 "rtx:fog:fogColor" = (0.75, 0.75, 0.75)
-            float3 "rtx:index:backgroundColor" = (0, 0, 0)
-            float3 "rtx:index:regionOfInterestMax" = (0, 0, 0)
-            float3 "rtx:index:regionOfInterestMin" = (0, 0, 0)
-            float3 "rtx:iray:environment_dome_ground_position" = (0, 0, 0)
-            float3 "rtx:iray:environment_dome_ground_reflectivity" = (0, 0, 0)
-            float3 "rtx:iray:environment_dome_rotation_axis" = (3.4028235e38, 3.4028235e38, 3.4028235e38)
-            float3 "rtx:post:backgroundZeroAlpha:backgroundDefaultColor" = (0, 0, 0)
-            float3 "rtx:post:colorcorr:contrast" = (1, 1, 1)
-            float3 "rtx:post:colorcorr:gain" = (1, 1, 1)
-            float3 "rtx:post:colorcorr:gamma" = (1, 1, 1)
-            float3 "rtx:post:colorcorr:offset" = (0, 0, 0)
-            float3 "rtx:post:colorcorr:saturation" = (1, 1, 1)
-            float3 "rtx:post:colorgrad:blackpoint" = (0, 0, 0)
-            float3 "rtx:post:colorgrad:contrast" = (1, 1, 1)
-            float3 "rtx:post:colorgrad:gain" = (1, 1, 1)
-            float3 "rtx:post:colorgrad:gamma" = (1, 1, 1)
-            float3 "rtx:post:colorgrad:lift" = (0, 0, 0)
-            float3 "rtx:post:colorgrad:multiply" = (1, 1, 1)
-            float3 "rtx:post:colorgrad:offset" = (0, 0, 0)
-            float3 "rtx:post:colorgrad:whitepoint" = (1, 1, 1)
-            float3 "rtx:post:lensDistortion:lensFocalLengthArray" = (10, 30, 50)
-            float3 "rtx:post:lensFlares:anisoFlareFalloffX" = (450, 475, 500)
-            float3 "rtx:post:lensFlares:anisoFlareFalloffY" = (10, 10, 10)
-            float3 "rtx:post:lensFlares:cutoffPoint" = (2, 2, 2)
-            float3 "rtx:post:lensFlares:haloFlareFalloff" = (10, 10, 10)
-            float3 "rtx:post:lensFlares:haloFlareRadius" = (75, 75, 75)
-            float3 "rtx:post:lensFlares:isotropicFlareFalloff" = (50, 50, 50)
-            float3 "rtx:post:lensFlares:spectralBlurWavelengthRange" = (380, 550, 770)
-            float3 "rtx:post:tonemap:whitepoint" = (1, 1, 1)
-            float3 "rtx:raytracing:indexdirect:svoBrickSize" = (32, 32, 32)
-            float3 "rtx:raytracing:inscattering:singleScatteringAlbedo" = (0.9, 0.9, 0.9)
-            float3 "rtx:raytracing:inscattering:transmittanceColor" = (0.5, 0.5, 0.5)
-            float3 "rtx:sceneDb:ambientLightColor" = (0.1, 0.1, 0.1)
-            float2 "rtx:viewTile:resolution" = (0, 0)
-        }
-    }
     defaultPrim = "ant"
     metersPerUnit = 1
     timeCodesPerSecond = 24
     upAxis = "Z"
 )
 
-def DistantLight "DistantLight" (
-    prepend apiSchemas = ["ShapingAPI"]
-)
-{
-    float inputs:angle = 1
-    float inputs:intensity = 3000
-    float inputs:shaping:cone:angle = 180
-    float inputs:shaping:cone:softness
-    float inputs:shaping:focus
-    color3f inputs:shaping:focusTint
-    asset inputs:shaping:ies:file
-    double3 xformOp:rotateXYZ = (45, 0, 90)
-    double3 xformOp:scale = (1, 1, 1)
-    double3 xformOp:translate = (0, 0, 0)
-    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
-}
-
 def PhysicsScene "physicsScene" (
-    prepend apiSchemas = ["warpSceneAPI"]
+    prepend apiSchemas = ["NewtonSceneAPI"]
 )
 {
-    custom bool Fabric:update_joint_applied_forces = 0
-    custom bool Fabric:update_joint_damping = 0
-    custom bool Fabric:update_joint_position_targets = 0
-    custom bool Fabric:update_joint_positions = 0
-    custom bool Fabric:update_joint_stiffness = 0
-    custom bool Fabric:update_joint_velocities = 0
-    custom bool Fabric:update_joint_velocity_targets = 0
-    custom bool Fabric:update_root_transforms = 0
-    custom bool Fabric:update_root_velocities = 0
     vector3f physics:gravityDirection = (0, 0, -1)
     float physics:gravityMagnitude = 10
-    custom float TimeStepsPerSecond = 120
+    int newton:maxSolverIterations = 100
+    int newton:timeStepsPerSecond = 120
 }
 
 def Xform "ant" (

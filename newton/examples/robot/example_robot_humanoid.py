@@ -27,6 +27,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton import ActuatorMode
 
 
 class Example:
@@ -42,7 +43,6 @@ class Example:
         self.viewer = viewer
 
         humanoid = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(humanoid)
         humanoid.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1e-5)
         humanoid.default_shape_cfg.ke = 5.0e4
         humanoid.default_shape_cfg.kd = 5.0e2
@@ -61,6 +61,7 @@ class Example:
         for i in range(len(humanoid.joint_target_ke)):
             humanoid.joint_target_ke[i] = 150
             humanoid.joint_target_kd[i] = 5
+            humanoid.joint_act_mode[i] = int(ActuatorMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(humanoid, self.num_worlds)
@@ -72,7 +73,7 @@ class Example:
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             njmax=100,
-            nconmax=50,
+            nconmax=65,
             use_mujoco_contacts=use_mujoco_contacts,
         )
 

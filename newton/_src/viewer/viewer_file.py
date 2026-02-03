@@ -56,9 +56,9 @@ class ViewerFile(ViewerBase):
         self._frame_count = 0
         self._model_recorded = False
 
-    def set_model(self, model):
+    def set_model(self, model, max_worlds: int | None = None):
         """Override set_model to record the model when it's set."""
-        super().set_model(model)
+        super().set_model(model, max_worlds=max_worlds)
 
         if model is not None and not self._model_recorded:
             self._recorder.record_model(model)

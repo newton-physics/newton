@@ -36,13 +36,14 @@ def spin_first_capsules_kernel(
     body_indices: wp.array(dtype=wp.int32),
     twist_rates: wp.array(dtype=float),  # radians per second per body
     dt: float,
-    body_q: wp.array(dtype=wp.transform),
+    body_q0: wp.array(dtype=wp.transform),
+    body_q1: wp.array(dtype=wp.transform),
 ):
     """Apply continuous twist to the first segment of each cable."""
     tid = wp.tid()
     body_id = body_indices[tid]
 
-    t = body_q[body_id]
+    t = body_q0[body_id]
     pos = wp.transform_get_translation(t)
     rot = wp.transform_get_rotation(t)
 
@@ -52,7 +53,9 @@ def spin_first_capsules_kernel(
     dq = wp.quat_from_axis_angle(axis_world, angle)
     rot_new = wp.mul(dq, rot)
 
-    body_q[body_id] = wp.transform(pos, rot_new)
+    T = wp.transform(pos, rot_new)
+    body_q0[body_id] = T
+    body_q1[body_id] = T
 
 
 class Example:
@@ -73,8 +76,8 @@ class Example:
 
         Returns:
             Tuple of (points, edge_indices, quaternions):
-            - points: List of capsule center positions (num_elements + 1).
-            - edge_indices: Flattened array of edge connectivity (2*num_elements).
+            - points: List of segment endpoints in world space (num_elements + 1).
+            - edge_indices: Flattened array of edge connectivity (2*num_elements). (Not used by `add_rod()`.)
             - quaternions: List of capsule orientations using parallel transport (num_elements).
         """
         if pos is None:
@@ -232,6 +235,8 @@ class Example:
             first_body = rod_bodies[0]
             builder.body_mass[first_body] = 0.0
             builder.body_inv_mass[first_body] = 0.0
+            builder.body_inertia[first_body] = wp.mat33(0.0)
+            builder.body_inv_inertia[first_body] = wp.mat33(0.0)
             kinematic_body_indices.append(first_body)
 
             # Store for twist application and testing
@@ -255,7 +260,10 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         self.viewer.set_model(self.model)
 
@@ -267,7 +275,7 @@ class Example:
 
     def capture(self):
         """Capture simulation loop into a CUDA graph for optimal GPU performance."""
-        if wp.get_device().is_cuda:
+        if self.solver.device.is_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -284,7 +292,7 @@ class Example:
                 kernel=spin_first_capsules_kernel,
                 dim=self.kinematic_bodies.shape[0],
                 inputs=[self.kinematic_bodies, self.first_twist_rates, self.sim_dt],
-                outputs=[self.state_0.body_q],
+                outputs=[self.state_0.body_q, self.state_1.body_q],
             )
 
             # Apply forces to the model
@@ -296,7 +304,7 @@ class Example:
 
             # Collide for contact detection
             if update_step_history:
-                self.contacts = self.model.collide(self.state_0)
+                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
             self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(

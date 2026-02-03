@@ -17,23 +17,34 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import IntEnum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import numpy as np
 import warp as wp
-from warp.context import Devicelike
+from warp import DeviceLike as Devicelike
 
-try:
-    from typing import override
-except ImportError:
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _override_noop(func: _F, /) -> _F:
+    """Fallback no-op decorator when override is unavailable."""
+    return func
+
+
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
     try:
-        from typing_extensions import override
+        from typing import override as _override
     except ImportError:
-        # Fallback no-op decorator if override is not available
-        def override(func):
-            return func
+        try:
+            from typing_extensions import override as _override
+        except ImportError:
+            _override = _override_noop
+
+    override = _override
 
 
 warp_int_types = (wp.int8, wp.uint8, wp.int16, wp.uint16, wp.int32, wp.uint32, wp.int64, wp.uint64)
@@ -64,6 +75,16 @@ nparray = np.ndarray[Any, np.dtype[Any]]
 
 # Warp vector types
 vec5 = wp.types.vector(length=5, dtype=wp.float32)
+vec10 = wp.types.vector(length=10, dtype=wp.float32)
+
+# Large finite value used as sentinel (matches MuJoCo's mjMAXVAL)
+MAXVAL = 1e10
+"""Large finite sentinel value for 'no limit' / 'no hit' / 'invalid' markers.
+
+Use this instead of infinity to avoid verify_fp false positives.
+For comparisons with volume-sampled data, use `>= wp.static(MAXVAL * 0.99)` to handle
+interpolation-induced floating-point errors.
+"""
 
 
 class Axis(IntEnum):
@@ -181,6 +202,7 @@ def axis_to_vec3(axis: AxisType | Vec3) -> wp.vec3:
 
 
 __all__ = [
+    "MAXVAL",
     "Axis",
     "AxisType",
     "Devicelike",
@@ -194,4 +216,5 @@ __all__ = [
     "flag_to_int",
     "override",
     "vec5",
+    "vec10",
 ]

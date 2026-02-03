@@ -22,13 +22,15 @@ When using uv, the `lockfile <https://docs.astral.sh/uv/concepts/projects/layout
 We maintain a lockfile in the root of the repository that pins exact versions of all dependencies and their transitive dependencies.
 
 Sometimes, a dependency in the lockfile needs to be updated to a newer version.
-This can be done by running ``uv lock --upgrade-package <package-name>``:
+This can be done by running ``uv lock -P <package-name>``:
 
 .. code-block:: console
 
-    uv lock --upgrade-package warp-lang
+    uv lock -P warp-lang --prerelease allow
 
-    uv lock --upgrade-package mujoco-warp
+    uv lock -P mujoco-warp --prerelease allow
+
+The ``--prerelease allow`` flag is used to allow updating to pre-release versions of dependencies.
 
 uv also provides a command to update all dependencies in the lockfile:
 
@@ -245,6 +247,52 @@ To build the documentation locally, ensure you have the documentation dependenci
             cd path/to/newton/docs && make html
 
 The built documentation will be available in ``docs/_build/html``.
+
+.. note::
+
+    The documentation build requires `pandoc <https://pandoc.org/>`_ for converting Jupyter notebooks.
+    While ``pypandoc_binary`` is included in the ``[docs]`` dependencies, some systems may require
+    pandoc to be installed separately:
+
+    - **Ubuntu/Debian:** ``sudo apt-get install pandoc``
+    - **macOS:** ``brew install pandoc``
+    - **Windows:** Download from https://pandoc.org/installing.html or ``choco install pandoc``
+
+Serving the documentation locally
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+After building the documentation, you can serve it locally using the ``docs/serve.py`` script.
+This is particularly useful for testing interactive features like the Viser 3D visualizations
+in the tutorial notebooks, which require proper MIME types for WebAssembly and JavaScript modules.
+
+.. tab-set::
+    :sync-group: env
+
+    .. tab-item:: uv
+        :sync: uv
+
+        .. code-block:: console
+
+            uv run docs/serve.py
+
+    .. tab-item:: venv
+        :sync: venv
+
+        .. code:: console
+
+            python docs/serve.py
+
+Then open http://localhost:8000 in your browser. You can specify a custom port with ``--port``:
+
+.. code-block:: console
+
+    python docs/serve.py --port 8080
+
+.. note::
+
+    Using Python's built-in ``http.server`` or simply opening the HTML files directly
+    will not work correctly for the interactive Viser visualizations, as they require
+    specific CORS headers and MIME types that ``serve.py`` provides.
 
 Testing documentation code snippets
 -----------------------------------

@@ -13,11 +13,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .collision import Collision, CollisionHandler
+"""
+Style3D solver module.
+
+This module provides the :class:`~newton.solvers.SolverStyle3D` cloth simulation
+solver along with helper functions for setting up cloth assets. It includes
+utilities for creating cloth meshes and grids, handling collisions, and sewing
+cloth vertices together.
+"""
+
+from .cloth import (
+    add_cloth_grid,
+    add_cloth_mesh,
+)
 from .solver_style3d import SolverStyle3D
 
 __all__ = [
-    "Collision",
-    "CollisionHandler",
     "SolverStyle3D",
+    "add_cloth_grid",
+    "add_cloth_mesh",
 ]

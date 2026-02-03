@@ -35,10 +35,11 @@ import newton.examples
 import newton.ik as ik
 import newton.usd
 import newton.utils
+from newton.solvers import style3d
 
 
 class Example:
-    def __init__(self, viewer):
+    def __init__(self, viewer, args=None):
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
@@ -55,10 +56,11 @@ class Example:
         # ------------------------------------------------------------------
         # Build a single H1 (fixed base for stability) + ground
         # ------------------------------------------------------------------
-        h1 = newton.Style3DModelBuilder()
+        h1 = newton.ModelBuilder()
         h1.add_mjcf(
             newton.utils.download_asset("unitree_h1") / "mjcf/h1_with_hand.xml",
             floating=False,
+            enable_self_collisions=False,
         )
         h1.add_ground_plane()
 
@@ -67,7 +69,8 @@ class Example:
         # ------------------------------------------------------------------
         garment_usd_name = "h1_jacket"
         # garment_usd_name = "h1_cake_skirt"
-        cloth_builder = newton.Style3DModelBuilder()
+        cloth_builder = newton.ModelBuilder()
+        newton.solvers.SolverStyle3D.register_custom_attributes(cloth_builder)
         asset_path = newton.utils.download_asset("style3d")
         usd_stage = Usd.Stage.Open(f"{asset_path}/garments/{garment_usd_name}.usd")
         usd_prim_garment = usd_stage.GetPrimAtPath(f"/Root/{garment_usd_name}/Root_Garment")
@@ -81,12 +84,11 @@ class Example:
         garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
         self.garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
 
-        cloth_builder.add_aniso_cloth_mesh(
+        style3d.add_cloth_mesh(
+            cloth_builder,
             pos=wp.vec3(0, 0, 0),
             rot=wp.quat_identity(),
             vel=wp.vec3(0.0, 0.0, 0.0),
-            tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e2) * 10.0,
-            edge_aniso_ke=wp.vec3(1.0e-6, 1.0e-6, 1.0e-6) * 40.0,
             panel_verts=self.garment_mesh_uv.tolist(),
             panel_indices=self.garment_mesh_uv_indices.tolist(),
             vertices=self.garment_mesh_points.tolist(),
@@ -94,14 +96,19 @@ class Example:
             density=0.5,
             scale=1.0,
             particle_radius=3.0e-3,
+            tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e2) * 10.0,
+            edge_aniso_ke=wp.vec3(1.0e-6, 1.0e-6, 1.0e-6) * 40.0,
         )
         h1.add_world(cloth_builder)
 
         self.graph = None
         self.model = h1.finalize()
         self.model.soft_contact_ke = 5e3
+        # no friction
+        self.model.soft_contact_mu = 0.0
         self.model.shape_material_mu.fill_(0.0)
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(2.5, 0.0, 1.5), 0.0, 180.0)
 
         # states
         self.state = self.model.state()
@@ -184,7 +191,10 @@ class Example:
         self.cloth_solver.precompute(h1)
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state)
+
+        # Create collision pipeline (default: unified)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
         self.shape_flags = self.model.shape_flags.numpy()
 
     # ----------------------------------------------------------------------
@@ -231,7 +241,7 @@ class Example:
                 device=self.model.device,
             )
             self.state.body_q.assign(self.state1.body_q)
-            self.contacts = self.model.collide(self.state)
+            self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
             self.cloth_solver.step(self.state, self.state1, self.control, self.contacts, self.sim_dt)
             (self.state, self.state1) = (self.state1, self.state)
 
@@ -327,5 +337,5 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.set_defaults(num_frames=601)
     viewer, args = newton.examples.init(parser)
-    example = Example(viewer)
+    example = Example(viewer, args)
     newton.examples.run(example, args)

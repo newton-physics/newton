@@ -20,7 +20,8 @@
 # ArticulationView. This example spawns multiple cartpole robots and applies
 # simple random control policy.
 #
-# Command: python -m newton.examples selection_cartpole
+# To limit the number of worlds to render use the max-worlds argument.
+# Command: python -m newton.examples selection_cartpole --num-worlds 16 --max-worlds 8
 #
 ###########################################################################
 
@@ -37,25 +38,25 @@ COLLAPSE_FIXED_JOINTS = False
 
 
 @wp.kernel
-def randomize_states_kernel(joint_q: wp.array2d(dtype=float), seed: int):
+def randomize_states_kernel(joint_q: wp.array3d(dtype=float), seed: int):
     tid = wp.tid()
     rng = wp.rand_init(seed, tid)
-    joint_q[tid, 0] = 2.0 - 4.0 * wp.randf(rng)
-    joint_q[tid, 1] = wp.pi / 8.0 - wp.pi / 4.0 * wp.randf(rng)
-    joint_q[tid, 2] = wp.pi / 8.0 - wp.pi / 4.0 * wp.randf(rng)
+    joint_q[tid, 0, 0] = 2.0 - 4.0 * wp.randf(rng)
+    joint_q[tid, 0, 1] = wp.pi / 8.0 - wp.pi / 4.0 * wp.randf(rng)
+    joint_q[tid, 0, 2] = wp.pi / 8.0 - wp.pi / 4.0 * wp.randf(rng)
 
 
 @wp.kernel
-def apply_forces_kernel(joint_q: wp.array2d(dtype=float), joint_f: wp.array2d(dtype=float)):
+def apply_forces_kernel(joint_q: wp.array3d(dtype=float), joint_f: wp.array3d(dtype=float)):
     tid = wp.tid()
-    if joint_q[tid, 0] > 0.0:
-        joint_f[tid, 0] = -20.0
+    if joint_q[tid, 0, 0] > 0.0:
+        joint_f[tid, 0, 0] = -20.0
     else:
-        joint_f[tid, 0] = 20.0
+        joint_f[tid, 0, 0] = 20.0
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=16, verbose=True):
+    def __init__(self, viewer, num_worlds=16, max_worlds=None, verbose=True):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -110,7 +111,7 @@ class Example:
         if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
             self.cartpoles.eval_fk(self.state_0)
 
-        self.viewer.set_model(self.model)
+        self.viewer.set_model(self.model, max_worlds=max_worlds)
         self.viewer.set_world_offsets((2.0, 0.0, 0.0))
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
@@ -149,7 +150,7 @@ class Example:
 
             joint_q = wp.to_torch(self.cartpoles.get_attribute("joint_q", self.state_0))
             joint_f = wp.to_torch(self.cartpoles.get_attribute("joint_f", self.control))
-            joint_f[:, 0] = torch.where(joint_q[:, 0] > 0, -20, 20)
+            joint_f[..., 0] = torch.where(joint_q[..., 0] > 0, -20, 20)
         else:
             joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
             joint_f = self.cartpoles.get_attribute("joint_f", self.control)
@@ -233,8 +234,8 @@ if __name__ == "__main__":
     if USE_TORCH:
         import torch
 
-        torch.set_device(args.device)
+        torch.set_default_device(args.device)
 
-    example = Example(viewer, num_worlds=args.num_worlds)
+    example = Example(viewer, num_worlds=args.num_worlds, max_worlds=args.max_worlds)
 
     newton.examples.run(example, args)

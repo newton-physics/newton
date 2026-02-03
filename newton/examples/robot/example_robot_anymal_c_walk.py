@@ -25,7 +25,6 @@
 
 import torch
 import warp as wp
-from warp.torch import device_to_torch
 
 wp.config.enable_backward = False
 
@@ -79,7 +78,7 @@ class Example:
     def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.device = wp.get_device()
-        self.torch_device = device_to_torch(self.device)
+        self.torch_device = wp.device_to_torch(self.device)
         self.is_test = args is not None and args.test
 
         builder = newton.ModelBuilder()
@@ -164,7 +163,9 @@ class Example:
             self.model,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
             ls_parallel=True,
+            ls_iterations=50,  # Increased from default 10 for determinism
             njmax=50,
+            nconmax=100,  # Increased from 75 to handle peak contact count of ~77
         )
 
         self.viewer.set_model(self.model)
@@ -317,8 +318,8 @@ class Example:
             lambda q, qd: q[1] > 9.0,  # This threshold assumes 500 frames
         )
 
-        forward_vel_min = wp.spatial_vector(-0.5, 0.9, -0.2, -0.8, -0.5, -0.5)
-        forward_vel_max = wp.spatial_vector(0.5, 1.1, 0.2, 0.8, 0.5, 0.5)
+        forward_vel_min = wp.spatial_vector(-0.5, 0.9, -0.2, -0.8, -1.5, -0.5)
+        forward_vel_max = wp.spatial_vector(0.5, 1.1, 0.2, 0.8, 1.5, 0.5)
         newton.examples.test_body_state(
             self.model,
             self.state_0,

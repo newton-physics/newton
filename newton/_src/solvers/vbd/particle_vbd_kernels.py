@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import numpy as np
 import warp as wp
-from warp.types import float32, matrix
 
 from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
 
@@ -52,7 +51,7 @@ NUM_THREADS_PER_COLLISION_PRIMITIVE = 4
 TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE = 16
 
 
-class mat32(matrix(shape=(3, 2), dtype=float32)):
+class mat32(wp.types.matrix(shape=(3, 2), dtype=wp.float32)):
     pass
 
 
@@ -1255,6 +1254,7 @@ def compute_friction(mu: float, normal_contact_force: float, T: mat32, u: wp.vec
 def forward_step(
     dt: float,
     gravity: wp.array(dtype=wp.vec3),
+    particle_world: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
@@ -1269,7 +1269,9 @@ def forward_step(
     if not particle_flags[particle] & ParticleFlags.ACTIVE:
         inertia[particle] = pos[particle]
         return
-    vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
+    world_idx = particle_world[particle]
+    world_g = gravity[wp.max(world_idx, 0)]
+    vel_new = vel[particle] + (world_g + external_force[particle] * inv_mass[particle]) * dt
     pos[particle] = pos[particle] + vel_new * dt
     inertia[particle] = pos[particle]
 
@@ -1278,6 +1280,7 @@ def forward_step(
 def forward_step_penetration_free(
     dt: float,
     gravity: wp.array(dtype=wp.vec3),
+    particle_world: wp.array(dtype=wp.int32),
     pos_prev: wp.array(dtype=wp.vec3),
     pos: wp.array(dtype=wp.vec3),
     vel: wp.array(dtype=wp.vec3),
@@ -1298,7 +1301,9 @@ def forward_step_penetration_free(
         inertia[particle_index] = pos[particle_index]
         return
 
-    vel_new = vel[particle_index] + (gravity[0] + external_force[particle_index] * inv_mass[particle_index]) * dt
+    world_idx = particle_world[particle_index]
+    world_g = gravity[wp.max(world_idx, 0)]
+    vel_new = vel[particle_index] + (world_g + external_force[particle_index] * inv_mass[particle_index]) * dt
     pos_inertia = pos[particle_index] + vel_new * dt
     inertia[particle_index] = pos_inertia
 
@@ -1896,15 +1901,17 @@ def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
     return vals[offs[i] : offs[i + 1]]
 
 
-def _set_to_csr(list_of_sets, dtype=np.int32, sort=True):
+def set_to_csr(
+    list_of_sets: list[set[int]], dtype: np.dtype = np.int32, sort: bool = True
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Convert a list of integer sets into CSR (Compressed Sparse Row) structure.
     Args:
         list_of_sets: Iterable where each entry is a set of ints.
         dtype: Output dtype for the flattened arrays.
-        sort: Whether to sort each row when writing into `flat`.
+        sort: Whether to sort each row when writing into ``flat``.
     Returns:
-        A tuple `(flat, offsets)` representing the CSR values and offsets.
+        A tuple ``(flat, offsets)`` representing the CSR values and offsets.
     """
     offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
     sizes = np.fromiter((len(s) for s in list_of_sets), count=len(list_of_sets), dtype=dtype)

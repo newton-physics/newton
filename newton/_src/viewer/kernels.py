@@ -380,7 +380,11 @@ def compute_joint_basis_lines(
         return
 
     joint_t = joint_type[joint_id]
-    if joint_t != int(newton.JointType.REVOLUTE) and joint_t != int(newton.JointType.D6):
+    if (
+        joint_t != int(newton.JointType.REVOLUTE)
+        and joint_t != int(newton.JointType.D6)
+        and joint_t != int(newton.JointType.CABLE)
+    ):
         # Set NaN for unsupported joints to hide them
         line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
         line_ends[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
@@ -425,6 +429,23 @@ def compute_joint_basis_lines(
     line_starts[tid] = world_pos
     line_ends[tid] = world_pos + axis_vec * scale_factor
     line_colors[tid] = color
+
+
+@wp.kernel
+def compute_com_positions(
+    body_q: wp.array(dtype=wp.transform),
+    body_com: wp.array(dtype=wp.vec3),
+    body_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
+    com_positions: wp.array(dtype=wp.vec3),
+):
+    tid = wp.tid()
+    body_tf = body_q[tid]
+    world_com = wp.transform_point(body_tf, body_com[tid])
+    world_idx = body_world[tid]
+    if world_offsets and world_idx >= 0 and world_idx < world_offsets.shape[0]:
+        world_com = world_com + world_offsets[world_idx]
+    com_positions[tid] = world_com
 
 
 @wp.func

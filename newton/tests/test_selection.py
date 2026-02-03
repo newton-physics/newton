@@ -19,15 +19,9 @@ import numpy as np
 import warp as wp
 
 import newton
+import newton.examples
 from newton.selection import ArticulationView
-
-try:
-    from newton_actuators import ActuatorPD
-
-    HAS_ACTUATORS = True
-except ImportError:
-    HAS_ACTUATORS = False
-
+from newton.tests.unittest_utils import assert_np_equal
 
 class TestSelection(unittest.TestCase):
     def test_no_match(self):
@@ -45,150 +39,155 @@ class TestSelection(unittest.TestCase):
         control = model.control()
         selection = ArticulationView(model, pattern="my_articulation", exclude_joint_types=[newton.JointType.FREE])
         self.assertEqual(selection.count, 1)
-        self.assertEqual(selection.get_root_transforms(model).shape, (1,))
-        self.assertEqual(selection.get_dof_positions(model).shape, (1, 0))
-        self.assertEqual(selection.get_dof_velocities(model).shape, (1, 0))
-        self.assertEqual(selection.get_dof_forces(control).shape, (1, 0))
+        self.assertEqual(selection.get_root_transforms(model).shape, (1, 1))
+        self.assertEqual(selection.get_dof_positions(model).shape, (1, 1, 0))
+        self.assertEqual(selection.get_dof_velocities(model).shape, (1, 1, 0))
+        self.assertEqual(selection.get_dof_forces(control).shape, (1, 1, 0))
 
-
-@unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
-class TestActuatorSelectionAPI(unittest.TestCase):
-    def _build_single_world_model(self):
-        builder = newton.ModelBuilder()
-        bodies = [builder.add_body() for _ in range(3)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        builder.add_articulation(joints, key="robot")
-        dofs = [builder.joint_qd_start[j] for j in joints]
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=200.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[2]], kp=300.0)
-        return builder.finalize(), dofs
-
-    def _build_multi_world_model(self, num_worlds=3):
-        template = newton.ModelBuilder()
-        bodies = [template.add_body() for _ in range(3)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(template.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        template.add_articulation(joints, key="robot")
-        dofs = [template.joint_qd_start[j] for j in joints]
-        template.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        template.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=200.0)
-        template.add_actuator(ActuatorPD, input_indices=[dofs[2]], kp=300.0)
-        builder = newton.ModelBuilder()
-        builder.replicate(template, num_worlds)
-        return builder.finalize(), num_worlds
-
-    def test_get_actuator_attribute_single_world(self):
-        model, dofs = self._build_single_world_model()
-        view = ArticulationView(model, pattern="robot")
-        actuator = model.actuators[0]
-        kp_values = view.get_actuator_attribute(actuator, "kp")
-        self.assertEqual(kp_values.shape, (1, 3))
-        np.testing.assert_array_almost_equal(kp_values.numpy().flatten(), [100.0, 200.0, 300.0])
-
-    def test_get_actuator_attribute_multi_world(self):
-        num_worlds = 3
-        model, _ = self._build_multi_world_model(num_worlds)
-        view = ArticulationView(model, pattern="robot*")
-        actuator = model.actuators[0]
-        kp_values = view.get_actuator_attribute(actuator, "kp")
-        self.assertEqual(kp_values.shape, (num_worlds, 3))
-        for w in range(num_worlds):
-            np.testing.assert_array_almost_equal(kp_values.numpy()[w], [100.0, 200.0, 300.0])
-
-    def test_set_actuator_attribute_single_world(self):
-        model, dofs = self._build_single_world_model()
-        view = ArticulationView(model, pattern="robot")
-        actuator = model.actuators[0]
-        new_kp = wp.array([[500.0, 600.0, 700.0]], dtype=float, device=model.device)
-        view.set_actuator_attribute(actuator, "kp", new_kp)
-        np.testing.assert_array_almost_equal(actuator.kp.numpy(), [500.0, 600.0, 700.0])
-
-    def test_set_actuator_attribute_multi_world(self):
-        num_worlds = 3
-        model, _ = self._build_multi_world_model(num_worlds)
-        view = ArticulationView(model, pattern="robot*")
-        actuator = model.actuators[0]
-        new_kp = wp.array(
-            [
-                [500.0, 600.0, 700.0],
-                [800.0, 900.0, 1000.0],
-                [1100.0, 1200.0, 1300.0],
-            ],
-            dtype=float,
-            device=model.device,
+    def test_selection_shapes(self):
+        # load articulation
+        ant = newton.ModelBuilder()
+        ant.add_mjcf(
+            newton.examples.get_asset("nv_ant.xml"),
+            ignore_names=["floor", "ground"],
         )
-        view.set_actuator_attribute(actuator, "kp", new_kp)
-        expected = [500.0, 600.0, 700.0, 800.0, 900.0, 1000.0, 1100.0, 1200.0, 1300.0]
-        np.testing.assert_array_almost_equal(actuator.kp.numpy(), expected)
 
-    def test_set_actuator_attribute_with_mask(self):
-        num_worlds = 3
-        model, _ = self._build_multi_world_model(num_worlds)
-        view = ArticulationView(model, pattern="robot*")
-        actuator = model.actuators[0]
-        mask = wp.array([False, True, False], dtype=bool, device=model.device)
-        new_kp = wp.array(
-            [
-                [999.0, 999.0, 999.0],
-                [500.0, 600.0, 700.0],
-                [999.0, 999.0, 999.0],
-            ],
-            dtype=float,
-            device=model.device,
+        L = 9  # num links
+        J = 9  # num joints
+        D = 14  # num joint dofs
+        C = 15  # num joint coords
+        S = 13  # num shapes
+
+        # scene with just one ant
+        single_ant_model = ant.finalize()
+
+        single_ant_view = ArticulationView(single_ant_model, "ant")
+        self.assertEqual(single_ant_view.count, 1)
+        self.assertEqual(single_ant_view.world_count, 1)
+        self.assertEqual(single_ant_view.count_per_world, 1)
+        self.assertEqual(single_ant_view.get_root_transforms(single_ant_model).shape, (1, 1))
+        self.assertEqual(single_ant_view.get_root_velocities(single_ant_model).shape, (1, 1))
+        self.assertEqual(single_ant_view.get_link_transforms(single_ant_model).shape, (1, 1, L))
+        self.assertEqual(single_ant_view.get_link_velocities(single_ant_model).shape, (1, 1, L))
+        self.assertEqual(single_ant_view.get_dof_positions(single_ant_model).shape, (1, 1, C))
+        self.assertEqual(single_ant_view.get_dof_velocities(single_ant_model).shape, (1, 1, D))
+        self.assertEqual(single_ant_view.get_attribute("body_mass", single_ant_model).shape, (1, 1, L))
+        self.assertEqual(single_ant_view.get_attribute("joint_type", single_ant_model).shape, (1, 1, J))
+        self.assertEqual(single_ant_view.get_attribute("joint_dof_dim", single_ant_model).shape, (1, 1, J, 2))
+        self.assertEqual(single_ant_view.get_attribute("joint_limit_ke", single_ant_model).shape, (1, 1, D))
+        self.assertEqual(single_ant_view.get_attribute("shape_thickness", single_ant_model).shape, (1, 1, S))
+
+        W = 10  # num worlds
+
+        # scene with one ant per world
+        single_ant_per_world_scene = newton.ModelBuilder()
+        single_ant_per_world_scene.replicate(ant, num_worlds=W)
+        single_ant_per_world_model = single_ant_per_world_scene.finalize()
+
+        single_ant_per_world_view = ArticulationView(single_ant_per_world_model, "ant")
+        self.assertEqual(single_ant_per_world_view.count, W)
+        self.assertEqual(single_ant_per_world_view.world_count, W)
+        self.assertEqual(single_ant_per_world_view.count_per_world, 1)
+        self.assertEqual(single_ant_per_world_view.get_root_transforms(single_ant_per_world_model).shape, (W, 1))
+        self.assertEqual(single_ant_per_world_view.get_root_velocities(single_ant_per_world_model).shape, (W, 1))
+        self.assertEqual(single_ant_per_world_view.get_link_transforms(single_ant_per_world_model).shape, (W, 1, L))
+        self.assertEqual(single_ant_per_world_view.get_link_velocities(single_ant_per_world_model).shape, (W, 1, L))
+        self.assertEqual(single_ant_per_world_view.get_dof_positions(single_ant_per_world_model).shape, (W, 1, C))
+        self.assertEqual(single_ant_per_world_view.get_dof_velocities(single_ant_per_world_model).shape, (W, 1, D))
+        self.assertEqual(
+            single_ant_per_world_view.get_attribute("body_mass", single_ant_per_world_model).shape, (W, 1, L)
         )
-        view.set_actuator_attribute(actuator, "kp", new_kp, mask=mask)
-        kp_np = actuator.kp.numpy()
-        np.testing.assert_array_almost_equal(kp_np[0:3], [100.0, 200.0, 300.0])
-        np.testing.assert_array_almost_equal(kp_np[3:6], [500.0, 600.0, 700.0])
-        np.testing.assert_array_almost_equal(kp_np[6:9], [100.0, 200.0, 300.0])
+        self.assertEqual(
+            single_ant_per_world_view.get_attribute("joint_type", single_ant_per_world_model).shape, (W, 1, J)
+        )
+        self.assertEqual(
+            single_ant_per_world_view.get_attribute("joint_dof_dim", single_ant_per_world_model).shape, (W, 1, J, 2)
+        )
+        self.assertEqual(
+            single_ant_per_world_view.get_attribute("joint_limit_ke", single_ant_per_world_model).shape, (W, 1, D)
+        )
+        self.assertEqual(
+            single_ant_per_world_view.get_attribute("shape_thickness", single_ant_per_world_model).shape, (W, 1, S)
+        )
 
-    def test_get_actuator_attribute_partial_selection(self):
-        model, dofs = self._build_single_world_model()
-        view = ArticulationView(model, pattern="robot", include_joints=[0, 1])
-        actuator = model.actuators[0]
-        kp_values = view.get_actuator_attribute(actuator, "kp")
-        self.assertEqual(kp_values.shape, (1, 2))
-        np.testing.assert_array_almost_equal(kp_values.numpy().flatten(), [100.0, 200.0])
+        A = 3  # num articulations per world
 
-    def test_set_actuator_attribute_partial_selection(self):
-        model, dofs = self._build_single_world_model()
-        view = ArticulationView(model, pattern="robot", include_joints=[1, 2])
-        actuator = model.actuators[0]
-        new_kp = wp.array([[555.0, 666.0]], dtype=float, device=model.device)
-        view.set_actuator_attribute(actuator, "kp", new_kp)
-        np.testing.assert_array_almost_equal(actuator.kp.numpy(), [100.0, 555.0, 666.0])
+        # scene with multiple ants per world
+        multi_ant_world = newton.ModelBuilder()
+        for i in range(A):
+            multi_ant_world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
+        multi_ant_per_world_scene = newton.ModelBuilder()
+        multi_ant_per_world_scene.replicate(multi_ant_world, num_worlds=W)
+        multi_ant_per_world_model = multi_ant_per_world_scene.finalize()
 
-    def test_get_set_multiple_parameters(self):
-        model, dofs = self._build_single_world_model()
-        view = ArticulationView(model, pattern="robot")
-        actuator = model.actuators[0]
-        kd_values = view.get_actuator_attribute(actuator, "kd")
-        np.testing.assert_array_almost_equal(kd_values.numpy().flatten(), [0.0, 0.0, 0.0])
-        new_kd = wp.array([[10.0, 20.0, 30.0]], dtype=float, device=model.device)
-        view.set_actuator_attribute(actuator, "kd", new_kd)
-        np.testing.assert_array_almost_equal(actuator.kd.numpy(), [10.0, 20.0, 30.0])
+        multi_ant_per_world_view = ArticulationView(multi_ant_per_world_model, "ant")
+        self.assertEqual(multi_ant_per_world_view.count, W * A)
+        self.assertEqual(multi_ant_per_world_view.world_count, W)
+        self.assertEqual(multi_ant_per_world_view.count_per_world, A)
+        self.assertEqual(multi_ant_per_world_view.get_root_transforms(multi_ant_per_world_model).shape, (W, A))
+        self.assertEqual(multi_ant_per_world_view.get_root_velocities(multi_ant_per_world_model).shape, (W, A))
+        self.assertEqual(multi_ant_per_world_view.get_link_transforms(multi_ant_per_world_model).shape, (W, A, L))
+        self.assertEqual(multi_ant_per_world_view.get_link_velocities(multi_ant_per_world_model).shape, (W, A, L))
+        self.assertEqual(multi_ant_per_world_view.get_dof_positions(multi_ant_per_world_model).shape, (W, A, C))
+        self.assertEqual(multi_ant_per_world_view.get_dof_velocities(multi_ant_per_world_model).shape, (W, A, D))
+        self.assertEqual(
+            multi_ant_per_world_view.get_attribute("body_mass", multi_ant_per_world_model).shape, (W, A, L)
+        )
+        self.assertEqual(
+            multi_ant_per_world_view.get_attribute("joint_type", multi_ant_per_world_model).shape, (W, A, J)
+        )
+        self.assertEqual(
+            multi_ant_per_world_view.get_attribute("joint_dof_dim", multi_ant_per_world_model).shape, (W, A, J, 2)
+        )
+        self.assertEqual(
+            multi_ant_per_world_view.get_attribute("joint_limit_ke", multi_ant_per_world_model).shape, (W, A, D)
+        )
+        self.assertEqual(
+            multi_ant_per_world_view.get_attribute("shape_thickness", multi_ant_per_world_model).shape, (W, A, S)
+        )
 
-    def test_non_actuated_dof_returns_zero(self):
-        builder = newton.ModelBuilder()
-        body0 = builder.add_body()
-        body1 = builder.add_body()
-        joint0 = builder.add_joint_revolute(parent=-1, child=body0, axis=newton.Axis.Z)
-        joint1 = builder.add_joint_prismatic(parent=body0, child=body1, axis=newton.Axis.X)
-        builder.add_articulation([joint0, joint1], key="robot")
-        dof0 = builder.joint_qd_start[joint0]
-        builder.add_actuator(ActuatorPD, input_indices=[dof0], kp=100.0)
-        model = builder.finalize()
-        view = ArticulationView(model, pattern="robot", include_joint_types=[newton.JointType.PRISMATIC])
-        actuator = model.actuators[0]
-        kp_values = view.get_actuator_attribute(actuator, "kp")
-        self.assertEqual(kp_values.shape, (1, 1))
-        np.testing.assert_array_almost_equal(kp_values.numpy().flatten(), [0.0])
+    def test_selection_mask(self):
+        # load articulation
+        ant = newton.ModelBuilder()
+        ant.add_mjcf(
+            newton.examples.get_asset("nv_ant.xml"),
+            ignore_names=["floor", "ground"],
+        )
+
+        num_worlds = 4
+        num_per_world = 3
+        num_artis = num_worlds * num_per_world
+
+        # scene with multiple ants per world
+        world = newton.ModelBuilder()
+        for i in range(num_per_world):
+            world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
+        scene = newton.ModelBuilder()
+        scene.replicate(world, num_worlds=num_worlds)
+        model = scene.finalize()
+
+        view = ArticulationView(model, "ant")
+
+        # test default mask
+        model_mask = view.get_model_articulation_mask()
+        expected = np.full(num_artis, 1, dtype=np.bool)
+        assert_np_equal(model_mask.numpy(), expected)
+
+        # test per-world mask
+        model_mask = view.get_model_articulation_mask(mask=[0, 1, 1, 0])
+        expected = np.array([0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
+        assert_np_equal(model_mask.numpy(), expected)
+
+        # test world-arti mask
+        m = [
+            [0, 1, 0],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 0, 0],
+        ]
+        model_mask = view.get_model_articulation_mask(mask=m)
+        expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
+        assert_np_equal(model_mask.numpy(), expected)
 
 
 if __name__ == "__main__":

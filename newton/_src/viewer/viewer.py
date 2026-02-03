@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from abc import abstractmethod
 
 import numpy as np
@@ -30,9 +32,10 @@ from newton.utils import (
     create_ellipsoid_mesh,
     create_plane_mesh,
     create_sphere_mesh,
+    solidify_mesh,
 )
 
-from ..core.types import nparray
+from ..core.types import MAXVAL, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
 
 
@@ -63,8 +66,13 @@ class ViewerBase:
         self._joint_points1 = None
         self._joint_colors = None
 
+        self._com_positions = None
+        self._com_colors = None
+        self._com_radii = None
+
         # World offset support
         self.world_offsets = None  # Array of vec3 offsets per world
+        self.max_worlds = None  # Limit on worlds to render (None = all)
 
         # Display options as individual boolean attributes
         self.show_joints = False
@@ -117,11 +125,20 @@ class ViewerBase:
         """
         return False
 
-    def set_model(self, model):
+    def set_model(self, model, max_worlds: int | None = None):
+        """
+        Set the model to be visualized.
+
+        Args:
+            model: The Newton model to visualize.
+            max_worlds: Maximum number of worlds to render (None = all).
+                        Useful for performance when training with many environments.
+        """
         if self.model is not None:
             raise RuntimeError("Viewer set_model() can be called only once.")
 
         self.model = model
+        self.max_worlds = max_worlds
 
         if model is not None:
             self.device = model.device
@@ -130,6 +147,22 @@ class ViewerBase:
             # Auto-compute world offsets if not already set
             if self.world_offsets is None:
                 self._auto_compute_world_offsets()
+
+    def _should_render_world(self, world_idx: int) -> bool:
+        """Check if a world should be rendered based on max_worlds limit."""
+        if world_idx == -1:  # Global entities always rendered
+            return True
+        if self.max_worlds is None:
+            return True
+        return world_idx < self.max_worlds
+
+    def _get_render_world_count(self) -> int:
+        """Get the number of worlds to render."""
+        if self.model is None:
+            return 0
+        if self.max_worlds is None:
+            return self.model.num_worlds
+        return min(self.max_worlds, self.model.num_worlds)
 
     def _get_shape_isomesh(self, shape_idx: int):
         """Get the isomesh for a collision shape with an SDF volume.
@@ -183,7 +216,7 @@ class ViewerBase:
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        num_worlds = self.model.num_worlds
+        num_worlds = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -206,8 +239,8 @@ class ViewerBase:
         num_worlds = self.model.num_worlds
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), wp.inf, dtype=wp.float32, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), -wp.inf, dtype=wp.float32, device=self.device)
+        world_bounds_min = wp.full((num_worlds, 3), MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((num_worlds, 3), -MAXVAL, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()
@@ -251,7 +284,7 @@ class ViewerBase:
     def _auto_compute_world_offsets(self):
         """Automatically compute world offsets based on model extents."""
         # If only one world or no worlds, no offsets needed
-        if self.model.num_worlds <= 1:
+        if self._get_render_world_count() <= 1:
             return
 
         max_extents = self._get_world_extents()
@@ -284,15 +317,32 @@ class ViewerBase:
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
 
-            self.log_instances(
-                shapes.name,
-                shapes.mesh,
-                shapes.world_xforms,
-                shapes.scales,  # Always pass scales - needed for transform matrix calculation
-                shapes.colors if self.model_changed or shapes.colors_changed else None,
-                shapes.materials if self.model_changed else None,
-                hidden=not visible,
-            )
+            colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+            materials = shapes.materials if self.model_changed else None
+
+            # Capsules may be rendered via a specialized path by the concrete viewer/backend
+            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # The base implementation of log_capsules() falls back to log_instances().
+            if shapes.geo_type == newton.GeoType.CAPSULE:
+                self.log_capsules(
+                    shapes.name,
+                    shapes.mesh,
+                    shapes.world_xforms,
+                    shapes.scales,
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
+            else:
+                self.log_instances(
+                    shapes.name,
+                    shapes.mesh,
+                    shapes.world_xforms,
+                    shapes.scales,  # Always pass scales - needed for transform matrix calculation
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
 
             shapes.colors_changed = False
 
@@ -342,6 +392,7 @@ class ViewerBase:
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
+        self._log_com(state)
 
         self.model_changed = False
 
@@ -583,8 +634,6 @@ class ViewerBase:
                 raise ValueError(f"log_geo requires geo_src for MESH or CONVEX_MESH (name={name})")
 
             # resolve points/indices from source, solidify if requested
-            from warp.render.utils import solidify_mesh  # noqa: PLC0415
-
             if not geo_is_solid:
                 indices, points = solidify_mesh(geo_src.indices, geo_src.vertices, geo_thickness)
             else:
@@ -677,6 +726,10 @@ class ViewerBase:
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         pass
 
+    # Optional specialized capsule path. Backends can override.
+    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+        self.log_instances(name, mesh, xforms, scales, colors, materials, hidden=hidden)
+
     @abstractmethod
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         pass
@@ -712,6 +765,9 @@ class ViewerBase:
             self.flags = flags
             self.mesh = mesh
             self.device = device
+            # Optional geometry type for specialized rendering paths (e.g., capsules).
+            # -1 means "unknown / not set".
+            self.geo_type = -1
 
             self.parents = []
             self.xforms = []
@@ -873,6 +929,10 @@ class ViewerBase:
 
         # loop over shapes
         for s in range(shape_count):
+            # skip shapes from worlds beyond max_worlds limit
+            if not self._should_render_world(shape_world[s]):
+                continue
+
             geo_type = shape_geo_type[s]
             geo_scale = [float(v) for v in shape_geo_scale[s]]
             geo_thickness = float(shape_geo_thickness[s])
@@ -930,6 +990,7 @@ class ViewerBase:
             if shape_hash not in self._shape_instances:
                 shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
                 self._shape_instances[shape_hash] = batch
             else:
                 batch = self._shape_instances[shape_hash]
@@ -957,7 +1018,15 @@ class ViewerBase:
                 material = wp.vec4(0.5, 0.5, 1.0, 0.0)
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, s, shape_world[s])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=s,
+                world=shape_world[s],
+            )
 
         # each shape instance object (batch) is associated with one slice
         batches = list(self._shape_instances.values())
@@ -1011,6 +1080,10 @@ class ViewerBase:
         shape_count = len(shape_body)
 
         for s in range(shape_count):
+            # skip shapes from worlds beyond max_worlds limit
+            if not self._should_render_world(shape_world[s]):
+                continue
+
             # Only process collision shapes with SDF volumes
             is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)
             if not is_collision_shape:
@@ -1058,6 +1131,7 @@ class ViewerBase:
             if geo_hash not in self._sdf_isomesh_instances:
                 shape_name = f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
                 self._sdf_isomesh_instances[geo_hash] = batch
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]
@@ -1073,7 +1147,15 @@ class ViewerBase:
             color = wp.vec3(self._collision_color_map(s))
             material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
-            batch.add(parent, xform, scale, color, material, s, shape_world[s])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=s,
+                world=shape_world[s],
+            )
 
         # Finalize all SDF isomesh batches
         for batch in self._sdf_isomesh_instances.values():
@@ -1125,8 +1207,12 @@ class ViewerBase:
         shape_name = "/model/inertia_boxes"
         batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
 
-        # loop over bodys
+        # loop over bodies
         for body in range(body_count):
+            # skip bodies from worlds beyond max_worlds limit
+            if not self._should_render_world(body_world[body]):
+                continue
+
             rot, principal_inertia = wp.eig3(wp.mat33(body_inertia[body]))
             xform = wp.transform(body_com[body], wp.quat_from_matrix(rot))
 
@@ -1151,7 +1237,15 @@ class ViewerBase:
             material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
 
             # add render instance
-            batch.add(parent, xform, scale, color, material, body_world[body])
+            batch.add(
+                parent=parent,
+                xform=xform,
+                scale=scale,
+                color=color,
+                material=material,
+                shape_index=body,
+                world=body_world[body],
+            )
 
         # batch to the GPU
         batch.finalize()
@@ -1211,6 +1305,33 @@ class ViewerBase:
 
         # Log all joint lines in a single call
         self.log_lines("/model/joints", self._joint_points0, self._joint_points1, self._joint_colors)
+
+    def _log_com(self, state):
+        num_bodies = self.model.body_count
+        if num_bodies == 0:
+            return
+
+        if self._com_positions is None or len(self._com_positions) < num_bodies:
+            self._com_positions = wp.zeros(num_bodies, dtype=wp.vec3, device=self.device)
+            self._com_colors = wp.full(num_bodies, wp.vec3(1.0, 0.8, 0.0), device=self.device)
+            self._com_radii = wp.full(num_bodies, 0.05, dtype=float, device=self.device)
+
+        from .kernels import compute_com_positions  # noqa: PLC0415
+
+        wp.launch(
+            kernel=compute_com_positions,
+            dim=num_bodies,
+            inputs=[
+                state.body_q,
+                self.model.body_com,
+                self.model.body_world,
+                self.world_offsets,
+            ],
+            outputs=[self._com_positions],
+            device=self.device,
+        )
+
+        self.log_points("/model/com", self._com_positions, self._com_radii, self._com_colors, hidden=not self.show_com)
 
     def _log_triangles(self, state):
         if self.model.tri_count:
@@ -1274,3 +1395,54 @@ class ViewerBase:
 
         num_colors = len(colors)
         return [c / 255.0 for c in colors[i % num_colors]]
+
+
+def is_jupyter_notebook():
+    try:
+        # Check if get_ipython is defined (available in IPython environments)
+        shell = get_ipython().__class__.__name__
+        if shell == "ZMQInteractiveShell":
+            # This indicates a Jupyter Notebook or JupyterLab environment
+            return True
+        elif shell == "TerminalInteractiveShell":
+            # This indicates a standard IPython terminal
+            return False
+        else:
+            # Other IPython-like environments
+            return False
+    except NameError:
+        # get_ipython is not defined, so it's likely a standard Python script
+        return False
+
+
+def is_sphinx_build() -> bool:
+    """
+    Detect if we're running inside a Sphinx documentation build (via nbsphinx).
+
+    Returns:
+        True if running in Sphinx/nbsphinx, False if in regular Jupyter session.
+    """
+
+    # Check for Newton's custom env var (set in docs/conf.py, inherited by nbsphinx subprocesses)
+    if os.environ.get("NEWTON_SPHINX_BUILD"):
+        return True
+
+    # nbsphinx sets SPHINXBUILD or we can check for sphinx in the call stack
+    if os.environ.get("SPHINXBUILD"):
+        return True
+
+    # Check if sphinx is in the module list (imported during doc build)
+    if "sphinx" in sys.modules or "nbsphinx" in sys.modules:
+        return True
+
+    # Check call stack for sphinx-related frames
+    try:
+        import traceback  # noqa: PLC0415
+
+        for frame_info in traceback.extract_stack():
+            if "sphinx" in frame_info.filename.lower() or "nbsphinx" in frame_info.filename.lower():
+                return True
+    except Exception:
+        pass
+
+    return False

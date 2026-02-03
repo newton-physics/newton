@@ -17,12 +17,14 @@
 # core
 # ==================================================================================
 from ._src.core import (
+    MAXVAL,
     Axis,
     AxisType,
 )
 from ._version import __version__
 
 __all__ = [
+    "MAXVAL",
     "Axis",
     "AxisType",
     "__version__",
@@ -53,7 +55,7 @@ __all__ += [
 # sim
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
-    JOINT_LIMIT_UNLIMITED,
+    ActuatorMode,
     BroadPhaseMode,
     CollisionPipeline,
     CollisionPipelineUnified,
@@ -62,18 +64,18 @@ from ._src.sim import (  # noqa: E402
     EqType,
     JointType,
     Model,
-    ModelAttributeAssignment,
-    ModelAttributeFrequency,
     ModelBuilder,
     State,
     count_rigid_contact_points,
     eval_fk,
     eval_ik,
+    get_joint_constraint_count,
     get_joint_dof_count,
+    infer_actuator_mode,
 )
 
 __all__ += [
-    "JOINT_LIMIT_UNLIMITED",
+    "ActuatorMode",
     "BroadPhaseMode",
     "CollisionPipeline",
     "CollisionPipelineUnified",
@@ -82,25 +84,14 @@ __all__ += [
     "EqType",
     "JointType",
     "Model",
-    "ModelAttributeAssignment",
-    "ModelAttributeFrequency",
     "ModelBuilder",
     "State",
     "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
+    "get_joint_constraint_count",
     "get_joint_dof_count",
-]
-
-# ==================================================================================
-# Style3D helpers
-# TODO: eliminate these and roll the functionality into Model and ModelBuilder?
-# ==================================================================================
-from ._src.sim.style3d import Style3DModel, Style3DModelBuilder  # noqa: E402
-
-__all__ += [
-    "Style3DModel",
-    "Style3DModelBuilder",
+    "infer_actuator_mode",
 ]
 
 # ==================================================================================

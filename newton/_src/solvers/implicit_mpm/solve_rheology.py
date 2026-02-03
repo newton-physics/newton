@@ -20,7 +20,7 @@ from typing import Any
 import warp as wp
 import warp.fem as fem
 import warp.sparse as sp
-from warp.fem.utils import symmetric_eigenvalues_qr
+from warp.fem.linalg import array_axpy, symmetric_eigenvalues_qr
 
 _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-9)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
@@ -38,16 +38,20 @@ wp.set_module_options({"enable_backward": False})
 
 class YieldParamVec(wp.vec4):
     """Compact yield surface definition in an interpolation-friendly format:
-    [p_max, -p_min, s_max, mu p_max] in scaled units."""
+    [p_max sqrt_3_2, -p_min sqrt_3_2, s_max, mu p_max] in scaled units.
+
+    The scaling by sqrt(3/2) is related to the orthogonal mapping from spherical/deviatoric
+    tensors to vectors in R^6.
+    """
 
     @wp.func
     def from_values(friction_coeff: float, yield_pressure: float, tensile_yield_ratio: float, yield_stress: float):
-        tangential_scale = wp.sqrt(3.0 / 2.0)
+        pressure_scale = wp.sqrt(3.0 / 2.0)
         return YieldParamVec(
-            yield_pressure,
-            tensile_yield_ratio * yield_pressure,
-            yield_stress * tangential_scale,
-            friction_coeff * yield_pressure * tangential_scale,
+            yield_pressure * pressure_scale,
+            tensile_yield_ratio * yield_pressure * pressure_scale,
+            yield_stress,
+            friction_coeff * yield_pressure,
         )
 
 
@@ -983,7 +987,7 @@ def apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_
     D, J, IJtm = rigidity_operator
 
     # compute velocity delta, store in prev_collider_velocity
-    fem.utils.array_axpy(
+    array_axpy(
         y=prev_collider_velocity,
         x=collider_velocity,
         alpha=1.0,
@@ -1123,6 +1127,8 @@ def solve_rheology(
         compliance_mat_diagonal = None
     else:
         compliance_mat_diagonal = _register_temp(fem.borrow_temporary(temporary_store, shape=stress.shape, dtype=mat66))
+        # TODO: Remove .zero_() workaround once Newton uses warp_lang-1.12.0.dev20260113 or newer.
+        compliance_mat_diagonal.zero_()
         sp.bsr_get_diag(compliance_mat, out=compliance_mat_diagonal)
 
     # Project initial stress on yield surface
@@ -1437,7 +1443,7 @@ def solve_rheology(
                 alpha=1.0,
                 beta=1.0,
             )
-            fem.utils.array_axpy(x=delta_stress, y=local_stress, alpha=1.0, beta=1.0)
+            array_axpy(x=delta_stress, y=local_stress, alpha=1.0, beta=1.0)
 
     # Run solver loop
 
