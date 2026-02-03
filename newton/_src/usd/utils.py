@@ -1040,6 +1040,31 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
     return None
 
 
+def _get_unconnected_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
+    """Fetch the first unconnected input value from a shader."""
+    if shader is None:
+        return None
+    try:
+        if not shader.GetPrim().IsValid():
+            return None
+    except Exception:
+        return None
+
+    for name in names:
+        inp = shader.GetInput(name)
+        if inp is None:
+            continue
+        try:
+            if inp.HasConnectedSource():
+                continue
+        except Exception:
+            continue
+        value = inp.Get()
+        if value is not None:
+            return value
+    return None
+
+
 def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
     """Extract material properties from a UsdPreviewSurface shader.
 
@@ -1068,6 +1093,22 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         if source:
             source_shader = UsdShade.Shader(source[0].GetPrim())
             properties["texture"] = _find_texture_in_shader(source_shader, prim)
+            if properties["texture"] is None:
+                color_value = _get_unconnected_input_value(
+                    source_shader,
+                    (
+                        "diffuseColor",
+                        "baseColor",
+                        "diffuse_color",
+                        "base_color",
+                        "diffuse_color_constant",
+                        "displayColor",
+                    ),
+                )
+                if color_value is not None:
+                    color_np = np.array(color_value, dtype=np.float32)
+                    if color_np.size >= 3:
+                        properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
         else:
             color_value = color_input.Get()
             if color_value is not None:
@@ -1076,26 +1117,51 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
                     properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
 
     metallic_input = shader.GetInput("metallic")
-    if metallic_input and metallic_input.GetConnectedSource():
-        warnings.warn(
-            "Metallic texture inputs are not yet supported; using scalar fallback.",
-            stacklevel=2,
-        )
-    elif metallic_input:
-        metallic_value = metallic_input.Get()
-        if metallic_value is not None:
-            properties["metallic"] = float(metallic_value)
+    if metallic_input:
+        try:
+            has_metallic_source = metallic_input.HasConnectedSource()
+        except Exception:
+            has_metallic_source = False
+        if has_metallic_source:
+            source = metallic_input.GetConnectedSource()
+            source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
+            metallic_value = _get_unconnected_input_value(source_shader, ("metallic", "metallic_constant"))
+            if metallic_value is not None:
+                properties["metallic"] = float(metallic_value)
+            else:
+                warnings.warn(
+                    "Metallic texture inputs are not yet supported; using scalar fallback.",
+                    stacklevel=2,
+                )
+        else:
+            metallic_value = metallic_input.Get()
+            if metallic_value is not None:
+                properties["metallic"] = float(metallic_value)
 
     roughness_input = shader.GetInput("roughness")
-    if roughness_input and roughness_input.GetConnectedSource():
-        warnings.warn(
-            "Roughness texture inputs are not yet supported; using scalar fallback.",
-            stacklevel=2,
-        )
-    elif roughness_input:
-        roughness_value = roughness_input.Get()
-        if roughness_value is not None:
-            properties["roughness"] = float(roughness_value)
+    if roughness_input:
+        try:
+            has_roughness_source = roughness_input.HasConnectedSource()
+        except Exception:
+            has_roughness_source = False
+        if has_roughness_source:
+            source = roughness_input.GetConnectedSource()
+            source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
+            roughness_value = _get_unconnected_input_value(
+                source_shader,
+                ("roughness", "roughness_constant", "reflection_roughness_constant"),
+            )
+            if roughness_value is not None:
+                properties["roughness"] = float(roughness_value)
+            else:
+                warnings.warn(
+                    "Roughness texture inputs are not yet supported; using scalar fallback.",
+                    stacklevel=2,
+                )
+        else:
+            roughness_value = roughness_input.Get()
+            if roughness_value is not None:
+                properties["roughness"] = float(roughness_value)
 
     return properties
 
@@ -1153,7 +1219,16 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         return None
 
     if properties["color"] is None:
-        properties["color"] = _get_input_color(("diffuse_color_constant", "diffuse_color", "base_color", "baseColor"))
+        properties["color"] = _get_input_color(
+            (
+                "diffuse_color_constant",
+                "diffuse_color",
+                "diffuseColor",
+                "base_color",
+                "baseColor",
+                "displayColor",
+            )
+        )
     if properties["metallic"] is None:
         properties["metallic"] = _get_input_float(("metallic_constant", "metallic"))
     if properties["roughness"] is None:
@@ -1254,4 +1329,14 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
     if source_shader is None:
         return {"color": None, "metallic": None, "roughness": None, "texture": None}
 
-    return _extract_shader_properties(source_shader, prim)
+    properties = _extract_shader_properties(source_shader, prim)
+    if properties["color"] is None and properties["texture"] is None:
+        display_color = UsdGeom.PrimvarsAPI(prim).GetPrimvar("displayColor")
+        if display_color:
+            color_value = display_color.Get()
+            if color_value is not None:
+                color_np = np.array(color_value, dtype=np.float32).reshape(-1)
+                if color_np.size >= 3:
+                    properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+
+    return properties
