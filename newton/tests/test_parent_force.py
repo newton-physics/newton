@@ -126,6 +126,84 @@ def test_parent_force_centrifugal(test, device, solver_fn):
     np.testing.assert_allclose(parent_f[3:6], [0, 0, 0], atol=1e-2)
 
 
+def test_apply_body_f(test, device, solver_fn):
+    """Test that body_f correctly propagates to body_parent_f on a 2-link chain.
+
+    Geometry (Z up, joints revolute about Y):
+        - Joint0 at origin, Link0 COM at (0, 0, -1)
+        - Joint1 at (0, 0, -2), Link1 COM at (0, 0, -3)
+
+    Forces/torques are applied in non-compliant directions to verify constraint forces.
+    """
+    dt = 5e-3
+    builder = newton.ModelBuilder(gravity=-9.81, up_axis=newton.Axis.Z)
+    builder.request_state_attributes("body_parent_f")
+
+    link0 = builder.add_link()
+    builder.add_shape_box(link0, hx=0.1, hy=0.1, hz=0.1)
+    joint0 = builder.add_joint_revolute(
+        -1,
+        link0,
+        parent_xform=wp.transform_identity(),
+        child_xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()),
+        axis=wp.vec3(0, 1, 0),
+    )
+
+    link1 = builder.add_link()
+    builder.add_shape_box(link1, hx=0.1, hy=0.1, hz=0.1)
+    joint1 = builder.add_joint_revolute(
+        link0,
+        link1,
+        parent_xform=wp.transform(wp.vec3(0, 0, -1), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()),
+        axis=wp.vec3(0, 1, 0),
+    )
+
+    builder.add_articulation([joint0, joint1])
+    model = builder.finalize(device=device)
+    solver = solver_fn(model)
+
+    masses = model.body_mass.numpy()
+    total_weight = (masses[0] + masses[1]) * 9.81
+
+    # Subtest: Apply linear force in Y to link1
+    # Creates torque about X (non-compliant, since joint axis is Y)
+    with test.subTest(case="linear_force"):
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        F_y = 10.0
+        body_f = np.zeros((2, 6), dtype=np.float32)
+        body_f[1, 1] = F_y
+        state_0.body_f.assign(body_f.flatten())
+
+        solver.step(state_0, state_1, None, None, dt)
+
+        parent_f = state_1.body_parent_f.numpy()[0]
+        # Linear: joint counters external force (-F_y) and supports weight (+Z)
+        np.testing.assert_allclose(parent_f[:3], [0, -F_y, total_weight], rtol=1e-4)
+        # Torque about X from force at link1 (2 units below link0 COM)
+        np.testing.assert_allclose(parent_f[3:6], [-2.0 * F_y, 0, 0], atol=1e-2)
+
+    # Subtest: Apply torque about X to link1 (non-compliant direction)
+    with test.subTest(case="torque"):
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        T_x = 5.0
+        body_f = np.zeros((2, 6), dtype=np.float32)
+        body_f[1, 3] = T_x
+        state_0.body_f.assign(body_f.flatten())
+
+        solver.step(state_0, state_1, None, None, dt)
+
+        parent_f = state_1.body_parent_f.numpy()[0]
+        # Linear: just weight (no external linear force)
+        np.testing.assert_allclose(parent_f[:3], [0, 0, total_weight], rtol=1e-4)
+        # Torque: joint counters external torque
+        np.testing.assert_allclose(parent_f[3:6], [-T_x, 0, 0], atol=1e-2)
+
+
 devices = get_test_devices()
 
 for device in devices:
@@ -140,6 +218,13 @@ for device in devices:
         TestParentForce,
         "test_parent_force_centrifugal_mjwarp",
         test_parent_force_centrifugal,
+        devices=[device],
+        solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
+    )
+    add_function_test(
+        TestParentForce,
+        "test_apply_body_f_mjwarp",
+        test_apply_body_f,
         devices=[device],
         solver_fn=lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     )

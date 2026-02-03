@@ -106,6 +106,7 @@ class State:
         First three entries: linear force; last three: torque.
 
         This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
+
         .. note::
             :attr:`body_parent_f` represents incoming joint wrenches in world frame, referenced to the body's center of mass (COM).
         """
