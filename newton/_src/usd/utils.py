@@ -788,39 +788,52 @@ def get_mesh(
     counts = mesh.GetFaceVertexCountsAttr().Get()
 
     uvs = None
+    uvs_interpolation = None
     if load_uvs:
         uv_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("st")
         if uv_primvar:
             uvs = uv_primvar.Get()
             if uvs is not None:
                 uvs = np.array(uvs)
+                # Get interpolation from primvar
+                uvs_interpolation = uv_primvar.GetInterpolation()
                 # Check if this primvar is indexed and expand if so
                 if uv_primvar.IsIndexed():
                     uv_indices = uv_primvar.GetIndices()
                     uvs = _expand_indexed_primvar(uvs, uv_indices, "UV", str(prim.GetPath()))
 
     normals = None
+    normals_interpolation = None
+    normal_indices = None
     if load_normals:
-        normals_attr = mesh.GetNormalsAttr()
-        if normals_attr:
-            normals = normals_attr.Get()
+        # First, try to load normals from primvars:normals (takes precedence)
+        normals_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
+        if normals_primvar:
+            normals = normals_primvar.Get()
+            if normals is not None:
+                # Use primvar interpolation
+                normals_interpolation = normals_primvar.GetInterpolation()
+                # Check for primvar indices
+                if normals_primvar.IsIndexed():
+                    normal_indices = normals_primvar.GetIndices()
+                # Fall back to direct attribute access for backwards compatibility
+                if normal_indices is None:
+                    normals_index_attr = prim.GetAttribute("primvars:normals:indices")
+                    if normals_index_attr and normals_index_attr.HasAuthoredValue():
+                        normal_indices = normals_index_attr.Get()
+
+        # Fall back to mesh.GetNormalsAttr() only if primvar is not present or has no data
+        if normals is None:
+            normals_attr = mesh.GetNormalsAttr()
+            if normals_attr:
+                normals = normals_attr.Get()
+                if normals is not None:
+                    # Use mesh normals interpolation (only relevant for non-primvar normals)
+                    normals_interpolation = mesh.GetNormalsInterpolation()
 
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
-        if mesh.GetNormalsInterpolation() == "faceVarying":
-            # compute vertex normals
-            # try to read primvars:normals:indices (the primvar indexer)
-            # First check if normals is a primvar and use its indices
-            normals_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
-            normal_indices = None
-            if normals_primvar and normals_primvar.IsIndexed():
-                normal_indices = normals_primvar.GetIndices()
-            # Fall back to direct attribute access for backwards compatibility
-            if normal_indices is None:
-                normals_index_attr = prim.GetAttribute("primvars:normals:indices")
-                if normals_index_attr and normals_index_attr.HasAuthoredValue():
-                    normal_indices = normals_index_attr.Get()
-
+        if normals_interpolation == "faceVarying":
             prim_path = str(prim.GetPath())
             if normal_indices is not None and len(normal_indices) > 0:
                 normals_fv = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
@@ -859,13 +872,17 @@ def get_mesh(
                 new_uvs = [] if uvs is not None else None
 
                 # Helper to create a new vertex clone from original v
-                def _new_vertex_from(v, n_dir):
+                def _new_vertex_from(v, n_dir, corner_idx):
                     new_vid = len(new_points)
                     new_points.append(points[v])
                     new_norm_sums.append(n_dir.copy())
                     clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
                     if new_uvs is not None:
-                        new_uvs.append(uvs[v])
+                        # Use corner UV if faceVarying, otherwise use vertex UV
+                        if uvs_interpolation == "faceVarying":
+                            new_uvs.append(uvs[corner_idx])
+                        else:
+                            new_uvs.append(uvs[v])
                     return new_vid
 
                 # Assign each corner to a cluster (new vertex) based on angular proximity
@@ -890,7 +907,7 @@ def get_mesh(
                             break
 
                     if not assigned:
-                        new_vid = _new_vertex_from(v, n_dir)
+                        new_vid = _new_vertex_from(v, n_dir, c)
                         new_indices[c] = new_vid
 
                 new_points = np.asarray(new_points, dtype=np.float64)

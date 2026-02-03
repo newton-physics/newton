@@ -75,14 +75,15 @@ class Example:
         usd_stage = Usd.Stage.Open(f"{asset_path}/garments/{garment_usd_name}.usd")
         usd_prim_garment = usd_stage.GetPrimAtPath(f"/Root/{garment_usd_name}/Root_Garment")
 
-        garment_mesh = newton.usd.get_mesh(usd_prim_garment, load_uvs=True)
+        garment_mesh = newton.usd.get_mesh(usd_prim_garment, load_uvs=False)
         self.garment_mesh_indices = garment_mesh.indices
         self.garment_mesh_points = garment_mesh.vertices[:, [2, 0, 1]]  # y-up to z-up
-        self.garment_mesh_uv = garment_mesh.uvs * 1e-3
 
-        # Load UV indices separately (not part of Mesh class)
-        garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
-        self.garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
+        # Load raw UV values and indices directly from the primvar
+        # (get_mesh expands indexed UVs, but style3d needs raw values + indices)
+        uv_primvar = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
+        self.garment_mesh_uv = np.array(uv_primvar.Get()) * 1e-3
+        self.garment_mesh_uv_indices = np.array(uv_primvar.GetIndices())
 
         style3d.add_cloth_mesh(
             cloth_builder,
