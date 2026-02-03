@@ -1968,6 +1968,11 @@ class SolverVBD(SolverBase):
             )
 
     def collision_detection_penetration_free(self, current_state: State):
+        # particle_displacements is based on pos_prev_collision_detection
+        # so reset them every time we do collision detection
+        self.pos_prev_collision_detection.assign(current_state.particle_q)
+        self.particle_displacements.zero_()
+
         self.trimesh_collision_detector.refit(current_state.particle_q)
         self.trimesh_collision_detector.vertex_triangle_collision_detection(
             self.particle_self_contact_margin,
