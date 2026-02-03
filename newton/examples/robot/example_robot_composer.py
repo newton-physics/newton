@@ -226,9 +226,11 @@ class Example:
         # Attach LEAP hand left to end effector
         # Rotate the hand to align with the arm
         hand_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2)
+        # ee_xform  is set for illustative purposes.
+        ee_xform = wp.transform((0.00, 0.1, 0.0), hand_quat)
         ur5e_with_robotiq_gripper.add_mjcf(
             str(self.robotiq_2f85_path),
-            xform=wp.transform((0.00, 0.1, 0.0), hand_quat),
+            xform=ee_xform,
             parent_body=ee_body_idx,
         )
 
@@ -270,18 +272,21 @@ class Example:
 
         # Attach LEAP hand left to end effector
         # Rotate the hand to align with the arm
-        hand_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 2)
+        quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 2)
+        quat_y = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi)
+        hand_quat = quat_y * quat_z
+        # ee_xform  is set for illustative purposes.
+        ee_xform = wp.transform((-0.065, 0.28, 0.10), hand_quat)
         ur5e_with_hand.add_mjcf(
             str(self.leap_path),
-            xform=wp.transform((0.05, 0.28, -0.075), hand_quat),
+            xform=ee_xform,
             parent_body=ee_body_idx,
         )
 
-        # Set MuJoCo control source to JOINT_TARGET
-        num_actuators = len(ur5e_with_hand.joint_act_mode)
-        ur5e_with_hand.custom_attributes["mujoco:ctrl_source"].values = [
-            SolverMuJoCo.CtrlSource.JOINT_TARGET
-        ] * num_actuators
+        # Set ctrl_source of all Mujoco actuators to be JOINT_TARGET
+        num_mujoco_actuators = len(ur5e_with_hand.custom_attributes["mujoco:ctrl_source"].values)
+        ctrl_source = [SolverMuJoCo.CtrlSource.JOINT_TARGET] * num_mujoco_actuators
+        ur5e_with_hand.custom_attributes["mujoco:ctrl_source"].values = ctrl_source
 
         builder.add_builder(ur5e_with_hand)
 
@@ -318,7 +323,7 @@ class Example:
         franka_with_hand.joint_target_kd[-7:] = [450, 450, 350, 350, 200, 200, 200]
         franka_with_hand.joint_effort_limit[-7:] = [87, 87, 87, 87, 12, 12, 12]
         franka_with_hand.joint_armature[-7:] = [0.195] * 4 + [0.074] * 3
-        franka_with_hand.joint_act_mode[-7:] = [int(newton.ActuatorMode.POSITION)] * 7
+        franka_with_hand.joint_act_mode[-7:] = [int(ActuatorMode.POSITION)] * 7
 
         # Find end effector body by searching body names
         franka_ee_name = "fr3_link8"
@@ -326,19 +331,24 @@ class Example:
 
         # Attach Allegro hand with custom base joint
         # Rotate the hand around the y axis by -90 degrees
-        hand_quat = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi / 2)
-        hand_xform = wp.transform((0.0, 0.0, 0.1), hand_quat)
+        quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -init_q[-1])
+        quat_y = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi / 2)
+        hand_quat = quat_z * quat_y
+        # ee_xform  is set for illustative purposes.
+        ee_xform = wp.transform((0.0, 0.0, 0.1), hand_quat)
 
         franka_with_hand.add_mjcf(
             str(self.allegro_path),
-            xform=hand_xform,
+            xform=ee_xform,
             parent_body=franka_ee_idx,
         )
 
-        num_actuators = len(franka_with_hand.joint_act_mode)
-        franka_with_hand.custom_attributes["mujoco:ctrl_source"].values = [
-            SolverMuJoCo.CtrlSource.JOINT_TARGET
-        ] * num_actuators
+        allegro_dof_count = franka_with_hand.joint_dof_count - 7 - 3
+        franka_with_hand.joint_target_pos[-allegro_dof_count:] = franka_with_hand.joint_q[-allegro_dof_count:]
+
+        num_mujoco_actuators = len(franka_with_hand.custom_attributes["mujoco:ctrl_source"].values)
+        ctrl_source = [SolverMuJoCo.CtrlSource.JOINT_TARGET] * num_mujoco_actuators
+        franka_with_hand.custom_attributes["mujoco:ctrl_source"].values = ctrl_source
 
         builder.add_builder(franka_with_hand)
 
