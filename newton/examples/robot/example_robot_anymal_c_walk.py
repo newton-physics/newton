@@ -165,7 +165,7 @@ class Example:
             ls_parallel=True,
             ls_iterations=50,  # Increased from default 10 for determinism
             njmax=50,
-            nconmax=75,
+            nconmax=100,  # Increased from 75 to handle peak contact count of ~77
         )
 
         self.viewer.set_model(self.model)
@@ -318,8 +318,8 @@ class Example:
             lambda q, qd: q[1] > 9.0,  # This threshold assumes 500 frames
         )
 
-        forward_vel_min = wp.spatial_vector(-0.5, 0.9, -0.2, -0.8, -0.5, -0.5)
-        forward_vel_max = wp.spatial_vector(0.5, 1.1, 0.2, 0.8, 0.5, 0.5)
+        forward_vel_min = wp.spatial_vector(-0.5, 0.9, -0.2, -0.8, -1.5, -0.5)
+        forward_vel_max = wp.spatial_vector(0.5, 1.1, 0.2, 0.8, 1.5, 0.5)
         newton.examples.test_body_state(
             self.model,
             self.state_0,

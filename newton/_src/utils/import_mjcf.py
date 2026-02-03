@@ -29,7 +29,7 @@ from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
 from ..sim import ActuatorMode, JointType, ModelBuilder
-from ..sim.model import ModelAttributeFrequency
+from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
@@ -122,6 +122,9 @@ def _load_and_expand_mjcf(
             parent.insert(idx + i, child)
 
     return root, base_dir
+
+
+AttributeFrequency = Model.AttributeFrequency
 
 
 def parse_mjcf(
@@ -229,19 +232,19 @@ def parse_mjcf(
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.SHAPE]
+        [AttributeFrequency.SHAPE]
     )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.BODY]
+        [AttributeFrequency.BODY]
     )
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT]
+        [AttributeFrequency.JOINT]
     )
     builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT_DOF]
+        [AttributeFrequency.JOINT_DOF]
     )
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.EQUALITY_CONSTRAINT]
+        [AttributeFrequency.EQUALITY_CONSTRAINT]
     )
     # MuJoCo actuator custom attributes (from "mujoco:actuator" frequency)
     builder_custom_attr_actuator: list[ModelBuilder.CustomAttribute] = [
@@ -260,7 +263,7 @@ def parse_mjcf(
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-            [ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD]
+            [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
         option_elem = root.find("option")
         if option_elem is not None and builder_custom_attr_option:
@@ -1029,7 +1032,12 @@ def parse_mjcf(
                 else:
                     linear_axes.append(ax)
 
-                dof_attr = parse_custom_attributes(joint_attrib, builder_custom_attr_dof, parsing_mode="mjcf")
+                dof_attr = parse_custom_attributes(
+                    joint_attrib,
+                    builder_custom_attr_dof,
+                    parsing_mode="mjcf",
+                    context={"use_degrees": use_degrees, "joint_type": joint_type_str},
+                )
                 # assemble custom attributes for each DOF (dict mapping DOF index to value)
                 # Only store values that were explicitly specified in the source
                 for key, value in dof_attr.items():
@@ -1724,9 +1732,17 @@ def parse_mjcf(
         # Process ALL actuators in MJCF order
         for actuator_elem in actuator_section:
             actuator_type = actuator_elem.tag  # position, velocity, motor, general
-            joint_name = actuator_elem.attrib.get("joint")
-            body_name = actuator_elem.attrib.get("body")
-            tendon_name = actuator_elem.attrib.get("tendon")
+
+            # Merge class defaults for this actuator element
+            # This handles MJCF class inheritance (e.g., <general class="size3" .../>)
+            elem_class = get_class(actuator_elem)
+            elem_defaults = class_defaults.get(elem_class, {}).get(actuator_type, {})
+            all_defaults = class_defaults.get("__all__", {}).get(actuator_type, {})
+            merged_attrib = merge_attrib(merge_attrib(all_defaults, elem_defaults), dict(actuator_elem.attrib))
+
+            joint_name = merged_attrib.get("joint")
+            body_name = merged_attrib.get("body")
+            tendon_name = merged_attrib.get("tendon")
 
             # Sanitize names to match how they were stored in the builder
             if joint_name:
@@ -1789,12 +1805,12 @@ def parse_mjcf(
                     print(f"Warning: {actuator_type} actuator has no joint, body, or tendon target, skipping")
                 continue
 
-            act_name = actuator_elem.attrib.get("name", f"{actuator_type}_{target_name_for_log}")
+            act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             # Extract gains based on actuator type
             if actuator_type == "position":
-                kp = parse_float(actuator_elem.attrib, "kp", 0.0)
-                kv = parse_float(actuator_elem.attrib, "kv", 0.0)  # Optional velocity damping
+                kp = parse_float(merged_attrib, "kp", 0.0)
+                kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
@@ -1818,7 +1834,7 @@ def parse_mjcf(
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
-                kv = parse_float(actuator_elem.attrib, "kv", 0.0)
+                kv = parse_float(merged_attrib, "kv", 0.0)
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
@@ -1842,8 +1858,8 @@ def parse_mjcf(
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "general":
-                gainprm_str = actuator_elem.attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
-                biasprm_str = actuator_elem.attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
+                gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
+                biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
                 gainprm_vals = [float(x) for x in gainprm_str.split()[:10]]
                 biasprm_vals = [float(x) for x in biasprm_str.split()[:10]]
                 while len(gainprm_vals) < 10:
@@ -1859,9 +1875,7 @@ def parse_mjcf(
                 continue
 
             # Add actuator via custom attributes
-            parsed_attrs = parse_custom_attributes(
-                actuator_elem.attrib, builder_custom_attr_actuator, parsing_mode="mjcf"
-            )
+            parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
 
             # Build full values dict
             actuator_values: dict[str, Any] = {}

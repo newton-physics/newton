@@ -96,7 +96,7 @@ Supported Features
      - ❌
    * - :class:`~newton.solvers.SolverVBD`
      - Implicit
-     - ❌
+     - ✅
      - ❌
      - ✅
      - ✅
@@ -120,6 +120,7 @@ from ._src.solvers import (
     SolverStyle3D,
     SolverVBD,
     SolverXPBD,
+    style3d,
 )
 
 # solver flags
@@ -135,4 +136,5 @@ __all__ = [
     "SolverStyle3D",
     "SolverVBD",
     "SolverXPBD",
+    "style3d",
 ]

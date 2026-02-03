@@ -21,7 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -68,7 +68,7 @@ from .joints import (
     get_joint_dof_count,
     infer_actuator_mode,
 )
-from .model import Model, ModelAttributeAssignment, ModelAttributeFrequency
+from .model import Model
 
 
 class ModelBuilder:
@@ -364,7 +364,7 @@ class ModelBuilder:
         """
         Represents a custom attribute definition for the ModelBuilder.
         This is used to define custom attributes that are not part of the standard ModelBuilder API.
-        Custom attributes can be defined for the :class:`~newton.Model`, :class:`~newton.State`, :class:`~newton.Control`, or :class:`~newton.Contacts` objects, depending on the :class:`ModelAttributeAssignment` category.
+        Custom attributes can be defined for the :class:`~newton.Model`, :class:`~newton.State`, :class:`~newton.Control`, or :class:`~newton.Contacts` objects, depending on the :class:`Model.AttributeAssignment` category.
         Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method.
 
         See :ref:`custom_attributes` for more information.
@@ -376,18 +376,18 @@ class ModelBuilder:
         dtype: type
         """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
 
-        frequency: ModelAttributeFrequency | str
+        frequency: Model.AttributeFrequency | str
         """Frequency category that determines how the attribute is indexed in the Model.
 
         Can be either:
-            - A :class:`ModelAttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
+            - A :class:`Model.AttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
               Uses dict-based storage where keys are entity indices, allowing sparse assignment.
             - A string for custom frequencies (e.g., ``"mujoco:pair"``). Uses list-based storage for
               sequential data appended via :meth:`add_custom_values`. All attributes sharing the same
               custom frequency must have the same count, validated at finalize time."""
 
-        assignment: ModelAttributeAssignment = ModelAttributeAssignment.MODEL
-        """Assignment category (see :class:`ModelAttributeAssignment`), defaults to :attr:`ModelAttributeAssignment.MODEL`"""
+        assignment: Model.AttributeAssignment = Model.AttributeAssignment.MODEL
+        """Assignment category (see :class:`Model.AttributeAssignment`), defaults to :attr:`Model.AttributeAssignment.MODEL`"""
 
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
@@ -396,7 +396,8 @@ class ModelBuilder:
         """For attributes containing entity indices, specifies how values are transformed during add_world/add_builder merging.
 
         Built-in entity types (values are offset by entity count):
-            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``
+            - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``,
+              ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
             - ``"world"``: Values are replaced with ``current_world`` (not offset)
@@ -427,14 +428,14 @@ class ModelBuilder:
         urdf_attribute_name: str | None = None
         """Name of the attribute in the URDF definition. If None, the attribute name is used."""
 
-        usd_value_transformer: Callable[[Any], Any] | None = None
-        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used."""
+        usd_value_transformer: Callable[[Any, dict[str, Any] | None], Any] | None = None
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives an optional context dict with parsing-time information."""
 
-        mjcf_value_transformer: Callable[[str], Any] | None = None
-        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
+        mjcf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
+        """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
 
-        urdf_value_transformer: Callable[[str], Any] | None = None
-        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used."""
+        urdf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
+        """Transformer function that converts a URDF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information."""
 
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
@@ -477,7 +478,7 @@ class ModelBuilder:
             return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
         @property
-        def frequency_key(self) -> ModelAttributeFrequency | str:
+        def frequency_key(self) -> Model.AttributeFrequency | str:
             """Return the resolved frequency, with namespace prepended for custom string frequencies.
 
             For string frequencies: returns "namespace:frequency" if namespace is set, otherwise just "frequency".
@@ -497,7 +498,7 @@ class ModelBuilder:
 
             Returns:
                 True if the frequency is a string (custom frequency), False if it's a
-                ModelAttributeFrequency enum (built-in frequency like BODY, SHAPE, etc.).
+                Model.AttributeFrequency enum (built-in frequency like BODY, SHAPE, etc.).
             """
             return isinstance(self.frequency, str)
 
@@ -796,17 +797,17 @@ class ModelBuilder:
                 builder.add_custom_attribute(
                     newton.ModelBuilder.CustomAttribute(
                         name="my_attribute",
-                        frequency=newton.ModelAttributeFrequency.BODY,
+                        frequency=newton.Model.AttributeFrequency.BODY,
                         dtype=wp.float32,
                         default=20.0,
-                        assignment=newton.ModelAttributeAssignment.MODEL,
+                        assignment=newton.Model.AttributeAssignment.MODEL,
                         namespace="my_namespace",
                     )
                 )
                 builder.add_body(custom_attributes={"my_namespace:my_attribute": 30.0})
                 builder.add_body()  # we leave out the custom_attributes, so the attribute will use the default value 20.0
                 model = builder.finalize()
-                # the model has now an AttributeNamespace object with the name "my_namespace"
+                # the model has now a Model.AttributeNamespace object with the name "my_namespace"
                 # and an attribute "my_attribute" that is a wp.array of shape (body_count, 1)
                 # with the default value 20.0
                 assert np.allclose(model.my_namespace.my_attribute.numpy(), [30.0, 20.0])
@@ -838,7 +839,7 @@ class ModelBuilder:
         return key in self.custom_attributes
 
     def get_custom_attributes_by_frequency(
-        self, frequencies: Sequence[ModelAttributeFrequency]
+        self, frequencies: Sequence[Model.AttributeFrequency]
     ) -> list[CustomAttribute]:
         """
         Get custom attributes by frequency.
@@ -934,9 +935,9 @@ class ModelBuilder:
 
     def _process_custom_attributes(
         self,
-        entity_index: int,
+        entity_index: int | list[int],
         custom_attrs: dict[str, Any],
-        expected_frequency: ModelAttributeFrequency,
+        expected_frequency: Model.AttributeFrequency,
     ) -> None:
         """Process custom attributes from kwargs and assign them to an entity.
 
@@ -948,10 +949,10 @@ class ModelBuilder:
         If no namespace prefix is provided, the attribute is assumed to be in the default namespace (None).
 
         Args:
-            entity_index: Index of the entity (body, shape, joint, etc.)
+            entity_index: Index of the entity (body, shape, joint, etc.). Can be a single index or a list of indices.
             custom_attrs: Dictionary of custom attribute names to values.
-                Keys can be "attr_name" or "namespace:attr_name"
-            expected_frequency: Expected frequency for these attributes
+                Keys can be "attr_name" or "namespace:attr_name". Values can be a single value or a list of values.
+            expected_frequency: Expected frequency for these attributes.
         """
         for attr_key, value in custom_attrs.items():
             # Parse namespace prefix if present (format: "namespace:attr_name" or "attr_name")
@@ -975,7 +976,20 @@ class ModelBuilder:
             # Set the value for this specific entity
             if custom_attr.values is None:
                 custom_attr.values = {}
-            custom_attr.values[entity_index] = value
+
+            # Fill in the value(s)
+            if isinstance(entity_index, list):
+                value_is_sequence = isinstance(value, (list, tuple))
+                if isinstance(value, np.ndarray):
+                    value_is_sequence = value.ndim != 0
+                if value_is_sequence:
+                    if len(value) != len(entity_index):
+                        raise ValueError(f"Expected {len(entity_index)} values, got {len(value)}")
+                    custom_attr.values.update(zip(entity_index, value, strict=False))
+                else:
+                    custom_attr.values.update((idx, value) for idx in entity_index)
+            else:
+                custom_attr.values[entity_index] = value
 
     def _process_joint_custom_attributes(
         self,
@@ -1000,6 +1014,52 @@ class ModelBuilder:
             joint_index: Index of the joint
             custom_attrs: Dictionary of custom attribute names to values
         """
+
+        def apply_indexed_values(
+            *,
+            value: Any,
+            attr_key: str,
+            expected_frequency: Model.AttributeFrequency,
+            index_start: int,
+            index_count: int,
+            index_label: str,
+            count_label: str,
+            length_error_template: str,
+        ) -> None:
+            if isinstance(value, dict):
+                for offset, offset_value in value.items():
+                    if not isinstance(offset, int):
+                        raise TypeError(
+                            f"{expected_frequency.name} attribute '{attr_key}' dict keys must be integers "
+                            f"({index_label} indices), got {type(offset)}"
+                        )
+                    if offset < 0 or offset >= index_count:
+                        raise ValueError(
+                            f"{expected_frequency.name} attribute '{attr_key}' has invalid {index_label} index "
+                            f"{offset} (joint has {index_count} {count_label})"
+                        )
+                    self._process_custom_attributes(
+                        entity_index=index_start + offset,
+                        custom_attrs={attr_key: offset_value},
+                        expected_frequency=expected_frequency,
+                    )
+                return
+
+            value_sanitized = value
+            if not isinstance(value_sanitized, (list, tuple)) and index_count == 1:
+                value_sanitized = [value_sanitized]
+
+            actual = len(value_sanitized)
+            if actual != index_count:
+                raise ValueError(length_error_template.format(attr_key=attr_key, actual=actual, expected=index_count))
+
+            for i, indexed_value in enumerate(value_sanitized):
+                self._process_custom_attributes(
+                    entity_index=index_start + i,
+                    custom_attrs={attr_key: indexed_value},
+                    expected_frequency=expected_frequency,
+                )
+
         for attr_key, value in custom_attrs.items():
             # Look up the attribute to determine its frequency
             custom_attr = self.custom_attributes.get(attr_key)
@@ -1010,15 +1070,15 @@ class ModelBuilder:
                 )
 
             # Process based on declared frequency
-            if custom_attr.frequency == ModelAttributeFrequency.JOINT:
+            if custom_attr.frequency == Model.AttributeFrequency.JOINT:
                 # Single value per joint
                 self._process_custom_attributes(
                     entity_index=joint_index,
                     custom_attrs={attr_key: value},
-                    expected_frequency=ModelAttributeFrequency.JOINT,
+                    expected_frequency=Model.AttributeFrequency.JOINT,
                 )
 
-            elif custom_attr.frequency == ModelAttributeFrequency.JOINT_DOF:
+            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_DOF:
                 # Values per DOF - can be list or dict
                 dof_start = self.joint_qd_start[joint_index]
                 if joint_index + 1 < len(self.joint_qd_start):
@@ -1027,45 +1087,18 @@ class ModelBuilder:
                     dof_end = self.joint_dof_count
 
                 dof_count = dof_end - dof_start
+                apply_indexed_values(
+                    value=value,
+                    attr_key=attr_key,
+                    expected_frequency=Model.AttributeFrequency.JOINT_DOF,
+                    index_start=dof_start,
+                    index_count=dof_count,
+                    index_label="DOF",
+                    count_label="DOFs",
+                    length_error_template="JOINT_DOF '{attr_key}': got {actual}, expected {expected}",
+                )
 
-                # Check if value is a dict (mapping DOF index to value)
-                if isinstance(value, dict):
-                    # Dict format: only specified DOF indices have values, rest use defaults
-                    for dof_offset, dof_value in value.items():
-                        if not isinstance(dof_offset, int):
-                            raise TypeError(
-                                f"JOINT_DOF attribute '{attr_key}' dict keys must be integers (DOF indices), got {type(dof_offset)}"
-                            )
-                        if dof_offset < 0 or dof_offset >= dof_count:
-                            raise ValueError(
-                                f"JOINT_DOF attribute '{attr_key}' has invalid DOF index {dof_offset} (joint has {dof_count} DOFs)"
-                            )
-                        single_attr = {attr_key: dof_value}
-                        self._process_custom_attributes(
-                            entity_index=dof_start + dof_offset,
-                            custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_DOF,
-                        )
-                else:
-                    # List format or single value for single-DOF joints
-                    value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)) and dof_count == 1:
-                        value_sanitized = [value_sanitized]
-
-                    actual = len(value_sanitized)
-                    if actual != dof_count:
-                        raise ValueError(f"JOINT_DOF '{attr_key}': got {actual}, expected {dof_count}")
-
-                    # Apply each value to its corresponding DOF
-                    for i, dof_value in enumerate(value_sanitized):
-                        single_attr = {attr_key: dof_value}
-                        self._process_custom_attributes(
-                            entity_index=dof_start + i,
-                            custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_DOF,
-                        )
-
-            elif custom_attr.frequency == ModelAttributeFrequency.JOINT_COORD:
+            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_COORD:
                 # Values per coordinate - can be list or dict
                 coord_start = self.joint_q_start[joint_index]
                 if joint_index + 1 < len(self.joint_q_start):
@@ -1074,46 +1107,20 @@ class ModelBuilder:
                     coord_end = self.joint_coord_count
 
                 coord_count = coord_end - coord_start
+                apply_indexed_values(
+                    value=value,
+                    attr_key=attr_key,
+                    expected_frequency=Model.AttributeFrequency.JOINT_COORD,
+                    index_start=coord_start,
+                    index_count=coord_count,
+                    index_label="coord",
+                    count_label="coordinates",
+                    length_error_template=(
+                        "JOINT_COORD attribute '{attr_key}' has {actual} values but joint has {expected} coordinates"
+                    ),
+                )
 
-                # Check if value is a dict (mapping coord index to value)
-                if isinstance(value, dict):
-                    # Dict format: only specified coord indices have values, rest use defaults
-                    for coord_offset, coord_value in value.items():
-                        if not isinstance(coord_offset, int):
-                            raise TypeError(
-                                f"JOINT_COORD attribute '{attr_key}' dict keys must be integers (coord indices), got {type(coord_offset)}"
-                            )
-                        if coord_offset < 0 or coord_offset >= coord_count:
-                            raise ValueError(
-                                f"JOINT_COORD attribute '{attr_key}' has invalid coord index {coord_offset} (joint has {coord_count} coordinates)"
-                            )
-                        single_attr = {attr_key: coord_value}
-                        self._process_custom_attributes(
-                            entity_index=coord_start + coord_offset,
-                            custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_COORD,
-                        )
-                else:
-                    # List format or single value for single-coordinate joints
-                    value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)) and coord_count == 1:
-                        value_sanitized = [value_sanitized]
-
-                    if len(value_sanitized) != coord_count:
-                        raise ValueError(
-                            f"JOINT_COORD attribute '{attr_key}' has {len(value_sanitized)} values but joint has {coord_count} coordinates"
-                        )
-
-                    # Apply each value to its corresponding coordinate
-                    for i, coord_value in enumerate(value_sanitized):
-                        single_attr = {attr_key: coord_value}
-                        self._process_custom_attributes(
-                            entity_index=coord_start + i,
-                            custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_COORD,
-                        )
-
-            elif custom_attr.frequency == ModelAttributeFrequency.JOINT_CONSTRAINT:
+            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_CONSTRAINT:
                 # Values per constraint - can be list or dict
                 cts_start = self.joint_cts_start[joint_index]
                 if joint_index + 1 < len(self.joint_cts_start):
@@ -1139,7 +1146,7 @@ class ModelBuilder:
                         self._process_custom_attributes(
                             entity_index=cts_start + cts_offset,
                             custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_CONSTRAINT,
+                            expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
                         )
                 else:
                     # List format or single value for single-constraint joints
@@ -1158,7 +1165,7 @@ class ModelBuilder:
                         self._process_custom_attributes(
                             entity_index=cts_start + i,
                             custom_attrs=single_attr,
-                            expected_frequency=ModelAttributeFrequency.JOINT_CONSTRAINT,
+                            expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
                         )
 
             else:
@@ -1408,7 +1415,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=articulation_idx,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.ARTICULATION,
+                expected_frequency=Model.AttributeFrequency.ARTICULATION,
             )
 
     # region importers
@@ -1922,6 +1929,10 @@ class ModelBuilder:
         start_joint_coord_idx = self.joint_coord_count
         start_articulation_idx = self.articulation_count
         start_equality_constraint_idx = len(self.equality_constraint_type)
+        start_edge_idx = self.edge_count
+        start_triangle_idx = self.tri_count
+        start_tetrahedron_idx = self.tet_count
+        start_spring_idx = self.spring_count
 
         if builder.particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
@@ -2156,6 +2167,11 @@ class ModelBuilder:
             "joint_coord": start_joint_coord_idx,
             "articulation": start_articulation_idx,
             "equality_constraint": start_equality_constraint_idx,
+            "particle": start_particle_idx,
+            "edge": start_edge_idx,
+            "triangle": start_triangle_idx,
+            "tetrahedron": start_tetrahedron_idx,
+            "spring": start_spring_idx,
         }
 
         # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
@@ -2191,9 +2207,9 @@ class ModelBuilder:
             if isinstance(freq_key, str):
                 # Custom frequency: offset by pre-merge count
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
-            elif attr.frequency == ModelAttributeFrequency.ONCE:
+            elif attr.frequency == Model.AttributeFrequency.ONCE:
                 index_offset = 0
-            elif attr.frequency == ModelAttributeFrequency.WORLD:
+            elif attr.frequency == Model.AttributeFrequency.WORLD:
                 # WORLD frequency: indices are keyed by world index, not by offset
                 # When called via add_world(), current_world is the world being added
                 index_offset = 0 if self.current_world == -1 else self.current_world
@@ -2378,7 +2394,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=body_id,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.BODY,
+                expected_frequency=Model.AttributeFrequency.BODY,
             )
 
         return body_id
@@ -2484,7 +2500,7 @@ class ModelBuilder:
                 If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT_DOF` or :attr:`ModelAttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`ModelAttributeFrequency.JOINT` require a single value to be defined.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT_DOF` or :attr:`Model.AttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.
@@ -3219,7 +3235,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=constraint_idx,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.EQUALITY_CONSTRAINT,
+                expected_frequency=Model.AttributeFrequency.EQUALITY_CONSTRAINT,
             )
 
         return constraint_idx
@@ -3868,7 +3884,7 @@ class ModelBuilder:
     # muscles
     def add_muscle(
         self, bodies: list[int], positions: list[Vec3], f0: float, lm: float, lt: float, lmax: float, pen: float
-    ) -> float:
+    ) -> int:
         """Adds a muscle-tendon activation unit.
 
         Args:
@@ -3878,6 +3894,7 @@ class ModelBuilder:
             lm: Muscle length
             lt: Tendon length
             lmax: Maximally efficient muscle length
+            pen: Penalty factor
 
         Returns:
             The index of the muscle in the model
@@ -4026,7 +4043,7 @@ class ModelBuilder:
             self._process_custom_attributes(
                 entity_index=shape,
                 custom_attrs=custom_attributes,
-                expected_frequency=ModelAttributeFrequency.SHAPE,
+                expected_frequency=Model.AttributeFrequency.SHAPE,
             )
 
         return shape
@@ -5054,6 +5071,7 @@ class ModelBuilder:
         mass: float,
         radius: float | None = None,
         flags: int = ParticleFlags.ACTIVE,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a single particle to the model.
 
@@ -5062,7 +5080,8 @@ class ModelBuilder:
             vel: The initial velocity of the particle.
             mass: The mass of the particle.
             radius: The radius of the particle used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
-            flags: The flags that control the dynamical behavior of the particle, see PARTICLE_FLAG_* constants.
+            flags: The flags that control the dynamical behavior of the particle, see :class:`newton.ParticleFlags`.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
@@ -5081,6 +5100,14 @@ class ModelBuilder:
 
         particle_id = self.particle_count - 1
 
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=particle_id,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.PARTICLE,
+            )
+
         return particle_id
 
     def add_particles(
@@ -5089,33 +5116,55 @@ class ModelBuilder:
         vel: list[Vec3],
         mass: list[float],
         radius: list[float] | None = None,
-        flags: list[wp.uint32] | None = None,
+        flags: list[int] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ):
-        """Adds a group particles to the model.
+        """Adds a group of particles to the model.
 
         Args:
-            pos: The initial positions of the particle.
-            vel: The initial velocities of the particle.
+            pos: The initial positions of the particles.
+            vel: The initial velocities of the particles.
             mass: The mass of the particles.
             radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
-            flags: The flags that control the dynamical behavior of the particles, see PARTICLE_FLAG_* constants.
+            flags: The flags that control the dynamical behavior of the particles, see :class:`newton.ParticleFlags`.
+            custom_attributes: Dictionary of custom attribute names to lists of values (one value for each particle).
 
         Note:
             Set the mass equal to zero to create a 'kinematic' particle that is not subject to dynamics.
         """
+        particle_start = self.particle_count
+        particle_count = len(pos)
+
         self.particle_q.extend(pos)
         self.particle_qd.extend(vel)
         self.particle_mass.extend(mass)
         if radius is None:
-            radius = [self.default_particle_radius] * len(pos)
+            radius = [self.default_particle_radius] * particle_count
         if flags is None:
-            flags = [ParticleFlags.ACTIVE] * len(pos)
+            flags = [ParticleFlags.ACTIVE] * particle_count
         self.particle_radius.extend(radius)
         self.particle_flags.extend(flags)
         # Maintain world assignment for bulk particle creation
-        self.particle_world.extend([self.current_world] * len(pos))
+        self.particle_world.extend([self.current_world] * particle_count)
 
-    def add_spring(self, i: int, j, ke: float, kd: float, control: float):
+        # Process custom attributes
+        if custom_attributes and particle_count:
+            particle_indices = list(range(particle_start, particle_start + particle_count))
+            self._process_custom_attributes(
+                entity_index=particle_indices,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.PARTICLE,
+            )
+
+    def add_spring(
+        self,
+        i: int,
+        j: int,
+        ke: float,
+        kd: float,
+        control: float,
+        custom_attributes: dict[str, Any] | None = None,
+    ):
         """Adds a spring between two particles in the system
 
         Args:
@@ -5124,6 +5173,7 @@ class ModelBuilder:
             ke: The elastic stiffness of the spring
             kd: The damping stiffness of the spring
             control: The actuation level of the spring
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
             The spring is created with a rest-length based on the distance
@@ -5145,6 +5195,15 @@ class ModelBuilder:
 
         self.spring_rest_length.append(l)
 
+        # Process custom attributes
+        if custom_attributes:
+            spring_index = len(self.spring_rest_length) - 1
+            self._process_custom_attributes(
+                entity_index=spring_index,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.SPRING,
+            )
+
     def add_triangle(
         self,
         i: int,
@@ -5155,16 +5214,23 @@ class ModelBuilder:
         tri_kd: float | None = None,
         tri_drag: float | None = None,
         tri_lift: float | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> float:
         """Adds a triangular FEM element between three particles in the system.
 
         Triangles are modeled as viscoelastic elements with elastic stiffness and damping
-        parameters specified on the model. See model.tri_ke, model.tri_kd.
+        parameters specified on the model. See :attr:`~newton.Model.tri_ke`, :attr:`~newton.Model.tri_kd`.
 
         Args:
-            i: The index of the first particle
-            j: The index of the second particle
-            k: The index of the third particle
+            i: The index of the first particle.
+            j: The index of the second particle.
+            k: The index of the third particle.
+            tri_ke: The elastic stiffness of the triangle. If None, the default value (:attr:`default_tri_ke`) is used.
+            tri_ka: The area stiffness of the triangle. If None, the default value (:attr:`default_tri_ka`) is used.
+            tri_kd: The damping stiffness of the triangle. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_drag: The drag coefficient of the triangle. If None, the default value (:attr:`default_tri_drag`) is used.
+            tri_lift: The lift coefficient of the triangle. If None, the default value (:attr:`default_tri_lift`) is used.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
             The area of the triangle
@@ -5173,7 +5239,6 @@ class ModelBuilder:
             The triangle is created with a rest-length based on the distance
             between the particles in their initial configuration.
         """
-        # TODO: Expose elastic parameters on a per-element basis
         tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
         tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
         tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
@@ -5211,18 +5276,28 @@ class ModelBuilder:
             self.tri_activations.append(0.0)
             self.tri_materials.append((tri_ke, tri_ka, tri_kd, tri_drag, tri_lift))
             self.tri_areas.append(area)
+
+            # Process custom attributes
+            if custom_attributes:
+                tri_index = len(self.tri_indices) - 1
+                self._process_custom_attributes(
+                    entity_index=tri_index,
+                    custom_attrs=custom_attributes,
+                    expected_frequency=Model.AttributeFrequency.TRIANGLE,
+                )
             return area
 
     def add_triangles(
         self,
-        i: list[int],
-        j: list[int],
-        k: list[int],
+        i: list[int] | nparray,
+        j: list[int] | nparray,
+        k: list[int] | nparray,
         tri_ke: list[float] | None = None,
         tri_ka: list[float] | None = None,
         tri_kd: list[float] | None = None,
         tri_drag: list[float] | None = None,
         tri_lift: list[float] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> list[float]:
         """Adds triangular FEM elements between groups of three particles in the system.
 
@@ -5233,6 +5308,12 @@ class ModelBuilder:
             i: The indices of the first particle
             j: The indices of the second particle
             k: The indices of the third particle
+            tri_ke: The elastic stiffness of the triangles. If None, the default value (:attr:`default_tri_ke`) is used.
+            tri_ka: The area stiffness of the triangles. If None, the default value (:attr:`default_tri_ka`) is used.
+            tri_kd: The damping stiffness of the triangles. If None, the default value (:attr:`default_tri_kd`) is used.
+            tri_drag: The drag coefficient of the triangles. If None, the default value (:attr:`default_tri_drag`) is used.
+            tri_lift: The lift coefficient of the triangles. If None, the default value (:attr:`default_tri_lift`) is used.
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
             The areas of the triangles
@@ -5243,9 +5324,10 @@ class ModelBuilder:
 
         """
         # compute basis for 2D rest pose
-        p = np.array(self.particle_q)[i]
-        q = np.array(self.particle_q)[j]
-        r = np.array(self.particle_q)[k]
+        q_ = np.asarray(self.particle_q)
+        p = q_[i]
+        q = q_[j]
+        r = q_[k]
 
         qp = q - p
         rp = r - p
@@ -5273,8 +5355,13 @@ class ModelBuilder:
         D[areas == 0.0] = np.eye(2)[None, ...]
         inv_D = np.linalg.inv(D)
 
-        inds = np.concatenate((i[valid_inds, None], j[valid_inds, None], k[valid_inds, None]), axis=-1)
+        i_ = np.asarray(i)
+        j_ = np.asarray(j)
+        k_ = np.asarray(k)
 
+        inds = np.concatenate((i_[valid_inds, None], j_[valid_inds, None], k_[valid_inds, None]), axis=-1)
+
+        tri_start = len(self.tri_indices)
         self.tri_indices.extend(inds.tolist())
         self.tri_poses.extend(inv_D[valid_inds].tolist())
         self.tri_activations.extend([0.0] * len(valid_inds))
@@ -5302,10 +5389,27 @@ class ModelBuilder:
         )
         areas = areas.tolist()
         self.tri_areas.extend(areas)
+
+        # Process custom attributes
+        if custom_attributes and len(valid_inds) > 0:
+            tri_indices = list(range(tri_start, tri_start + len(valid_inds)))
+            self._process_custom_attributes(
+                entity_index=tri_indices,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.TRIANGLE,
+            )
         return areas
 
     def add_tetrahedron(
-        self, i: int, j: int, k: int, l: int, k_mu: float = 1.0e3, k_lambda: float = 1.0e3, k_damp: float = 0.0
+        self,
+        i: int,
+        j: int,
+        k: int,
+        l: int,
+        k_mu: float = 1.0e3,
+        k_lambda: float = 1.0e3,
+        k_damp: float = 0.0,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> float:
         """Adds a tetrahedral FEM element between four particles in the system.
 
@@ -5320,6 +5424,7 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The element's damping stiffness
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Return:
             The volume of the tetrahedron
@@ -5351,6 +5456,15 @@ class ModelBuilder:
             self.tet_activations.append(0.0)
             self.tet_materials.append((k_mu, k_lambda, k_damp))
 
+            # Process custom attributes
+            if custom_attributes:
+                tet_index = len(self.tet_indices) - 1
+                self._process_custom_attributes(
+                    entity_index=tet_index,
+                    custom_attrs=custom_attributes,
+                    expected_frequency=Model.AttributeFrequency.TETRAHEDRON,
+                )
+
         return volume
 
     def add_edge(
@@ -5362,7 +5476,8 @@ class ModelBuilder:
         rest: float | None = None,
         edge_ke: float | None = None,
         edge_kd: float | None = None,
-    ) -> None:
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
         """Adds a bending edge element between two adjacent triangles in the cloth mesh, defined by four vertices.
 
         The bending energy model follows the discrete shell formulation from [Grinspun et al. 2003].
@@ -5376,6 +5491,10 @@ class ModelBuilder:
             rest: The rest angle across the edge in radians, if not specified it will be computed
             edge_ke: The bending stiffness coefficient
             edge_kd: The bending damping coefficient
+            custom_attributes: Dictionary of custom attribute names to values.
+
+        Return:
+            The index of the edge.
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
@@ -5407,16 +5526,28 @@ class ModelBuilder:
         self.edge_rest_angle.append(rest)
         self.edge_rest_length.append(wp.length(x4 - x3))
         self.edge_bending_properties.append((edge_ke, edge_kd))
+        edge_index = len(self.edge_indices) - 1
+
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=edge_index,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.EDGE,
+            )
+
+        return edge_index
 
     def add_edges(
         self,
-        i,
-        j,
-        k,
-        l,
+        i: list[int],
+        j: list[int],
+        k: list[int],
+        l: list[int],
         rest: list[float] | None = None,
         edge_ke: list[float] | None = None,
         edge_kd: list[float] | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ) -> None:
         """Adds bending edge elements between two adjacent triangles in the cloth mesh, defined by four vertices.
 
@@ -5424,13 +5555,14 @@ class ModelBuilder:
         The bending stiffness is controlled by the `edge_ke` parameter, and the bending damping by the `edge_kd` parameter.
 
         Args:
-            i: The index of the first particle, i.e., opposite vertex 0
-            j: The index of the second particle, i.e., opposite vertex 1
-            k: The index of the third particle, i.e., vertex 0
-            l: The index of the fourth particle, i.e., vertex 1
+            i: The indices of the first particles, i.e., opposite vertex 0
+            j: The indices of the second particles, i.e., opposite vertex 1
+            k: The indices of the third particles, i.e., vertex 0
+            l: The indices of the fourth particles, i.e., vertex 1
             rest: The rest angles across the edges in radians, if not specified they will be computed
-            edge_ke: The bending stiffness coefficient
-            edge_kd: The bending damping coefficient
+            edge_ke: The bending stiffness coefficients
+            edge_kd: The bending damping coefficients
+            custom_attributes: Dictionary of custom attribute names to values.
 
         Note:
             The edge lies between the particles indexed by 'k' and 'l' parameters with the opposing
@@ -5438,17 +5570,27 @@ class ModelBuilder:
             winding: (i, k, l), (j, l, k).
 
         """
-        x3 = np.array(self.particle_q)[k]
-        x4 = np.array(self.particle_q)[l]
+        # Convert inputs to numpy arrays
+        i_ = np.asarray(i)
+        j_ = np.asarray(j)
+        k_ = np.asarray(k)
+        l_ = np.asarray(l)
+
+        # Cache particle positions as numpy array
+        particle_q_ = np.asarray(self.particle_q)
+        x3 = particle_q_[k_]
+        x4 = particle_q_[l_]
+        x4_minus_x3 = x4 - x3
+
         if rest is None:
-            rest = np.zeros_like(i, dtype=float)
-            valid_mask = (i != -1) & (j != -1)
+            rest = np.zeros_like(i_, dtype=float)
+            valid_mask = (i_ != -1) & (j_ != -1)
 
             # compute rest angle
-            x1_valid = np.array(self.particle_q)[i[valid_mask]]
-            x2_valid = np.array(self.particle_q)[j[valid_mask]]
-            x3_valid = np.array(self.particle_q)[k[valid_mask]]
-            x4_valid = np.array(self.particle_q)[l[valid_mask]]
+            x1_valid = particle_q_[i_[valid_mask]]
+            x2_valid = particle_q_[j_[valid_mask]]
+            x3_valid = particle_q_[k_[valid_mask]]
+            x4_valid = particle_q_[l_[valid_mask]]
 
             def normalized(a):
                 l = np.linalg.norm(a, axis=-1, keepdims=True)
@@ -5465,12 +5607,14 @@ class ModelBuilder:
             cos_theta = np.clip(dot(n1, n2), -1.0, 1.0)
             sin_theta = dot(np.cross(n1, n2), e)
             rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
+            rest = rest.tolist()
 
-        inds = np.concatenate((i[:, None], j[:, None], k[:, None], l[:, None]), axis=-1)
+        inds = np.concatenate((i_[:, None], j_[:, None], k_[:, None], l_[:, None]), axis=-1)
 
+        edge_start = len(self.edge_indices)
         self.edge_indices.extend(inds.tolist())
-        self.edge_rest_angle.extend(rest.tolist())
-        self.edge_rest_length.extend(np.linalg.norm(x4 - x3, axis=1).tolist())
+        self.edge_rest_angle.extend(rest)
+        self.edge_rest_length.extend(np.linalg.norm(x4_minus_x3, axis=1).tolist())
 
         def init_if_none(arr, defaultValue):
             if arr is None:
@@ -5481,6 +5625,15 @@ class ModelBuilder:
         edge_kd = init_if_none(edge_kd, self.default_edge_kd)
 
         self.edge_bending_properties.extend(zip(edge_ke, edge_kd, strict=False))
+
+        # Process custom attributes
+        if custom_attributes and len(i) > 0:
+            edge_indices = list(range(edge_start, edge_start + len(i)))
+            self._process_custom_attributes(
+                entity_index=edge_indices,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.EDGE,
+            )
 
     def add_cloth_grid(
         self,
@@ -5508,6 +5661,9 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        custom_attributes_particles: dict[str, Any] | None = None,
+        custom_attributes_edges: dict[str, Any] | None = None,
+        custom_attributes_triangles: dict[str, Any] | None = None,
     ):
         """Helper to create a regular planar cloth grid
 
@@ -5564,8 +5720,6 @@ class ModelBuilder:
             vertices=vertices,
             indices=indices,
             density=density,
-            edge_callback=None,
-            face_callback=None,
             tri_ke=tri_ke,
             tri_ka=tri_ka,
             tri_kd=tri_kd,
@@ -5577,6 +5731,9 @@ class ModelBuilder:
             spring_ke=spring_ke,
             spring_kd=spring_kd,
             particle_radius=particle_radius,
+            custom_attributes_particles=custom_attributes_particles,
+            custom_attributes_triangles=custom_attributes_triangles,
+            custom_attributes_edges=custom_attributes_edges,
         )
 
         vertex_id = 0
@@ -5607,8 +5764,6 @@ class ModelBuilder:
         vertices: list[Vec3],
         indices: list[int],
         density: float,
-        edge_callback=None,
-        face_callback=None,
         tri_ke: float | None = None,
         tri_ka: float | None = None,
         tri_kd: float | None = None,
@@ -5620,6 +5775,10 @@ class ModelBuilder:
         spring_ke: float | None = None,
         spring_kd: float | None = None,
         particle_radius: float | None = None,
+        custom_attributes_particles: dict[str, Any] | None = None,
+        custom_attributes_edges: dict[str, Any] | None = None,
+        custom_attributes_triangles: dict[str, Any] | None = None,
+        custom_attributes_springs: dict[str, Any] | None = None,
     ) -> None:
         """Helper to create a cloth model from a regular triangle mesh
 
@@ -5633,12 +5792,14 @@ class ModelBuilder:
             vertices: A list of vertex positions
             indices: A list of triangle indices, 3 entries per-face
             density: The density per-area of the mesh
-            edge_callback: A user callback when an edge is created
-            face_callback: A user callback when a face is created
             particle_radius: The particle_radius which controls particle based collisions.
-        Note:
+            custom_attributes_particles: Dictionary of custom attribute names to values for the particles.
+            custom_attributes_edges: Dictionary of custom attribute names to values for the edges.
+            custom_attributes_triangles: Dictionary of custom attribute names to values for the triangles.
+            custom_attributes_springs: Dictionary of custom attribute names to values for the springs.
 
-            The mesh should be two manifold.
+        Note:
+            The mesh should be two-manifold.
         """
         tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
         tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
@@ -5665,7 +5826,11 @@ class ModelBuilder:
         rot_mat_np = np.array(wp.quat_to_matrix(rot), dtype=np.float32).reshape(3, 3)
         verts_3d_np = np.dot(vertices_np, rot_mat_np.T) + pos
         self.add_particles(
-            verts_3d_np.tolist(), [vel] * num_verts, mass=[0.0] * num_verts, radius=[particle_radius] * num_verts
+            verts_3d_np.tolist(),
+            [vel] * num_verts,
+            mass=[0.0] * num_verts,
+            radius=[particle_radius] * num_verts,
+            custom_attributes=custom_attributes_particles,
         )
 
         # triangles
@@ -5680,6 +5845,7 @@ class ModelBuilder:
             [tri_kd] * num_tris,
             [tri_drag] * num_tris,
             [tri_lift] * num_tris,
+            custom_attributes=custom_attributes_triangles,
         )
         for t in range(num_tris):
             area = areas[t]
@@ -5703,6 +5869,7 @@ class ModelBuilder:
             edge_indices[:, 3],
             edge_ke=[edge_ke] * len(edge_indices),
             edge_kd=[edge_kd] * len(edge_indices),
+            custom_attributes=custom_attributes_edges,
         )
 
         if add_springs:
@@ -5719,7 +5886,7 @@ class ModelBuilder:
                     spring_indices.add((min(i, j), max(i, j)))
 
             for i, j in spring_indices:
-                self.add_spring(i, j, spring_ke, spring_kd, control=0.0)
+                self.add_spring(i, j, spring_ke, spring_kd, control=0.0, custom_attributes=custom_attributes_springs)
 
     def add_particle_grid(
         self,
@@ -5736,7 +5903,8 @@ class ModelBuilder:
         jitter: float,
         radius_mean: float | None = None,
         radius_std: float = 0.0,
-        flags: int | None = None,
+        flags: list[int] | int | None = None,
+        custom_attributes: dict[str, Any] | None = None,
     ):
         """
         Adds a regular 3D grid of particles to the model.
@@ -5746,20 +5914,21 @@ class ModelBuilder:
         by its dimensions along each axis and the spacing between particles.
 
         Args:
-            pos (Vec3): The world-space position of the grid origin.
-            rot (Quat): The rotation to apply to the grid (as a quaternion).
-            vel (Vec3): The initial velocity to assign to each particle.
-            dim_x (int): Number of particles along the X axis.
-            dim_y (int): Number of particles along the Y axis.
-            dim_z (int): Number of particles along the Z axis.
-            cell_x (float): Spacing between particles along the X axis.
-            cell_y (float): Spacing between particles along the Y axis.
-            cell_z (float): Spacing between particles along the Z axis.
-            mass (float): Mass to assign to each particle.
-            jitter (float): Maximum random offset to apply to each particle position.
-            radius_mean (float, optional): Mean radius for particles. If None, uses the builder's default.
-            radius_std (float, optional): Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
-            flags (int, optional): Flags to assign to each particle. If None, uses the builder's default.
+            pos: The world-space position of the grid origin.
+            rot: The rotation to apply to the grid (as a quaternion).
+            vel: The initial velocity to assign to each particle.
+            dim_x: Number of particles along the X axis.
+            dim_y: Number of particles along the Y axis.
+            dim_z: Number of particles along the Z axis.
+            cell_x: Spacing between particles along the X axis.
+            cell_y: Spacing between particles along the Y axis.
+            cell_z: Spacing between particles along the Z axis.
+            mass: Mass to assign to each particle.
+            jitter: Maximum random offset to apply to each particle position.
+            radius_mean: Mean radius for particles. If None, uses the builder's default.
+            radius_std: Standard deviation for particle radii. If > 0, radii are sampled from a normal distribution.
+            flags: Flags to assign to each particle. If None, uses the builder's default.
+            custom_attributes: Dictionary of custom attribute names to values for the particles.
 
         Returns:
             None
@@ -5791,12 +5960,34 @@ class ModelBuilder:
         if flags is not None:
             flags = [flags] * points.shape[0]
 
+        # Broadcast scalar custom attribute values to all particles
+        num_particles = points.shape[0]
+        broadcast_custom_attrs = None
+        if custom_attributes:
+            broadcast_custom_attrs = {}
+            for key, value in custom_attributes.items():
+                # Check if value is a sequence (but not string/bytes) or numpy array
+                is_array = isinstance(value, np.ndarray)
+                is_sequence = isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+                if is_array or is_sequence:
+                    # Value is already a sequence/array - validate length
+                    if len(value) != num_particles:
+                        raise ValueError(
+                            f"Custom attribute '{key}' has {len(value)} values but {num_particles} particles in grid"
+                        )
+                    broadcast_custom_attrs[key] = list(value) if is_array else value
+                else:
+                    # Scalar value - broadcast to all particles
+                    broadcast_custom_attrs[key] = [value] * num_particles
+
         self.add_particles(
             pos=points.tolist(),
             vel=velocity.tolist(),
             mass=masses,
             radius=radii.tolist(),
             flags=flags,
+            custom_attributes=broadcast_custom_attrs,
         )
 
     def add_soft_grid(
@@ -7041,26 +7232,36 @@ class ModelBuilder:
                 if isinstance(freq_key, str):
                     # Custom frequency: count determined by validated frequency count
                     count = custom_frequency_counts.get(freq_key, 0)
-                elif freq_key == ModelAttributeFrequency.ONCE:
+                elif freq_key == Model.AttributeFrequency.ONCE:
                     count = 1
-                elif freq_key == ModelAttributeFrequency.BODY:
+                elif freq_key == Model.AttributeFrequency.BODY:
                     count = m.body_count
-                elif freq_key == ModelAttributeFrequency.SHAPE:
+                elif freq_key == Model.AttributeFrequency.SHAPE:
                     count = m.shape_count
-                elif freq_key == ModelAttributeFrequency.JOINT:
+                elif freq_key == Model.AttributeFrequency.JOINT:
                     count = m.joint_count
-                elif freq_key == ModelAttributeFrequency.JOINT_DOF:
+                elif freq_key == Model.AttributeFrequency.JOINT_DOF:
                     count = m.joint_dof_count
-                elif freq_key == ModelAttributeFrequency.JOINT_COORD:
+                elif freq_key == Model.AttributeFrequency.JOINT_COORD:
                     count = m.joint_coord_count
-                elif freq_key == ModelAttributeFrequency.JOINT_CONSTRAINT:
+                elif freq_key == Model.AttributeFrequency.JOINT_CONSTRAINT:
                     count = m.joint_constraint_count
-                elif freq_key == ModelAttributeFrequency.ARTICULATION:
+                elif freq_key == Model.AttributeFrequency.ARTICULATION:
                     count = m.articulation_count
-                elif freq_key == ModelAttributeFrequency.WORLD:
+                elif freq_key == Model.AttributeFrequency.WORLD:
                     count = m.num_worlds
-                elif freq_key == ModelAttributeFrequency.EQUALITY_CONSTRAINT:
+                elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
+                elif freq_key == Model.AttributeFrequency.PARTICLE:
+                    count = m.particle_count
+                elif freq_key == Model.AttributeFrequency.EDGE:
+                    count = m.edge_count
+                elif freq_key == Model.AttributeFrequency.TRIANGLE:
+                    count = m.tri_count
+                elif freq_key == Model.AttributeFrequency.TETRAHEDRON:
+                    count = m.tet_count
+                elif freq_key == Model.AttributeFrequency.SPRING:
+                    count = m.spring_count
                 else:
                     continue
 

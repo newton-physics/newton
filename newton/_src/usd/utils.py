@@ -23,7 +23,10 @@ import warp as wp
 
 from ..core.types import Axis, AxisType, nparray
 from ..geometry import MESH_MAXHULLVERT, Mesh
-from ..sim.model import ModelAttributeAssignment, ModelAttributeFrequency
+from ..sim.model import Model
+
+AttributeAssignment = Model.AttributeAssignment
+AttributeFrequency = Model.AttributeFrequency
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -469,8 +472,8 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
         if assignment_meta and frequency_meta:
             # Metadata format
             try:
-                assignment_val = ModelAttributeAssignment[assignment_meta.upper()]
-                frequency_val = ModelAttributeFrequency[frequency_meta.upper()]
+                assignment_val = AttributeAssignment[assignment_meta.upper()]
+                frequency_val = AttributeFrequency[frequency_meta.upper()]
             except KeyError:
                 print(
                     f"Warning: Custom attribute '{attr_name}' has invalid assignment or frequency in customData. Skipping."

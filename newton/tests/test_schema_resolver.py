@@ -50,7 +50,7 @@ from typing import Any
 
 import warp as wp
 
-from newton import ModelAttributeFrequency, ModelBuilder
+from newton import Model, ModelBuilder
 from newton._src.usd.schema_resolver import (
     PrimType,
     SchemaResolverManager,
@@ -61,6 +61,8 @@ from newton._src.usd.schemas import (
     SchemaResolverPhysx,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
+
+AttributeFrequency = Model.AttributeFrequency
 
 if USD_AVAILABLE:
     try:
@@ -487,7 +489,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         model = builder.finalize()
         state = model.state()
-        self.assertEqual(model.get_attribute_frequency("testBodyVec"), ModelAttributeFrequency.BODY)
+        self.assertEqual(model.get_attribute_frequency("testBodyVec"), AttributeFrequency.BODY)
 
         body_map = result["path_body_map"]
         idx = body_map[body_path]
@@ -533,7 +535,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(float(body_vec[other_idx, 2]), 0.0, places=6)
 
         # Joint custom property materialization and defaults
-        self.assertEqual(model.get_attribute_frequency("testJointScalar"), ModelAttributeFrequency.JOINT)
+        self.assertEqual(model.get_attribute_frequency("testJointScalar"), AttributeFrequency.JOINT)
         # Authored joint value
         self.assertIn(joint_name, builder.joint_key)
         joint_idx = builder.joint_key.index(joint_name)
@@ -1257,11 +1259,9 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Check attribute frequencies
         self.assertEqual(
-            model.get_attribute_frequency("articulation_default_stiffness"), ModelAttributeFrequency.ARTICULATION
+            model.get_attribute_frequency("articulation_default_stiffness"), AttributeFrequency.ARTICULATION
         )
-        self.assertEqual(
-            model.get_attribute_frequency("articulation_default_damping"), ModelAttributeFrequency.ARTICULATION
-        )
+        self.assertEqual(model.get_attribute_frequency("articulation_default_damping"), AttributeFrequency.ARTICULATION)
 
         # Validate namespaced attributes
         self.assertTrue(hasattr(control, "pd_control"))
