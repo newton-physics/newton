@@ -230,22 +230,21 @@ class SolverMuJoCo(SolverBase):
         return parsed
 
     @staticmethod
-    def _find_mjc_actuator_prims(stage, _context: dict[str, Any] | None = None):
-        """Find all prims of type ``MjcActuator`` for USD parsing.
+    def _is_mjc_actuator_prim(prim, _context: dict[str, Any]) -> bool:
+        """Filter for prims of type ``MjcActuator`` for USD parsing.
 
-        This is used as the ``usd_prim_finder`` for the ``mujoco:actuator`` custom frequency.
-        It yields USD Prim objects whose type name is ``MjcActuator``.
+        This is used as the ``usd_prim_filter`` for the ``mujoco:actuator`` custom frequency.
+        Returns True for USD Prim objects whose type name is ``MjcActuator``.
 
         Args:
-            stage: The USD stage to search.
-            context: Optional context dictionary with parsing results (path maps, units, etc.).
+            prim: The USD prim to check.
+            _context: Context dictionary with parsing results (path maps, units, etc.).
+                This matches the return value of :meth:`newton.ModelBuilder.add_usd`.
 
-        Yields:
-            USD Prim objects with type name ``MjcActuator``.
+        Returns:
+            True if the prim is an MjcActuator, False otherwise.
         """
-        for prim in stage.Traverse():
-            if prim.GetTypeName() == "MjcActuator":
-                yield prim
+        return prim.GetTypeName() == "MjcActuator"
 
     @override
     @classmethod
@@ -262,7 +261,7 @@ class SolverMuJoCo(SolverBase):
             ModelBuilder.CustomFrequency(
                 name="actuator",
                 namespace="mujoco",
-                usd_prim_finder=cls._find_mjc_actuator_prims,
+                usd_prim_filter=cls._is_mjc_actuator_prim,
             )
         )
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="tendon", namespace="mujoco"))

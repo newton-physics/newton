@@ -1751,33 +1751,38 @@ def parse_usd(
         "max_solver_iterations": max_solver_iters,
     }
 
-    # Process custom frequencies with USD prim finders
-    # For each frequency that has a usd_prim_finder callback, find prims and extract custom attribute values
+    # Process custom frequencies with USD prim filters
+    # Collect frequencies with filters and their attributes, then traverse stage once
+    frequencies_with_filters = []
     for freq_key, freq_obj in builder.custom_frequencies.items():
-        if freq_obj.usd_prim_finder is None:
+        if freq_obj.usd_prim_filter is None:
             continue
-
-        # Get all custom attributes with this frequency
         freq_attrs = [attr for attr in builder.custom_attributes.values() if attr.frequency == freq_key]
         if not freq_attrs:
             continue
+        frequencies_with_filters.append((freq_key, freq_obj, freq_attrs))
 
-        # Find prims using the callback and extract custom attribute values
-        for prim in freq_obj.usd_prim_finder(stage, result):
-            prim_custom_attrs = usd.get_custom_attribute_values(prim, freq_attrs)
+    # Traverse stage once and check all filters for each prim
+    if frequencies_with_filters:
+        for prim in stage.Traverse():
+            for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
+                if not freq_obj.usd_prim_filter(prim, result):
+                    continue
 
-            # Build a complete values dict for all attributes in this frequency
-            # Use None for missing values so add_custom_values can apply defaults
-            values_dict = {}
-            for attr in freq_attrs:
-                # Use authored value if present, otherwise None (defaults applied at finalize)
-                values_dict[attr.key] = prim_custom_attrs.get(attr.key, None)
+                prim_custom_attrs = usd.get_custom_attribute_values(prim, freq_attrs)
 
-            # Always add values for this prim to increment the frequency count,
-            # even if all values are None (defaults will be applied during finalization)
-            builder.add_custom_values(**values_dict)
-            if verbose:
-                print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+                # Build a complete values dict for all attributes in this frequency
+                # Use None for missing values so add_custom_values can apply defaults
+                values_dict = {}
+                for attr in freq_attrs:
+                    # Use authored value if present, otherwise None (defaults applied at finalize)
+                    values_dict[attr.key] = prim_custom_attrs.get(attr.key, None)
+
+                # Always add values for this prim to increment the frequency count,
+                # even if all values are None (defaults will be applied during finalization)
+                builder.add_custom_values(**values_dict)
+                if verbose:
+                    print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
     return result
 
 

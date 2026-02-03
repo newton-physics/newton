@@ -21,7 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -526,9 +526,9 @@ class ModelBuilder:
         They must be registered via :meth:`ModelBuilder.add_custom_frequency` before any custom attributes
         using them can be added.
 
-        The optional ``usd_prim_finder`` callback enables automatic USD parsing for this frequency.
-        When provided, :func:`newton.parse_usd` will call this function to find USD prims of this
-        entity type and extract custom attribute values from them.
+        The optional ``usd_prim_filter`` callback enables automatic USD parsing for this frequency.
+        When provided, :meth:`ModelBuilder.add_usd` will call this function for each prim in the USD
+        stage to determine whether custom attribute values with this frequency should be extracted from it.
 
         See :ref:`custom_attributes` for more information on custom frequencies.
 
@@ -537,17 +537,15 @@ class ModelBuilder:
             .. code-block:: python
 
                 # Define a custom frequency for MuJoCo actuators with USD parsing support
-                def find_actuator_prims(stage, context):
-                    for prim in stage.Traverse():
-                        if prim.GetTypeName() == "MjcActuator":
-                            yield prim
+                def is_actuator_prim(prim: Usd.Prim, context: dict[str, Any]) -> bool:
+                    return prim.GetTypeName() == "MjcActuator"
 
 
                 builder.add_custom_frequency(
                     ModelBuilder.CustomFrequency(
                         name="actuator",
                         namespace="mujoco",
-                        usd_prim_finder=find_actuator_prims,
+                        usd_prim_filter=is_actuator_prim,
                     )
                 )
         """
@@ -559,13 +557,14 @@ class ModelBuilder:
         """Namespace for the custom frequency. If provided, the frequency key becomes ``"namespace:name"``.
         If None, the custom frequency is registered without a namespace."""
 
-        usd_prim_finder: Callable[[Usd.Stage, dict[str, Any] | None], Generator[Usd.Prim, None, None]] | None = None
-        """Optional callback to find USD prims for this frequency during USD parsing.
+        usd_prim_filter: Callable[[Usd.Prim, dict[str, Any]], bool] | None = None
+        """Optional callback to filter USD prims for this frequency during USD parsing.
 
-        The callback receives the USD stage and a context dictionary containing parsing results
-        (path maps, units, etc.) and should yield USD Prim objects. For each yielded prim,
-        custom attribute values will be extracted and added to the builder via
-        :meth:`ModelBuilder.add_custom_values`.
+        The callback receives a USD Prim and a context dictionary containing parsing results.
+        The context dictionary matches the return value of :meth:`newton.ModelBuilder.add_usd` and includes
+        keys such as ``path_body_map``, ``path_joint_map``, ``path_shape_map``, ``linear_unit``,
+        ``mass_unit``, etc. Return ``True`` if the prim matches this custom frequency and its
+        custom attribute values should be extracted; return ``False`` to skip this prim.
 
         If None, this frequency cannot be automatically parsed from USD files."""
 
@@ -901,7 +900,7 @@ class ModelBuilder:
 
         Custom frequencies must be registered before adding any custom attributes that use them.
         This enables explicit declaration of custom entity types and optionally provides USD
-        parsing support via the ``usd_prim_finder`` callback.
+        parsing support via the ``usd_prim_filter`` callback.
 
         This method is idempotent: registering the same frequency multiple times is silently
         ignored (useful when loading multiple files that all register the same frequencies).
@@ -918,7 +917,7 @@ class ModelBuilder:
                     ModelBuilder.CustomFrequency(
                         name="actuator",
                         namespace="mujoco",
-                        usd_prim_finder=find_actuator_prims,
+                        usd_prim_filter=is_actuator_prim,
                     )
                 )
         """

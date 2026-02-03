@@ -520,34 +520,32 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 USD Parsing Support
 -------------------
 
-Custom frequencies can optionally support automatic USD parsing by providing a ``usd_prim_finder`` callback when registering the frequency. This callback is invoked during :meth:`~newton.ModelBuilder.add_usd` to find USD prims of that entity type.
+Custom frequencies can optionally support automatic USD parsing by providing a ``usd_prim_filter`` callback when registering the frequency. This callback is invoked during :meth:`~newton.ModelBuilder.add_usd` for each prim in the USD stage to determine whether custom attribute values should be extracted from it.
 
 .. code-block:: python
 
-  def find_actuator_prims(stage, context):
-      """Find all prims with type name ``MjcActuator``."""
-      for prim in stage.Traverse():
-          if prim.GetTypeName() == "MjcActuator":
-              yield prim
-   
+   def is_actuator_prim(prim, context):
+       """Return True for prims with type name ``MjcActuator``."""
+       return prim.GetTypeName() == "MjcActuator"
+
    builder.add_custom_frequency(
        ModelBuilder.CustomFrequency(
            name="actuator",
            namespace="mujoco",
-           usd_prim_finder=find_actuator_prims,
+           usd_prim_filter=is_actuator_prim,
        )
    )
 
-When ``parse_usd()`` is called, it will:
+When :meth:`~newton.ModelBuilder.add_usd` is called, it will:
 
 1. After parsing all standard entities (bodies, shapes, joints, etc.), iterate over registered custom frequencies
-2. For each frequency with a ``usd_prim_finder``, call the finder to discover prims
-3. For each discovered prim, extract custom attribute values and add them via :meth:`newton.ModelBuilder.add_custom_values`
+2. For each frequency with a ``usd_prim_filter``, traverse all prims in the stage
+3. For each prim where the filter returns ``True``, extract custom attribute values and add them via :meth:`newton.ModelBuilder.add_custom_values`
 
-The ``usd_prim_finder`` callback receives:
+The ``usd_prim_filter`` callback receives:
 
-* ``stage``: The USD stage being parsed.
-* ``context``: A dictionary with parsing results (path maps, units, etc.) that can be used to resolve references. Note that this dictionary matches the results dictionary returned by :meth:`newton.ModelBuilder.add_usd`.
+* ``prim``: The USD prim being evaluated.
+* ``context``: A dictionary with parsing results (path maps, units, etc.) that can be used to resolve references. This dictionary matches the return value of :meth:`~newton.ModelBuilder.add_usd` and includes keys such as ``path_body_map``, ``path_joint_map``, ``path_shape_map``, ``linear_unit``, ``mass_unit``, etc.
 
 This enables solvers like MuJoCo to define their own USD schemas and have them automatically parsed during model loading.
 

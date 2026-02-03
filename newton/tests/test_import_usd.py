@@ -3666,7 +3666,7 @@ def Xform "Articulation" (
     def test_custom_frequency_usd_defaults_when_no_authored_attrs(self):
         """Test that custom frequency counts increment for prims with no authored custom attributes.
 
-        Regression test: when a usd_prim_finder yields prims that have no authored custom attributes,
+        Regression test: when a usd_prim_filter returns True for prims that have no authored custom attributes,
         the frequency count should still increment for each prim, and default values should be applied.
         """
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -3676,25 +3676,23 @@ def Xform "Articulation" (
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        # Define two Xform prims that will be discovered by our custom finder
+        # Define two Xform prims that will be matched by our custom filter
         # These prims have NO authored custom attributes
         UsdGeom.Xform.Define(stage, "/World/CustomItem0")
         UsdGeom.Xform.Define(stage, "/World/CustomItem1")
 
-        # Define a prim finder that yields these custom items
-        def find_custom_items(usd_stage, context):
-            for prim in usd_stage.Traverse():
-                if prim.GetPath().pathString.startswith("/World/CustomItem"):
-                    yield prim
+        # Define a prim filter that matches these custom items
+        def is_custom_item(prim, context):
+            return prim.GetPath().pathString.startswith("/World/CustomItem")
 
         builder = newton.ModelBuilder()
 
-        # Register custom frequency with the prim finder
+        # Register custom frequency with the prim filter
         builder.add_custom_frequency(
             newton.ModelBuilder.CustomFrequency(
                 name="item",
                 namespace="test",
-                usd_prim_finder=find_custom_items,
+                usd_prim_filter=is_custom_item,
             )
         )
 
