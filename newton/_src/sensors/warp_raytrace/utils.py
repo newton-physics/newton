@@ -190,11 +190,12 @@ class Utils:
         self,
         width: int,
         height: int,
-        num_cameras: int,
         image: wp.array(dtype=wp.uint32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
+        num_cameras = image.shape[1]
+
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
             width, height, num_cameras, out_buffer, num_worlds_per_row
         )
@@ -222,11 +223,12 @@ class Utils:
         self,
         width: int,
         height: int,
-        num_cameras: int,
         image: wp.array(dtype=wp.vec3f, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
+        num_cameras = image.shape[1]
+
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
             width, height, num_cameras, out_buffer, num_worlds_per_row
         )
@@ -254,12 +256,13 @@ class Utils:
         self,
         width: int,
         height: int,
-        num_cameras: int,
         image: wp.array(dtype=wp.float32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
         depth_range: wp.array(dtype=wp.float32) | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
+        num_cameras = image.shape[1]
+
         out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
             width, height, num_cameras, out_buffer, num_worlds_per_row
         )

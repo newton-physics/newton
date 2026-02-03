@@ -192,9 +192,6 @@ class RenderContext:
 
     def render(
         self,
-        width: int,
-        height: int,
-        num_cameras: int,
         camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
@@ -209,9 +206,14 @@ class RenderContext:
             if refit_bvh:
                 self.refit_bvh()
 
+            width = camera_rays.shape[2]
+            height = camera_rays.shape[1]
+            num_cameras = camera_rays.shape[0]
+
             assert camera_transforms.size == num_cameras * self.num_worlds, (
                 f"camera_transforms size must match {num_cameras} x {self.num_worlds}"
             )
+
             assert camera_rays.size == width * height * num_cameras * 2, (
                 f"camera_rays size must match {width} x {height} x {num_cameras} x 2"
             )

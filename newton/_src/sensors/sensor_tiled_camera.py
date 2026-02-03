@@ -213,9 +213,6 @@ class SensorTiledCamera:
     def render(
         self,
         state: State | None,
-        width: int,
-        height: int,
-        num_cameras: int,
         camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
         color_image: wp.array(dtype=wp.uint32, ndim=3) | None = None,
@@ -231,9 +228,6 @@ class SensorTiledCamera:
 
         Args:
             state: The current simulation state containing body transforms.
-            width: Width of the output image.
-            height: Height of the output image.
-            num_cameras: Number of cameras.
             camera_transforms: Array of camera transforms in world space, shape (num_cameras, num_worlds).
             camera_rays: Array of camera rays in camera space, shape (num_cameras, height, width, 2).
             color_image: Optional output array for color data (num_worlds, num_cameras, width*height).
@@ -253,9 +247,6 @@ class SensorTiledCamera:
             self.update_from_state(state)
 
         self.render_context.render(
-            width,
-            height,
-            num_cameras,
             camera_transforms,
             camera_rays,
             color_image,
@@ -297,7 +288,6 @@ class SensorTiledCamera:
         self,
         width: int,
         height: int,
-        num_cameras: int,
         image: wp.array(dtype=wp.uint32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
@@ -311,21 +301,19 @@ class SensorTiledCamera:
         Args:
             width: Width of a tile in the image buffer.
             height: Height of a tile in the image buffer.
-            num_cameras: Number of cameras.
             image: Color output array from render(), shape (num_worlds, num_cameras, width*height).
             out_buffer: Optional output array
             num_worlds_per_row: Optional number of rows
         """
 
         return self.render_context.utils.flatten_color_image_to_rgba(
-            width, height, num_cameras, image, out_buffer, num_worlds_per_row
+            width, height, image, out_buffer, num_worlds_per_row
         )
 
     def flatten_normal_image_to_rgba(
         self,
         width: int,
         height: int,
-        num_cameras: int,
         image: wp.array(dtype=wp.vec3f, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
@@ -339,21 +327,19 @@ class SensorTiledCamera:
         Args:
             width: Width of a tile in the image buffer.
             height: Height of a tile in the image buffer.
-            num_cameras: Number of cameras.
             image: Normal output array from render(), shape (num_worlds, num_cameras, width*height).
             out_buffer: Optional output array
             num_worlds_per_row: Optional number of rows
         """
 
         return self.render_context.utils.flatten_normal_image_to_rgba(
-            width, height, num_cameras, image, out_buffer, num_worlds_per_row
+            width, height, image, out_buffer, num_worlds_per_row
         )
 
     def flatten_depth_image_to_rgba(
         self,
         width: int,
         height: int,
-        num_cameras: int,
         image: wp.array(dtype=wp.float32, ndim=3),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
         num_worlds_per_row: int | None = None,
@@ -369,7 +355,6 @@ class SensorTiledCamera:
         Args:
             width: Width of a tile in the image buffer.
             height: Height of a tile in the image buffer.
-            num_cameras: Number of cameras.
             image: Depth output array from render(), shape (num_worlds, num_cameras, width*height).
             out_buffer: Optional output array
             num_worlds_per_row: Optional number of rows
@@ -377,7 +362,7 @@ class SensorTiledCamera:
         """
 
         return self.render_context.utils.flatten_depth_image_to_rgba(
-            width, height, num_cameras, image, out_buffer, num_worlds_per_row, depth_range
+            width, height, image, out_buffer, num_worlds_per_row, depth_range
         )
 
     def assign_random_colors_per_world(self, seed: int = 100):

@@ -256,9 +256,6 @@ class Example:
     def render_sensors(self):
         self.tiled_camera_sensor.render(
             self.state,
-            self.sensor_render_width,
-            self.sensor_render_height,
-            self.num_cameras,
             self.get_camera_transforms(),
             self.camera_rays,
             color_image=self.tiled_camera_sensor_color_image,
@@ -324,7 +321,6 @@ class Example:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
                 self.sensor_render_width,
                 self.sensor_render_height,
-                self.num_cameras,
                 self.tiled_camera_sensor_color_image,
                 texture_buffer,
                 self.num_worlds_per_row,
@@ -333,7 +329,6 @@ class Example:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
                 self.sensor_render_width,
                 self.sensor_render_height,
-                self.num_cameras,
                 self.tiled_camera_sensor_albedo_image,
                 texture_buffer,
                 self.num_worlds_per_row,
@@ -342,7 +337,6 @@ class Example:
             self.tiled_camera_sensor.flatten_depth_image_to_rgba(
                 self.sensor_render_width,
                 self.sensor_render_height,
-                self.num_cameras,
                 self.tiled_camera_sensor_depth_image,
                 texture_buffer,
                 self.num_worlds_per_row,
@@ -352,7 +346,6 @@ class Example:
             self.tiled_camera_sensor.flatten_normal_image_to_rgba(
                 self.sensor_render_width,
                 self.sensor_render_height,
-                self.num_cameras,
                 self.tiled_camera_sensor_normal_image,
                 texture_buffer,
                 self.num_worlds_per_row,
@@ -367,7 +360,6 @@ class Example:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
                 self.sensor_render_width,
                 self.sensor_render_height,
-                self.num_cameras,
                 self.tiled_camera_sensor_shape_index_image,
                 texture_buffer,
                 self.num_worlds_per_row,
@@ -382,7 +374,6 @@ class Example:
             self.tiled_camera_sensor.flatten_color_image_to_rgba(
                 self.sensor_render_width,
                 self.sensor_render_height,
-                self.num_cameras,
                 self.tiled_camera_sensor_shape_index_image,
                 texture_buffer,
                 self.num_worlds_per_row,
