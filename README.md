@@ -525,6 +525,11 @@ uv sync --extra examples
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_softbody_dropping_to_cloth.png" alt="Softbody Dropping to Cloth">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_poker_cards_stacking.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_poker_cards_stacking.png" alt="Poker Cards Stacking">
+      </a>
+    </td>
   </tr>
   <tr>
     <td align="center">
@@ -532,6 +537,9 @@ uv sync --extra examples
     </td>
     <td align="center">
       <code>uv run -m newton.examples softbody_dropping_to_cloth</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples poker_cards_stacking</code>
     </td>
   </tr>
 </table>
