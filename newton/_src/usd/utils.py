@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import os
+import warnings
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, overload
 
@@ -32,11 +34,13 @@ if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
 
 try:
-    from pxr import Gf, Usd, UsdGeom
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 except ImportError:
     Usd = None
     Gf = None
     UsdGeom = None
+    Sdf = None
+    UsdShade = None
 
 
 @overload
@@ -964,3 +968,289 @@ def get_mesh(
         uvs = np.array(uvs, dtype=np.float32)
 
     return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
+
+
+def _resolve_asset_path(asset: Sdf.AssetPath | str | None, prim: Usd.Prim) -> str | None:
+    """Resolve a USD asset reference to a usable path or URL.
+
+    Args:
+        asset: The asset value or asset path authored on a shader input.
+        prim: The prim providing the stage context for relative paths.
+
+    Returns:
+        Absolute path or URL to the asset, or ``None`` when missing.
+    """
+    if asset is None:
+        return None
+    if isinstance(asset, Sdf.AssetPath):
+        if asset.resolvedPath:
+            return asset.resolvedPath
+        asset_path = asset.path
+    else:
+        asset_path = str(asset)
+    if not asset_path:
+        return None
+    if asset_path.startswith(("http://", "https://")):
+        return asset_path
+    if os.path.isabs(asset_path):
+        return asset_path
+    root_layer = prim.GetStage().GetRootLayer()
+    base_dir = None
+    if root_layer is not None:
+        base_dir = os.path.dirname(root_layer.realPath or root_layer.identifier or "")
+    if base_dir:
+        return os.path.abspath(os.path.join(base_dir, asset_path))
+    return asset_path
+
+
+def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> str | None:
+    """Search a shader network for a connected texture asset.
+
+    Args:
+        shader: The shader node to inspect.
+        prim: The prim providing stage context for asset resolution.
+
+    Returns:
+        Resolved texture asset path, or ``None`` if not found.
+    """
+    if shader is None:
+        return None
+    shader_id = shader.GetIdAttr().Get()
+    if shader_id == "UsdUVTexture":
+        file_input = shader.GetInput("file")
+        if file_input:
+            asset = file_input.Get()
+            return _resolve_asset_path(asset, prim)
+        return None
+    if shader_id == "UsdPreviewSurface":
+        for input_name in ("diffuseColor", "baseColor"):
+            shader_input = shader.GetInput(input_name)
+            if shader_input:
+                source = shader_input.GetConnectedSource()
+                if source:
+                    source_shader = UsdShade.Shader(source[0].GetPrim())
+                    texture = _find_texture_in_shader(source_shader, prim)
+                    if texture:
+                        return texture
+    return None
+
+
+def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
+    """Extract material properties from a UsdPreviewSurface shader.
+
+    Args:
+        shader: The UsdPreviewSurface shader node to inspect.
+        prim: The prim providing stage context for asset resolution.
+
+    Returns:
+        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+    """
+    properties: dict[str, Any] = {
+        "color": None,
+        "metallic": None,
+        "roughness": None,
+        "texture": None,
+    }
+    if shader is None:
+        return properties
+    shader_id = shader.GetIdAttr().Get()
+    if shader_id != "UsdPreviewSurface":
+        return properties
+
+    color_input = shader.GetInput("baseColor") or shader.GetInput("diffuseColor")
+    if color_input:
+        source = color_input.GetConnectedSource()
+        if source:
+            source_shader = UsdShade.Shader(source[0].GetPrim())
+            properties["texture"] = _find_texture_in_shader(source_shader, prim)
+        else:
+            color_value = color_input.Get()
+            if color_value is not None:
+                color_np = np.array(color_value, dtype=np.float32)
+                if color_np.size >= 3:
+                    properties["color"] = (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+
+    metallic_input = shader.GetInput("metallic")
+    if metallic_input and metallic_input.GetConnectedSource():
+        warnings.warn(
+            "Metallic texture inputs are not yet supported; using scalar fallback.",
+            stacklevel=2,
+        )
+    elif metallic_input:
+        metallic_value = metallic_input.Get()
+        if metallic_value is not None:
+            properties["metallic"] = float(metallic_value)
+
+    roughness_input = shader.GetInput("roughness")
+    if roughness_input and roughness_input.GetConnectedSource():
+        warnings.warn(
+            "Roughness texture inputs are not yet supported; using scalar fallback.",
+            stacklevel=2,
+        )
+    elif roughness_input:
+        roughness_value = roughness_input.Get()
+        if roughness_value is not None:
+            properties["roughness"] = float(roughness_value)
+
+    return properties
+
+
+def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -> dict[str, Any]:
+    """Extract common material properties from a shader node.
+
+    This routine starts with UsdPreviewSurface parsing and then falls back to
+    common input names used by other shader implementations.
+
+    Args:
+        shader: The shader node to inspect.
+        prim: The prim providing stage context for asset resolution.
+
+    Returns:
+        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+    """
+    properties = _extract_preview_surface_properties(shader, prim)
+    if shader is None:
+        return properties
+    try:
+        if not shader.GetPrim().IsValid():
+            return properties
+    except Exception:
+        return properties
+
+    def _get_input_value(name: str):
+        inp = shader.GetInput(name)
+        if inp is None:
+            return None
+        try:
+            if inp.HasConnectedSource():
+                return None
+        except Exception:
+            return None
+        return inp.Get()
+
+    def _get_input_color(names: tuple[str, ...]):
+        for name in names:
+            value = _get_input_value(name)
+            if value is not None:
+                color_np = np.array(value, dtype=np.float32)
+                if color_np.size >= 3:
+                    return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
+        return None
+
+    def _get_input_float(names: tuple[str, ...]):
+        for name in names:
+            value = _get_input_value(name)
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    if properties["color"] is None:
+        properties["color"] = _get_input_color(
+            ("diffuse_color_constant", "diffuse_color", "base_color", "baseColor")
+        )
+    if properties["metallic"] is None:
+        properties["metallic"] = _get_input_float(("metallic_constant", "metallic"))
+    if properties["roughness"] is None:
+        properties["roughness"] = _get_input_float(
+            ("reflection_roughness_constant", "roughness_constant", "roughness")
+        )
+
+    if properties["texture"] is None:
+        for inp in shader.GetInputs():
+            name = inp.GetBaseName()
+            if inp.HasConnectedSource():
+                source = inp.GetConnectedSource()
+                source_shader = UsdShade.Shader(source[0].GetPrim())
+                texture = _find_texture_in_shader(source_shader, prim)
+                if texture:
+                    properties["texture"] = texture
+                    break
+            elif "file" in name or "texture" in name:
+                asset = inp.Get()
+                if asset:
+                    properties["texture"] = _resolve_asset_path(asset, prim)
+                    break
+
+    return properties
+
+
+def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
+    """Resolve surface material properties bound to a prim.
+
+    Args:
+        prim: The prim whose bound material should be inspected.
+
+    Returns:
+        Dictionary with ``color``, ``metallic``, ``roughness``, and ``texture``.
+    """
+    if not prim or not prim.IsValid():
+        return {"color": None, "metallic": None, "roughness": None, "texture": None}
+
+    def _get_bound_material(target_prim: Usd.Prim):
+        if not target_prim or not target_prim.IsValid():
+            return None
+        if target_prim.HasAPI(UsdShade.MaterialBindingAPI):
+            binding_api = UsdShade.MaterialBindingAPI(target_prim)
+            bound_material, _ = binding_api.ComputeBoundMaterial()
+            return bound_material
+
+        # Some assets author material:binding relationships without applying MaterialBindingAPI.
+        rels = [rel for rel in target_prim.GetRelationships() if rel.GetName().startswith("material:binding")]
+        if not rels:
+            return None
+        rels.sort(
+            key=lambda rel: 0
+            if rel.GetName() == "material:binding"
+            else 1
+            if rel.GetName() == "material:binding:preview"
+            else 2
+        )
+        for rel in rels:
+            targets = rel.GetTargets()
+            if targets:
+                mat_prim = target_prim.GetStage().GetPrimAtPath(targets[0])
+                if mat_prim and mat_prim.IsValid():
+                    return UsdShade.Material(mat_prim)
+        return None
+
+    material = _get_bound_material(prim)
+    if not material:
+        proto_prim = None
+        try:
+            if prim.IsInstanceProxy():
+                proto_prim = prim.GetPrimInPrototype()
+            elif prim.IsInstance():
+                proto_prim = prim.GetPrototype()
+        except Exception:
+            proto_prim = None
+        if proto_prim and proto_prim.IsValid():
+            material = _get_bound_material(proto_prim)
+
+    if not material:
+        return {"color": None, "metallic": None, "roughness": None, "texture": None}
+    surface_output = material.GetSurfaceOutput()
+    if not surface_output:
+        surface_output = material.GetOutput("surface")
+    if not surface_output:
+        surface_output = material.GetOutput("mdl:surface")
+
+    source_shader = None
+    if surface_output:
+        source = surface_output.GetConnectedSource()
+        if source:
+            source_shader = UsdShade.Shader(source[0].GetPrim())
+
+    if source_shader is None:
+        # Fallback: scan material children for a shader node (MDL-style materials).
+        for child in material.GetPrim().GetChildren():
+            if child.IsA(UsdShade.Shader):
+                source_shader = UsdShade.Shader(child)
+                break
+
+    if source_shader is None:
+        return {"color": None, "metallic": None, "roughness": None, "texture": None}
+
+    return _extract_shader_properties(source_shader, prim)
