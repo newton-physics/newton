@@ -4750,6 +4750,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         joint_prim.CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Double, True).Set(5.0)
 
         builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
         model = builder.finalize()
 

@@ -289,11 +289,19 @@ class SchemaResolverMjc(SchemaResolver):
         },
     }
 
-    def register_custom_attributes(self, builder: ModelBuilder) -> None:
+    def validate_custom_attributes(self, builder: ModelBuilder) -> None:
         """
-        Register MuJoCo-specific custom attributes on the builder.
+        Validate that MuJoCo custom attributes have been registered on the builder.
 
+        Users must call :meth:`SolverMuJoCo.register_custom_attributes` before parsing
+        USD files with this resolver.
+
+        Raises:
+            RuntimeError: If required MuJoCo custom attributes are not registered.
         """
-        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
-
-        SolverMuJoCo.register_custom_attributes(builder)
+        has_mujoco_attrs = any(attr.namespace == "mujoco" for attr in builder.custom_attributes.values())
+        if not has_mujoco_attrs:
+            raise RuntimeError(
+                "MuJoCo custom attributes not registered. "
+                "Call SolverMuJoCo.register_custom_attributes(builder) before parsing USD with SchemaResolverMjc."
+            )

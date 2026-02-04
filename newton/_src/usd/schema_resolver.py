@@ -146,15 +146,15 @@ class SchemaResolver:
         merged.update(prim_solver_attrs)
         return merged
 
-    def register_custom_attributes(self, builder: ModelBuilder) -> None:
+    def validate_custom_attributes(self, builder: ModelBuilder) -> None:
         """
-        Register solver-specific custom attributes on the builder.
+        Validate that solver-specific custom attributes are registered on the builder.
 
-        Override in subclasses to declare custom attributes needed for this schema.
-        Called by parse_usd() before processing entities.
+        Override in subclasses to check that required custom attributes have been
+        registered before parsing. Called by parse_usd() before processing entities.
 
         Args:
-            builder: The ModelBuilder to register custom attributes on.
+            builder: The ModelBuilder to validate custom attributes on.
         """
         pass
 
