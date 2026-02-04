@@ -1012,6 +1012,17 @@ class SolverMuJoCo(SolverBase):
                 mjcf_value_transformer=parse_limited,
             )
         )
+        # Tendon names (string attribute - stored as list[str], not warp array)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_key",
+                frequency="tendon",
+                dtype=str,
+                default="",
+                namespace="mujoco",
+                mjcf_attribute_name="name",
+            )
+        )
 
         # Joint arrays (one entry per joint in a fixed tendon's linear combination)
         builder.add_custom_attribute(

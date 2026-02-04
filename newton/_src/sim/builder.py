@@ -374,7 +374,8 @@ class ModelBuilder:
         """Variable name to expose on the Model. Must be a valid Python identifier."""
 
         dtype: type
-        """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
+        """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays,
+        or ``str`` for string attributes that remain as Python lists."""
 
         frequency: Model.AttributeFrequency | str
         """Frequency category that determines how the attribute is indexed in the Model.
@@ -439,13 +440,13 @@ class ModelBuilder:
 
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
-            # ensure dtype is a valid Warp dtype
-            try:
-                _size = wp.types.type_size_in_bytes(self.dtype)
-            except TypeError as e:
-                raise ValueError(
-                    f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype that is compatible with Warp arrays."
-                ) from e
+            # Allow str dtype for string attributes (stored as Python lists, not warp arrays)
+            if self.dtype is not str:
+                # ensure dtype is a valid Warp dtype
+                try:
+                    _size = wp.types.type_size_in_bytes(self.dtype)
+                except TypeError as e:
+                    raise ValueError(f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype or str.") from e
 
             # Set dtype-specific default value if none was provided
             if self.default is None:
@@ -464,6 +465,9 @@ class ModelBuilder:
         @staticmethod
         def _default_for_dtype(dtype: object) -> Any:
             """Get default value for dtype when not specified."""
+            # string type gets empty string
+            if dtype is str:
+                return ""
             # quaternions get identity quaternion
             if wp.types.type_is_quaternion(dtype):
                 return wp.quat_identity(dtype._wp_scalar_type_)
@@ -512,8 +516,13 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
-        def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
-            """Build wp.array from count, dtype, default and overrides."""
+        def build_array(
+            self, count: int, device: Devicelike | None = None, requires_grad: bool = False
+        ) -> wp.array | list:
+            """Build wp.array (or list for string dtype) from count, dtype, default and overrides.
+
+            For string dtype, returns a Python list[str] instead of a Warp array.
+            """
             if self.values is None or len(self.values) == 0:
                 # No values provided, use default for all
                 arr = [self.default] * count
@@ -525,6 +534,11 @@ class ModelBuilder:
             else:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
                 arr = [self.values.get(i, self.default) for i in range(count)]
+
+            # String dtype: return as Python list instead of warp array
+            if self.dtype is str:
+                return arr
+
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -7285,8 +7299,8 @@ class ModelBuilder:
                 if count == 0:
                     continue
 
-                wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
-                m.add_attribute(custom_attr.name, wp_arr, freq_key, custom_attr.assignment, custom_attr.namespace)
+                result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
+                m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
             return m
 
