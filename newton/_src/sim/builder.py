@@ -7332,7 +7332,9 @@ class ModelBuilder:
             return self.add_joint(**joint_params)
         elif floating is True or (floating is None and parent == -1):
             # FREE joint (floating=True always requires parent==-1, validated above)
-            return self.add_joint_free(child, parent_xform=parent_xform, key=key)
+            # Note: We don't pass parent_xform here because add_joint_free initializes joint_q from body_q[child]
+            # and the caller (e.g., URDF importer) will set the correct joint_q values afterward
+            return self.add_joint_free(child, key=key)
         else:
             # FIXED joint (floating=False or floating=None with parent body)
             return self.add_joint_fixed(parent, child, parent_xform, child_xform, key=key)
