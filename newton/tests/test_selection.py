@@ -374,32 +374,41 @@ class TestSelection(unittest.TestCase):
 </mujoco>
 """
         num_links_per_articulation = 4
-        num_articulations_per_world = 1
+        num_articulations_per_world = 2
         num_worlds = 3
         num_links = num_links_per_articulation * num_articulations_per_world * num_worlds
 
         # Create a single articulation
-        individual_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(individual_builder)
-        individual_builder.add_mjcf(mjcf)
+        single_articuation_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(single_articuation_builder)
+        single_articuation_builder.add_mjcf(mjcf)
 
-        # Create 3 worlds with a single articulation per world.
+        # Create a world with 2 articulations
+        single_world_builder = newton.ModelBuilder()
+        for _i in range(0, num_articulations_per_world):
+            single_world_builder.add_builder(single_articuation_builder)
+
+        # Customise the articulation keys in single_world_builder
+        single_world_builder.articulation_key[0] = "art0"
+        single_world_builder.articulation_key[1] = "art1"
+
+        # Create 3 worlds with 2 articulations per world and 4 links per articulation.
         builder = newton.ModelBuilder()
         for _i in range(0, num_worlds):
-            builder.add_world(individual_builder)
+            builder.add_world(single_world_builder)
 
         # Create the model
         model = builder.finalize()
 
-        # create a view of "link1" and "link2" by excluding "root" and "link3"
+        # create a view of art0/"link1" and art0/"link2" by excluding "root" and "link3"
         links_to_exclude = ["root", "link3"]
-        link_view = ArticulationView(model, "myart", exclude_links=links_to_exclude)
+        link_view = ArticulationView(model, "art0", exclude_links=links_to_exclude)
 
-        # Get the attributes associated with "link1" and "link2"
+        # Get the attributes associated with "art0/link1" and "art0/link2"
         link_masses = link_view.get_attribute("body_mass", model).numpy()
         link_vels = link_view.get_attribute("body_qd", model).numpy()
 
-        # Modify the attributes associated with "link1" and "link2"
+        # Modify the attributes associated with "art0/link1" and "art0/link2"
         val = 1.0
         for world_idx in range(link_masses.shape[0]):
             for arti_idx in range(link_masses.shape[1]):
@@ -417,37 +426,78 @@ class TestSelection(unittest.TestCase):
         expected_body_masses = []
         expected_body_vels = []
         if use_mask:
-            expected_body_masses = [0.01, 0.01, 0.01, 0.01, 0.01, 3.01, 4.01, 0.01, 0.01, 0.01, 0.01, 0.01]
+            expected_body_masses = [
+                #root link1 link2 link3
+                0.01, 0.01, 0.01, 0.01, #world0/artic0 
+                0.01, 0.01, 0.01, 0.01, #world0/artic1
+                0.01, 3.01, 4.01, 0.01, #world1/artic0
+                0.01, 0.01, 0.01, 0.01, #world1/artic1
+                0.01, 0.01, 0.01, 0.01, #world2/artic0
+                0.01, 0.01, 0.01, 0.01] #world2/artic1
             expected_body_vels = [
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],
-                [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            ]
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic0/root
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic0/link1
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic0/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic0/link3
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic1/root
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic1/link1
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic1/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic1/link3
 
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic0/root
+                [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],#world1/artic0/link1
+                [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],#world1/artic0/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic0/link3
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic1/root
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic1/link1
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic1/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic1/link3
+
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic0/root
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic0/link1
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic0/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic0/link3
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic1/root
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic1/link1
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic1/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic1/link3
+            ]
         else:
-            expected_body_masses = [0.01, 1.01, 2.01, 0.01, 0.01, 3.01, 4.01, 0.01, 0.01, 5.01, 6.01, 0.01]
+            expected_body_masses = [
+                #root link1 link2 link3
+                0.01, 1.01, 2.01, 0.01,     #world0/artic0 
+                0.01, 0.01, 0.01, 0.01,     #world0/artic1
+                0.01, 3.01, 4.01, 0.01,     #world1/artic0
+                0.01, 0.01, 0.01, 0.01,     #world1/artic1
+                0.01, 5.01, 6.01, 0.01,     #world2/artic0
+                0.01, 0.01, 0.01, 0.01]     #world2/artic1
             expected_body_vels = [
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-                [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],
-                [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],
-                [6.0, 6.0, 6.0, 6.0, 6.0, 6.0],
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic0/root
+                [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],#world0/artic0/link1
+                [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],#world0/artic0/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic0/link3
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic1/root
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic1/link1
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic1/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world0/artic1/link3
+
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic0/root
+                [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],#world1/artic0/link1
+                [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],#world1/artic0/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic0/link3
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic1/root
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic1/link1
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic1/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world1/artic1/link3
+
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic0/root
+                [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],#world2/artic0/link1
+                [6.0, 6.0, 6.0, 6.0, 6.0, 6.0],#world2/artic0/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic0/link3
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic1/root
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic1/link1
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic1/link2
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],#world2/artic1/link3
             ]
 
         # Get the updated body masses
