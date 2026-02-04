@@ -5260,7 +5260,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         assert np.allclose(solver.mjc_eq_to_newton_jnt.numpy(), expected_eq_to_newton_jnt)
 
 
-class TestMuJoCoSolverInitialPositions(unittest.TestCase):
+class TestMuJoCoSolverReferencePositions(unittest.TestCase):
     """Test qpos0 synchronization from Newton model.joint_q."""
 
     def test_qpos0_multiworld_sync(self):
@@ -5301,7 +5301,7 @@ class TestMuJoCoSolverInitialPositions(unittest.TestCase):
         model.joint_q.assign(joint_q_np)
 
         # Notify solver to sync to qpos0
-        solver.notify_model_changed(SolverNotifyFlags.INITIAL_POSITIONS)
+        solver.notify_model_changed(SolverNotifyFlags.REFERENCE_POSITIONS)
 
         # Verify qpos0 per world
         qpos0 = solver.mjw_model.qpos0.numpy()
@@ -5360,7 +5360,7 @@ class TestMuJoCoSolverInitialPositions(unittest.TestCase):
         model.joint_q.assign(joint_q_np)
 
         # Notify solver to sync to qpos0 and recalculate derived values
-        solver.notify_model_changed(SolverNotifyFlags.INITIAL_POSITIONS)
+        solver.notify_model_changed(SolverNotifyFlags.REFERENCE_POSITIONS)
 
         # Verify tendon_length0 is now different per world
         # tendon_length0 = coef * qpos0 = 1.0 * joint_q
@@ -5400,7 +5400,7 @@ class TestMuJoCoSolverInitialPositions(unittest.TestCase):
         model.joint_q.assign(joint_q_np)
 
         # Notify solver to sync to qpos0
-        solver.notify_model_changed(SolverNotifyFlags.INITIAL_POSITIONS)
+        solver.notify_model_changed(SolverNotifyFlags.REFERENCE_POSITIONS)
 
         # Verify qpos0 in CPU mj_model
         self.assertAlmostEqual(solver.mj_model.qpos0[0], 0.75, places=5)

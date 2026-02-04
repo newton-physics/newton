@@ -1854,7 +1854,7 @@ class SolverMuJoCo(SolverBase):
             self.update_tendon_properties()
         if flags & SolverNotifyFlags.ACTUATOR_PROPERTIES:
             self.update_actuator_properties()
-        if flags & SolverNotifyFlags.INITIAL_POSITIONS:
+        if flags & SolverNotifyFlags.REFERENCE_POSITIONS:
             self.update_initial_positions()
 
     def update_initial_positions(self):
