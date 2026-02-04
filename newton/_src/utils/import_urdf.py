@@ -682,7 +682,7 @@ def parse_urdf(
         # When parent_body is set, xform is interpreted as relative to the parent body
         base_parent_xform = wp.transform(xform.p, wp.quat_identity())
         base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
-        base_joint_id = builder.add_base_joint(
+        base_joint_id = builder._add_base_joint(
             child=root,
             base_joint=base_joint,
             key="base_joint",
@@ -693,7 +693,7 @@ def parse_urdf(
         joint_indices.append(base_joint_id)
     elif floating and base_parent == -1:
         # floating=True only makes sense when connecting to world
-        floating_joint_id = builder.add_base_joint(
+        floating_joint_id = builder._add_base_joint(
             child=root,
             floating=True,
             key="floating_base",
@@ -717,7 +717,7 @@ def parse_urdf(
         # Fixed joint to world or to parent_body
         # When parent_body is set, xform is interpreted as relative to the parent body
         joint_indices.append(
-            builder.add_base_joint(
+            builder._add_base_joint(
                 child=root,
                 floating=False,
                 key="fixed_base",

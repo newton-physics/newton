@@ -116,7 +116,7 @@ def Xform "Root" (
             body = UsdGeom.Cube.Define(stage, path)
             UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
             # Adding CollisionAPI triggers mass computation from geometry (density * volume).
-            # Bodies need positive mass to receive base joints from add_base_joints_to_floating_bodies.
+            # Bodies need positive mass to receive base joints from _add_base_joints_to_floating_bodies.
             UsdPhysics.CollisionAPI.Apply(body.GetPrim())
             return body
 
@@ -2232,8 +2232,8 @@ def Xform "Root" (
             int(ActuatorMode.VELOCITY),
         )
 
-    def test_add_base_joints_to_floating_bodies_default(self):
-        """Test add_base_joints_to_floating_bodies with default parameters creates free joints."""
+    def test__add_base_joints_to_floating_bodies_default(self):
+        """Test _add_base_joints_to_floating_bodies with default parameters creates free joints."""
         builder = newton.ModelBuilder()
 
         # Create two bodies at different positions using add_link (no auto joint)
@@ -2245,21 +2245,21 @@ def Xform "Root" (
         builder.add_shape_box(body1, hx=0.5, hy=0.5, hz=0.5)
 
         # Call the method with default parameters
-        builder.add_base_joints_to_floating_bodies([body0, body1])
+        builder._add_base_joints_to_floating_bodies([body0, body1])
 
         self.assertEqual(builder.joint_count, 2)
         self.assertEqual(builder.joint_type.count(newton.JointType.FREE), 2)
         self.assertEqual(builder.articulation_count, 2)
 
-    def test_add_base_joints_to_floating_bodies_fixed(self):
-        """Test add_base_joints_to_floating_bodies with floating=False creates fixed joints."""
+    def test__add_base_joints_to_floating_bodies_fixed(self):
+        """Test _add_base_joints_to_floating_bodies with floating=False creates fixed joints."""
         builder = newton.ModelBuilder()
 
         # Use add_link to create body without auto joint
         body0 = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
         builder.add_shape_box(body0, hx=0.5, hy=0.5, hz=0.5)
 
-        builder.add_base_joints_to_floating_bodies([body0], floating=False)
+        builder._add_base_joints_to_floating_bodies([body0], floating=False)
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[0], newton.JointType.FIXED)
@@ -2269,15 +2269,15 @@ def Xform "Root" (
         parent_xform = builder.joint_X_p[0]
         assert_np_equal(np.array(parent_xform.p), np.array([0.0, 0.0, 1.0]), tol=1e-6)
 
-    def test_add_base_joints_to_floating_bodies_base_joint_string(self):
-        """Test add_base_joints_to_floating_bodies with base_joint string creates D6 joints."""
+    def test__add_base_joints_to_floating_bodies_base_joint_string(self):
+        """Test _add_base_joints_to_floating_bodies with base_joint string creates D6 joints."""
         builder = newton.ModelBuilder()
 
         # Use add_link to create body without auto joint
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.add_shape_box(body0, hx=0.5, hy=0.5, hz=0.5)
 
-        builder.add_base_joints_to_floating_bodies([body0], base_joint="px,py,rz")
+        builder._add_base_joints_to_floating_bodies([body0], base_joint="px,py,rz")
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[0], newton.JointType.D6)
@@ -2288,8 +2288,8 @@ def Xform "Root" (
         parent_xform = builder.joint_X_p[0]
         assert_np_equal(np.array(parent_xform.p), np.array([1.0, 2.0, 3.0]), tol=1e-6)
 
-    def test_add_base_joints_to_floating_bodies_base_joint_dict(self):
-        """Test add_base_joints_to_floating_bodies with base_joint dict creates specified joint."""
+    def test__add_base_joints_to_floating_bodies_base_joint_dict(self):
+        """Test _add_base_joints_to_floating_bodies with base_joint dict creates specified joint."""
         builder = newton.ModelBuilder()
 
         # Use add_link to create body without auto joint
@@ -2297,7 +2297,7 @@ def Xform "Root" (
         builder.add_shape_box(body0, hx=0.5, hy=0.5, hz=0.5)
 
         # Use angular_axes with JointDofConfig for revolute joint
-        builder.add_base_joints_to_floating_bodies(
+        builder._add_base_joints_to_floating_bodies(
             [body0],
             base_joint={
                 "joint_type": newton.JointType.REVOLUTE,
@@ -2310,8 +2310,8 @@ def Xform "Root" (
         self.assertEqual(builder.joint_dof_count, 1)
         self.assertEqual(builder.articulation_count, 1)
 
-    def test_add_base_joints_to_floating_bodies_skips_connected(self):
-        """Test that add_base_joints_to_floating_bodies skips bodies already connected as children."""
+    def test__add_base_joints_to_floating_bodies_skips_connected(self):
+        """Test that _add_base_joints_to_floating_bodies skips bodies already connected as children."""
         builder = newton.ModelBuilder()
 
         # Create parent and child bodies using add_link (no auto joint)
@@ -2324,23 +2324,23 @@ def Xform "Root" (
         joint = builder.add_joint_revolute(parent, child, axis=(0, 0, 1))
         builder.add_articulation([joint])
 
-        # Now call add_base_joints_to_floating_bodies - only parent should get a joint
-        builder.add_base_joints_to_floating_bodies([parent, child], floating=False)
+        # Now call _add_base_joints_to_floating_bodies - only parent should get a joint
+        builder._add_base_joints_to_floating_bodies([parent, child], floating=False)
 
         # Should have 2 joints total: 1 revolute + 1 fixed for parent
         self.assertEqual(builder.joint_count, 2)
         self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 1)
         self.assertEqual(builder.joint_type.count(newton.JointType.FIXED), 1)
 
-    def test_add_base_joints_to_floating_bodies_skips_zero_mass(self):
-        """Test that add_base_joints_to_floating_bodies skips bodies with zero mass."""
+    def test__add_base_joints_to_floating_bodies_skips_zero_mass(self):
+        """Test that _add_base_joints_to_floating_bodies skips bodies with zero mass."""
         builder = newton.ModelBuilder()
 
         # Create a body with zero mass using add_link (no auto joint, no shapes)
         body0 = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
         # Don't add any shapes, so mass stays at 0
 
-        builder.add_base_joints_to_floating_bodies([body0])
+        builder._add_base_joints_to_floating_bodies([body0])
 
         # No joints should be created for zero mass bodies
         self.assertEqual(builder.joint_count, 0)
@@ -2352,7 +2352,7 @@ def Xform "Root" (
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0  # Set mass
 
-        joint_id = builder.add_base_joint(body0)
+        joint_id = builder._add_base_joint(body0)
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FREE)
@@ -2365,7 +2365,7 @@ def Xform "Root" (
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
 
-        joint_id = builder.add_base_joint(body0, floating=False)
+        joint_id = builder._add_base_joint(body0, floating=False)
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
@@ -2378,7 +2378,7 @@ def Xform "Root" (
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
 
-        joint_id = builder.add_base_joint(body0, base_joint="px,py,rz")
+        joint_id = builder._add_base_joint(body0, base_joint="px,py,rz")
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.D6)
@@ -2391,7 +2391,7 @@ def Xform "Root" (
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
 
-        joint_id = builder.add_base_joint(
+        joint_id = builder._add_base_joint(
             body0,
             base_joint={
                 "joint_type": newton.JointType.REVOLUTE,
@@ -2410,7 +2410,7 @@ def Xform "Root" (
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
 
-        joint_id = builder.add_base_joint(body0, key="my_custom_joint")
+        joint_id = builder._add_base_joint(body0, key="my_custom_joint")
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_key[joint_id], "my_custom_joint")

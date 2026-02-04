@@ -1375,7 +1375,7 @@ def parse_usd(
                             parent_xform = (
                                 wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
                             )
-                        joint_id = builder.add_base_joint(
+                        joint_id = builder._add_base_joint(
                             child_body_id,
                             floating=floating,
                             base_joint=base_joint,
@@ -1398,7 +1398,7 @@ def parse_usd(
                             parent_xform = (
                                 wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
                             )
-                        joint_id = builder.add_base_joint(
+                        joint_id = builder._add_base_joint(
                             child_body_id,
                             floating=floating,
                             base_joint=base_joint,
@@ -1466,7 +1466,7 @@ def parse_usd(
                     parent_xform = None
                     if base_parent != -1:
                         parent_xform = wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
-                    base_joint_id = builder.add_base_joint(
+                    base_joint_id = builder._add_base_joint(
                         child_body_id,
                         floating=floating,
                         base_joint=base_joint,
@@ -1499,7 +1499,7 @@ def parse_usd(
                             else:
                                 # body_q is already in world space, use it directly
                                 parent_xform = builder.body_q[child_body_id]
-                            base_joint_id = builder.add_base_joint(
+                            base_joint_id = builder._add_base_joint(
                                 child_body_id,
                                 floating=floating,
                                 base_joint=base_joint,
@@ -1558,7 +1558,7 @@ def parse_usd(
     )
 
     # insert remaining bodies that were not part of any articulation so far
-    # (joints for these bodies will be added later by add_base_joints_to_floating_bodies)
+    # (joints for these bodies will be added later by _add_base_joints_to_floating_bodies)
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
         body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
@@ -1928,7 +1928,7 @@ def parse_usd(
                     continue  # Skip static bodies
                 # Compute parent_xform to preserve imported pose when attaching to parent_body
                 parent_xform = wp.transform_inverse(builder.body_q[parent_body]) * builder.body_q[body_id]
-                joint_id = builder.add_base_joint(
+                joint_id = builder._add_base_joint(
                     body_id,
                     floating=floating,
                     base_joint=base_joint,
@@ -1942,7 +1942,7 @@ def parse_usd(
                     articulation_key=None,
                 )
         else:
-            builder.add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
+            builder._add_base_joints_to_floating_bodies(new_bodies, floating=floating, base_joint=base_joint)
 
     # collapsing fixed joints to reduce the number of simulated bodies connected by fixed joints.
     collapse_results = None

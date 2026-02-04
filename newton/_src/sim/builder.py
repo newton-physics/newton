@@ -7150,6 +7150,7 @@ class ModelBuilder:
             ValueError: If parameter combinations are invalid:
                 - Both floating and base_joint are specified (mutually exclusive)
                 - floating=True with parent != -1 (FREE joints require world frame)
+                - base_joint dict contains conflicting keys like 'parent', 'child', etc.
         """
         if floating is not None and base_joint is not None:
             base_joint_str = base_joint if isinstance(base_joint, str) else "{dict}"
@@ -7169,6 +7170,20 @@ class ModelBuilder:
                 f"  - Use floating=False to create FIXED joint to parent\n"
                 f"  - Use base_joint='px,py,pz,rx,ry,rz' for 6-DOF mobility attached to parent"
             )
+
+        # Validate base_joint dict doesn't contain conflicting keys
+        if isinstance(base_joint, dict):
+            conflicting_keys = set(base_joint.keys()) & {"parent", "child", "parent_xform", "child_xform"}
+            if conflicting_keys:
+                raise ValueError(
+                    f"base_joint dict cannot specify {conflicting_keys}. "
+                    f"These parameters are automatically set based on parent_body and attachment:\n"
+                    f"  - 'parent' is set from parent_body parameter (currently {parent})\n"
+                    f"  - 'child' is set to the imported root body\n"
+                    f"  - 'parent_xform' and 'child_xform' are set from xform parameter\n"
+                    f"Please remove {conflicting_keys} from the base_joint dict and use the "
+                    f"parent_body argument instead."
+                )
 
     def _check_sequential_composition(self, parent_body: int) -> int | None:
         """
@@ -7341,12 +7356,12 @@ class ModelBuilder:
                 key=key,
             )
         elif isinstance(base_joint, dict):
-            # Check for conflicting keys that will be overwritten
+            # Defensive check for conflicting keys (should have been caught by _validate_base_joint_params)
             conflicting_keys = set(base_joint.keys()) & {"parent", "child", "parent_xform", "child_xform"}
             if conflicting_keys:
                 raise ValueError(
                     f"base_joint dict cannot specify {conflicting_keys}. "
-                    f"These parameters are automatically set based on the attachment. "
+                    f"These parameters are automatically set based on parent_body and attachment. "
                     f"Remove these keys from the base_joint dict."
                 )
 
@@ -7361,7 +7376,7 @@ class ModelBuilder:
         else:
             raise ValueError(f"base_joint must be a string or dict, got {type(base_joint).__name__}")
 
-    def add_base_joint(
+    def _add_base_joint(
         self,
         child: int,
         floating: bool | None = None,
@@ -7464,7 +7479,7 @@ class ModelBuilder:
 
         return joint_id
 
-    def add_base_joints_to_floating_bodies(
+    def _add_base_joints_to_floating_bodies(
         self,
         new_bodies: Iterable[int] | None = None,
         floating: bool | None = None,
@@ -7499,7 +7514,7 @@ class ModelBuilder:
             if self.body_mass[body_id] <= 0:
                 continue
 
-            joint = self.add_base_joint(body_id, floating=floating, base_joint=base_joint)
+            joint = self._add_base_joint(body_id, floating=floating, base_joint=base_joint)
             # Use body key as articulation key for single-body articulations
             self.add_articulation([joint], key=self.body_key[body_id])
 

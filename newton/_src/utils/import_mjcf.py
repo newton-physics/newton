@@ -1235,7 +1235,7 @@ def parse_mjcf(
                 base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
                 base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
                 joint_indices.append(
-                    builder.add_base_joint(
+                    builder._add_base_joint(
                         child=link,
                         base_joint=base_joint,
                         key="base_joint",
@@ -1247,13 +1247,13 @@ def parse_mjcf(
             elif floating is not None and floating and parent == -1:
                 # floating=True only makes sense when connecting to world
                 joint_indices.append(
-                    builder.add_base_joint(child=link, floating=True, key="floating_base", parent=parent)
+                    builder._add_base_joint(child=link, floating=True, key="floating_base", parent=parent)
                 )
             else:
                 # Fixed joint to world or to parent_body
                 # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
                 joint_indices.append(
-                    builder.add_base_joint(
+                    builder._add_base_joint(
                         child=link, floating=False, key="fixed_base", parent_xform=_xform, parent=parent
                     )
                 )

@@ -690,6 +690,57 @@ class TestImportUrdf(unittest.TestCase):
             self.parse_urdf(urdf_content, builder, floating=True, base_joint="px,py", up_axis="Z")
         self.assertIn("both 'floating' and 'base_joint'", str(cm.exception))
 
+    def test_base_joint_dict_with_conflicting_parent(self):
+        """Test that base_joint dict with 'parent' key raises an error."""
+        urdf_content = """<?xml version="1.0" encoding="utf-8"?>
+<robot name="test_base_joint_dict_parent">
+    <link name="base_link">
+        <inertial>
+            <mass value="1.0"/>
+            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
+        </inertial>
+        <visual>
+            <geometry><sphere radius="0.1"/></geometry>
+        </visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        # Test with 'parent' key in base_joint dict
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(
+                urdf_content,
+                builder,
+                base_joint={"joint_type": newton.JointType.REVOLUTE, "parent": 0},
+                up_axis="Z",
+            )
+        self.assertIn("base_joint dict cannot specify", str(cm.exception))
+        self.assertIn("parent", str(cm.exception))
+
+        # Test with 'child' key
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(
+                urdf_content,
+                builder,
+                base_joint={"joint_type": newton.JointType.REVOLUTE, "child": 0},
+                up_axis="Z",
+            )
+        self.assertIn("base_joint dict cannot specify", str(cm.exception))
+        self.assertIn("child", str(cm.exception))
+
+        # Test with 'parent_xform' key
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as cm:
+            self.parse_urdf(
+                urdf_content,
+                builder,
+                base_joint={"joint_type": newton.JointType.REVOLUTE, "parent_xform": wp.transform_identity()},
+                up_axis="Z",
+            )
+        self.assertIn("base_joint dict cannot specify", str(cm.exception))
+        self.assertIn("parent_xform", str(cm.exception))
+
     def test_base_joint_respects_import_xform(self):
         """Test that base joints (parent == -1) correctly use the import xform.
 
