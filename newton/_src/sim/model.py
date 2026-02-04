@@ -849,7 +849,7 @@ class Model:
     def add_attribute(
         self,
         name: str,
-        attrib: wp.array,
+        attrib: wp.array | list,
         frequency: Model.AttributeFrequency | str,
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
@@ -859,7 +859,8 @@ class Model:
 
         Args:
             name (str): Name of the attribute.
-            attrib (wp.array): The array to add as an attribute.
+            attrib (wp.array | list): The array to add as an attribute. Can be a wp.array for
+                numeric types or a list for string attributes.
             frequency (Model.AttributeFrequency | str): The frequency of the attribute.
                 Can be a Model.AttributeFrequency enum value or a string for custom frequencies.
             assignment (Model.AttributeAssignment, optional): The assignment category using Model.AttributeAssignment enum.
@@ -869,12 +870,9 @@ class Model:
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
 
         Raises:
-            TypeError: If the attribute is not a wp.array.
             AttributeError: If the attribute already exists or is on the wrong device.
         """
-        if not isinstance(attrib, wp.array):
-            raise TypeError(f"Attribute '{name}' must be a wp.array")
-        if attrib.device != self.device:
+        if isinstance(attrib, wp.array) and attrib.device != self.device:
             raise AttributeError(f"Attribute '{name}' device mismatch (model={self.device}, got={attrib.device})")
 
         # Handle namespaced attributes

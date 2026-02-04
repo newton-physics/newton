@@ -1630,19 +1630,14 @@ def parse_mjcf(
         and attr.name not in ("tendon_world", "tendon_joint_adr", "tendon_joint_num", "tendon_joint", "tendon_coef")
     ]
 
-    def parse_tendons(tendon_section, tendon_counter: int) -> int:
+    def parse_tendons(tendon_section):
         """Parse tendons from a tendon section.
 
         Args:
             tendon_section: XML element containing tendon definitions.
-            tendon_counter: Running counter for stable tendon indices.
-
-        Returns:
-            Updated tendon counter after processing all tendons in this section.
         """
         for fixed in tendon_section.findall("fixed"):
             tendon_name = fixed.attrib.get("name", "")
-            tendon_idx = tendon_counter
 
             # Parse joint elements within this fixed tendon
             joint_entries = []
@@ -1699,19 +1694,16 @@ def parse_mjcf(
             for attr in builder_custom_attr_tendon:
                 tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
 
-            builder.add_custom_values(**tendon_values)
+            indices = builder.add_custom_values(**tendon_values)
 
-            # Track tendon name for actuator resolution and index-to-name mapping
-            sanitized_name = sanitize_name(tendon_name) if tendon_name else f"tendon_{tendon_idx}"
-            tendon_name_to_idx[sanitized_name] = tendon_idx
+            # Track tendon name for actuator resolution (get index from add_custom_values return)
+            if tendon_name:
+                tendon_idx = indices.get("mujoco:tendon_world", 0)
+                tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
 
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
                 print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
-
-            tendon_counter += 1
-
-        return tendon_counter
 
     # -----------------
     # parse actuators
@@ -1912,25 +1904,10 @@ def parse_mjcf(
     # Only parse tendons if custom tendon attributes are registered
     has_tendon_attrs = "mujoco:tendon_world" in builder.custom_attributes
     if has_tendon_attrs:
-        # Compute base index from existing tendons (for multiple add_mjcf calls)
-        tendon_world_attr = builder.custom_attributes.get("mujoco:tendon_world")
-        tendon_base_idx = len(tendon_world_attr.values) if tendon_world_attr and tendon_world_attr.values else 0
-
         # Find all sections marked <tendon></tendon>
         tendon_sections = root.findall(".//tendon")
-        tendon_counter = tendon_base_idx
         for tendon_section in tendon_sections:
-            tendon_counter = parse_tendons(tendon_section, tendon_counter)
-
-        # Store tendon names on builder.mujoco.tendon_key for transfer to model during finalize()
-        # (Custom attributes don't support string types, so we store as a plain list)
-        if tendon_name_to_idx:
-            tendon_key = [name for name, _ in sorted(tendon_name_to_idx.items(), key=lambda x: x[1])]
-            if not hasattr(builder, "mujoco"):
-                builder.mujoco = Model.AttributeNamespace("mujoco")
-            if not hasattr(builder.mujoco, "tendon_key"):
-                builder.mujoco.tendon_key = []
-            builder.mujoco.tendon_key.extend(tendon_key)
+            parse_tendons(tendon_section)
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:
