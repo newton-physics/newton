@@ -174,7 +174,18 @@ class Model:
         self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
         self.particle_world_start = None
-        """Start index of the first particle per world, shape [num_worlds + 2], int."""
+        """Start index of the first particle per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the particles belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global particles (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total particle count.
+
+        The number of particles in a given world `w` can be computed as:
+            `num_particles_in_world = particle_world_start[w + 1] - particle_world_start[w]`.
+
+        The total number of global particles can be computed as:
+            `num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]`.
+        """
 
         self.shape_key = []
         """List of keys for each shape."""
@@ -238,7 +249,18 @@ class Model:
         self.shape_world = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start = None
-        """Start index of the first shape per world, shape [num_worlds + 2], int."""
+        """Start index of the first shape per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the shapes belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global shapes (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total shape count.
+
+        The number of shapes in a given world `w` can be computed as:
+            `num_shapes_in_world = shape_world_start[w + 1] - shape_world_start[w]`.
+
+        The total number of global shapes can be computed as:
+            `num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]`.
+        """
 
         # Mesh SDF storage
         self.shape_sdf_data = None
@@ -336,7 +358,18 @@ class Model:
         self.body_world = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
         self.body_world_start = None
-        """Start index of the first body per world, shape [num_worlds + 2], int."""
+        """Start index of the first body per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the bodies belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global bodies (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total body count.
+
+        The number of bodies in a given world `w` can be computed as:
+            `num_bodies_in_world = body_world_start[w + 1] - body_world_start[w]`.
+
+        The total number of global bodies can be computed as:
+            `num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]`.
+        """
 
         self.joint_q = None
         """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
@@ -403,13 +436,57 @@ class Model:
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
         self.joint_world_start = None
-        """Start index of the first joint per world, shape [num_worlds + 2], int."""
+        """Start index of the first joint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint count.
+
+        The number of joints in a given world `w` can be computed as:
+            `num_joints_in_world = joint_world_start[w + 1] - joint_world_start[w]`.
+
+        The total number of global joints can be computed as:
+            `num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]`.
+        """
         self.joint_dof_world_start = None
-        """Start index of the first joint degree of freedom per world, shape [num_worlds + 2], int."""
+        """Start index of the first joint degree of freedom per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint DOFs belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint DOFs (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint DOF count.
+
+        The number of joint DOFs in a given world `w` can be computed as:
+            `num_joint_dofs_in_world = joint_dof_world_start[w + 1] - joint_dof_world_start[w]`.
+
+        The total number of global joint DOFs can be computed as:
+            `num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]`.
+        """
         self.joint_coord_world_start = None
-        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int."""
+        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint coordinates belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint coordinates (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint coordinate count.
+
+        The number of joint coordinates in a given world `w` can be computed as:
+            `num_joint_coords_in_world = joint_coord_world_start[w + 1] - joint_coord_world_start[w]`.
+
+        The total number of global joint coordinates can be computed as:
+            `num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]`.
+        """
         self.joint_constraint_world_start = None
-        """Start index of the first joint constraint per world, shape [num_worlds + 2], int."""
+        """Start index of the first joint constraint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint constraints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint constraints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint constraint count.
+
+        The number of joint constraints in a given world `w` can be computed as:
+            `num_joint_constraints_in_world = joint_constraint_world_start[w + 1] - joint_constraint_world_start[w]`.
+
+        The total number of global joint constraints can be computed as:
+            `num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]`.
+        """
 
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
@@ -418,7 +495,18 @@ class Model:
         self.articulation_world = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
         self.articulation_world_start = None
-        """Start index of the first articulation per world, shape [num_worlds + 2], int."""
+        """Start index of the first articulation per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the articulations belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global articulations (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total articulation count.
+
+        The number of articulations in a given world `w` can be computed as:
+            `num_articulations_in_world = articulation_world_start[w + 1] - articulation_world_start[w]`.
+
+        The total number of global articulations can be computed as:
+            `num_global_articulations = articulation_world_start[-1] - articulation_world_start[-2] + articulation_world_start[0]`.
+        """
         self.max_joints_per_articulation = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
 
@@ -468,7 +556,18 @@ class Model:
         self.equality_constraint_world = None
         """World index for each constraint, shape [equality_constraint_count], int."""
         self.equality_constraint_world_start = None
-        """Start index of the first equality constraint per world, shape [num_worlds + 2], int."""
+        """Start index of the first equality constraint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the equality constraints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global equality constraints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total equality constraint count.
+
+        The number of equality constraints in a given world `w` can be computed as:
+            `num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]`.
+
+        The total number of global equality constraints can be computed as:
+            `num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]`.
+        """
 
         self.particle_count = 0
         """Total number of particles in the system."""
