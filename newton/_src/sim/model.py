@@ -173,6 +173,8 @@ class Model:
         """Maximum particle velocity (to prevent instability)."""
         self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
+        self.particle_world_start = None
+        """Start index of the first particle per world, shape [num_worlds + 2], int."""
 
         self.shape_key = []
         """List of keys for each shape."""
@@ -235,6 +237,8 @@ class Model:
         """Number of shape contact pairs."""
         self.shape_world = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
+        self.shape_world_start = None
+        """Start index of the first shape per world, shape [num_worlds + 2], int."""
 
         # Mesh SDF storage
         self.shape_sdf_data = None
@@ -331,6 +335,8 @@ class Model:
         """Rigid body keys, shape [body_count], str."""
         self.body_world = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
+        self.body_world_start = None
+        """Start index of the first body per world, shape [num_worlds + 2], int."""
 
         self.joint_q = None
         """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
@@ -396,12 +402,23 @@ class Model:
         """Joint keys, shape [joint_count], str."""
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
+        self.joint_world_start = None
+        """Start index of the first joint per world, shape [num_worlds + 2], int."""
+        self.joint_dof_world_start = None
+        """Start index of the first joint degree of freedom per world, shape [num_worlds + 2], int."""
+        self.joint_coord_world_start = None
+        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int."""
+        self.joint_constraint_world_start = None
+        """Start index of the first joint constraint per world, shape [num_worlds + 2], int."""
+
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
         self.articulation_world = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
+        self.articulation_world_start = None
+        """Start index of the first articulation per world, shape [num_worlds + 2], int."""
         self.max_joints_per_articulation = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
 
@@ -450,25 +467,8 @@ class Model:
         """Whether constraint is active, shape [equality_constraint_count], bool."""
         self.equality_constraint_world = None
         """World index for each constraint, shape [equality_constraint_count], int."""
-
-        self.world_particle_start = None
-        """Start index of the first particle per world, shape [num_worlds + 2], int."""
-        self.world_body_start = None
-        """Start index of the first body per world, shape [num_worlds + 2], int."""
-        self.world_shape_start = None
-        """Start index of the first shape per world, shape [num_worlds + 2], int."""
-        self.world_joint_start = None
-        """Start index of the first joint per world, shape [num_worlds + 2], int."""
-        self.world_articulation_start = None
-        """Start index of the first articulation per world, shape [num_worlds + 2], int."""
-        self.world_equality_constraint_start = None
+        self.equality_constraint_world_start = None
         """Start index of the first equality constraint per world, shape [num_worlds + 2], int."""
-        self.world_joint_dof_start = None
-        """Start index of the first joint degree of freedom per world, shape [num_worlds + 2], int."""
-        self.world_joint_coord_start = None
-        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int."""
-        self.world_joint_constraint_start = None
-        """Start index of the first joint constraint per world, shape [num_worlds + 2], int."""
 
         self.particle_count = 0
         """Total number of particles in the system."""

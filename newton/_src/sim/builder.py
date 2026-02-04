@@ -770,15 +770,15 @@ class ModelBuilder:
         self.equality_constraint_world = []
 
         # per-world entity start indices
-        self.world_particle_start = []
-        self.world_body_start = []
-        self.world_shape_start = []
-        self.world_joint_start = []
-        self.world_articulation_start = []
-        self.world_equality_constraint_start = []
-        self.world_joint_dof_start = []
-        self.world_joint_coord_start = []
-        self.world_joint_constraint_start = []
+        self.particle_world_start = []
+        self.body_world_start = []
+        self.shape_world_start = []
+        self.joint_world_start = []
+        self.articulation_world_start = []
+        self.equality_constraint_world_start = []
+        self.joint_dof_world_start = []
+        self.joint_coord_world_start = []
+        self.joint_constraint_world_start = []
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
@@ -6585,18 +6585,18 @@ class ModelBuilder:
             .. code-block:: python
 
                 body_world = [-1, -1, 0, 0, ..., 1, 1, ..., N - 1, N - 1, ..., -1, -1, -1, ...]
-                world_body_start = [2, 15, 25, ..., 50, 60, 72]
+                body_world_start = [2, 15, 25, ..., 50, 60, 72]
                 #          world :  -1 |  0 |  1   ... |  N-1 | -1 |  total
         """
         # List of all world starts of entities
         world_entity_start_arrays = [
-            (self.world_particle_start, self.particle_count, self.particle_world, "particle"),
-            (self.world_body_start, self.body_count, self.body_world, "body"),
-            (self.world_shape_start, self.shape_count, self.shape_world, "shape"),
-            (self.world_joint_start, self.joint_count, self.joint_world, "joint"),
-            (self.world_articulation_start, self.articulation_count, self.articulation_world, "articulation"),
+            (self.particle_world_start, self.particle_count, self.particle_world, "particle"),
+            (self.body_world_start, self.body_count, self.body_world, "body"),
+            (self.shape_world_start, self.shape_count, self.shape_world, "shape"),
+            (self.joint_world_start, self.joint_count, self.joint_world, "joint"),
+            (self.articulation_world_start, self.articulation_count, self.articulation_world, "articulation"),
             (
-                self.world_equality_constraint_start,
+                self.equality_constraint_world_start,
                 len(self.equality_constraint_type),
                 self.equality_constraint_world,
                 "equality constraint",
@@ -6676,9 +6676,9 @@ class ModelBuilder:
 
         # List of world starts of joints spaces, i.e. coords/DOFs/constraints
         world_joint_space_start_arrays = [
-            (self.world_joint_dof_start, self.joint_qd_start, self.joint_dof_count, "joint DOF"),
-            (self.world_joint_coord_start, self.joint_q_start, self.joint_coord_count, "joint coordinate"),
-            (self.world_joint_constraint_start, self.joint_cts_start, self.joint_constraint_count, "joint constraint"),
+            (self.joint_dof_world_start, self.joint_qd_start, self.joint_dof_count, "joint DOF"),
+            (self.joint_coord_world_start, self.joint_q_start, self.joint_coord_count, "joint coordinate"),
+            (self.joint_constraint_world_start, self.joint_cts_start, self.joint_constraint_count, "joint constraint"),
         ]
 
         def build_joint_space_start_array(
@@ -7369,15 +7369,15 @@ class ModelBuilder:
 
             # ---------------------
             # per-world start indices
-            m.world_particle_start = wp.array(self.world_particle_start, dtype=wp.int32)
-            m.world_body_start = wp.array(self.world_body_start, dtype=wp.int32)
-            m.world_shape_start = wp.array(self.world_shape_start, dtype=wp.int32)
-            m.world_joint_start = wp.array(self.world_joint_start, dtype=wp.int32)
-            m.world_articulation_start = wp.array(self.world_articulation_start, dtype=wp.int32)
-            m.world_equality_constraint_start = wp.array(self.world_equality_constraint_start, dtype=wp.int32)
-            m.world_joint_dof_start = wp.array(self.world_joint_dof_start, dtype=wp.int32)
-            m.world_joint_coord_start = wp.array(self.world_joint_coord_start, dtype=wp.int32)
-            m.world_joint_constraint_start = wp.array(self.world_joint_constraint_start, dtype=wp.int32)
+            m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
+            m.body_world_start = wp.array(self.body_world_start, dtype=wp.int32)
+            m.shape_world_start = wp.array(self.shape_world_start, dtype=wp.int32)
+            m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
+            m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
+            m.equality_constraint_world_start = wp.array(self.equality_constraint_world_start, dtype=wp.int32)
+            m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
+            m.joint_coord_world_start = wp.array(self.joint_coord_world_start, dtype=wp.int32)
+            m.joint_constraint_world_start = wp.array(self.joint_constraint_world_start, dtype=wp.int32)
 
             # ---------------------
             # counts

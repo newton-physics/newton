@@ -479,80 +479,80 @@ class TestModel(unittest.TestCase):
             self.assertEqual(articulation_world[5], -1)  # ball body's articulation
 
         # Verify world start indices
-        world_particle_start = model.world_particle_start.numpy() if model.world_particle_start is not None else []
-        world_body_start = model.world_body_start.numpy() if model.world_body_start is not None else []
-        world_shape_start = model.world_shape_start.numpy() if model.world_shape_start is not None else []
-        world_joint_start = model.world_joint_start.numpy() if model.world_joint_start is not None else []
-        world_articulation_start = (
-            model.world_articulation_start.numpy() if model.world_articulation_start is not None else []
+        particle_world_start = model.particle_world_start.numpy() if model.particle_world_start is not None else []
+        body_world_start = model.body_world_start.numpy() if model.body_world_start is not None else []
+        shape_world_start = model.shape_world_start.numpy() if model.shape_world_start is not None else []
+        joint_world_start = model.joint_world_start.numpy() if model.joint_world_start is not None else []
+        articulation_world_start = (
+            model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
         )
-        world_equality_constraint_start = (
-            model.world_equality_constraint_start.numpy() if model.world_equality_constraint_start is not None else []
+        equality_constraint_world_start = (
+            model.equality_constraint_world_start.numpy() if model.equality_constraint_world_start is not None else []
         )
-        world_joint_dof_start = model.world_joint_dof_start.numpy() if model.world_joint_dof_start is not None else []
-        world_joint_coord_start = (
-            model.world_joint_coord_start.numpy() if model.world_joint_coord_start is not None else []
+        joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
+        joint_coord_world_start = (
+            model.joint_coord_world_start.numpy() if model.joint_coord_world_start is not None else []
         )
-        world_joint_constraint_start = (
-            model.world_joint_constraint_start.numpy() if model.world_joint_constraint_start is not None else []
+        joint_constraint_world_start = (
+            model.joint_constraint_world_start.numpy() if model.joint_constraint_world_start is not None else []
         )
 
         # Optional console-output for debugging
         if verbose:
-            print(f"world_particle_start: {world_particle_start}")
-            print(f"world_body_start: {world_body_start}")
-            print(f"world_shape_start: {world_shape_start}")
-            print(f"world_joint_start: {world_joint_start}")
-            print(f"world_articulation_start: {world_articulation_start}")
-            print(f"world_equality_constraint_start: {world_equality_constraint_start}")
-            print(f"world_joint_dof_start: {world_joint_dof_start}")
-            print(f"world_joint_coord_start: {world_joint_coord_start}")
-            print(f"world_joint_constraint_start: {world_joint_constraint_start}")
+            print(f"particle_world_start: {particle_world_start}")
+            print(f"body_world_start: {body_world_start}")
+            print(f"shape_world_start: {shape_world_start}")
+            print(f"joint_world_start: {joint_world_start}")
+            print(f"articulation_world_start: {articulation_world_start}")
+            print(f"equality_constraint_world_start: {equality_constraint_world_start}")
+            print(f"joint_dof_world_start: {joint_dof_world_start}")
+            print(f"joint_coord_world_start: {joint_coord_world_start}")
+            print(f"joint_constraint_world_start: {joint_constraint_world_start}")
 
         # Check that sizes match num_worlds + 2, i.e. conforms to spec
-        self.assertEqual(world_particle_start.size, model.num_worlds + 2)
-        self.assertEqual(world_body_start.size, model.num_worlds + 2)
-        self.assertEqual(world_shape_start.size, model.num_worlds + 2)
-        self.assertEqual(world_joint_start.size, model.num_worlds + 2)
-        self.assertEqual(world_articulation_start.size, model.num_worlds + 2)
-        self.assertEqual(world_equality_constraint_start.size, model.num_worlds + 2)
-        self.assertEqual(world_joint_dof_start.size, model.num_worlds + 2)
-        self.assertEqual(world_joint_coord_start.size, model.num_worlds + 2)
-        self.assertEqual(world_joint_constraint_start.size, model.num_worlds + 2)
+        self.assertEqual(particle_world_start.size, model.num_worlds + 2)
+        self.assertEqual(body_world_start.size, model.num_worlds + 2)
+        self.assertEqual(shape_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_world_start.size, model.num_worlds + 2)
+        self.assertEqual(articulation_world_start.size, model.num_worlds + 2)
+        self.assertEqual(equality_constraint_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_dof_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_coord_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_constraint_world_start.size, model.num_worlds + 2)
 
         # Check that the last elements match total counts
-        self.assertEqual(world_particle_start[-1], model.particle_count)
-        self.assertEqual(world_body_start[-1], model.body_count)
-        self.assertEqual(world_shape_start[-1], model.shape_count)
-        self.assertEqual(world_joint_start[-1], model.joint_count)
-        self.assertEqual(world_articulation_start[-1], model.articulation_count)
-        self.assertEqual(world_equality_constraint_start[-1], model.equality_constraint_count)
-        self.assertEqual(world_joint_dof_start[-1], model.joint_dof_count)
-        self.assertEqual(world_joint_coord_start[-1], model.joint_coord_count)
-        self.assertEqual(world_joint_constraint_start[-1], model.joint_constraint_count)
+        self.assertEqual(particle_world_start[-1], model.particle_count)
+        self.assertEqual(body_world_start[-1], model.body_count)
+        self.assertEqual(shape_world_start[-1], model.shape_count)
+        self.assertEqual(joint_world_start[-1], model.joint_count)
+        self.assertEqual(articulation_world_start[-1], model.articulation_count)
+        self.assertEqual(equality_constraint_world_start[-1], model.equality_constraint_count)
+        self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
+        self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
+        self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
 
         # Check that world starts are non-decreasing
         for i in range(model.num_worlds + 1):
-            self.assertLessEqual(world_particle_start[i], world_particle_start[i + 1])
-            self.assertLessEqual(world_body_start[i], world_body_start[i + 1])
-            self.assertLessEqual(world_shape_start[i], world_shape_start[i + 1])
-            self.assertLessEqual(world_joint_start[i], world_joint_start[i + 1])
-            self.assertLessEqual(world_articulation_start[i], world_articulation_start[i + 1])
-            self.assertLessEqual(world_equality_constraint_start[i], world_equality_constraint_start[i + 1])
-            self.assertLessEqual(world_joint_dof_start[i], world_joint_dof_start[i + 1])
-            self.assertLessEqual(world_joint_coord_start[i], world_joint_coord_start[i + 1])
-            self.assertLessEqual(world_joint_constraint_start[i], world_joint_constraint_start[i + 1])
+            self.assertLessEqual(particle_world_start[i], particle_world_start[i + 1])
+            self.assertLessEqual(body_world_start[i], body_world_start[i + 1])
+            self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
+            self.assertLessEqual(joint_world_start[i], joint_world_start[i + 1])
+            self.assertLessEqual(articulation_world_start[i], articulation_world_start[i + 1])
+            self.assertLessEqual(equality_constraint_world_start[i], equality_constraint_world_start[i + 1])
+            self.assertLessEqual(joint_dof_world_start[i], joint_dof_world_start[i + 1])
+            self.assertLessEqual(joint_coord_world_start[i], joint_coord_world_start[i + 1])
+            self.assertLessEqual(joint_constraint_world_start[i], joint_constraint_world_start[i + 1])
 
         # Check exact values of world starts for this specific case
-        self.assertTrue(np.array_equal(world_particle_start, np.array([1, 3, 5, 7, 9])))
-        self.assertTrue(np.array_equal(world_body_start, np.array([1, 4, 7, 10, 12])))
-        self.assertTrue(np.array_equal(world_shape_start, np.array([1, 4, 7, 10, 12])))
-        self.assertTrue(np.array_equal(world_joint_start, np.array([1, 3, 5, 7, 9])))
-        self.assertTrue(np.array_equal(world_articulation_start, np.array([1, 2, 3, 4, 6])))
-        self.assertTrue(np.array_equal(world_equality_constraint_start, np.array([0, 0, 0, 0, 0])))
-        self.assertTrue(np.array_equal(world_joint_dof_start, np.array([6, 8, 10, 12, 24])))
-        self.assertTrue(np.array_equal(world_joint_coord_start, np.array([7, 9, 11, 13, 27])))
-        self.assertTrue(np.array_equal(world_joint_constraint_start, np.array([0, 10, 20, 30, 30])))
+        self.assertTrue(np.array_equal(particle_world_start, np.array([1, 3, 5, 7, 9])))
+        self.assertTrue(np.array_equal(body_world_start, np.array([1, 4, 7, 10, 12])))
+        self.assertTrue(np.array_equal(shape_world_start, np.array([1, 4, 7, 10, 12])))
+        self.assertTrue(np.array_equal(joint_world_start, np.array([1, 3, 5, 7, 9])))
+        self.assertTrue(np.array_equal(articulation_world_start, np.array([1, 2, 3, 4, 6])))
+        self.assertTrue(np.array_equal(equality_constraint_world_start, np.array([0, 0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(joint_dof_world_start, np.array([6, 8, 10, 12, 24])))
+        self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
+        self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
 
     def test_num_worlds_tracking(self):
         """Test that num_worlds is properly tracked when using add_world."""
@@ -789,35 +789,35 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_worlds[3], 1)  # b1_0->b1_1 from world 1
 
         # Verify world start indices
-        world_particle_start = model.world_particle_start.numpy() if model.world_particle_start is not None else []
-        world_body_start = model.world_body_start.numpy() if model.world_body_start is not None else []
-        world_shape_start = model.world_shape_start.numpy() if model.world_shape_start is not None else []
-        world_joint_start = model.world_joint_start.numpy() if model.world_joint_start is not None else []
-        world_articulation_start = (
-            model.world_articulation_start.numpy() if model.world_articulation_start is not None else []
+        particle_world_start = model.particle_world_start.numpy() if model.particle_world_start is not None else []
+        body_world_start = model.body_world_start.numpy() if model.body_world_start is not None else []
+        shape_world_start = model.shape_world_start.numpy() if model.shape_world_start is not None else []
+        joint_world_start = model.joint_world_start.numpy() if model.joint_world_start is not None else []
+        articulation_world_start = (
+            model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
         )
-        world_equality_constraint_start = (
-            model.world_equality_constraint_start.numpy() if model.world_equality_constraint_start is not None else []
+        equality_constraint_world_start = (
+            model.equality_constraint_world_start.numpy() if model.equality_constraint_world_start is not None else []
         )
-        world_joint_dof_start = model.world_joint_dof_start.numpy() if model.world_joint_dof_start is not None else []
-        world_joint_coord_start = (
-            model.world_joint_coord_start.numpy() if model.world_joint_coord_start is not None else []
+        joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
+        joint_coord_world_start = (
+            model.joint_coord_world_start.numpy() if model.joint_coord_world_start is not None else []
         )
-        world_joint_constraint_start = (
-            model.world_joint_constraint_start.numpy() if model.world_joint_constraint_start is not None else []
+        joint_constraint_world_start = (
+            model.joint_constraint_world_start.numpy() if model.joint_constraint_world_start is not None else []
         )
 
         # Optional console-output for debugging
         if verbose:
-            print(f"world_particle_start: {world_particle_start}")
-            print(f"world_body_start: {world_body_start}")
-            print(f"world_shape_start: {world_shape_start}")
-            print(f"world_joint_start: {world_joint_start}")
-            print(f"world_articulation_start: {world_articulation_start}")
-            print(f"world_equality_constraint_start: {world_equality_constraint_start}")
-            print(f"world_joint_dof_start: {world_joint_dof_start}")
-            print(f"world_joint_coord_start: {world_joint_coord_start}")
-            print(f"world_joint_constraint_start: {world_joint_constraint_start}")
+            print(f"particle_world_start: {particle_world_start}")
+            print(f"body_world_start: {body_world_start}")
+            print(f"shape_world_start: {shape_world_start}")
+            print(f"joint_world_start: {joint_world_start}")
+            print(f"articulation_world_start: {articulation_world_start}")
+            print(f"equality_constraint_world_start: {equality_constraint_world_start}")
+            print(f"joint_dof_world_start: {joint_dof_world_start}")
+            print(f"joint_coord_world_start: {joint_coord_world_start}")
+            print(f"joint_constraint_world_start: {joint_constraint_world_start}")
 
         # Verify total counts
         self.assertEqual(builder.particle_count, 0)
@@ -829,60 +829,60 @@ class TestModel(unittest.TestCase):
         self.assertEqual(builder.joint_dof_count, 10)
         self.assertEqual(builder.joint_coord_count, 11)
         self.assertEqual(builder.joint_constraint_count, 20)
-        self.assertEqual(world_particle_start[-1], builder.particle_count)
-        self.assertEqual(world_body_start[-1], builder.body_count)
-        self.assertEqual(world_shape_start[-1], builder.shape_count)
-        self.assertEqual(world_joint_start[-1], builder.joint_count)
-        self.assertEqual(world_articulation_start[-1], builder.articulation_count)
-        self.assertEqual(world_equality_constraint_start[-1], len(builder.equality_constraint_world))
-        self.assertEqual(world_joint_dof_start[-1], builder.joint_dof_count)
-        self.assertEqual(world_joint_coord_start[-1], builder.joint_coord_count)
-        self.assertEqual(world_joint_constraint_start[-1], builder.joint_constraint_count)
+        self.assertEqual(particle_world_start[-1], builder.particle_count)
+        self.assertEqual(body_world_start[-1], builder.body_count)
+        self.assertEqual(shape_world_start[-1], builder.shape_count)
+        self.assertEqual(joint_world_start[-1], builder.joint_count)
+        self.assertEqual(articulation_world_start[-1], builder.articulation_count)
+        self.assertEqual(equality_constraint_world_start[-1], len(builder.equality_constraint_world))
+        self.assertEqual(joint_dof_world_start[-1], builder.joint_dof_count)
+        self.assertEqual(joint_coord_world_start[-1], builder.joint_coord_count)
+        self.assertEqual(joint_constraint_world_start[-1], builder.joint_constraint_count)
 
         # Check that sizes match num_worlds + 2, i.e. conforms to spec
-        self.assertEqual(world_particle_start.size, model.num_worlds + 2)
-        self.assertEqual(world_body_start.size, model.num_worlds + 2)
-        self.assertEqual(world_shape_start.size, model.num_worlds + 2)
-        self.assertEqual(world_joint_start.size, model.num_worlds + 2)
-        self.assertEqual(world_articulation_start.size, model.num_worlds + 2)
-        self.assertEqual(world_equality_constraint_start.size, model.num_worlds + 2)
-        self.assertEqual(world_joint_dof_start.size, model.num_worlds + 2)
-        self.assertEqual(world_joint_coord_start.size, model.num_worlds + 2)
-        self.assertEqual(world_joint_constraint_start.size, model.num_worlds + 2)
+        self.assertEqual(particle_world_start.size, model.num_worlds + 2)
+        self.assertEqual(body_world_start.size, model.num_worlds + 2)
+        self.assertEqual(shape_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_world_start.size, model.num_worlds + 2)
+        self.assertEqual(articulation_world_start.size, model.num_worlds + 2)
+        self.assertEqual(equality_constraint_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_dof_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_coord_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_constraint_world_start.size, model.num_worlds + 2)
 
         # Check that the last elements match total counts
-        self.assertEqual(world_particle_start[-1], model.particle_count)
-        self.assertEqual(world_body_start[-1], model.body_count)
-        self.assertEqual(world_shape_start[-1], model.shape_count)
-        self.assertEqual(world_joint_start[-1], model.joint_count)
-        self.assertEqual(world_articulation_start[-1], model.articulation_count)
-        self.assertEqual(world_equality_constraint_start[-1], model.equality_constraint_count)
-        self.assertEqual(world_joint_dof_start[-1], model.joint_dof_count)
-        self.assertEqual(world_joint_coord_start[-1], model.joint_coord_count)
-        self.assertEqual(world_joint_constraint_start[-1], model.joint_constraint_count)
+        self.assertEqual(particle_world_start[-1], model.particle_count)
+        self.assertEqual(body_world_start[-1], model.body_count)
+        self.assertEqual(shape_world_start[-1], model.shape_count)
+        self.assertEqual(joint_world_start[-1], model.joint_count)
+        self.assertEqual(articulation_world_start[-1], model.articulation_count)
+        self.assertEqual(equality_constraint_world_start[-1], model.equality_constraint_count)
+        self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
+        self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
+        self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
 
         # Check that world starts are non-decreasing
         for i in range(model.num_worlds + 1):
-            self.assertLessEqual(world_particle_start[i], world_particle_start[i + 1])
-            self.assertLessEqual(world_body_start[i], world_body_start[i + 1])
-            self.assertLessEqual(world_shape_start[i], world_shape_start[i + 1])
-            self.assertLessEqual(world_joint_start[i], world_joint_start[i + 1])
-            self.assertLessEqual(world_articulation_start[i], world_articulation_start[i + 1])
-            self.assertLessEqual(world_equality_constraint_start[i], world_equality_constraint_start[i + 1])
-            self.assertLessEqual(world_joint_dof_start[i], world_joint_dof_start[i + 1])
-            self.assertLessEqual(world_joint_coord_start[i], world_joint_coord_start[i + 1])
-            self.assertLessEqual(world_joint_constraint_start[i], world_joint_constraint_start[i + 1])
+            self.assertLessEqual(particle_world_start[i], particle_world_start[i + 1])
+            self.assertLessEqual(body_world_start[i], body_world_start[i + 1])
+            self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
+            self.assertLessEqual(joint_world_start[i], joint_world_start[i + 1])
+            self.assertLessEqual(articulation_world_start[i], articulation_world_start[i + 1])
+            self.assertLessEqual(equality_constraint_world_start[i], equality_constraint_world_start[i + 1])
+            self.assertLessEqual(joint_dof_world_start[i], joint_dof_world_start[i + 1])
+            self.assertLessEqual(joint_coord_world_start[i], joint_coord_world_start[i + 1])
+            self.assertLessEqual(joint_constraint_world_start[i], joint_constraint_world_start[i + 1])
 
         # Check exact values of world starts for this specific case
-        self.assertTrue(np.array_equal(world_particle_start, np.array([0, 0, 0, 0])))
-        self.assertTrue(np.array_equal(world_body_start, np.array([0, 2, 4, 5])))
-        self.assertTrue(np.array_equal(world_shape_start, np.array([0, 0, 0, 0])))
-        self.assertTrue(np.array_equal(world_joint_start, np.array([0, 2, 4, 5])))
-        self.assertTrue(np.array_equal(world_articulation_start, np.array([0, 1, 2, 3])))
-        self.assertTrue(np.array_equal(world_equality_constraint_start, np.array([0, 0, 0, 0])))
-        self.assertTrue(np.array_equal(world_joint_dof_start, np.array([0, 2, 4, 10])))
-        self.assertTrue(np.array_equal(world_joint_coord_start, np.array([0, 2, 4, 11])))
-        self.assertTrue(np.array_equal(world_joint_constraint_start, np.array([0, 10, 20, 20])))
+        self.assertTrue(np.array_equal(particle_world_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(body_world_start, np.array([0, 2, 4, 5])))
+        self.assertTrue(np.array_equal(shape_world_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(joint_world_start, np.array([0, 2, 4, 5])))
+        self.assertTrue(np.array_equal(articulation_world_start, np.array([0, 1, 2, 3])))
+        self.assertTrue(np.array_equal(equality_constraint_world_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(joint_dof_world_start, np.array([0, 2, 4, 10])))
+        self.assertTrue(np.array_equal(joint_coord_world_start, np.array([0, 2, 4, 11])))
+        self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 20])))
 
     def test_add_world(self):
         orig_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.5, 0.6, 0.7))

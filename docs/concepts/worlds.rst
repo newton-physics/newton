@@ -101,17 +101,17 @@ World Start Indices & Dimensions
 In addition to the world grouping arrays, the :class:`~newton.Model` object will also contain Warp arrays that store the per-world starting indices for each entity type.
 
 These arrays include:
-- Particles: :attr:`~newton.Model.world_particle_start`
-- Bodies: :attr:`~newton.Model.world_body_start`
-- Shapes: :attr:`~newton.Model.world_shape_start`
-- Joints: :attr:`~newton.Model.world_joint_start`
-- Articulations: :attr:`~newton.Model.world_articulation_start`
-- Equality Constraints: :attr:`~newton.Model.world_equality_constraint_start`
+- Particles: :attr:`~newton.Model.particle_world_start`
+- Bodies: :attr:`~newton.Model.body_world_start`
+- Shapes: :attr:`~newton.Model.shape_world_start`
+- Joints: :attr:`~newton.Model.joint_world_start`
+- Articulations: :attr:`~newton.Model.articulation_world_start`
+- Equality Constraints: :attr:`~newton.Model.equality_constraint_world_start`
 
 To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
-- Joint DOFs: :attr:`~newton.Model.world_joint_dof_start`
-- Joint Coordinates: :attr:`~newton.Model.world_joint_coord_start`
-- Joint Constraints: :attr:`~newton.Model.world_joint_constraint_start`
+- Joint DOFs: :attr:`~newton.Model.joint_dof_world_start`
+- Joint Coordinates: :attr:`~newton.Model.joint_coord_world_start`
+- Joint Constraints: :attr:`~newton.Model.joint_constraint_world_start`
 
 All :attr:`~newton.Model.world_*_start` arrays adopt a special format that facilitates accounting of the total number of entities in each world as well as the global world (index ``-1``) at the front and back of each per-entity array such as :attr:`~newton.Model.body_world`.
 Specifically, each :attr:`~newton.Model.world_*_start` array contains ``num_worlds + 2`` entries, with the first ``num_worlds`` entries corresponding to starting indices of each ``world >= 0`` world,
@@ -129,7 +129,7 @@ For the previous example, we can compute the per-world shape counts as follows:
 
    # Shape start indices per world
    # Entries: [start_world_0, start_world_1, start_global_back, total_shapes]
-   shape_start = model.world_shape_start.numpy()
+   shape_start = model.shape_world_start.numpy()
    print("Shape starts: ", shape_start)
    # Output: Shape starts: [1  3  5  6]  # 1 global shape at front, 2 shapes in world 0, 2 shapes in world 1, 1 global shape at back, total 6 shapes
 
@@ -158,14 +158,14 @@ For example:
 
    @wp.kernel
    def 2d_world_body_example_kernel(
-       world_body_start: wp.array(dtype=wp.int32),
+       body_world_start: wp.array(dtype=wp.int32),
        body_world: wp.array(dtype=wp.int32),
        body_twist: wp.array(dtype=wp.spatial_vectorf),
    ):
        world_id, body_world_id = wp.tid()  # 2D world-entity grid
        # Perform operations specific to the world and entity here
-       world_start = world_body_start[world_id]
-       num_bodies_in_world = world_body_start[world_id + 1] - world_start
+       world_start = body_world_start[world_id]
+       num_bodies_in_world = body_world_start[world_id + 1] - world_start
        if body_world_id < num_bodies_in_world:
           global_body_id = world_start + body_world_id
           # Access body-specific data using global_body_id
@@ -178,8 +178,8 @@ For example:
    model = builder.finalize()
 
    # Define number of entities per world (e.g., bodies)
-   world_body_start = model.world_body_start.numpy()
-   num_bodies_per_world = [world_body_start[i+1] - world_body_start[i] for i in range(model.num_worlds)]
+   body_world_start = model.body_world_start.numpy()
+   num_bodies_per_world = [body_world_start[i+1] - body_world_start[i] for i in range(model.num_worlds)]
 
    # Launch kernel with 2D grid: (num_worlds, max_num_entities)
    wp.launch(2d_world_body_example_kernel, dim=(model.num_worlds, max(num_bodies_per_world)), ...)
