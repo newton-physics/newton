@@ -1645,7 +1645,8 @@ class TestModel(unittest.TestCase):
         """Test that add_base_joint with parent creates fixed joint."""
         builder = ModelBuilder()
         parent_body = builder.add_body(wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
-        builder.add_joint_fixed(parent=-1, child=parent_body)
+        parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
+        builder.add_articulation([parent_joint])  # Register parent body into an articulation
 
         child_body = builder.add_body(wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
         joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)

@@ -228,14 +228,10 @@ def parse_mjcf(
                     - ``{dict}``
                     - ``body_idx``
                     - Custom joint to parent body (e.g., D6)
-                  * - ``True``
+                  * - *explicitly set*
+                    - *explicitly set*
                     - *any*
-                    - *any*
-                    - ❌ Error: mutually exclusive
-                  * - *any*
-                    - *any*
-                    - *any*
-                    - ❌ Error: mutually exclusive
+                    - ❌ Error: mutually exclusive (cannot specify both)
                   * - ``True``
                     - ``None``
                     - ``body_idx``

@@ -2270,7 +2270,7 @@ def Xform "Root" (
         assert_np_equal(np.array(parent_xform.p), np.array([0.0, 0.0, 1.0]), tol=1e-6)
 
     def test__add_base_joints_to_floating_bodies_base_joint_string(self):
-        """Test _add_base_joints_to_floating_bodies with base_joint string creates D6 joints."""
+        """Test _add_base_joints_to_floating_bodies with base_joint dict creates D6 joints."""
         builder = newton.ModelBuilder()
 
         # Use add_link to create body without auto joint
@@ -2383,7 +2383,7 @@ def Xform "Root" (
         self.assertEqual(builder.joint_parent[joint_id], -1)
 
     def test_add_base_joint_string(self):
-        """Test add_base_joint with base_joint string creates a D6 joint."""
+        """Test _add_base_joint with base_joint dict parameter creates a D6 joint with specified axes."""
         builder = newton.ModelBuilder()
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
@@ -4229,7 +4229,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_string_creates_d6_joint(self):
-        """Test that base_joint as string creates a D6 joint with specified axes."""
+        """Test that base_joint as dict creates a D6 joint with specified axes."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
@@ -4871,8 +4871,8 @@ def Xform "Articulation" (
         self.assertIn("parent_xform", str(ctx.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_valid_string_variations(self):
-        """Test that various valid base_joint string formats work correctly."""
+    def test_base_joint_valid_dict_variations(self):
+        """Test that various valid base_joint dict formats work correctly."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         def create_stage():
