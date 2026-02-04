@@ -1630,19 +1630,14 @@ def parse_mjcf(
         and attr.name not in ("tendon_world", "tendon_joint_adr", "tendon_joint_num", "tendon_joint", "tendon_coef")
     ]
 
-    def parse_tendons(tendon_section, tendon_counter: int) -> int:
+    def parse_tendons(tendon_section):
         """Parse tendons from a tendon section.
 
         Args:
             tendon_section: XML element containing tendon definitions.
-            tendon_counter: Running counter for stable tendon indices.
-
-        Returns:
-            Updated tendon counter after processing all tendons in this section.
         """
         for fixed in tendon_section.findall("fixed"):
             tendon_name = fixed.attrib.get("name", "")
-            tendon_idx = tendon_counter
 
             # Parse joint elements within this fixed tendon
             joint_entries = []
@@ -1699,19 +1694,16 @@ def parse_mjcf(
             for attr in builder_custom_attr_tendon:
                 tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
 
-            builder.add_custom_values(**tendon_values)
+            indices = builder.add_custom_values(**tendon_values)
 
-            # Track tendon name for actuator resolution
+            # Track tendon name for actuator resolution (get index from add_custom_values return)
             if tendon_name:
+                tendon_idx = indices.get("mujoco:tendon_world", 0)
                 tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
 
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
                 print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
-
-            tendon_counter += 1
-
-        return tendon_counter
 
     # -----------------
     # parse actuators
@@ -1914,9 +1906,8 @@ def parse_mjcf(
     if has_tendon_attrs:
         # Find all sections marked <tendon></tendon>
         tendon_sections = root.findall(".//tendon")
-        tendon_counter = 0
         for tendon_section in tendon_sections:
-            tendon_counter = parse_tendons(tendon_section, tendon_counter)
+            parse_tendons(tendon_section)
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:
