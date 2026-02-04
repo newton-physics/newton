@@ -656,6 +656,40 @@ def parse_urdf(
         else:
             raise Exception("Unsupported joint type: " + joint["type"])
 
+    # Create a mapping from joint name to joint index
+    joint_name_to_idx = {}
+    for joint, joint_idx in zip(sorted_joints, joint_indices[1:], strict=False):  # Skip base joint
+        joint_name_to_idx[joint["name"]] = joint_idx
+
+    # Create mimic constraints
+    for joint in sorted_joints:
+        if "mimic_joint" in joint:
+            mimic_target_name = joint["mimic_joint"]
+            if mimic_target_name not in joint_name_to_idx:
+                warnings.warn(
+                    f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            follower_idx = joint_name_to_idx.get(joint["name"])
+            leader_idx = joint_name_to_idx.get(mimic_target_name)
+
+            if follower_idx is None:
+                warnings.warn(
+                    f"Mimic joint '{joint['name']}' was not created, skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            builder.add_constraint_mimic(
+                joint1=follower_idx,
+                joint2=leader_idx,
+                multiplier=joint.get("mimic_multiplier", 1.0),
+                offset=joint.get("mimic_offset", 0.0),
+                key=f"mimic_{joint['name']}",
+            )
+
     # Create articulation from all collected joints
     if joint_indices:
         articulation_key = urdf_root.attrib.get("name")

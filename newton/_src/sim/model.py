@@ -104,7 +104,9 @@ class Model:
         """Attribute frequency follows the number of tetrahedra (see :attr:`~newton.Model.tet_count`)."""
         SPRING = 13
         """Attribute frequency follows the number of springs (see :attr:`~newton.Model.spring_count`)."""
-        WORLD = 14
+        CONSTRAINT_MIMIC = 14
+        """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
+        WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
 
     class AttributeNamespace:
@@ -451,6 +453,21 @@ class Model:
         self.equality_constraint_world = None
         """World index for each constraint, shape [equality_constraint_count], int."""
 
+        self.constraint_mimic_joint1 = None
+        """First joint index (the follower joint), shape [constraint_mimic_count], int."""
+        self.constraint_mimic_joint2 = None
+        """Second joint index (the leader joint), shape [constraint_mimic_count], int."""
+        self.constraint_mimic_multiplier = None
+        """Multiplier for the mimic constraint, shape [constraint_mimic_count], float."""
+        self.constraint_mimic_offset = None
+        """Offset for the mimic constraint, shape [constraint_mimic_count], float."""
+        self.constraint_mimic_enabled = None
+        """Whether constraint is active, shape [constraint_mimic_count], bool."""
+        self.constraint_mimic_key = []
+        """Constraint name/key, shape [constraint_mimic_count], str."""
+        self.constraint_mimic_world = None
+        """World index for each constraint, shape [constraint_mimic_count], int."""
+
         self.particle_count = 0
         """Total number of particles in the system."""
         self.body_count = 0
@@ -479,6 +496,8 @@ class Model:
         """Total number of joint constraints of all joints."""
         self.equality_constraint_count = 0
         """Total number of equality constraints in the system."""
+        self.constraint_mimic_count = 0
+        """Total number of mimic constraints in the system."""
 
         # indices of particles sharing the same color
         self.particle_color_groups = []

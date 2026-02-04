@@ -676,5 +676,156 @@ class TestUrdfUriResolution(unittest.TestCase):
             self.assertEqual(builder_auto.shape_count, 2)
 
 
+MIMIC_URDF = """
+<robot name="mimic_test">
+    <link name="base_link"/>
+    <link name="leader_link"/>
+    <link name="follower_link"/>
+
+    <joint name="leader_joint" type="revolute">
+        <parent link="base_link"/>
+        <child link="leader_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-1.57" upper="1.57"/>
+    </joint>
+
+    <joint name="follower_joint" type="revolute">
+        <parent link="base_link"/>
+        <child link="follower_link"/>
+        <origin xyz="1 0 0" rpy="0 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14"/>
+        <mimic joint="leader_joint" multiplier="2.0" offset="0.5"/>
+    </joint>
+</robot>
+"""
+
+
+class TestMimicConstraints(unittest.TestCase):
+    """Tests for URDF mimic joint parsing."""
+
+    def test_mimic_constraint_basic(self):
+        """Test that mimic constraints are created from URDF mimic tags."""
+        builder = newton.ModelBuilder()
+        builder.add_urdf(MIMIC_URDF)
+        model = builder.finalize()
+
+        # Should have 1 mimic constraint
+        self.assertEqual(model.constraint_mimic_count, 1)
+
+        # Check the constraint values
+        joint1 = model.constraint_mimic_joint1.numpy()[0]
+        joint2 = model.constraint_mimic_joint2.numpy()[0]
+        multiplier = model.constraint_mimic_multiplier.numpy()[0]
+        offset = model.constraint_mimic_offset.numpy()[0]
+        enabled = model.constraint_mimic_enabled.numpy()[0]
+
+        # Find joint indices by name
+        leader_idx = model.joint_key.index("leader_joint")
+        follower_idx = model.joint_key.index("follower_joint")
+
+        self.assertEqual(joint1, follower_idx)  # follower joint (joint1)
+        self.assertEqual(joint2, leader_idx)  # leader joint (joint2)
+        self.assertAlmostEqual(multiplier, 2.0, places=5)
+        self.assertAlmostEqual(offset, 0.5, places=5)
+        self.assertTrue(enabled)
+
+    def test_mimic_constraint_default_values(self):
+        """Test mimic constraints with default multiplier and offset."""
+        urdf = """
+        <robot name="mimic_defaults">
+            <link name="base"/>
+            <link name="l1"/>
+            <link name="l2"/>
+            <joint name="j1" type="revolute">
+                <parent link="base"/><child link="l1"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="j2" type="revolute">
+                <parent link="base"/><child link="l2"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+                <mimic joint="j1"/>
+            </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_urdf(urdf)
+        model = builder.finalize()
+
+        self.assertEqual(model.constraint_mimic_count, 1)
+        multiplier = model.constraint_mimic_multiplier.numpy()[0]
+        offset = model.constraint_mimic_offset.numpy()[0]
+
+        # Default values from URDF spec
+        self.assertAlmostEqual(multiplier, 1.0, places=5)
+        self.assertAlmostEqual(offset, 0.0, places=5)
+
+    def test_mimic_constraint_programmatic(self):
+        """Test programmatic creation of mimic constraints."""
+        builder = newton.ModelBuilder()
+
+        # Create two joints
+        b0 = builder.add_body()
+        b1 = builder.add_body()
+        b2 = builder.add_body()
+
+        j1 = builder.add_joint_revolute(
+            parent=-1,
+            child=b0,
+            axis=(0, 0, 1),
+            key="j1",
+        )
+        j2 = builder.add_joint_revolute(
+            parent=-1,
+            child=b1,
+            axis=(0, 0, 1),
+            key="j2",
+        )
+        j3 = builder.add_joint_revolute(
+            parent=-1,
+            child=b2,
+            axis=(0, 0, 1),
+            key="j3",
+        )
+
+        # Add mimic constraints
+        c1 = builder.add_constraint_mimic(
+            joint1=j2,
+            joint2=j1,
+            multiplier=1.5,
+            offset=-0.25,
+            key="mimic1",
+        )
+        c2 = builder.add_constraint_mimic(
+            joint1=j3,
+            joint2=j1,
+            multiplier=-1.0,
+            offset=0.0,
+            enabled=False,
+            key="mimic2",
+        )
+
+        model = builder.finalize()
+
+        self.assertEqual(model.constraint_mimic_count, 2)
+
+        # Check first constraint
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j2)
+        self.assertEqual(model.constraint_mimic_joint2.numpy()[0], j1)
+        self.assertAlmostEqual(model.constraint_mimic_multiplier.numpy()[0], 1.5)
+        self.assertAlmostEqual(model.constraint_mimic_offset.numpy()[0], -0.25)
+        self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
+        self.assertEqual(model.constraint_mimic_key[0], "mimic1")
+
+        # Check second constraint
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j3)
+        self.assertEqual(model.constraint_mimic_joint2.numpy()[1], j1)
+        self.assertAlmostEqual(model.constraint_mimic_multiplier.numpy()[1], -1.0)
+        self.assertAlmostEqual(model.constraint_mimic_offset.numpy()[1], 0.0)
+        self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
+        self.assertEqual(model.constraint_mimic_key[1], "mimic2")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
