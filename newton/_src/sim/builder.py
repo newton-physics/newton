@@ -21,6 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
+from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -5285,13 +5286,13 @@ class ModelBuilder:
                     continue
 
                 # BFS over edges
-                queue: list[int] = [start_edge]
+                queue: deque[int] = deque([start_edge])
                 visited[start_edge] = True
                 component_joints: list[int] = []
                 component_edges: list[int] = []
 
                 while queue:
-                    parent_edge = queue.pop(0)
+                    parent_edge = queue.popleft()
                     component_edges.append(parent_edge)
                     parent_body = edge_bodies[parent_edge]
 
