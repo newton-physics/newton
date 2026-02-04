@@ -201,7 +201,14 @@ class Example:
         ur5e_with_robotiq_gripper.add_mjcf(
             str(self.ur5e_path),
             xform=wp.transform(pos, ur5e_quat_base),
-            base_joint="px,py,rz",
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
         )
 
         # Base joints
@@ -248,7 +255,14 @@ class Example:
         ur5e_with_hand.add_mjcf(
             str(self.ur5e_path),
             xform=wp.transform(pos, ur5e_quat_base),
-            base_joint="px,py,rz",
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
         )
 
         # Base joints
@@ -297,7 +311,14 @@ class Example:
         franka_with_hand.add_urdf(
             str(self.franka_urdf),
             xform=wp.transform(pos),
-            base_joint="px,py,rz",
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
         )
 
         # Base joints
@@ -361,7 +382,14 @@ class Example:
             xform=wp.transform(pos),
             enable_self_collisions=False,
             hide_collision_shapes=True,
-            base_joint="px,py,rz",  # Planar mobile base
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },  # Planar mobile base
         )
 
         # Set gains for base joint DOFs (first 3 DOFs)

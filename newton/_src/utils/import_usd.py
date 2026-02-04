@@ -45,7 +45,7 @@ def parse_usd(
     *,
     xform: Transform | None = None,
     floating: bool | None = None,
-    base_joint: dict | str | None = None,
+    base_joint: dict | None = None,
     parent_body: int = -1,
     only_load_enabled_rigid_bodies: bool = False,
     only_load_enabled_joints: bool = True,
@@ -74,7 +74,7 @@ def parse_usd(
     See :ref:`usd_parsing` for more information.
 
     Args:
-        builder (ModelBuilder): The :class:`~newton.ModelBuilder` to add the bodies and joints to.
+        builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The transform to apply to the entire scene.
         floating (bool or None): Controls the base joint type for the root body (bodies not connected as
@@ -86,15 +86,10 @@ def parse_usd(
             - ``False``: Creates a FIXED joint (0 DOF).
 
             Cannot be specified together with ``base_joint``.
-        base_joint (Union[str, dict]): Custom joint specification for connecting the root body to the world
+        base_joint (dict): Custom joint specification for connecting the root body to the world
             (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
-            custom mobility. Can be either:
-
-            - **String format**: Comma-separated axis names for a D6 joint (e.g., ``"px,py,rz"`` for a
-              planar robot with 2 translations and 1 rotation, or ``"px,py,pz,rx,ry,rz"`` for full 6-DOF).
-              Valid axis names: ``px``, ``py``, ``pz`` (translation), ``rx``, ``ry``, ``rz`` (rotation).
-            - **Dictionary format**: Full joint specification with parameters as accepted by
-              :meth:`ModelBuilder.add_joint` (e.g., custom joint types, axes, limits, stiffness).
+            custom mobility. Dictionary with joint parameters as accepted by
+            :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
             Cannot be specified together with ``floating``.
         parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
@@ -104,53 +99,53 @@ def parse_usd(
             articulation can be used as parent; attempting to attach to an older articulation will raise
             a ``ValueError``.
 
-        .. note::
-           Valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
+            .. note::
+               Valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
 
-           .. list-table::
-              :header-rows: 1
-              :widths: 15 15 15 55
+               .. list-table::
+                  :header-rows: 1
+                  :widths: 15 15 15 55
 
-              * - floating
-                - base_joint
-                - parent_body
-                - Result
-              * - ``None``
-                - ``None``
-                - ``-1``
-                - Format default (USD: FREE joint for bodies without joints)
-              * - ``True``
-                - ``None``
-                - ``-1``
-                - FREE joint to world (6 DOF)
-              * - ``False``
-                - ``None``
-                - ``-1``
-                - FIXED joint to world (0 DOF)
-              * - ``None``
-                - ``"px,py,rz"``
-                - ``-1``
-                - D6 joint to world with specified axes
-              * - ``False``
-                - ``None``
-                - ``body_idx``
-                - FIXED joint to parent body
-              * - ``None``
-                - ``"px,py,rz"``
-                - ``body_idx``
-                - D6 joint to parent body with specified axes
-              * - ``True``
-                - *any*
-                - *any*
-                - ❌ Error: mutually exclusive
-              * - *any*
-                - *any*
-                - *any*
-                - ❌ Error: mutually exclusive
-              * - ``True``
-                - ``None``
-                - ``body_idx``
-                - ❌ Error: FREE joints require world frame
+                  * - floating
+                    - base_joint
+                    - parent_body
+                    - Result
+                  * - ``None``
+                    - ``None``
+                    - ``-1``
+                    - Format default (USD: FREE joint for bodies without joints)
+                  * - ``True``
+                    - ``None``
+                    - ``-1``
+                    - FREE joint to world (6 DOF)
+                  * - ``False``
+                    - ``None``
+                    - ``-1``
+                    - FIXED joint to world (0 DOF)
+                  * - ``None``
+                    - ``{dict}``
+                    - ``-1``
+                    - Custom joint to world (e.g., D6)
+                  * - ``False``
+                    - ``None``
+                    - ``body_idx``
+                    - FIXED joint to parent body
+                  * - ``None``
+                    - ``{dict}``
+                    - ``body_idx``
+                    - Custom joint to parent body (e.g., D6)
+                  * - ``True``
+                    - *any*
+                    - *any*
+                    - ❌ Error: mutually exclusive
+                  * - *any*
+                    - *any*
+                    - *any*
+                    - ❌ Error: mutually exclusive
+                  * - ``True``
+                    - ``None``
+                    - ``body_idx``
+                    - ❌ Error: FREE joints require world frame
 
         only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
         only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
@@ -189,7 +184,7 @@ def parse_usd(
     Returns:
         dict: Dictionary with the following entries:
 
-           .. list-table::
+        .. list-table::
             :widths: 25 75
 
             * - ``"fps"``
