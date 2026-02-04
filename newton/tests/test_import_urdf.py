@@ -790,14 +790,14 @@ class TestMimicConstraints(unittest.TestCase):
         )
 
         # Add mimic constraints
-        c1 = builder.add_constraint_mimic(
+        _c1 = builder.add_constraint_mimic(
             joint1=j2,
             joint2=j1,
             multiplier=1.5,
             offset=-0.25,
             key="mimic1",
         )
-        c2 = builder.add_constraint_mimic(
+        _c2 = builder.add_constraint_mimic(
             joint1=j3,
             joint2=j1,
             multiplier=-1.0,
