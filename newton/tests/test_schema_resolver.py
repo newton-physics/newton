@@ -60,6 +60,7 @@ from newton._src.usd.schemas import (
     SchemaResolverNewton,
     SchemaResolverPhysx,
 )
+from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 if USD_AVAILABLE:
@@ -145,7 +146,7 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
         builder.add_usd(
             source=str(ant_mixed_path),
-            schema_resolvers=[SchemaResolverNewton(), SchemaResolverMjc()],  # nothing should be found
+            schema_resolvers=[SchemaResolverNewton()],  # nothing should be found
             verbose=False,
         )
         armature_values_found = []
@@ -410,6 +411,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Import with two different schema priorities
         builder_newton = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder_newton)
         builder_newton.add_usd(
             source=str(dst),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
@@ -417,6 +419,7 @@ class TestSchemaResolver(unittest.TestCase):
         )
 
         builder_mjc = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder_mjc)
         builder_mjc.add_usd(
             source=str(dst),
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton(), SchemaResolverPhysx()],
@@ -449,7 +452,7 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
         result = builder.add_usd(
             source=str(dst),
-            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
         )
 
@@ -613,7 +616,7 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
         result = builder.add_usd(
             source=str(usd_path),
-            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
         )
 
@@ -735,7 +738,7 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
         builder.add_usd(
             source=str(usd_path),
-            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
         )
 
@@ -818,7 +821,7 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
         builder.add_usd(
             source=str(humanoid_path),
-            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
         )
 
@@ -946,7 +949,7 @@ class TestSchemaResolver(unittest.TestCase):
         builder = ModelBuilder()
         builder.add_usd(
             source=str(humanoid_path),
-            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
+            schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx()],
             verbose=False,
         )
 
@@ -1070,6 +1073,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         # Test with all three plugins to ensure attribute collection works
         builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
@@ -1121,6 +1125,7 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(ant_mixed_path.exists(), f"Missing mixed USD: {ant_mixed_path}")
 
         builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(
             source=str(ant_mixed_path),
             schema_resolvers=[SchemaResolverNewton(), SchemaResolverPhysx(), SchemaResolverMjc()],
@@ -1328,6 +1333,7 @@ class TestSchemaResolver(unittest.TestCase):
 
         # mjc:margin is available instead via custom solver attributes
         builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(
             source=stage,
             schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
