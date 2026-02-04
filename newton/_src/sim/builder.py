@@ -146,11 +146,16 @@ class ModelBuilder:
 
     @dataclass
     class ActuatorEntry:
-        """Stores accumulated indices and arguments for one actuator type + scalar params combo."""
+        """Stores accumulated indices and arguments for one actuator type + scalar params combo.
 
-        input_indices: list[int]
-        output_indices: list[int]
-        args: list[dict[str, Any]]  # Only array params, scalar params are in the dict key
+        Each element in input_indices/output_indices represents one actuator.
+        For single-input actuators: [[idx1], [idx2], ...] → flattened to 1D array
+        For multi-input actuators: [[idx1, idx2], [idx3, idx4], ...] → 2D array
+        """
+
+        input_indices: list[list[int]]  # Per-actuator input indices
+        output_indices: list[list[int]]  # Per-actuator output indices
+        args: list[dict[str, Any]]  # Per-actuator array params (scalar params in dict key)
 
     @dataclass
     class ShapeConfig:
@@ -1188,21 +1193,24 @@ class ModelBuilder:
     def add_actuator(
         self,
         actuator_class: type,
-        input_indices: list[int],  # len = 1 for single input actuators, todo: case for len > 1
+        input_indices: list[int],
         output_indices: list[int] | None = None,
         **kwargs,
     ) -> None:
-        """Add an actuator for one or more DOFs.
+        """Add a single actuator that reads from one or more DOFs.
 
-        Multiple calls with the same actuator_class and scalar params accumulate into one ActuatorEntry.
-        Different scalar param values (e.g., different delay) create separate actuator instances.
-        The actuator instance is created during finalize().
+        Multiple calls with the same actuator_class and scalar
+        params accumulate into one ActuatorEntry. The actuator instance is created during finalize().
+
+        For single-input actuators (most common): input_indices has one element.
+        For multi-input actuators: input_indices has multiple elements (creates 2D index array).
 
         Args:
             actuator_class: The actuator class (e.g., ActuatorPD).
-            input_indices: List of DOF indices for reading state/targets.
-            output_indices: List of DOF indices for writing output. Defaults to input_indices.
-            **kwargs: Actuator parameters (e.g., kp, kd, max_force). Shared across all DOFs.
+            input_indices: DOF indices this actuator reads from. Length 1 for single-input,
+                length > 1 for multi-input actuators.
+            output_indices: DOF indices for writing output. Defaults to input_indices.
+            **kwargs: Actuator parameters (e.g., kp, kd, max_force).
         """
         if output_indices is None:
             output_indices = input_indices.copy()
@@ -1223,8 +1231,27 @@ class ModelBuilder:
         # Filter out scalar params from args (they're already in the key)
         array_params = {k: v for k, v in resolved.items() if k not in scalar_param_names}
 
-        entry.input_indices.extend(input_indices)
-        entry.output_indices.extend(output_indices)
+        # Validate dimension consistency before appending
+        if entry.input_indices:
+            expected_input_dim = len(entry.input_indices[0])
+            if len(input_indices) != expected_input_dim:
+                raise ValueError(
+                    f"Input indices dimension mismatch for {actuator_class.__name__}: "
+                    f"expected {expected_input_dim}, got {len(input_indices)}. "
+                    f"All actuators of the same type must have the same number of inputs."
+                )
+        if entry.output_indices:
+            expected_output_dim = len(entry.output_indices[0])
+            if len(output_indices) != expected_output_dim:
+                raise ValueError(
+                    f"Output indices dimension mismatch for {actuator_class.__name__}: "
+                    f"expected {expected_output_dim}, got {len(output_indices)}. "
+                    f"All actuators of the same type must have the same number of outputs."
+                )
+
+        # Each call adds one actuator with its input/output indices
+        entry.input_indices.append(input_indices)
+        entry.output_indices.append(output_indices)
         entry.args.append(array_params)
 
     def _stack_args_to_arrays(self, args_list: list[dict], device=None, requires_grad: bool = False) -> dict:
@@ -1247,6 +1274,41 @@ class ModelBuilder:
             result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
 
         return result
+
+    @staticmethod
+    def _build_index_array(indices: list[list[int]], device) -> wp.array:
+        """Build a warp array from nested index lists.
+
+        If all inner lists have length 1, creates a 1D array (N,).
+        Otherwise, creates a 2D array (N, M) where M is the inner list length.
+
+        Args:
+            indices: Nested list of indices, one inner list per actuator.
+            device: Device for the warp array.
+
+        Returns:
+            wp.array with shape (N,) or (N, M).
+
+        Raises:
+            ValueError: If inner lists have inconsistent lengths (for 2D case).
+        """
+        if not indices:
+            return wp.array([], dtype=wp.uint32, device=device)
+
+        inner_lengths = [len(idx_list) for idx_list in indices]
+        max_len = max(inner_lengths)
+
+        if max_len == 1:
+            # All single-input: flatten to 1D
+            flat = [idx_list[0] for idx_list in indices]
+            return wp.array(flat, dtype=wp.uint32, device=device)
+        else:
+            # Multi-input: create 2D array
+            if not all(length == max_len for length in inner_lengths):
+                raise ValueError(
+                    f"All actuators must have the same number of inputs for 2D indexing. Got lengths: {inner_lengths}"
+                )
+            return wp.array(indices, dtype=wp.uint32, device=device)
 
     @property
     def default_site_cfg(self) -> ShapeConfig:
@@ -2381,9 +2443,11 @@ class ModelBuilder:
                 entry_key,
                 ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
             )
-            # Offset indices by start_joint_dof_idx
-            entry.input_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.input_indices])
-            entry.output_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.output_indices])
+            # Offset indices by start_joint_dof_idx (each actuator's indices are a list)
+            for idx_list in sub_entry.input_indices:
+                entry.input_indices.append([idx + start_joint_dof_idx for idx in idx_list])
+            for idx_list in sub_entry.output_indices:
+                entry.output_indices.append([idx + start_joint_dof_idx for idx in idx_list])
             entry.args.extend(sub_entry.args)
 
     @staticmethod
@@ -7285,8 +7349,8 @@ class ModelBuilder:
             # Create actuators from accumulated entries
             m.actuators = []
             for (actuator_class, scalar_key), entry in self.actuator_entries.items():
-                input_indices = wp.array(entry.input_indices, dtype=wp.uint32, device=device)
-                output_indices = wp.array(entry.output_indices, dtype=wp.uint32, device=device)
+                input_indices = self._build_index_array(entry.input_indices, device)
+                output_indices = self._build_index_array(entry.output_indices, device)
                 param_arrays = self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad)
                 scalar_params = dict(scalar_key)
                 actuator = actuator_class(

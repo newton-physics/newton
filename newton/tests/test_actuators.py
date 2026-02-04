@@ -152,6 +152,71 @@ class TestActuatorBuilder(unittest.TestCase):
 
         np.testing.assert_array_almost_equal(delay3.kp.numpy(), [200.0, 250.0])
 
+    def test_multi_input_actuator_2d_indices(self):
+        """Test actuators with multiple input indices (2D index arrays)."""
+        builder = newton.ModelBuilder()
+
+        # Create 6 joints for testing
+        bodies = [builder.add_body() for _ in range(6)]
+        joints = []
+        for i, body in enumerate(bodies):
+            parent = -1 if i == 0 else bodies[i - 1]
+            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
+        builder.add_articulation(joints)
+
+        dofs = [builder.joint_qd_start[j] for j in joints]
+
+        # Add multi-input actuators: each reads from 2 DOFs
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[0], dofs[1]], kp=100.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[2], dofs[3]], kp=200.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[4], dofs[5]], kp=300.0)
+
+        model = builder.finalize()
+
+        # Should have 1 ActuatorPD instance with 3 actuators, each with 2 inputs
+        self.assertEqual(len(model.actuators), 1)
+        pd_act = model.actuators[0]
+
+        self.assertEqual(pd_act.num_actuators, 3)
+
+        # Verify input_indices shape is 2D: (3, 2)
+        input_arr = pd_act.input_indices.numpy()
+        self.assertEqual(input_arr.shape, (3, 2))
+
+        # Verify the indices are correct
+        np.testing.assert_array_equal(input_arr[0], [dofs[0], dofs[1]])
+        np.testing.assert_array_equal(input_arr[1], [dofs[2], dofs[3]])
+        np.testing.assert_array_equal(input_arr[2], [dofs[4], dofs[5]])
+
+        # Verify output_indices also has same shape
+        output_arr = pd_act.output_indices.numpy()
+        self.assertEqual(output_arr.shape, (3, 2))
+
+        # Verify kp array has correct values (one per actuator)
+        np.testing.assert_array_almost_equal(pd_act.kp.numpy(), [100.0, 200.0, 300.0])
+
+    def test_dimension_mismatch_raises_error(self):
+        """Test that mixing different input dimensions raises an error."""
+        builder = newton.ModelBuilder()
+
+        bodies = [builder.add_body() for _ in range(3)]
+        joints = []
+        for i, body in enumerate(bodies):
+            parent = -1 if i == 0 else bodies[i - 1]
+            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
+        builder.add_articulation(joints)
+
+        dofs = [builder.joint_qd_start[j] for j in joints]
+
+        # First call: 1 input
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+
+        # Second call: 2 inputs - should raise
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_actuator(ActuatorPD, input_indices=[dofs[1], dofs[2]], kp=200.0)
+
+        self.assertIn("dimension mismatch", str(ctx.exception))
+
 
 @unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
 class TestActuatorUSDParsing(unittest.TestCase):
