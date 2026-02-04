@@ -17,7 +17,6 @@
 from ._src.sensors.sensor_contact import (
     MatchKind,
     SensorContact,
-    populate_contacts,
 )
 
 # Frame transform sensors
@@ -47,5 +46,4 @@ __all__ = [
     "SensorIMU",
     "SensorRaycast",
     "SensorTiledCamera",
-    "populate_contacts",
 ]

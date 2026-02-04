@@ -556,9 +556,10 @@ def convert_warp_coords_to_mj_kernel(
 
 
 @wp.kernel
-def convert_mjw_contact_to_warp_kernel(
+def convert_mjw_contacts_to_newton_kernel(
     # inputs
     mjc_geom_to_newton_shape: wp.array2d(dtype=wp.int32),
+    mjc_body_to_newton: wp.array(dtype=wp.int32, ndim=2),
     pyramidal_cone: bool,
     mj_nacon: wp.array(dtype=wp.int32),
     mj_contact_frame: wp.array(dtype=wp.mat33f),
@@ -568,16 +569,23 @@ def convert_mjw_contact_to_warp_kernel(
     mj_contact_worldid: wp.array(dtype=wp.int32),
     mj_efc_force: wp.array2d(dtype=float),
     # outputs
-    contact_pair: wp.array(dtype=wp.vec2i),
-    contact_normal: wp.array(dtype=wp.vec3f),
-    contact_force: wp.array(dtype=float),
+    rigid_contact_count: wp.array(dtype=wp.int32),
+    rigid_contact_shape0: wp.array(dtype=wp.int32),
+    rigid_contact_shape1: wp.array(dtype=wp.int32),
+    rigid_contact_point0: wp.array(dtype=wp.vec3),
+    rigid_contact_point1: wp.array(dtype=wp.vec3),
+    rigid_contact_normal: wp.array(dtype=wp.vec3),
+    contact_force: wp.array(dtype=wp.spatial_vector),
 ):
     """Convert MuJoCo contacts to Newton contact format.
 
     Uses mjc_geom_to_newton_shape to convert MuJoCo geom indices to Newton shape indices.
     """
-    n_contacts = mj_nacon[0]
     contact_idx = wp.tid()
+    n_contacts = mj_nacon[0]
+
+    if contact_idx == 0:
+        rigid_contact_count[0] = n_contacts
 
     if contact_idx >= n_contacts:
         return
@@ -585,23 +593,26 @@ def convert_mjw_contact_to_warp_kernel(
     world = mj_contact_worldid[contact_idx]
     geoms_mjw = mj_contact_geom[contact_idx]
 
-    normalforce = wp.float(-1.0)
+    normal = wp.transpose(mj_contact_frame[contact_idx])[0]
 
-    efc_address0 = mj_contact_efc_address[contact_idx, 0]
-    if efc_address0 >= 0:
-        normalforce = mj_efc_force[world, efc_address0]
+    rigid_contact_shape0[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[0]]
+    rigid_contact_shape1[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[1]]
+    rigid_contact_normal[contact_idx] = -normal
 
-        if pyramidal_cone:
-            dim = mj_contact_dim[contact_idx]
-            for i in range(1, 2 * (dim - 1)):
-                normalforce += mj_efc_force[world, mj_contact_efc_address[contact_idx, i]]
+    if contact_force:
+        efc_address0 = mj_contact_efc_address[contact_idx, 0]
+        has_force = efc_address0 >= 0
+        normalforce = float(-1.0)
+        if has_force:
+            normalforce = mj_efc_force[world, efc_address0]
 
-    pair = wp.vec2i()
-    for i in range(2):
-        pair[i] = mjc_geom_to_newton_shape[world, geoms_mjw[i]]
-    contact_pair[contact_idx] = pair
-    contact_normal[contact_idx] = wp.transpose(mj_contact_frame[contact_idx])[0]
-    contact_force[contact_idx] = wp.where(normalforce > 0.0, normalforce, 0.0)
+            if pyramidal_cone:
+                dim = mj_contact_dim[contact_idx]
+                for i in range(1, 2 * (dim - 1)):
+                    normalforce += mj_efc_force[world, mj_contact_efc_address[contact_idx, i]]
+        force = wp.where(normalforce > 0.0, -normalforce * normal, wp.vec3(0.0))
+        # TODO: preserve force directions
+        contact_force[contact_idx] = wp.spatial_vector(force, wp.vec3(0.0))
 
 
 # Import control source/type enums and create warp constants
@@ -1537,28 +1548,6 @@ def create_inverse_shape_mapping_kernel(
         newton_shape_to_mjc_geom[newton_shape_idx] = geom_idx
 
 
-@wp.func
-def mj_body_acceleration(
-    body_rootid: wp.array(dtype=int),
-    xipos_in: wp.array2d(dtype=wp.vec3),
-    subtree_com_in: wp.array2d(dtype=wp.vec3),
-    cvel_in: wp.array2d(dtype=wp.spatial_vector),
-    cacc_in: wp.array2d(dtype=wp.spatial_vector),
-    worldid: int,
-    bodyid: int,
-) -> wp.vec3:
-    """Compute accelerations for bodies from mjwarp data."""
-    cacc = cacc_in[worldid, bodyid]
-    cvel = cvel_in[worldid, bodyid]
-    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
-    ang = wp.spatial_top(cvel)
-    lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
-    acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
-    correction = wp.cross(ang, lin)
-
-    return acc + correction
-
-
 @wp.kernel
 def update_eq_properties_kernel(
     mjc_eq_to_newton_eq: wp.array2d(dtype=wp.int32),
@@ -1725,16 +1714,39 @@ def update_eq_data_and_active_kernel(
     eq_active_out[world, mjc_eq] = eq_constraint_enabled[newton_eq]
 
 
+@wp.func
+def mj_body_acceleration(
+    body_rootid: wp.array(dtype=int),
+    xipos_in: wp.array2d(dtype=wp.vec3),
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cvel_in: wp.array2d(dtype=wp.spatial_vector),
+    cacc_in: wp.array2d(dtype=wp.spatial_vector),
+    worldid: int,
+    bodyid: int,
+) -> wp.vec3:
+    """Compute accelerations for bodies from mjwarp data."""
+    cacc = cacc_in[worldid, bodyid]
+    cvel = cvel_in[worldid, bodyid]
+    offset = xipos_in[worldid, bodyid] - subtree_com_in[worldid, body_rootid[bodyid]]
+    ang = wp.spatial_top(cvel)
+    lin = wp.spatial_bottom(cvel) - wp.cross(offset, ang)
+    acc = wp.spatial_bottom(cacc) - wp.cross(offset, wp.spatial_top(cacc))
+    correction = wp.cross(ang, lin)
+
+    return acc + correction
+
+
 @wp.kernel
 def convert_rigid_forces_from_mj_kernel(
     mjc_body_to_newton: wp.array2d(dtype=wp.int32),
     # mjw sources
     mjw_body_rootid: wp.array(dtype=wp.int32),
     mjw_gravity: wp.array(dtype=wp.vec3),
-    mjw_xpos: wp.array2d(dtype=wp.vec3),
+    mjw_xipos: wp.array2d(dtype=wp.vec3),
     mjw_subtree_com: wp.array2d(dtype=wp.vec3),
     mjw_cacc: wp.array2d(dtype=wp.spatial_vector),
     mjw_cvel: wp.array2d(dtype=wp.spatial_vector),
+    mjw_cint: wp.array2d(dtype=wp.spatial_vector),
     # outputs
     body_qdd: wp.array(dtype=wp.spatial_vector),
     body_parent_f: wp.array(dtype=wp.spatial_vector),
@@ -1748,20 +1760,25 @@ def convert_rigid_forces_from_mj_kernel(
 
     if body_qdd:
         cacc = mjw_cacc[world, mjc_body]
-        lin = mj_body_acceleration(
+        qdd_lin = mj_body_acceleration(
             mjw_body_rootid,
-            mjw_xpos,
+            mjw_xipos,
             mjw_subtree_com,
             mjw_cvel,
             mjw_cacc,
             world,
             mjc_body,
         )
-        body_qdd[newton_body] = wp.spatial_vector(lin + mjw_gravity[world], wp.spatial_top(cacc))
+        body_qdd[newton_body] = wp.spatial_vector(qdd_lin + mjw_gravity[world], wp.spatial_top(cacc))
 
     if body_parent_f:
-        # TODO: implement link incoming forces
-        pass
+        cint = mjw_cint[world, mjc_body]
+        parent_f_ang = wp.spatial_top(cint)
+        parent_f_lin = wp.spatial_bottom(cint)
+
+        offset = mjw_xipos[world, mjc_body] - mjw_subtree_com[world, mjw_body_rootid[mjc_body]]
+
+        body_parent_f[newton_body] = wp.spatial_vector(parent_f_lin, parent_f_ang - wp.cross(offset, parent_f_lin))
 
 
 @wp.kernel

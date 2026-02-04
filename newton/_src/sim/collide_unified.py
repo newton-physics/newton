@@ -589,6 +589,7 @@ class CollisionPipelineUnified:
                 requires_grad=self.requires_grad,
                 device=self.device,
                 per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
+                requested_attributes=model.get_requested_contact_attributes(),
             )
         else:
             self.contacts.clear()
