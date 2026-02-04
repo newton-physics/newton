@@ -10,12 +10,12 @@ newton.ik
    :nosignatures:
 
    IKJacobianType
-   IKObjectiveJointLimit
-   IKOptimizerLBFGS
-   IKOptimizerLM
    IKObjective
-   IKOptimizer
+   IKObjectiveJointLimit
    IKObjectivePosition
    IKObjectiveRotation
+   IKOptimizer
+   IKOptimizerLBFGS
+   IKOptimizerLM
    IKSampler
    IKSolver
