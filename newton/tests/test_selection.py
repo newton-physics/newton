@@ -192,7 +192,7 @@ class TestSelection(unittest.TestCase):
         expected = np.array([0, 1, 0, 1, 0, 1, 1, 1, 1, 0, 0, 0], dtype=np.bool)
         assert_np_equal(model_mask.numpy(), expected)
 
-    def run_test_joint_selection(self, use_mask: bool):
+    def run_test_joint_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         """Test an ArticulationView that includes a subset of joints and that we
         can write attributes to the subset of joints with and without a mask. Test
         that we can write to model/state/control."""
@@ -240,8 +240,11 @@ class TestSelection(unittest.TestCase):
             single_world_builder.add_builder(single_articuation_builder)
 
         # Customise the articulation keys in single_world_builder
-        single_world_builder.articulation_key[0] = "art0"
         single_world_builder.articulation_key[1] = "art1"
+        if use_multiple_artics_per_view:
+            single_world_builder.articulation_key[0] = "art1"
+        else:
+            single_world_builder.articulation_key[0] = "art0"
 
         # Create 3 worlds with two articulations per world and 3 joints per articulation.
         builder = newton.ModelBuilder()
@@ -274,133 +277,260 @@ class TestSelection(unittest.TestCase):
 
         mask = None
         if use_mask:
-            mask = [[False], [False], [True]]
+            if use_multiple_artics_per_view:
+                mask = [[False, False], [False, True], [False, False]]
+            else:
+                mask = [[False], [True], [False]]
 
         expected_dof_positions = []
         expected_joint_limit_lower = []
         expected_joint_target_pos = []
         if use_mask:
-            expected_dof_positions = [
-                0.0,  # world0/artic0
-                0.0,
-                0.0,
-                0.0,  # world0/artic1
-                0.0,
-                0.0,
-                0.0,  # world1/artic0
-                0.0,
-                0.0,
-                0.0,  # world1/artic1
-                0.0,
-                0.0,
-                0.0,  # world2/artic0
-                0.0,
-                0.0,
-                0.0,  # world2/artic1
-                0.0,
-                3.0,
-            ]
-            expected_joint_limit_lower = [
-                -50.5,  # world0/artic0
-                -50.5,
-                -50.5,
-                -50.5,  # world0/artic1
-                -50.5,
-                -50.5,
-                -50.5,  # world1/artic0
-                -50.5,
-                -50.5,
-                -50.5,  # world1/artic1
-                -50.5,
-                -50.5,
-                -50.5,  # world2/artic0
-                -50.5,
-                -50.5,
-                -50.5,  # world2/artic1
-                -50.5,
-                -47.5,
-            ]
-            expected_joint_target_pos = [
-                0.0,  # world0/artic0
-                0.0,
-                0.0,
-                0.0,  # world0/artic1
-                0.0,
-                0.0,
-                0.0,  # world1/artic0
-                0.0,
-                0.0,
-                0.0,  # world1/artic1
-                0.0,
-                0.0,
-                0.0,  # world2/artic0
-                0.0,
-                0.0,
-                0.0,  # world2/artic1
-                0.0,
-                6.0,
-            ]
+            if use_multiple_artics_per_view:
+                expected_dof_positions = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    4.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    0.0,
+                ]
+                expected_joint_limit_lower = [
+                    -50.5,  # world0/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world0/artic1
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic1
+                    -50.5,
+                    -46.5,
+                    -50.5,  # world2/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world2/artic1
+                    -50.5,
+                    -50.5,
+                ]
+                expected_joint_target_pos = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    8.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    0.0,
+                ]
+            else:
+                expected_dof_positions = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    2.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    0.0,
+                ]
+                expected_joint_limit_lower = [
+                    -50.5,  # world0/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world0/artic1
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic1
+                    -50.5,
+                    -48.5,
+                    -50.5,  # world2/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world2/artic1
+                    -50.5,
+                    -50.5,
+                ]
+                expected_joint_target_pos = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    4.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    0.0,
+                ]
         else:
-            expected_dof_positions = [
-                0.0,  # world0/artic0
-                0.0,
-                0.0,
-                0.0,  # world0/artic1
-                0.0,
-                1.0,
-                0.0,  # world1/artic0
-                0.0,
-                0.0,
-                0.0,  # world1/artic1
-                0.0,
-                2.0,
-                0.0,  # world2/artic0
-                0.0,
-                0.0,
-                0.0,  # world2/artic1
-                0.0,
-                3.0,
-            ]
-            expected_joint_limit_lower = [
-                -50.5,  # world0/artic0
-                -50.5,
-                -50.5,
-                -50.5,  # world0/artic1
-                -50.5,
-                -49.5,
-                -50.5,  # world1/artic0
-                -50.5,
-                -50.5,
-                -50.5,  # world1/artic1
-                -50.5,
-                -48.5,
-                -50.5,  # world2/artic0
-                -50.5,
-                -50.5,
-                -50.5,  # world2/artic1
-                -50.5,
-                -47.5,
-            ]
-            expected_joint_target_pos = [
-                0.0,  # world0/artic0
-                0.0,
-                0.0,
-                0.0,  # world0/artic1
-                0.0,
-                2.0,
-                0.0,  # world1/artic0
-                0.0,
-                0.0,
-                0.0,  # world1/artic1
-                0.0,
-                4.0,
-                0.0,  # world2/artic0
-                0.0,
-                0.0,
-                0.0,  # world2/artic1
-                0.0,
-                6.0,
-            ]
+            if use_multiple_artics_per_view:
+                expected_dof_positions = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    1.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    2.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    3.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    4.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    5.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    6.0,
+                ]
+                expected_joint_limit_lower = [
+                    -50.5,  # world0/artic0
+                    -50.5,
+                    -49.5,
+                    -50.5,  # world0/artic1
+                    -50.5,
+                    -48.5,
+                    -50.5,  # world1/artic0
+                    -50.5,
+                    -47.5,
+                    -50.5,  # world1/artic1
+                    -50.5,
+                    -46.5,
+                    -50.5,  # world2/artic0
+                    -50.5,
+                    -45.5,
+                    -50.5,  # world2/artic1
+                    -50.5,
+                    -44.5,
+                ]
+                expected_joint_target_pos = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    2.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    4.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    6.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    8.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    10.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    12.0,
+                ]
+            else:
+                expected_dof_positions = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    1.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    2.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    3.0,
+                ]
+                expected_joint_limit_lower = [
+                    -50.5,  # world0/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world0/artic1
+                    -50.5,
+                    -49.5,
+                    -50.5,  # world1/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic1
+                    -50.5,
+                    -48.5,
+                    -50.5,  # world2/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world2/artic1
+                    -50.5,
+                    -47.5,
+                ]
+                expected_joint_target_pos = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    2.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    4.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    6.0,
+                ]
 
         # Set the values associated with "joint3"
         joint_view.set_dof_positions(state_0, joint_dof_positions, mask)
@@ -804,23 +934,29 @@ class TestSelection(unittest.TestCase):
                     msg=f"Expected body velocity value: {expected}, Measured value: {measured}",
                 )
 
-    def test_joint_selection_no_mask(self):
-        self.run_test_joint_selection(False)
+    def test_joint_selection_one_per_view_no_mask(self):
+        self.run_test_joint_selection(use_mask=False, use_multiple_artics_per_view=False)
 
-    def test_joint_selection_with_mask(self):
-        self.run_test_joint_selection(True)
+    def test_joint_selection_two_per_view_no_mask(self):
+        self.run_test_joint_selection(use_mask=False, use_multiple_artics_per_view=True)
+
+    def test_joint_selection_one_per_view_with_mask(self):
+        self.run_test_joint_selection(use_mask=True, use_multiple_artics_per_view=False)
+
+    def test_joint_selection_two_per_view_with_mask(self):
+        self.run_test_joint_selection(use_mask=True, use_multiple_artics_per_view=True)
 
     def test_link_selection_one_per_view_no_mask(self):
-        self.run_test_link_selection(False, False)
+        self.run_test_link_selection(use_mask=False, use_multiple_artics_per_view=False)
 
     def test_link_selection_two_per_view_no_mask(self):
-        self.run_test_link_selection(False, True)
+        self.run_test_link_selection(use_mask=False, use_multiple_artics_per_view=True)
 
     def test_link_selection_one_per_view_with_mask(self):
-        self.run_test_link_selection(True, False)
+        self.run_test_link_selection(use_mask=True, use_multiple_artics_per_view=False)
 
     def test_link_selection_two_per_view_with_mask(self):
-        self.run_test_link_selection(True, True)
+        self.run_test_link_selection(use_mask=True, use_multiple_artics_per_view=True)
 
 
 if __name__ == "__main__":
