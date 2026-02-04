@@ -612,9 +612,9 @@ class TestImportUrdf(unittest.TestCase):
         self.assertEqual(joint_type, newton.JointType.FIXED)
 
     def test_base_joint_dict_creates_d6_joint(self):
-        """Test that base_joint as dict creates a D6 joint with specified axes."""
+        """Test that base_joint dict with linear and angular axes creates a D6 joint."""
         urdf_content = """<?xml version="1.0" encoding="utf-8"?>
-<robot name="test_base_joint_string">
+<robot name="test_base_joint_dict">
     <link name="base_link">
         <inertial>
             <mass value="1.0"/>
@@ -649,7 +649,7 @@ class TestImportUrdf(unittest.TestCase):
         self.assertEqual(builder.joint_key[0], "base_joint")
 
     def test_base_joint_dict_creates_custom_joint(self):
-        """Test that base_joint as dict creates the specified joint type."""
+        """Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with custom axis."""
         urdf_content = """<?xml version="1.0" encoding="utf-8"?>
 <robot name="test_base_joint_dict">
     <link name="base_link">
