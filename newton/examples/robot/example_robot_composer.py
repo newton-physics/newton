@@ -233,7 +233,7 @@ class Example:
         # Attach Robotiq 2F85 gripper to end effector
         # Rotate the gripper to align with the arm
         gripper_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2)
-        # ee_xform  is set for illustative purposes.
+        # ee_xform is set for illustrative purposes.
         ee_xform = wp.transform((0.00, 0.1, 0.0), gripper_quat)
         ur5e_with_robotiq_gripper.add_mjcf(
             str(self.robotiq_2f85_path),
@@ -289,7 +289,7 @@ class Example:
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 2)
         quat_y = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi)
         hand_quat = quat_y * quat_z
-        # ee_xform  is set for illustative purposes.
+        # ee_xform is set for illustrative purposes.
         ee_xform = wp.transform((-0.065, 0.28, 0.10), hand_quat)
         ur5e_with_hand.add_mjcf(
             str(self.leap_path),
@@ -355,7 +355,7 @@ class Example:
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -init_q[-1])
         quat_y = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi / 2)
         hand_quat = quat_z * quat_y
-        # ee_xform  is set for illustative purposes.
+        # ee_xform is set for illustrative purposes.
         ee_xform = wp.transform((0.0, 0.0, 0.1), hand_quat)
 
         franka_with_hand.add_mjcf(
