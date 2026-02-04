@@ -3601,8 +3601,8 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(model.joint_count, 1)
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
 
-    def test_base_joint_string_creates_d6_joint(self):
-        """Test that base_joint as string creates a D6 joint with specified axes."""
+    def test_base_joint_dict_creates_d6_joint(self):
+        """Test that base_joint as dict creates a D6 joint with specified axes."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_base_joint_string">
     <worldbody>
@@ -3614,7 +3614,17 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="px,py,rz")
+        builder.add_mjcf(
+            mjcf_content,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
         model = builder.finalize()
 
         self.assertEqual(model.joint_count, 1)
@@ -3660,28 +3670,45 @@ class TestImportMjcf(unittest.TestCase):
         # Specifying both parameters should raise ValueError
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as cm:
-            builder.add_mjcf(mjcf_content, floating=True, base_joint="px,py")
+            builder.add_mjcf(
+                mjcf_content,
+                floating=True,
+                base_joint={
+                    "joint_type": newton.JointType.D6,
+                    "linear_axes": [
+                        newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                        newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    ],
+                },
+            )
         self.assertIn("both 'floating' and 'base_joint'", str(cm.exception))
 
     def test_base_joint_respects_import_xform(self):
         """Test that base joints (parent == -1) correctly use the import xform.
 
-        This is a regression test for a bug where root bodies with base_joint
-        ignored the import xform parameter, using raw body pos/ori instead of
-        the composed world_xform.
+            This is a regression test for a bug where root bodies with base_joint
+            ignored the import xform parameter, using raw body pos/ori instead of
+            the composed world_xform.
 
-        Setup:
-        - Root body at (1, 0, 0) with no rotation
-        - Import xform: translate by (10, 20, 30) and rotate 90° around Z
-        - Using base_joint="lx,ly,lz" (D6 joint with linear axes)
+            Setup:
+            - Root body at (1, 0, 0) with no rotation
+            - Import xform: translate by (10, 20, 30) and rotate 90° around Z
+            - Using base_joint={
+            "joint_type": newton.JointType.D6,
+            "linear_axes": [
+                newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])
+            ],
+        } (D6 joint with linear axes)
 
-        Expected final body transform after FK:
-        - world_xform = import_xform * body_local_xform
-        - = transform((10,20,30), rot_90z) * transform((1,0,0), identity)
-        - Position: (10,20,30) + rotate_90z(1,0,0) = (10,20,30) + (0,1,0) = (10, 21, 30)
-        - Orientation: 90° Z rotation
+            Expected final body transform after FK:
+            - world_xform = import_xform * body_local_xform
+            - = transform((10,20,30), rot_90z) * transform((1,0,0), identity)
+            - Position: (10,20,30) + rotate_90z(1,0,0) = (10,20,30) + (0,1,0) = (10, 21, 30)
+            - Orientation: 90° Z rotation
 
-        Bug would give: position = (1, 0, 0), orientation = identity (ignoring import xform)
+            Bug would give: position = (1, 0, 0), orientation = identity (ignoring import xform)
         """
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_base_joint_xform">
@@ -3700,7 +3727,18 @@ class TestImportMjcf(unittest.TestCase):
 
         # Use base_joint to convert freejoint to a D6 joint
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, xform=import_xform, base_joint="lx,ly,lz")
+        builder.add_mjcf(
+            mjcf_content,
+            xform=import_xform,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
 
         # Verify body transform after forward kinematics
@@ -3759,7 +3797,17 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="lx,ly,lz")
+        builder.add_mjcf(
+            mjcf_content,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
 
         # Verify body transform after forward kinematics
@@ -3868,7 +3916,14 @@ class TestImportMjcf(unittest.TestCase):
         robot_body_idx = 0
 
         # Attach gripper with a D6 joint (rotation around Z)
-        builder.add_mjcf(gripper_mjcf, parent_body=robot_body_idx, base_joint="rz")
+        builder.add_mjcf(
+            gripper_mjcf,
+            parent_body=robot_body_idx,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
 
         model = builder.finalize()
 
@@ -4121,7 +4176,17 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
         builder = newton.ModelBuilder()
-        builder.add_mjcf(fixed_root_mjcf, base_joint="px,py,rz")
+        builder.add_mjcf(
+            fixed_root_mjcf,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
         model = builder.finalize()
 
         self.assertEqual(model.joint_count, 2)
@@ -5584,110 +5649,6 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(float(gainprm[6, 0]), 9999.0, places=1)
         self.assertAlmostEqual(float(gainprm[7, 0]), 3000.0, places=1)
 
-    def test_base_joint_empty_string_fails(self):
-        """Test that empty base_joint string raises ValueError."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_mjcf(mjcf_content, base_joint="")
-        self.assertIn("cannot be empty", str(ctx.exception))
-
-    def test_base_joint_whitespace_only_fails(self):
-        """Test that whitespace-only base_joint string raises ValueError."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_mjcf(mjcf_content, base_joint="   ")
-        self.assertIn("cannot be empty", str(ctx.exception))
-
-    def test_base_joint_invalid_length_fails(self):
-        """Test that base_joint axis specs with invalid length raise ValueError."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-        builder = newton.ModelBuilder()
-
-        # Single character
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_mjcf(mjcf_content, base_joint="p")
-        self.assertIn("exactly 2 characters", str(ctx.exception))
-
-        # Three characters
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_mjcf(mjcf_content, base_joint="pxx")
-        self.assertIn("exactly 2 characters", str(ctx.exception))
-
-    def test_base_joint_invalid_type_char_fails(self):
-        """Test that base_joint with invalid type character raises ValueError."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_mjcf(mjcf_content, base_joint="xx")  # 'x' is not a valid type
-        self.assertIn("first char must be l/p/a/r", str(ctx.exception))
-
-    def test_base_joint_invalid_axis_char_fails(self):
-        """Test that base_joint with invalid axis character raises ValueError."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_mjcf(mjcf_content, base_joint="pw")  # 'w' is not a valid axis
-        self.assertIn("second char must be x/y/z", str(ctx.exception))
-
-    def test_base_joint_duplicate_axes_fails(self):
-        """Test that base_joint with duplicate axis specifications raises ValueError."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_mjcf(mjcf_content, base_joint="px,py,px")  # 'px' appears twice
-        self.assertIn("Duplicate axis specifications", str(ctx.exception))
-        self.assertIn("px", str(ctx.exception))
-
     def test_base_joint_dict_conflicting_keys_fails(self):
         """Test that base_joint dict with conflicting keys raises ValueError."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -5721,61 +5682,3 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
             )
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent_xform", str(ctx.exception))
-
-    def test_base_joint_valid_string_variations(self):
-        """Test that various valid base_joint string formats work correctly."""
-        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test">
-    <worldbody>
-        <body name="body1" pos="0 0 0">
-            <freejoint/>
-            <geom type="box" size="0.1 0.1 0.1"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-
-        # Test linear with 'l' prefix
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="lx,ly,lz")
-        model = builder.finalize()
-        self.assertEqual(model.joint_coord_count, 3)  # 3 linear DOFs
-
-        # Test linear with 'p' prefix (prismatic)
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="px,py,pz")
-        model = builder.finalize()
-        self.assertEqual(model.joint_coord_count, 3)  # 3 linear DOFs
-
-        # Test angular with 'a' prefix
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="ax,ay,az")
-        model = builder.finalize()
-        self.assertEqual(model.joint_coord_count, 3)  # 3 angular DOFs
-
-        # Test angular with 'r' prefix (revolute)
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="rx,ry,rz")
-        model = builder.finalize()
-        self.assertEqual(model.joint_coord_count, 3)  # 3 angular DOFs
-
-        # Test mixed linear and angular
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="px,py,rz")
-        model = builder.finalize()
-        self.assertEqual(model.joint_coord_count, 3)  # 2 linear + 1 angular
-
-        # Test with spaces (should be trimmed)
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint=" px , py , rz ")
-        model = builder.finalize()
-        self.assertEqual(model.joint_coord_count, 3)
-
-        # Test uppercase (should be lowercased)
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="PX,PY,RZ")
-        model = builder.finalize()
-        self.assertEqual(model.joint_coord_count, 3)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

@@ -611,8 +611,8 @@ class TestImportUrdf(unittest.TestCase):
         joint_type = model.joint_type.numpy()[0]
         self.assertEqual(joint_type, newton.JointType.FIXED)
 
-    def test_base_joint_string_creates_d6_joint(self):
-        """Test that base_joint as string creates a D6 joint with specified axes."""
+    def test_base_joint_dict_creates_d6_joint(self):
+        """Test that base_joint as dict creates a D6 joint with specified axes."""
         urdf_content = """<?xml version="1.0" encoding="utf-8"?>
 <robot name="test_base_joint_string">
     <link name="base_link">
@@ -627,7 +627,19 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, base_joint="px,py,rz", up_axis="Z")
+        self.parse_urdf(
+            urdf_content,
+            builder,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+            up_axis="Z",
+        )
         model = builder.finalize()
 
         # Verify the model has a D6 joint
@@ -687,7 +699,19 @@ class TestImportUrdf(unittest.TestCase):
         # Specifying both parameters should raise ValueError
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as cm:
-            self.parse_urdf(urdf_content, builder, floating=True, base_joint="px,py", up_axis="Z")
+            self.parse_urdf(
+                urdf_content,
+                builder,
+                floating=True,
+                base_joint={
+                    "joint_type": newton.JointType.D6,
+                    "linear_axes": [
+                        newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                        newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    ],
+                },
+                up_axis="Z",
+            )
         self.assertIn("both 'floating' and 'base_joint'", str(cm.exception))
 
     def test_base_joint_dict_with_conflicting_parent(self):
@@ -744,19 +768,26 @@ class TestImportUrdf(unittest.TestCase):
     def test_base_joint_respects_import_xform(self):
         """Test that base joints (parent == -1) correctly use the import xform.
 
-        This is a regression test for a bug where root bodies with base_joint
-        ignored the import xform parameter, using raw body pos/ori instead of
-        the composed world_xform.
+            This is a regression test for a bug where root bodies with base_joint
+            ignored the import xform parameter, using raw body pos/ori instead of
+            the composed world_xform.
 
-        Setup:
-        - Root body at origin with no rotation
-        - Import xform: translate by (10, 20, 30) and rotate 90° around Z
-        - Using base_joint="px,py,pz" (D6 joint with linear axes)
+            Setup:
+            - Root body at origin with no rotation
+            - Import xform: translate by (10, 20, 30) and rotate 90° around Z
+            - Using base_joint={
+            "joint_type": newton.JointType.D6,
+            "linear_axes": [
+                newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])
+            ],
+        } (D6 joint with linear axes)
 
-        Expected final body transform after FK:
-        - world_xform = import_xform * body_local_xform
-        - Position should reflect import position
-        - Orientation should reflect import rotation
+            Expected final body transform after FK:
+            - world_xform = import_xform * body_local_xform
+            - Position should reflect import position
+            - Orientation should reflect import rotation
         """
         urdf_content = """<?xml version="1.0"?>
 <robot name="test_base_joint_xform">
@@ -780,7 +811,20 @@ class TestImportUrdf(unittest.TestCase):
 
         # Use base_joint to create a D6 joint
         builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, xform=import_xform, base_joint="px,py,pz", up_axis="Z")
+        self.parse_urdf(
+            urdf_content,
+            builder,
+            xform=import_xform,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+            up_axis="Z",
+        )
         model = builder.finalize()
 
         # Verify body transform after forward kinematics
@@ -903,7 +947,16 @@ class TestImportUrdf(unittest.TestCase):
         robot_body_idx = 0
 
         # Attach gripper with a D6 joint (rotation around Z)
-        self.parse_urdf(gripper_urdf, builder, parent_body=robot_body_idx, base_joint="rz", up_axis="Z")
+        self.parse_urdf(
+            gripper_urdf,
+            builder,
+            parent_body=robot_body_idx,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+            up_axis="Z",
+        )
 
         model = builder.finalize()
 
@@ -1204,117 +1257,6 @@ class TestImportUrdf(unittest.TestCase):
         # Each articulation has 2 joints (FIXED base + revolute)
         self.assertEqual(model.joint_count, 10)
 
-    def test_base_joint_empty_string_fails(self):
-        """Test that empty base_joint string raises ValueError."""
-        urdf_content = """<?xml version="1.0"?>
-<robot name="test">
-    <link name="body1">
-        <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
-        </inertial>
-        <visual><geometry><box size="0.2 0.2 0.2"/></geometry></visual>
-    </link>
-</robot>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(urdf_content, builder, base_joint="", up_axis="Z")
-        self.assertIn("cannot be empty", str(ctx.exception))
-
-    def test_base_joint_whitespace_only_fails(self):
-        """Test that whitespace-only base_joint string raises ValueError."""
-        urdf_content = """<?xml version="1.0"?>
-<robot name="test">
-    <link name="body1">
-        <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
-        </inertial>
-        <visual><geometry><box size="0.2 0.2 0.2"/></geometry></visual>
-    </link>
-</robot>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(urdf_content, builder, base_joint="   ", up_axis="Z")
-        self.assertIn("cannot be empty", str(ctx.exception))
-
-    def test_base_joint_invalid_length_fails(self):
-        """Test that base_joint axis specs with invalid length raise ValueError."""
-        urdf_content = """<?xml version="1.0"?>
-<robot name="test">
-    <link name="body1">
-        <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
-        </inertial>
-        <visual><geometry><box size="0.2 0.2 0.2"/></geometry></visual>
-    </link>
-</robot>"""
-        builder = newton.ModelBuilder()
-
-        # Single character
-        with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(urdf_content, builder, base_joint="p", up_axis="Z")
-        self.assertIn("exactly 2 characters", str(ctx.exception))
-
-        # Three characters
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(urdf_content, builder, base_joint="pxx", up_axis="Z")
-        self.assertIn("exactly 2 characters", str(ctx.exception))
-
-    def test_base_joint_invalid_type_char_fails(self):
-        """Test that base_joint with invalid type character raises ValueError."""
-        urdf_content = """<?xml version="1.0"?>
-<robot name="test">
-    <link name="body1">
-        <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
-        </inertial>
-        <visual><geometry><box size="0.2 0.2 0.2"/></geometry></visual>
-    </link>
-</robot>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(urdf_content, builder, base_joint="xx", up_axis="Z")  # 'x' is not a valid type
-        self.assertIn("first char must be l/p/a/r", str(ctx.exception))
-
-    def test_base_joint_invalid_axis_char_fails(self):
-        """Test that base_joint with invalid axis character raises ValueError."""
-        urdf_content = """<?xml version="1.0"?>
-<robot name="test">
-    <link name="body1">
-        <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
-        </inertial>
-        <visual><geometry><box size="0.2 0.2 0.2"/></geometry></visual>
-    </link>
-</robot>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(urdf_content, builder, base_joint="pw", up_axis="Z")  # 'w' is not a valid axis
-        self.assertIn("second char must be x/y/z", str(ctx.exception))
-
-    def test_base_joint_duplicate_axes_fails(self):
-        """Test that base_joint with duplicate axis specifications raises ValueError."""
-        urdf_content = """<?xml version="1.0"?>
-<robot name="test">
-    <link name="body1">
-        <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
-        </inertial>
-        <visual><geometry><box size="0.2 0.2 0.2"/></geometry></visual>
-    </link>
-</robot>"""
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(urdf_content, builder, base_joint="px,py,px", up_axis="Z")  # 'px' appears twice
-        self.assertIn("Duplicate axis specifications", str(ctx.exception))
-        self.assertIn("px", str(ctx.exception))
-
     def test_base_joint_dict_conflicting_keys_fails(self):
         """Test that base_joint dict with conflicting keys raises ValueError."""
         urdf_content = """<?xml version="1.0"?>
@@ -1357,47 +1299,6 @@ class TestImportUrdf(unittest.TestCase):
             )
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent_xform", str(ctx.exception))
-
-    def test_base_joint_valid_string_variations(self):
-        """Test that various valid base_joint string formats work correctly."""
-        urdf_content = """<?xml version="1.0"?>
-<robot name="test">
-    <link name="body1">
-        <inertial>
-            <mass value="1.0"/>
-            <inertia ixx="0.1" ixy="0.0" ixz="0.0" iyy="0.1" iyz="0.0" izz="0.1"/>
-        </inertial>
-        <visual><geometry><box size="0.2 0.2 0.2"/></geometry></visual>
-    </link>
-</robot>"""
-
-        # Test linear with 'l' prefix
-        builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, base_joint="lx,ly,lz", up_axis="Z")
-        model = builder.finalize()
-        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
-        self.assertEqual(model.joint_dof_count, 3)  # 3 linear axes
-
-        # Test positional with 'p' prefix
-        builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, base_joint="px,py,pz", up_axis="Z")
-        model = builder.finalize()
-        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
-        self.assertEqual(model.joint_dof_count, 3)  # 3 positional axes
-
-        # Test angular with 'a' prefix
-        builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, base_joint="ax,ay,az", up_axis="Z")
-        model = builder.finalize()
-        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
-        self.assertEqual(model.joint_dof_count, 3)  # 3 angular axes
-
-        # Test rotational with 'r' prefix
-        builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, base_joint="rx,ry,rz", up_axis="Z")
-        model = builder.finalize()
-        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
-        self.assertEqual(model.joint_dof_count, 3)  # 3 rotational axes
 
 
 class TestUrdfUriResolution(unittest.TestCase):

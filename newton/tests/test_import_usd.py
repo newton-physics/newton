@@ -2277,7 +2277,17 @@ def Xform "Root" (
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.add_shape_box(body0, hx=0.5, hy=0.5, hz=0.5)
 
-        builder._add_base_joints_to_floating_bodies([body0], base_joint="px,py,rz")
+        builder._add_base_joints_to_floating_bodies(
+            [body0],
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[0], newton.JointType.D6)
@@ -2378,7 +2388,17 @@ def Xform "Root" (
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
 
-        joint_id = builder._add_base_joint(body0, base_joint="px,py,rz")
+        joint_id = builder._add_base_joint(
+            body0,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[joint_id], newton.JointType.D6)
@@ -4222,7 +4242,17 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(body_prim)
 
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, base_joint="px,py,rz")
+        builder.add_usd(
+            stage,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
         model = builder.finalize()
 
         self.assertEqual(model.joint_count, 1)
@@ -4272,26 +4302,43 @@ def Xform "Articulation" (
         # Specifying both floating and base_joint should raise an error
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as ctx:
-            builder.add_usd(stage, floating=True, base_joint="px,py")
+            builder.add_usd(
+                stage,
+                floating=True,
+                base_joint={
+                    "joint_type": newton.JointType.D6,
+                    "linear_axes": [
+                        newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                        newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    ],
+                },
+            )
         self.assertIn("Cannot specify both", str(ctx.exception))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_respects_import_xform(self):
         """Test that base joints (parent == -1) correctly use the import xform.
 
-        This is a regression test for a bug where root bodies with base_joint
-        ignored the import xform parameter, using raw body pos/ori instead of
-        the composed world_xform.
+            This is a regression test for a bug where root bodies with base_joint
+            ignored the import xform parameter, using raw body pos/ori instead of
+            the composed world_xform.
 
-        Setup:
-        - Root body at (1, 0, 0) with no rotation
-        - Import xform: translate by (10, 20, 30) and rotate 90° around Z
-        - Using base_joint="px,py,pz" (D6 joint with linear axes)
+            Setup:
+            - Root body at (1, 0, 0) with no rotation
+            - Import xform: translate by (10, 20, 30) and rotate 90° around Z
+            - Using base_joint={
+            "joint_type": newton.JointType.D6,
+            "linear_axes": [
+                newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])
+            ],
+        } (D6 joint with linear axes)
 
-        Expected final body transform after FK:
-        - world_xform = import_xform * body_local_xform
-        - Position should reflect import position + rotated offset
-        - Orientation should reflect import rotation
+            Expected final body transform after FK:
+            - world_xform = import_xform * body_local_xform
+            - Position should reflect import position + rotated offset
+            - Orientation should reflect import rotation
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
@@ -4318,7 +4365,18 @@ def Xform "Articulation" (
 
         # Use base_joint to create a D6 joint
         builder = newton.ModelBuilder()
-        builder.add_usd(stage, xform=import_xform, base_joint="px,py,pz")
+        builder.add_usd(
+            stage,
+            xform=import_xform,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
 
         # Verify body transform after forward kinematics
@@ -4459,7 +4517,14 @@ def Xform "Articulation" (
         robot_body_idx = 0
 
         # Attach gripper with a D6 joint (rotation around Z)
-        builder.add_usd(gripper_stage, parent_body=robot_body_idx, base_joint="rz")
+        builder.add_usd(
+            gripper_stage,
+            parent_body=robot_body_idx,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
 
         model = builder.finalize()
 
@@ -4768,134 +4833,6 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_count, 10)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_empty_string_fails(self):
-        """Test that empty base_joint string raises ValueError."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Cube.Define(stage, "/Body")
-        body_prim = body.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(body_prim)
-        UsdPhysics.CollisionAPI.Apply(body_prim)
-        UsdPhysics.MassAPI.Apply(body_prim).GetMassAttr().Set(1.0)
-
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_usd(stage, base_joint="")
-        self.assertIn("cannot be empty", str(ctx.exception))
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_whitespace_only_fails(self):
-        """Test that whitespace-only base_joint string raises ValueError."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Cube.Define(stage, "/Body")
-        body_prim = body.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(body_prim)
-        UsdPhysics.CollisionAPI.Apply(body_prim)
-        UsdPhysics.MassAPI.Apply(body_prim).GetMassAttr().Set(1.0)
-
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_usd(stage, base_joint="   ")
-        self.assertIn("cannot be empty", str(ctx.exception))
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_invalid_length_fails(self):
-        """Test that base_joint axis specs with invalid length raise ValueError."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Cube.Define(stage, "/Body")
-        body_prim = body.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(body_prim)
-        UsdPhysics.CollisionAPI.Apply(body_prim)
-        UsdPhysics.MassAPI.Apply(body_prim).GetMassAttr().Set(1.0)
-
-        builder = newton.ModelBuilder()
-
-        # Single character
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_usd(stage, base_joint="p")
-        self.assertIn("exactly 2 characters", str(ctx.exception))
-
-        # Three characters
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_usd(stage, base_joint="pxx")
-        self.assertIn("exactly 2 characters", str(ctx.exception))
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_invalid_type_char_fails(self):
-        """Test that base_joint with invalid type character raises ValueError."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Cube.Define(stage, "/Body")
-        body_prim = body.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(body_prim)
-        UsdPhysics.CollisionAPI.Apply(body_prim)
-        UsdPhysics.MassAPI.Apply(body_prim).GetMassAttr().Set(1.0)
-
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_usd(stage, base_joint="xx")  # 'x' is not a valid type
-        self.assertIn("first char must be l/p/a/r", str(ctx.exception))
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_invalid_axis_char_fails(self):
-        """Test that base_joint with invalid axis character raises ValueError."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Cube.Define(stage, "/Body")
-        body_prim = body.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(body_prim)
-        UsdPhysics.CollisionAPI.Apply(body_prim)
-        UsdPhysics.MassAPI.Apply(body_prim).GetMassAttr().Set(1.0)
-
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_usd(stage, base_joint="pw")  # 'w' is not a valid axis
-        self.assertIn("second char must be x/y/z", str(ctx.exception))
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_duplicate_axes_fails(self):
-        """Test that base_joint with duplicate axis specifications raises ValueError."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-
-        body = UsdGeom.Cube.Define(stage, "/Body")
-        body_prim = body.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(body_prim)
-        UsdPhysics.CollisionAPI.Apply(body_prim)
-        UsdPhysics.MassAPI.Apply(body_prim).GetMassAttr().Set(1.0)
-
-        builder = newton.ModelBuilder()
-        with self.assertRaises(ValueError) as ctx:
-            builder.add_usd(stage, base_joint="px,py,px")  # 'px' appears twice
-        self.assertIn("Duplicate axis specifications", str(ctx.exception))
-        self.assertIn("px", str(ctx.exception))
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_conflicting_keys_fails(self):
         """Test that base_joint dict with conflicting keys raises ValueError."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -4951,28 +4888,68 @@ def Xform "Articulation" (
 
         # Test linear with 'l' prefix
         builder = newton.ModelBuilder()
-        builder.add_usd(create_stage(), base_joint="lx,ly,lz")
+        builder.add_usd(
+            create_stage(),
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
         self.assertEqual(model.joint_dof_count, 3)  # 3 linear axes
 
         # Test positional with 'p' prefix
         builder = newton.ModelBuilder()
-        builder.add_usd(create_stage(), base_joint="px,py,pz")
+        builder.add_usd(
+            create_stage(),
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
         self.assertEqual(model.joint_dof_count, 3)  # 3 positional axes
 
         # Test angular with 'a' prefix
         builder = newton.ModelBuilder()
-        builder.add_usd(create_stage(), base_joint="ax,ay,az")
+        builder.add_usd(
+            create_stage(),
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "angular_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
         self.assertEqual(model.joint_dof_count, 3)  # 3 angular axes
 
         # Test rotational with 'r' prefix
         builder = newton.ModelBuilder()
-        builder.add_usd(create_stage(), base_joint="rx,ry,rz")
+        builder.add_usd(
+            create_stage(),
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "angular_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
         self.assertEqual(model.joint_dof_count, 3)  # 3 rotational axes

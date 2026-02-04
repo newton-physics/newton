@@ -1424,7 +1424,7 @@ class ModelBuilder:
         *,
         xform: Transform | None = None,
         floating: bool | None = None,
-        base_joint: dict | str | None = None,
+        base_joint: dict | None = None,
         parent_body: int = -1,
         scale: float = 1.0,
         hide_visuals: bool = False,
@@ -1455,15 +1455,10 @@ class ModelBuilder:
                 - ``False``: Creates a FIXED joint (0 DOF).
 
                 Cannot be specified together with ``base_joint``.
-            base_joint (Union[str, dict]): Custom joint specification for connecting the root body to the world
+            base_joint (dict): Custom joint specification for connecting the root body to the world
                 (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
-                custom mobility. Can be either:
-
-                - **String format**: Comma-separated axis names for a D6 joint (e.g., ``"px,py,rz"`` for a
-                  planar robot with 2 translations and 1 rotation, or ``"px,py,pz,rx,ry,rz"`` for full 6-DOF).
-                  Valid axis names: ``px``, ``py``, ``pz`` (translation), ``rx``, ``ry``, ``rz`` (rotation).
-                - **Dictionary format**: Full joint specification with parameters as accepted by
-                  :meth:`ModelBuilder.add_joint` (e.g., custom joint types, axes, limits, stiffness).
+                custom mobility. Dictionary with joint parameters as accepted by
+                :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
                 Cannot be specified together with ``floating``.
             parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
@@ -1497,17 +1492,17 @@ class ModelBuilder:
                         - ``-1``
                         - FIXED joint to world (0 DOF)
                       * - ``None``
-                        - ``"px,py,rz"``
+                        - ``{dict}``
                         - ``-1``
-                        - D6 joint to world with specified axes
+                        - Custom joint to world (e.g., D6)
                       * - ``False``
                         - ``None``
                         - ``body_idx``
                         - FIXED joint to parent body
                       * - ``None``
-                        - ``"px,py,rz"``
+                        - ``{dict}``
                         - ``body_idx``
-                        - D6 joint to parent body with specified axes
+                        - Custom joint to parent body (e.g., D6)
                       * - ``True``
                         - *any*
                         - *any*
@@ -1572,7 +1567,7 @@ class ModelBuilder:
         *,
         xform: Transform | None = None,
         floating: bool | None = None,
-        base_joint: dict | str | None = None,
+        base_joint: dict | None = None,
         parent_body: int = -1,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
@@ -1612,15 +1607,10 @@ class ModelBuilder:
                 - ``False``: Creates a FIXED joint (0 DOF).
 
                 Cannot be specified together with ``base_joint``.
-            base_joint (Union[str, dict]): Custom joint specification for connecting the root body to the world
+            base_joint (dict): Custom joint specification for connecting the root body to the world
                 (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
-                custom mobility. Can be either:
-
-                - **String format**: Comma-separated axis names for a D6 joint (e.g., ``"px,py,rz"`` for a
-                  planar robot with 2 translations and 1 rotation, or ``"px,py,pz,rx,ry,rz"`` for full 6-DOF).
-                  Valid axis names: ``px``, ``py``, ``pz`` (translation), ``rx``, ``ry``, ``rz`` (rotation).
-                - **Dictionary format**: Full joint specification with parameters as accepted by
-                  :meth:`ModelBuilder.add_joint` (e.g., custom joint types, axes, limits, stiffness).
+                custom mobility. Dictionary with joint parameters as accepted by
+                :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
                 Cannot be specified together with ``floating``.
             parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
@@ -1654,17 +1644,17 @@ class ModelBuilder:
                         - ``-1``
                         - FIXED joint to world (0 DOF)
                       * - ``None``
-                        - ``"px,py,rz"``
+                        - ``{dict}``
                         - ``-1``
-                        - D6 joint to world with specified axes
+                        - Custom joint to world (e.g., D6)
                       * - ``False``
                         - ``None``
                         - ``body_idx``
                         - FIXED joint to parent body
                       * - ``None``
-                        - ``"px,py,rz"``
+                        - ``{dict}``
                         - ``body_idx``
-                        - D6 joint to parent body with specified axes
+                        - Custom joint to parent body (e.g., D6)
                       * - ``True``
                         - *any*
                         - *any*
@@ -1787,7 +1777,7 @@ class ModelBuilder:
         *,
         xform: Transform | None = None,
         floating: bool | None = None,
-        base_joint: dict | str | None = None,
+        base_joint: dict | None = None,
         parent_body: int = -1,
         armature_scale: float = 1.0,
         scale: float = 1.0,
@@ -1832,15 +1822,10 @@ class ModelBuilder:
                 - ``False``: Creates a FIXED joint (0 DOF).
 
                 Cannot be specified together with ``base_joint``.
-            base_joint (Union[str, dict]): Custom joint specification for connecting the root body to the world
+            base_joint (dict): Custom joint specification for connecting the root body to the world
                 (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
-                custom mobility. Can be either:
-
-                - **String format**: Comma-separated axis names for a D6 joint (e.g., ``"px,py,rz"`` for a
-                  planar robot with 2 translations and 1 rotation, or ``"px,py,pz,rx,ry,rz"`` for full 6-DOF).
-                  Valid axis names: ``px``, ``py``, ``pz`` (translation), ``rx``, ``ry``, ``rz`` (rotation).
-                - **Dictionary format**: Full joint specification with parameters as accepted by
-                  :meth:`ModelBuilder.add_joint` (e.g., custom joint types, axes, limits, stiffness).
+                custom mobility. Dictionary with joint parameters as accepted by
+                :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
 
                 Cannot be specified together with ``floating``.
             parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
@@ -1874,17 +1859,17 @@ class ModelBuilder:
                         - ``-1``
                         - FIXED joint to world (0 DOF)
                       * - ``None``
-                        - ``"px,py,rz"``
+                        - ``{dict}``
                         - ``-1``
-                        - D6 joint to world with specified axes
+                        - Custom joint to world (e.g., D6)
                       * - ``False``
                         - ``None``
                         - ``body_idx``
                         - FIXED joint to parent body
                       * - ``None``
-                        - ``"px,py,rz"``
+                        - ``{dict}``
                         - ``body_idx``
-                        - D6 joint to parent body with specified axes
+                        - Custom joint to parent body (e.g., D6)
                       * - ``True``
                         - *any*
                         - *any*
@@ -7134,7 +7119,7 @@ class ModelBuilder:
         return None
 
     @staticmethod
-    def _validate_base_joint_params(floating: bool | None, base_joint: dict | str | None, parent: int) -> None:
+    def _validate_base_joint_params(floating: bool | None, base_joint: dict | None, parent: int) -> None:
         """
         Validate floating and base_joint parameter combinations.
 
@@ -7143,7 +7128,7 @@ class ModelBuilder:
 
         Args:
             floating: The floating parameter value (True, False, or None).
-            base_joint: The base_joint parameter value.
+            base_joint: Dict with joint parameters (or None).
             parent: The parent body index (-1 for world, >= 0 for a body).
 
         Raises:
@@ -7153,13 +7138,12 @@ class ModelBuilder:
                 - base_joint dict contains conflicting keys like 'parent', 'child', etc.
         """
         if floating is not None and base_joint is not None:
-            base_joint_str = base_joint if isinstance(base_joint, str) else "{dict}"
             raise ValueError(
                 f"Cannot specify both 'floating' and 'base_joint' parameters. "
                 f"These are mutually exclusive ways to control root attachment:\n"
                 f"  - Use 'floating' for simple FREE/FIXED joints\n"
-                f"  - Use 'base_joint' for custom mobility (e.g., 'px,py,rz')\n"
-                f"Current values: floating={floating}, base_joint={base_joint_str!r}"
+                f"  - Use 'base_joint' dict for custom joint parameters\n"
+                f"Current values: floating={floating}, base_joint={{dict}}"
             )
 
         if floating is True and parent != -1:
@@ -7168,11 +7152,11 @@ class ModelBuilder:
                 f"FREE joints must connect to world frame (parent_body=-1).\n"
                 f"Did you mean:\n"
                 f"  - Use floating=False to create FIXED joint to parent\n"
-                f"  - Use base_joint='px,py,pz,rx,ry,rz' for 6-DOF mobility attached to parent"
+                f"  - Use base_joint dict with D6 joint parameters for 6-DOF mobility attached to parent"
             )
 
         # Validate base_joint dict doesn't contain conflicting keys
-        if isinstance(base_joint, dict):
+        if base_joint is not None:
             conflicting_keys = set(base_joint.keys()) & {"parent", "child", "parent_xform", "child_xform"}
             if conflicting_keys:
                 raise ValueError(
@@ -7275,158 +7259,44 @@ class ModelBuilder:
                 custom_attributes=custom_attributes,
             )
 
-    @staticmethod
-    def _parse_d6_axes_spec(base_joint_str: str) -> tuple[list[str], list[str]]:
-        """
-        Parse D6 joint axis specification string.
-
-        Args:
-            base_joint_str: Comma-separated axis specs like 'px,py,rz' or 'lx,ly,az'
-
-        Returns:
-            Tuple of (linear_axes, angular_axes) where each is a list of axis characters ('x', 'y', 'z')
-
-        Raises:
-            ValueError: If the specification is invalid
-        """
-        # Parse and clean axis specifications
-        axes_spec = [ax.strip() for ax in base_joint_str.lower().split(",") if ax.strip()]
-
-        # Validate non-empty
-        if not axes_spec:
-            raise ValueError(
-                "base_joint string cannot be empty. Expected comma-separated axis specs like 'px,py,rz' or 'lx,ly,az'."
-            )
-
-        # Validate axis specs: must be exactly 2 characters (type + axis)
-        invalid = []
-        for ax in axes_spec:
-            if len(ax) != 2:
-                invalid.append(f"{ax!r} (must be exactly 2 characters)")
-            elif ax[0] not in {"l", "p", "a", "r"}:
-                invalid.append(f"{ax!r} (first char must be l/p/a/r)")
-            elif ax[1] not in {"x", "y", "z"}:
-                invalid.append(f"{ax!r} (second char must be x/y/z)")
-
-        if invalid:
-            raise ValueError(
-                f"Invalid base_joint axis spec(s): {', '.join(invalid)}. "
-                f"Expected 2-character tokens like 'px', 'py', 'rz' where first char is "
-                f"'l'/'p' (linear/prismatic) or 'a'/'r' (angular/revolute), and second char is 'x'/'y'/'z'."
-            )
-
-        # Check for duplicates
-        if len(axes_spec) != len(set(axes_spec)):
-            duplicates = [ax for ax in axes_spec if axes_spec.count(ax) > 1]
-            raise ValueError(
-                f"Duplicate axis specifications in base_joint: {duplicates}. Each axis can only be specified once."
-            )
-
-        # Separate into linear and angular axes
-        linear_axes = [ax[1] for ax in axes_spec if ax[0] in {"l", "p"}]
-        angular_axes = [ax[1] for ax in axes_spec if ax[0] in {"a", "r"}]
-
-        return linear_axes, angular_axes
-
-    def _create_joint_from_base_joint_spec(
-        self,
-        base_joint: str | dict,
-        parent: int,
-        child: int,
-        parent_xform: Transform,
-        child_xform: Transform,
-        key: str | None,
-    ) -> int:
-        """Create joint from base_joint specification (string or dict)."""
-        if isinstance(base_joint, str):
-            # Parse axis specification and create D6 joint
-            linear_axes_str, angular_axes_str = self._parse_d6_axes_spec(base_joint)
-
-            axes_vec = {"x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0], "z": [0.0, 0.0, 1.0]}
-            linear_axes = [ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in linear_axes_str]
-            angular_axes = [ModelBuilder.JointDofConfig(axis=axes_vec[a]) for a in angular_axes_str]
-
-            return self.add_joint_d6(
-                linear_axes=linear_axes,
-                angular_axes=angular_axes,
-                parent_xform=parent_xform,
-                child_xform=child_xform,
-                parent=parent,
-                child=child,
-                key=key,
-            )
-        elif isinstance(base_joint, dict):
-            # Defensive check for conflicting keys (should have been caught by _validate_base_joint_params)
-            conflicting_keys = set(base_joint.keys()) & {"parent", "child", "parent_xform", "child_xform"}
-            if conflicting_keys:
-                raise ValueError(
-                    f"base_joint dict cannot specify {conflicting_keys}. "
-                    f"These parameters are automatically set based on parent_body and attachment. "
-                    f"Remove these keys from the base_joint dict."
-                )
-
-            joint_params = base_joint.copy()
-            joint_params["parent"] = parent
-            joint_params["child"] = child
-            joint_params["parent_xform"] = parent_xform
-            joint_params["child_xform"] = child_xform
-            if "key" not in joint_params and key is not None:
-                joint_params["key"] = key
-            return self.add_joint(**joint_params)
-        else:
-            raise ValueError(f"base_joint must be a string or dict, got {type(base_joint).__name__}")
-
     def _add_base_joint(
         self,
         child: int,
         floating: bool | None = None,
-        base_joint: dict | str | None = None,
+        base_joint: dict | None = None,
         key: str | None = None,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         parent: int = -1,
     ) -> int:
         """
-        Adds a joint connecting a body to a parent body (or the world) based on the ``floating`` and ``base_joint`` parameters.
+        Internal helper for importers to create base joints.
 
-        This method is used to attach a body to a parent body or the world frame with the appropriate joint type.
-        By default, the body's current transform is used as the parent transform for the joint.
+        This method is used by importers (URDF, MJCF, USD) to attach imported bodies
+        to the world or to a parent body with the appropriate joint type.
 
         Args:
-            child (int): The body index to connect.
-            floating (bool or None, optional): If None (default), behavior depends on format-specific defaults.
+            child: The body index to connect.
+            floating: If None (default), behavior depends on format-specific defaults.
                 If True, creates a FREE joint (only valid when ``parent == -1``).
                 If False, always creates a fixed joint.
-            base_joint (str or dict or None, optional): Specifies the joint type to create.
-                This can be either:
-
-                - A string defining the joint axes of a D6 joint with comma-separated positional
-                  and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y
-                  and an angular axis in z).
-                - A dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
-
+            base_joint: Dict with joint parameters passed to :meth:`add_joint`.
                 Cannot be specified together with ``floating``.
-            key (str or None, optional): A unique key for the joint. If not provided, a default
-                key is generated based on the body index.
-            parent_xform (Transform or None, optional): The transform of the joint in the parent frame.
-                If None, defaults to the body's current transform (``body_q[child]``) when parent is world (-1),
-                or identity transform when parent is another body.
-            child_xform (Transform or None, optional): The transform of the joint in the child frame.
+            key: A unique key for the joint.
+            parent_xform: The transform of the joint in the parent frame.
+                If None, defaults to ``body_q[child]`` when parent is world (-1),
+                or identity when parent is another body.
+            child_xform: The transform of the joint in the child frame.
                 If None, defaults to identity transform.
-            parent (int, optional): The index of the parent body. Use -1 (default) to connect to the world.
-                When connecting to an existing body, the child body becomes part of the same kinematic articulation.
+            parent: The index of the parent body. Use -1 (default) to connect to world.
 
         Returns:
-            int: The index of the created joint.
+            The index of the created joint.
 
         Raises:
-            ValueError: If parent is invalid, or if both ``floating`` and ``base_joint`` are specified,
-                or if ``floating=True`` with ``parent != -1``.
-
-        Note:
-            When ``parent_xform`` is not provided:
-            - If parent is -1 (world), the body's current transform (``body_q[child]``) is used.
-            - If parent is another body, identity transform is used (joint at parent body origin).
+            ValueError: If both ``floating`` and ``base_joint`` are specified,
+                or if ``floating=True`` with ``parent != -1``, or if parent body
+                is not part of any articulation.
         """
         # Validate parameter combinations
         self._validate_base_joint_params(floating, base_joint, parent)
@@ -7445,58 +7315,43 @@ class ModelBuilder:
 
         # Determine transforms
         if parent_xform is None:
-            if parent == -1:
-                parent_xform = self.body_q[child]
-            else:
-                parent_xform = wp.transform_identity()
+            parent_xform = self.body_q[child] if parent == -1 else wp.transform_identity()
         if child_xform is None:
             child_xform = wp.transform_identity()
 
         # Create joint based on parameters
         if base_joint is not None:
-            # Handle base_joint parameter (string or dict)
-            joint_id = self._create_joint_from_base_joint_spec(
-                base_joint=base_joint,
-                parent=parent,
-                child=child,
-                parent_xform=parent_xform,
-                child_xform=child_xform,
-                key=key,
-            )
-        elif floating is not None and not floating:
-            # floating=False means fixed joints
-            joint_id = self.add_joint_fixed(parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key)
+            # Use custom joint parameters from dict
+            joint_params = base_joint.copy()
+            joint_params["parent"] = parent
+            joint_params["child"] = child
+            joint_params["parent_xform"] = parent_xform
+            joint_params["child_xform"] = child_xform
+            if "key" not in joint_params and key is not None:
+                joint_params["key"] = key
+            return self.add_joint(**joint_params)
+        elif floating is True or (floating is None and parent == -1):
+            # FREE joint (floating=True always requires parent==-1, validated above)
+            return self.add_joint_free(child, parent_xform=parent_xform, key=key)
         else:
-            # Default: floating=None or floating=True
-            # At this point, if floating=True, parent must be -1 (validated above)
-            if parent == -1:
-                joint_id = self.add_joint_free(child, key=key)
-            else:
-                # floating=None with parent != -1: use fixed joint
-                joint_id = self.add_joint_fixed(
-                    parent, child, parent_xform=parent_xform, child_xform=child_xform, key=key
-                )
-
-        return joint_id
+            # FIXED joint (floating=False or floating=None with parent body)
+            return self.add_joint_fixed(parent, child, parent_xform, child_xform, key=key)
 
     def _add_base_joints_to_floating_bodies(
         self,
         new_bodies: Iterable[int] | None = None,
         floating: bool | None = None,
-        base_joint: dict | str | None = None,
+        base_joint: dict | None = None,
     ):
         """
         Adds joints and single-joint articulations to every rigid body that is not a child in any joint
         and has positive mass.
 
         Args:
-            new_bodies (Iterable[int] or None, optional): The set of body indices to consider for adding joints.
-            floating (bool or None, optional): If True or None (default), floating bodies receive a free joint.
+            new_bodies: The set of body indices to consider for adding joints.
+            floating: If True or None (default), floating bodies receive a free joint.
                 If False, floating bodies receive a fixed joint.
-            base_joint (str or dict or None, optional): The joint by which floating bodies are connected to the world.
-                This can be either a string defining the joint axes of a D6 joint with comma-separated positional
-                and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis
-                in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            base_joint: Dict with joint parameters passed to :meth:`add_joint`.
                 When specified, this takes precedence over the ``floating`` parameter.
 
         Note:
