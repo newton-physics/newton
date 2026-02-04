@@ -115,9 +115,9 @@ def flatten_normal_image(
 
 
 @wp.kernel(enable_backward=False)
-def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=3), depth_range: wp.array(dtype=wp.float32)):
-    world_id, camera_id, yx = wp.tid()
-    depth = depth_image[world_id, camera_id, yx]
+def find_depth_range(depth_image: wp.array(dtype=wp.float32, ndim=4), depth_range: wp.array(dtype=wp.float32)):
+    world_id, camera_id, y, x = wp.tid()
+    depth = depth_image[world_id, camera_id, y, x]
     if depth > 0:
         wp.atomic_min(depth_range, 0, depth)
         wp.atomic_max(depth_range, 1, depth)

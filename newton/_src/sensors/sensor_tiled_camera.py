@@ -22,7 +22,7 @@ import warp as wp
 
 from ..geometry import ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderShapeType
+from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderOrder, RenderShapeType
 
 DEFAULT_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
@@ -106,6 +106,7 @@ class SensorTiledCamera:
     RenderContext = RenderContext
     RenderLightType = RenderLightType
     RenderShapeType = RenderShapeType
+    RenderOrder = RenderOrder
 
     @dataclass
     class Options:

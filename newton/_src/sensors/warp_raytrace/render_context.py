@@ -220,44 +220,44 @@ class RenderContext:
             height = camera_rays.shape[1]
             num_cameras = camera_rays.shape[0]
 
-            assert camera_transforms.size == num_cameras * self.num_worlds, (
+            assert camera_transforms.shape == (num_cameras, self.num_worlds), (
                 f"camera_transforms size must match {num_cameras} x {self.num_worlds}"
             )
 
-            assert camera_rays.size == width * height * num_cameras * 2, (
-                f"camera_rays size must match {width} x {height} x {num_cameras} x 2"
+            assert camera_rays.shape == (num_cameras, height, width, 2), (
+                f"camera_rays size must match {num_cameras} x {width} x {height} x 2"
             )
 
             if color_image is not None:
-                assert color_image.size == width * height * num_cameras * self.num_worlds, (
+                assert color_image.shape == (self.num_worlds, num_cameras, height, width), (
                     f"color_image size must match {self.num_worlds} x {num_cameras} x {height} x {width}"
                 )
                 if clear_data is not None and clear_data.clear_color is not None:
                     color_image.fill_(wp.uint32(clear_data.clear_color))
 
             if depth_image is not None:
-                assert depth_image.size == width * height * num_cameras * self.num_worlds, (
+                assert depth_image.shape == (self.num_worlds, num_cameras, height, width), (
                     f"depth_image size must match {self.num_worlds} x {num_cameras} x {height} x {width}"
                 )
                 if clear_data is not None and clear_data.clear_depth is not None:
                     depth_image.fill_(wp.float32(clear_data.clear_depth))
 
             if shape_index_image is not None:
-                assert shape_index_image.size == width * height * num_cameras * self.num_worlds, (
+                assert shape_index_image.shape == (self.num_worlds, num_cameras, height, width), (
                     f"shape_index_image size must match {self.num_worlds} x {num_cameras} x {height} x {width}"
                 )
                 if clear_data is not None and clear_data.clear_shape_index is not None:
                     shape_index_image.fill_(wp.uint32(clear_data.clear_shape_index))
 
             if normal_image is not None:
-                assert normal_image.size == width * height * num_cameras * self.num_worlds, (
+                assert normal_image.shape == (self.num_worlds, num_cameras, height, width), (
                     f"normal_image size must match {self.num_worlds} x {num_cameras} x {height} x {width}"
                 )
                 if clear_data is not None and clear_data.clear_normal is not None:
                     normal_image.fill_(clear_data.clear_normal)
 
             if albedo_image is not None:
-                assert albedo_image.size == width * height * num_cameras * self.num_worlds, (
+                assert albedo_image.shape == (self.num_worlds, num_cameras, height, width), (
                     f"albedo_image size must match {self.num_worlds} x {num_cameras} x {height} x {width}"
                 )
                 if clear_data is not None and clear_data.clear_albedo is not None:
