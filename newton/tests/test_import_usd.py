@@ -2269,7 +2269,7 @@ def Xform "Root" (
         parent_xform = builder.joint_X_p[0]
         assert_np_equal(np.array(parent_xform.p), np.array([0.0, 0.0, 1.0]), tol=1e-6)
 
-    def test__add_base_joints_to_floating_bodies_base_joint_string(self):
+    def test__add_base_joints_to_floating_bodies_base_joint_dict(self):
         """Test _add_base_joints_to_floating_bodies with base_joint dict creates D6 joints."""
         builder = newton.ModelBuilder()
 
@@ -2291,7 +2291,7 @@ def Xform "Root" (
 
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_type[0], newton.JointType.D6)
-        self.assertEqual(builder.joint_dof_count, 3)  # px, py, rz
+        self.assertEqual(builder.joint_dof_count, 3)  # 2 linear + 1 angular axes
         self.assertEqual(builder.articulation_count, 1)
 
         # Verify the parent transform uses the body position
@@ -2382,8 +2382,8 @@ def Xform "Root" (
         self.assertEqual(builder.joint_child[joint_id], body0)
         self.assertEqual(builder.joint_parent[joint_id], -1)
 
-    def test_add_base_joint_string(self):
-        """Test _add_base_joint with base_joint dict parameter creates a D6 joint with specified axes."""
+    def test_add_base_joint_dict(self):
+        """Test _add_base_joint with base_joint dict creates a D6 joint."""
         builder = newton.ModelBuilder()
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
@@ -2405,8 +2405,8 @@ def Xform "Root" (
         self.assertEqual(builder.joint_child[joint_id], body0)
         self.assertEqual(builder.joint_parent[joint_id], -1)
 
-    def test_add_base_joint_dict(self):
-        """Test add_base_joint with base_joint dict creates the specified joint."""
+    def test_add_base_joint_dict_revolute(self):
+        """Test _add_base_joint with base_joint dict creates a revolute joint with custom axis."""
         builder = newton.ModelBuilder()
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
@@ -4228,8 +4228,8 @@ def Xform "Articulation" (
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_base_joint_string_creates_d6_joint(self):
-        """Test that base_joint as dict creates a D6 joint with specified axes."""
+    def test_base_joint_dict_creates_d6_joint(self):
+        """Test that base_joint dict with linear and angular axes creates a D6 joint."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
@@ -4260,7 +4260,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_creates_custom_joint(self):
-        """Test that base_joint as dict creates the specified joint type."""
+        """Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with custom axis."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()

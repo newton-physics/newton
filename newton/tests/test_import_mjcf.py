@@ -3602,9 +3602,9 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
 
     def test_base_joint_dict_creates_d6_joint(self):
-        """Test that base_joint as dict creates a D6 joint with specified axes."""
+        """Test that base_joint dict with linear and angular axes creates a D6 joint."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test_base_joint_string">
+<mujoco model="test_base_joint_dict">
     <worldbody>
         <body name="base_link" pos="0 0 0">
             <freejoint/>
@@ -3631,7 +3631,7 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
 
     def test_base_joint_dict_creates_custom_joint(self):
-        """Test that base_joint as dict creates the specified joint type."""
+        """Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with custom axis."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_base_joint_dict">
     <worldbody>
