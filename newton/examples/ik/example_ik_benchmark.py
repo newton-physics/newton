@@ -92,10 +92,10 @@ class Example:
         zero_rot = [wp.zeros(n_problems, dtype=wp.vec4) for _ in self.ee_links]
         objectives = []
         for ee, link in enumerate(self.ee_links):
-            objectives.append(ik.IKPositionObjective(link, wp.vec3(), zero_pos[ee]))
+            objectives.append(ik.IKObjectivePosition(link, wp.vec3(), zero_pos[ee]))
         for ee, link in enumerate(self.ee_links):
             objectives.append(
-                ik.IKRotationObjective(
+                ik.IKObjectiveRotation(
                     link,
                     wp.quat_identity(),
                     zero_rot[ee],
@@ -103,7 +103,7 @@ class Example:
                 )
             )
         objectives.append(
-            ik.IKJointLimitObjective(
+            ik.IKObjectiveJointLimit(
                 self.model.joint_limit_lower,
                 self.model.joint_limit_upper,
                 weight=1.0,
@@ -116,7 +116,7 @@ class Example:
             sampler=ik.IKSampler.ROBERTS,
             n_seeds=self.seeds,
             lambda_factor=self.lambda_factor,
-            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
         return (
             solver,

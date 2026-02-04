@@ -210,6 +210,7 @@ class CollisionPipeline:
                 self.soft_contact_max,
                 requires_grad=self.requires_grad,
                 device=model.device,
+                requested_attributes=model.get_requested_contact_attributes(),
             )
         else:
             self.contacts.clear()
