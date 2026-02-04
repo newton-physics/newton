@@ -689,5 +689,18 @@ add_example_test(
 )
 
 
+class TestMultiphysicsExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_falling_gift",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 600},
+    use_viewer=True,
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

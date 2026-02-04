@@ -278,15 +278,17 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        # Test that particles are in a reasonable range
-        # Boxes should have fallen and settled on the ground
-        p_lower = wp.vec3(-5.0, -5.0, -0.5)
-        p_upper = wp.vec3(5.0, 5.0, 35.0)
-        newton.examples.test_particle_state(
-            self.state_0,
-            "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
-        )
+        # Test that bounding box size is reasonable (not exploding)
+        particle_q = self.state_0.particle_q.numpy()
+        min_pos = np.min(particle_q, axis=0)
+        max_pos = np.max(particle_q, axis=0)
+        bbox_size = np.linalg.norm(max_pos - min_pos)
+
+        # Check bbox size is reasonable
+        assert bbox_size < 10.0, f"Bounding box exploded: size={bbox_size:.2f}"
+
+        # Check no excessive penetration
+        assert min_pos[2] > -0.5, f"Excessive penetration: z_min={min_pos[2]:.4f}"
 
     def render(self):
         self.viewer.begin_frame(self.sim_time)
