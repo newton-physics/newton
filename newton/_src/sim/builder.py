@@ -21,7 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -638,6 +638,7 @@ class ModelBuilder:
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
 
+        self._requested_contact_attributes: set[str] = set()
         self._requested_state_attributes: set[str] = set()
 
         # springs
@@ -1909,6 +1910,7 @@ class ModelBuilder:
             # No world context (add_builder called directly), copy scalar gravity
             self.gravity = builder.gravity
 
+        self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
         # explicitly resolve the transform multiplication function to avoid
@@ -5119,11 +5121,11 @@ class ModelBuilder:
         flags: list[int] | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ):
-        """Adds a group particles to the model.
+        """Adds a group of particles to the model.
 
         Args:
-            pos: The initial positions of the particle.
-            vel: The initial velocities of the particle.
+            pos: The initial positions of the particles.
+            vel: The initial velocities of the particles.
             mass: The mass of the particles.
             radius: The radius of the particles used in collision handling. If None, the radius is set to the default value (:attr:`default_particle_radius`).
             flags: The flags that control the dynamical behavior of the particles, see :class:`newton.ParticleFlags`.
@@ -5139,13 +5141,13 @@ class ModelBuilder:
         self.particle_qd.extend(vel)
         self.particle_mass.extend(mass)
         if radius is None:
-            radius = [self.default_particle_radius] * len(pos)
+            radius = [self.default_particle_radius] * particle_count
         if flags is None:
-            flags = [ParticleFlags.ACTIVE] * len(pos)
+            flags = [ParticleFlags.ACTIVE] * particle_count
         self.particle_radius.extend(radius)
         self.particle_flags.extend(flags)
         # Maintain world assignment for bulk particle creation
-        self.particle_world.extend([self.current_world] * len(pos))
+        self.particle_world.extend([self.current_world] * particle_count)
 
         # Process custom attributes
         if custom_attributes and particle_count:
@@ -5960,13 +5962,34 @@ class ModelBuilder:
         if flags is not None:
             flags = [flags] * points.shape[0]
 
+        # Broadcast scalar custom attribute values to all particles
+        num_particles = points.shape[0]
+        broadcast_custom_attrs = None
+        if custom_attributes:
+            broadcast_custom_attrs = {}
+            for key, value in custom_attributes.items():
+                # Check if value is a sequence (but not string/bytes) or numpy array
+                is_array = isinstance(value, np.ndarray)
+                is_sequence = isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+
+                if is_array or is_sequence:
+                    # Value is already a sequence/array - validate length
+                    if len(value) != num_particles:
+                        raise ValueError(
+                            f"Custom attribute '{key}' has {len(value)} values but {num_particles} particles in grid"
+                        )
+                    broadcast_custom_attrs[key] = list(value) if is_array else value
+                else:
+                    # Scalar value - broadcast to all particles
+                    broadcast_custom_attrs[key] = [value] * num_particles
+
         self.add_particles(
             pos=points.tolist(),
             vel=velocity.tolist(),
             mass=masses,
             radius=radii.tolist(),
             flags=flags,
-            custom_attributes=custom_attributes,
+            custom_attributes=broadcast_custom_attrs,
         )
 
     def add_soft_grid(
@@ -6247,6 +6270,19 @@ class ModelBuilder:
                 joint = self.add_joint_free(child=body_id)
                 self.add_articulation([joint])
 
+    def request_contact_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific contact attributes be allocated when creating a Contacts object from the finalized Model.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        # Local import to avoid adding more module-level dependencies in this large file.
+        from .contacts import Contacts  # noqa: PLC0415
+
+        Contacts.validate_extended_attributes(attributes)
+        self._requested_contact_attributes.update(attributes)
+
     def request_state_attributes(self, *attributes: str) -> None:
         """
         Request that specific state attributes be allocated when creating a State object from the finalized Model.
@@ -6259,7 +6295,7 @@ class ModelBuilder:
         # Local import to avoid adding more module-level dependencies in this large file.
         from .state import State  # noqa: PLC0415
 
-        State.validate_extended_state_attributes(attributes)
+        State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def set_coloring(self, particle_color_groups):
@@ -6580,6 +6616,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
 
