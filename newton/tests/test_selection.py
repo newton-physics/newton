@@ -299,7 +299,7 @@ class TestSelection(unittest.TestCase):
                 0.0,  # world2/artic1
                 0.0,
                 3.0,
-            ]  
+            ]
             expected_joint_limit_lower = [
                 -50.5,  # world0/artic0
                 -50.5,
@@ -463,7 +463,7 @@ class TestSelection(unittest.TestCase):
                 msg=f"Expected model joint target pos value: {expected}, Measured value: {measured}",
             )
 
-    def run_test_link_selection(self, use_mask: bool):
+    def run_test_link_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         """Test an ArticulationView that excludes a subset of links and that we
         can write attributes to the subset of links with and without a mask"""
         mjcf = """<?xml version="1.0" ?>
@@ -509,7 +509,10 @@ class TestSelection(unittest.TestCase):
 
         # Customise the articulation keys in single_world_builder
         single_world_builder.articulation_key[0] = "art0"
-        single_world_builder.articulation_key[1] = "art1"
+        if use_multiple_artics_per_view:
+            single_world_builder.articulation_key[1] = "art0"
+        else:
+            single_world_builder.articulation_key[1] = "art1"
 
         # Create 3 worlds with 2 articulations per world and 4 links per articulation.
         builder = newton.ModelBuilder()
@@ -539,7 +542,11 @@ class TestSelection(unittest.TestCase):
 
         mask = None
         if use_mask:
-            mask = [[False], [True], [False]]
+            if use_multiple_artics_per_view:
+                mask = [[False, False], [False, True], [False, False]]
+            else:
+                mask = [[False], [True], [False]]
+
         link_view.set_attribute("body_mass", model, link_masses, mask)
         link_view.set_attribute("body_qd", model, link_vels, mask)
         link_view.set_attribute("body_qd", state_0, link_vels, mask)
@@ -547,111 +554,219 @@ class TestSelection(unittest.TestCase):
         expected_body_masses = []
         expected_body_vels = []
         if use_mask:
-            expected_body_masses = [
-                0.01,  # world0/artic0
-                0.01,
-                0.01,
-                0.01,
-                0.01,  # world0/artic1
-                0.01,
-                0.01,
-                0.01,
-                0.01,  # world1/artic0
-                3.01,
-                4.01,
-                0.01,
-                0.01,  # world1/artic1
-                0.01,
-                0.01,
-                0.01,
-                0.01,  # world2/artic0
-                0.01,
-                0.01,
-                0.01,
-                0.01,  # world2/artic1
-                0.01,
-                0.01,
-                0.01,
-            ]
-            expected_body_vels = [
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link1
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/root
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link1
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/root
-                [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],  # world1/artic0/link1
-                [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],  # world1/artic0/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/root
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link1
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/root
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link1
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/root
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link1
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link3
-            ]
+            if use_multiple_artics_per_view:
+                expected_body_masses = [
+                    0.01,  # world0/artic0
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world0/artic1
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world1/artic0
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world1/artic1
+                    7.01,
+                    8.01,
+                    0.01,
+                    0.01,  # world2/artic0
+                    0.01,
+                    00.01,
+                    0.01,
+                    0.01,  # world2/artic1
+                    0.01,
+                    0.01,
+                    0.01,
+                ]
+                expected_body_vels = [
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/root
+                    [7.0, 7.0, 7.0, 7.0, 7.0, 7.0],  # world1/artic1/link1
+                    [8.0, 8.0, 8.0, 8.0, 8.0, 8.0],  # world1/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link3
+                ]
+            else:
+                expected_body_masses = [
+                    0.01,  # world0/artic0
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world0/artic1
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world1/artic0
+                    3.01,
+                    4.01,
+                    0.01,
+                    0.01,  # world1/artic1
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world2/artic0
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world2/artic1
+                    0.01,
+                    0.01,
+                    0.01,
+                ]
+                expected_body_vels = [
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/root
+                    [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],  # world1/artic0/link1
+                    [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],  # world1/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link3
+                ]
         else:
-            expected_body_masses = [
-                0.01,  # world0/artic0
-                1.01,
-                2.01,
-                0.01,
-                0.01,  # world0/artic1
-                0.01,
-                0.01,
-                0.01,
-                0.01,  # world1/artic0
-                3.01,
-                4.01,
-                0.01,
-                0.01,  # world1/artic1
-                0.01,
-                0.01,
-                0.01,
-                0.01,  # world2/artic0
-                5.01,
-                6.01,
-                0.01,
-                0.01,  # world2/artic1
-                0.01,
-                0.01,
-                0.01,
-            ]
-            expected_body_vels = [
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
-                [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # world0/artic0/link1
-                [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],  # world0/artic0/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/root
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link1
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/root
-                [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],  # world1/artic0/link1
-                [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],  # world1/artic0/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/root
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link1
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/root
-                [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],  # world2/artic0/link1
-                [6.0, 6.0, 6.0, 6.0, 6.0, 6.0],  # world2/artic0/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link3
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/root
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link1
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link2
-                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link3
-            ]
+            if use_multiple_artics_per_view:
+                expected_body_masses = [
+                    0.01,  # world0/artic0
+                    1.01,
+                    2.01,
+                    0.01,
+                    0.01,  # world0/artic1
+                    3.01,
+                    4.01,
+                    0.01,
+                    0.01,  # world1/artic0
+                    5.01,
+                    6.01,
+                    0.01,
+                    0.01,  # world1/artic1
+                    7.01,
+                    8.01,
+                    0.01,
+                    0.01,  # world2/artic0
+                    9.01,
+                    10.01,
+                    0.01,
+                    0.01,  # world2/artic1
+                    11.01,
+                    12.01,
+                    0.01,
+                ]
+                expected_body_vels = [
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
+                    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # world0/artic0/link1
+                    [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],  # world0/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/root
+                    [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],  # world0/artic1/link1
+                    [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],  # world0/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/root
+                    [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],  # world1/artic0/link1
+                    [6.0, 6.0, 6.0, 6.0, 6.0, 6.0],  # world1/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/root
+                    [7.0, 7.0, 7.0, 7.0, 7.0, 7.0],  # world1/artic1/link1
+                    [8.0, 8.0, 8.0, 8.0, 8.0, 8.0],  # world1/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/root
+                    [9.0, 9.0, 9.0, 9.0, 9.0, 9.0],  # world2/artic0/link1
+                    [10.0, 10.0, 10.0, 10.0, 10.0, 10.0],  # world2/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/root
+                    [11.0, 11.0, 11.0, 11.0, 11.0, 11.0],  # world2/artic1/link1
+                    [12.0, 12.0, 12.0, 12.0, 12.0, 12.0],  # world2/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link3
+                ]
+            else:
+                expected_body_masses = [
+                    0.01,  # world0/artic0
+                    1.01,
+                    2.01,
+                    0.01,
+                    0.01,  # world0/artic1
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world1/artic0
+                    3.01,
+                    4.01,
+                    0.01,
+                    0.01,  # world1/artic1
+                    0.01,
+                    0.01,
+                    0.01,
+                    0.01,  # world2/artic0
+                    5.01,
+                    6.01,
+                    0.01,
+                    0.01,  # world2/artic1
+                    0.01,
+                    0.01,
+                    0.01,
+                ]
+                expected_body_vels = [
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
+                    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0],  # world0/artic0/link1
+                    [2.0, 2.0, 2.0, 2.0, 2.0, 2.0],  # world0/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic1/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/root
+                    [3.0, 3.0, 3.0, 3.0, 3.0, 3.0],  # world1/artic0/link1
+                    [4.0, 4.0, 4.0, 4.0, 4.0, 4.0],  # world1/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world1/artic1/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/root
+                    [5.0, 5.0, 5.0, 5.0, 5.0, 5.0],  # world2/artic0/link1
+                    [6.0, 6.0, 6.0, 6.0, 6.0, 6.0],  # world2/artic0/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic0/link3
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/root
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link1
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link2
+                    [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world2/artic1/link3
+                ]
 
         # Get the updated body masses
         measured_body_masses = model.body_mass.numpy()
@@ -695,11 +810,17 @@ class TestSelection(unittest.TestCase):
     def test_joint_selection_with_mask(self):
         self.run_test_joint_selection(True)
 
-    def test_link_selection_no_mask(self):
-        self.run_test_link_selection(False)
+    def test_link_selection_one_per_view_no_mask(self):
+        self.run_test_link_selection(False, False)
 
-    def test_link_selection_with_mask(self):
-        self.run_test_link_selection(True)
+    def test_link_selection_two_per_view_no_mask(self):
+        self.run_test_link_selection(False, True)
+
+    def test_link_selection_one_per_view_with_mask(self):
+        self.run_test_link_selection(True, False)
+
+    def test_link_selection_two_per_view_with_mask(self):
+        self.run_test_link_selection(True, True)
 
 
 if __name__ == "__main__":
