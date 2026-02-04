@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -88,7 +89,7 @@ class Example:
                 edges.append((prev, cur))
                 prev = cur
 
-        self.graph_bodies, _graph_joints = builder.add_rod_graph(
+        self.graph_bodies, self.graph_joints = builder.add_rod_graph(
             node_positions=node_positions,
             edges=edges,
             radius=cable_radius,
@@ -105,6 +106,7 @@ class Example:
         # Edges are created in contiguous blocks per branch in the construction loop above.
         tip_edge_idx = num_segments_per_branch - 1
         pinned_body = int(self.graph_bodies[tip_edge_idx])
+        self.pinned_body = pinned_body
         builder.body_mass[pinned_body] = 0.0
         builder.body_inv_mass[pinned_body] = 0.0
         builder.body_inertia[pinned_body] = wp.mat33(0.0)
@@ -128,6 +130,10 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = self.model.collide(self.state_0)
+
+        if self.state_0.body_q is None:
+            raise RuntimeError("Body state is not available.")
+        self.pinned_body_q0 = self.state_0.body_q.numpy()[self.pinned_body].copy()
 
         self.viewer.set_model(self.model)
         self.capture()
@@ -162,7 +168,57 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass
+        if self.state_0.body_q is None or self.model.joint_parent is None or self.model.joint_child is None:
+            raise RuntimeError("Body/joint state is not available.")
+
+        rod_bodies = [int(b) for b in self.graph_bodies]
+
+        # ---------------------------
+        # Connectivity check
+        # ---------------------------
+        # `add_rod_graph(wrap_in_articulation=True)` builds a joint forest over the edge bodies.
+        # For this Y-junction (one connected component), all rod bodies should be connected via
+        # the joints returned by `add_rod_graph`.
+        joint_parent = self.model.joint_parent.numpy()
+        joint_child = self.model.joint_child.numpy()
+
+        adjacency: dict[int, set[int]] = {b: set() for b in rod_bodies}
+        for j in self.graph_joints:
+            p = int(joint_parent[j])
+            c = int(joint_child[j])
+            if p in adjacency and c in adjacency:
+                adjacency[p].add(c)
+                adjacency[c].add(p)
+
+        visited: set[int] = set()
+        stack = [rod_bodies[0]]
+        while stack:
+            b = stack.pop()
+            if b in visited:
+                continue
+            visited.add(b)
+            stack.extend(adjacency[b] - visited)
+
+        if len(visited) != len(rod_bodies):
+            raise ValueError(f"Rod bodies are not fully connected (visited {len(visited)} / {len(rod_bodies)}).")
+
+        # ---------------------------
+        # Simple pose sanity checks
+        # ---------------------------
+        body_q_np = self.state_0.body_q.numpy()[rod_bodies]
+        if not np.all(np.isfinite(body_q_np)):
+            raise ValueError("NaN/Inf in cable body transforms.")
+
+        pos = body_q_np[:, 0:3]
+        if np.max(np.abs(pos[:, 0])) > 2.0 or np.max(np.abs(pos[:, 1])) > 2.0:
+            raise ValueError("Cable bodies drifted too far in X/Y.")
+        if np.min(pos[:, 2]) < -0.2 or np.max(pos[:, 2]) > 3.0:
+            raise ValueError("Cable bodies out of Z bounds.")
+
+        # Pinned body should not drift.
+        q_now = self.state_0.body_q.numpy()[self.pinned_body]
+        if np.max(np.abs(q_now[0:3] - self.pinned_body_q0[0:3])) > 1.0e-4:
+            raise ValueError("Pinned tip body moved unexpectedly.")
 
 
 if __name__ == "__main__":

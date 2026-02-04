@@ -5040,6 +5040,7 @@ class ModelBuilder:
         This is a generalization of :meth:`add_rod` to support branching/junction topologies.
 
         Representation:
+
         - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
           ``node_positions[v]`` (body frame is placed at the start node ``u`` and local +Z points
           toward ``v``).
@@ -5047,6 +5048,7 @@ class ModelBuilder:
           traversal so that each body has a single parent when wrapped into an articulation.
 
         Notes:
+
         - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
           articulation per connected component). This keeps the joint graph articulation-safe
           (tree/forest), avoiding cycles at junctions.
