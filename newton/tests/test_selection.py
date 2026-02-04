@@ -278,9 +278,11 @@ class TestSelection(unittest.TestCase):
         mask = None
         if use_mask:
             if use_multiple_artics_per_view:
-                mask = [[False, False], [False, True], [False, False]]
+                mask = [False] * (num_worlds * num_articulations_per_world)
+                mask[num_articulations_per_world + 1] = True  # world1/artic1
             else:
-                mask = [[False], [True], [False]]
+                mask = [False] * num_worlds
+                mask[1] = True  # world1/artic
 
         expected_dof_positions = []
         expected_joint_limit_lower = []
@@ -673,9 +675,11 @@ class TestSelection(unittest.TestCase):
         mask = None
         if use_mask:
             if use_multiple_artics_per_view:
-                mask = [[False, False], [False, True], [False, False]]
+                mask = [False] * (num_worlds * num_articulations_per_world)
+                mask[num_articulations_per_world + 1] = True  # world1/artic1
             else:
-                mask = [[False], [True], [False]]
+                mask = [False] * num_worlds
+                mask[1] = True  # world1/artic
 
         link_view.set_attribute("body_mass", model, link_masses, mask)
         link_view.set_attribute("body_qd", model, link_vels, mask)
