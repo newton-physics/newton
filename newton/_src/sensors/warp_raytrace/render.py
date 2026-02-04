@@ -23,7 +23,7 @@ from . import lighting, ray_cast, textures
 from .types import RenderOrder
 
 if TYPE_CHECKING:
-    from .render_context import ClearData, RenderContext
+    from .render_context import RenderContext
 
 
 @wp.func
@@ -170,11 +170,11 @@ def _render_megakernel(
     render_normal: wp.bool,
     render_albedo: wp.bool,
     # Outputs
-    out_pixels: wp.array3d(dtype=wp.uint32),
-    out_depth: wp.array3d(dtype=wp.float32),
-    out_shape_index: wp.array3d(dtype=wp.uint32),
-    out_normal: wp.array3d(dtype=wp.vec3f),
-    out_albedo: wp.array3d(dtype=wp.uint32),
+    out_pixels: wp.array(dtype=wp.uint32),
+    out_depth: wp.array(dtype=wp.float32),
+    out_shape_index: wp.array(dtype=wp.uint32),
+    out_normal: wp.array(dtype=wp.vec3f),
+    out_albedo: wp.array(dtype=wp.uint32),
 ):
     tid = wp.tid()
 
@@ -192,7 +192,9 @@ def _render_megakernel(
     if px >= img_width or py >= img_height:
         return
 
-    out_index = py * img_width + px
+    pixels_per_camera = img_width * img_height
+    pixels_per_world = num_cameras * pixels_per_camera
+    out_index = world_index * pixels_per_world + camera_index * pixels_per_camera + py * img_width + px
 
     ray_origin_world = wp.transform_point(
         camera_transforms[camera_index, world_index], camera_rays[camera_index, py, px, 0]
@@ -230,13 +232,13 @@ def _render_megakernel(
         return
 
     if render_depth:
-        out_depth[world_index, camera_index, out_index] = closest_hit.distance
+        out_depth[out_index] = closest_hit.distance
 
     if render_normal:
-        out_normal[world_index, camera_index, out_index] = closest_hit.normal
+        out_normal[out_index] = closest_hit.normal
 
     if render_shape_index:
-        out_shape_index[world_index, camera_index, out_index] = closest_hit.shape_index
+        out_shape_index[out_index] = closest_hit.shape_index
 
     if not render_color and not render_albedo:
         return
@@ -286,7 +288,7 @@ def _render_megakernel(
                 )
 
     if render_albedo:
-        out_albedo[world_index, camera_index, out_index] = pack_rgba_to_uint32(base_color, 1.0)
+        out_albedo[out_index] = pack_rgba_to_uint32(base_color, 1.0)
 
     if not render_color:
         return
@@ -341,53 +343,44 @@ def _render_megakernel(
         out_color = out_color + base_color * light_contribution
 
     out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
-
-    out_pixels[world_index, camera_index, out_index] = pack_rgba_to_uint32(
-        out_color,
-        1.0,
-    )
+    out_pixels[out_index] = pack_rgba_to_uint32(out_color, 1.0)
 
 
 def render_megakernel(
     rc: RenderContext,
+    width: int,
+    height: int,
+    num_cameras: int,
     camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
     camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    color_image: wp.array(dtype=wp.uint32, ndim=3) | None,
-    depth_image: wp.array(dtype=wp.float32, ndim=3) | None,
-    shape_index_image: wp.array(dtype=wp.uint32, ndim=3) | None,
-    normal_image: wp.array(dtype=wp.vec3f, ndim=3) | None,
-    albedo_image: wp.array(dtype=wp.uint32, ndim=3) | None,
-    clear_data: ClearData | None,
+    color_image: wp.array(dtype=wp.uint32, ndim=4) | None,
+    depth_image: wp.array(dtype=wp.float32, ndim=4) | None,
+    shape_index_image: wp.array(dtype=wp.uint32, ndim=4) | None,
+    normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None,
+    albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None,
 ):
-    if rc.options.render_order == RenderOrder.TILED:
-        assert rc.width % rc.options.tile_width == 0, "render width must be a multiple of tile_width"
-        assert rc.height % rc.options.tile_height == 0, "render height must be a multiple of tile_height"
-
-    if clear_data is not None and clear_data.clear_color is not None and color_image is not None:
-        color_image.fill_(wp.uint32(clear_data.clear_color))
-
-    if clear_data is not None and clear_data.clear_depth is not None and depth_image is not None:
-        depth_image.fill_(wp.float32(clear_data.clear_depth))
-
-    if clear_data is not None and clear_data.clear_shape_index is not None and shape_index_image is not None:
-        shape_index_image.fill_(wp.uint32(clear_data.clear_shape_index))
-
-    if clear_data is not None and clear_data.clear_normal is not None and normal_image is not None:
-        normal_image.fill_(clear_data.clear_normal)
-
-    if clear_data is not None and clear_data.clear_albedo is not None and albedo_image is not None:
-        albedo_image.fill_(wp.uint32(clear_data.clear_albedo))
+    # Reshaping output images to one dimension, slightly improves performance in the Kernel.
+    if color_image is not None:
+        color_image = color_image.reshape(rc.num_worlds * num_cameras * width * height)
+    if depth_image is not None:
+        depth_image = depth_image.reshape(rc.num_worlds * num_cameras * width * height)
+    if shape_index_image is not None:
+        shape_index_image = shape_index_image.reshape(rc.num_worlds * num_cameras * width * height)
+    if normal_image is not None:
+        normal_image = normal_image.reshape(rc.num_worlds * num_cameras * width * height)
+    if albedo_image is not None:
+        albedo_image = albedo_image.reshape(rc.num_worlds * num_cameras * width * height)
 
     wp.launch(
         kernel=_render_megakernel,
-        dim=rc.num_worlds * rc.num_cameras * rc.width * rc.height,
+        dim=(rc.num_worlds * num_cameras * width * height),
         inputs=[
             # Model and Options
             rc.num_worlds,
-            rc.num_cameras,
+            num_cameras,
             rc.num_lights,
-            rc.width,
-            rc.height,
+            width,
+            height,
             rc.options.render_order,
             rc.options.tile_width,
             rc.options.tile_height,
