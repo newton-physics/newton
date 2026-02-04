@@ -215,7 +215,6 @@ class RenderContext:
         if self.has_shapes or self.has_particles or self.has_triangle_mesh:
             if refit_bvh:
                 self.refit_bvh()
-
             width = camera_rays.shape[2]
             height = camera_rays.shape[1]
             num_cameras = camera_rays.shape[0]
@@ -225,7 +224,7 @@ class RenderContext:
             )
 
             assert camera_rays.shape == (num_cameras, height, width, 2), (
-                f"camera_rays size must match {num_cameras} x {width} x {height} x 2"
+                f"camera_rays size must match {num_cameras} x {height} x {width} x 2"
             )
 
             if color_image is not None:
