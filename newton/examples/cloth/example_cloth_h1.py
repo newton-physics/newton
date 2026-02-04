@@ -145,7 +145,7 @@ class Example:
             tf = self.ee_tfs[ee_i]
 
             self.pos_objs.append(
-                ik.IKPositionObjective(
+                ik.IKObjectivePosition(
                     link_index=link_idx,
                     link_offset=wp.vec3(0.0, 0.0, 0.0),
                     target_positions=wp.array([wp.transform_get_translation(tf)], dtype=wp.vec3),
@@ -153,7 +153,7 @@ class Example:
             )
 
             self.rot_objs.append(
-                ik.IKRotationObjective(
+                ik.IKObjectiveRotation(
                     link_index=link_idx,
                     link_offset_rotation=wp.quat_identity(),
                     target_rotations=wp.array([_q2v4(wp.transform_get_rotation(tf))], dtype=wp.vec4),
@@ -161,7 +161,7 @@ class Example:
             )
 
         # Joint limit objective
-        self.obj_joint_limits = ik.IKJointLimitObjective(
+        self.obj_joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.model.joint_limit_lower,
             joint_limit_upper=self.model.joint_limit_upper,
             weight=10.0,
@@ -176,7 +176,7 @@ class Example:
             n_problems=1,
             objectives=[*self.pos_objs, *self.rot_objs, self.obj_joint_limits],
             lambda_initial=0.1,
-            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
         self.ik_solver.step(self.joint_q, self.joint_q, iterations=self.ik_iters)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
