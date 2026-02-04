@@ -4715,6 +4715,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
+    `@unittest.skipUnless`(USD_AVAILABLE, "Requires usd-core")
     def test_mjc_damping_from_usd_via_schema_resolver(self):
         """Test mjc:damping attributes are parsed via SchemaResolverMjc."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
@@ -4724,7 +4725,6 @@ class TestMuJoCoAttributes(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-
         # Create root body
         root_path = "/robot"
         root_shape = UsdGeom.Cube.Define(stage, root_path)
