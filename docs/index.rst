@@ -23,13 +23,14 @@ Newton Physics
    :hidden:
    :caption: Concepts
    
+   Worlds <concepts/worlds>
    Articulations <concepts/articulations>
    Sites <concepts/sites>
    Sensors <concepts/sensors>
    Conventions <concepts/conventions>
    USD Parsing <concepts/usd_parsing>
    Custom Attributes <concepts/custom_attributes>
-   Extended State Attributes <concepts/extended_state_attributes>
+   Extended Attributes <concepts/extended_attributes>
    Collisions and Contacts <concepts/collisions>
    
 .. toctree::

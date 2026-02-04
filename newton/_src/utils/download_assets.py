@@ -93,6 +93,49 @@ def _touch(path: Path) -> None:
         pass
 
 
+def _find_parent_cache(
+    cache_path: Path,
+    repo_name: str,
+    folder_path: str,
+    branch: str,
+    git_url: str,
+) -> tuple[Path, Path] | None:
+    """Check if folder_path exists inside an already-cached parent folder.
+
+    For example, if folder_path is "unitree_g1/usd" and we have
+    "newton-assets_unitree_g1_<hash>" cached, return the paths.
+
+    Args:
+        cache_path: The base cache directory
+        repo_name: Repository name (e.g., "newton-assets")
+        folder_path: The requested folder path (e.g., "unitree_g1/usd")
+        branch: Git branch name
+        git_url: Full git URL for hash computation
+
+    Returns:
+        Tuple of (parent_cache_folder, target_subfolder) if found, None otherwise.
+    """
+    parts = folder_path.split("/")
+    if len(parts) <= 1:
+        return None  # No parent to check
+
+    # Generate all potential parent paths: "a/b/c" -> ["a", "a/b"]
+    parent_paths = ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+    for parent_path in parent_paths:
+        # Generate the cache folder name for this parent
+        parent_hash = hashlib.md5(f"{git_url}#{parent_path}#{branch}".encode()).hexdigest()[:8]
+        parent_folder_name = parent_path.replace("/", "_").replace("\\", "_")
+        parent_cache = cache_path / f"{repo_name}_{parent_folder_name}_{parent_hash}"
+
+        # Check if this parent cache exists and contains our target
+        target_in_parent = parent_cache / folder_path
+        if target_in_parent.exists() and (parent_cache / ".git").exists():
+            return (parent_cache, target_in_parent)
+
+    return None
+
+
 def download_git_folder(
     git_url: str, folder_path: str, cache_dir: str | None = None, branch: str = "main", force_refresh: bool = False
 ) -> Path:
@@ -145,14 +188,34 @@ def download_git_folder(
 
     target_folder = cache_folder / folder_path
 
+    # TTL to avoid repeated network checks
+    ttl_seconds = 3600
+
+    # Check if the requested folder exists in an already-cached parent
+    # This avoids redundant downloads when a parent folder already contains the subfolder
+    if not force_refresh:
+        parent_result = _find_parent_cache(cache_path, repo_name, folder_path, branch, git_url)
+        if parent_result is not None:
+            parent_cache, target_in_parent = parent_result
+            stamp_file = parent_cache / ".newton_last_check"
+
+            if _stamp_fresh(stamp_file, ttl_seconds):
+                return target_in_parent
+
+            # Verify parent cache is up-to-date
+            current_commit = _read_cached_commit(parent_cache)
+            latest_commit = _get_latest_commit_via_git(git_url, branch)
+            if latest_commit is None or (current_commit and latest_commit == current_commit):
+                _touch(stamp_file)
+                return target_in_parent
+            # If parent is stale, fall through to download fresh subfolder
+
     # 1. Handle force_refresh
     if force_refresh and cache_folder.exists():
         _safe_rmtree(cache_folder)
 
     # 2. Check cache validity using Git
-    # TTL to avoid repeated network checks
     stamp_file = cache_folder / ".newton_last_check"
-    ttl_seconds = 3600
 
     is_cached = target_folder.exists() and (cache_folder / ".git").exists()
     if is_cached and not force_refresh:
