@@ -4222,12 +4222,19 @@ class TestImportMjcf(unittest.TestCase):
         builder.add_mjcf(robot_mjcf, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False)
 
         ee_body_idx = builder.body_key.index("end_effector")
-        ee_world_pos = builder.body_q[ee_body_idx].p
 
         builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx, xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
 
         gripper_body_idx = builder.body_key.index("gripper_base")
-        gripper_world_pos = builder.body_q[gripper_body_idx].p
+
+        # Finalize and compute forward kinematics to get world-space positions
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        ee_world_pos = body_q[ee_body_idx, :3]  # Extract x, y, z
+        gripper_world_pos = body_q[gripper_body_idx, :3]  # Extract x, y, z
 
         self.assertAlmostEqual(gripper_world_pos[0], ee_world_pos[0], places=5)
         self.assertAlmostEqual(gripper_world_pos[1], ee_world_pos[1], places=5)

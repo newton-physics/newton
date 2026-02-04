@@ -1363,9 +1363,18 @@ def parse_usd(
                         # Compute parent_xform to preserve imported pose when attaching to parent_body
                         parent_xform = None
                         if base_parent != -1:
-                            parent_xform = (
-                                wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
-                            )
+                            # When parent_body is specified, interpret xform parameter as parent-relative offset
+                            # body_data[i]["xform"] = USD_local * incoming_world_xform
+                            # We want parent_xform to position the child at this location relative to parent
+                            # Use incoming_world_xform as the base parent-relative offset
+                            parent_xform = incoming_world_xform
+                            # If the USD body has a non-identity local transform, compose it with incoming_xform
+                            # Note: incoming_world_xform already includes the child's USD local transform via body_incoming_xform
+                            # So we can use body_data[i]["xform"] directly for the intended position
+                            # But we need it relative to parent. Since parent's body_q may not reflect joint offsets,
+                            # we interpret body_data[i]["xform"] as the intended parent-relative transform directly.
+                            # For articulations without joints, incoming_world_xform IS the parent-relative offset.
+                            parent_xform = incoming_world_xform
                         joint_id = builder._add_base_joint(
                             child_body_id,
                             floating=floating,
@@ -1386,9 +1395,8 @@ def parse_usd(
                         # Compute parent_xform to preserve imported pose when attaching to parent_body
                         parent_xform = None
                         if base_parent != -1:
-                            parent_xform = (
-                                wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
-                            )
+                            # When parent_body is specified, interpret xform parameter as parent-relative offset
+                            parent_xform = incoming_world_xform
                         joint_id = builder._add_base_joint(
                             child_body_id,
                             floating=floating,
@@ -1456,7 +1464,8 @@ def parse_usd(
                     # Compute parent_xform to preserve imported pose when attaching to parent_body
                     parent_xform = None
                     if base_parent != -1:
-                        parent_xform = wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
+                        # When parent_body is specified, use incoming_world_xform as parent-relative offset
+                        parent_xform = incoming_world_xform
                     base_joint_id = builder._add_base_joint(
                         child_body_id,
                         floating=floating,
@@ -1484,9 +1493,8 @@ def parse_usd(
                             # Compute parent_xform to preserve imported pose
                             parent_xform = None
                             if base_parent != -1:
-                                parent_xform = (
-                                    wp.transform_inverse(builder.body_q[base_parent]) * builder.body_q[child_body_id]
-                                )
+                                # When parent_body is specified, use incoming_world_xform as parent-relative offset
+                                parent_xform = incoming_world_xform
                             else:
                                 # body_q is already in world space, use it directly
                                 parent_xform = builder.body_q[child_body_id]
@@ -1918,7 +1926,8 @@ def parse_usd(
                 if builder.body_mass[body_id] <= 0:
                     continue  # Skip static bodies
                 # Compute parent_xform to preserve imported pose when attaching to parent_body
-                parent_xform = wp.transform_inverse(builder.body_q[parent_body]) * builder.body_q[body_id]
+                # When parent_body is specified, use incoming_world_xform as parent-relative offset
+                parent_xform = incoming_world_xform
                 joint_id = builder._add_base_joint(
                     body_id,
                     floating=floating,

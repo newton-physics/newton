@@ -1221,6 +1221,58 @@ class TestImportUrdf(unittest.TestCase):
         # Verify joint count: arm (3) + gripper (2) + sensor (1) = 6
         self.assertEqual(model.joint_count, 6)
 
+    def test_xform_relative_to_parent_body(self):
+        """Test that xform is interpreted relative to parent_body when attaching."""
+        robot_urdf = """<?xml version="1.0"?>
+<robot name="robot">
+    <link name="base">
+        <inertial><mass value="1.0"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial>
+        <visual><geometry><sphere radius="0.1"/></geometry></visual>
+    </link>
+    <link name="end_effector">
+        <inertial><mass value="0.5"/><inertia ixx="0.05" ixy="0" ixz="0" iyy="0.05" iyz="0" izz="0.05"/></inertial>
+        <visual><geometry><sphere radius="0.05"/></geometry></visual>
+    </link>
+    <joint name="joint1" type="revolute">
+        <parent link="base"/><child link="end_effector"/>
+        <origin xyz="0 1 0"/><axis xyz="0 0 1"/>
+    </joint>
+</robot>
+"""
+        gripper_urdf = """<?xml version="1.0"?>
+<robot name="gripper">
+    <link name="gripper_base">
+        <inertial><mass value="0.2"/><inertia ixx="0.02" ixy="0" ixz="0" iyy="0.02" iyz="0" izz="0.02"/></inertial>
+        <visual><geometry><box size="0.02 0.02 0.02"/></geometry></visual>
+    </link>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        self.parse_urdf(robot_urdf, builder, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False)
+
+        ee_body_idx = builder.body_key.index("end_effector")
+
+        # xform is in world coordinates, offset by +0.1 in Z (vertical up)
+        self.parse_urdf(
+            gripper_urdf, builder, parent_body=ee_body_idx, xform=wp.transform((0.0, 0.1, 0.0), wp.quat_identity())
+        )
+
+        gripper_body_idx = builder.body_key.index("gripper_base")
+
+        # Finalize and compute forward kinematics to get world-space positions
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        ee_world_pos = body_q[ee_body_idx, :3]  # Extract x, y, z
+        gripper_world_pos = body_q[gripper_body_idx, :3]  # Extract x, y, z
+
+        # Verify gripper is offset by +0.1 in Z (world up direction)
+        self.assertAlmostEqual(gripper_world_pos[0], ee_world_pos[0], places=5)
+        self.assertAlmostEqual(gripper_world_pos[1], ee_world_pos[1], places=5)
+        self.assertAlmostEqual(gripper_world_pos[2], ee_world_pos[2] + 0.1, places=5)
+
     def test_many_independent_articulations(self):
         """Test creating many (5) independent articulations and verifying indexing."""
         robot_urdf = """<?xml version="1.0"?>

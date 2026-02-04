@@ -2270,7 +2270,7 @@ def Xform "Root" (
         assert_np_equal(np.array(parent_xform.p), np.array([0.0, 0.0, 1.0]), tol=1e-6)
 
     def test__add_base_joints_to_floating_bodies_base_joint_dict(self):
-        """Test _add_base_joints_to_floating_bodies with base_joint dict creates D6 joints."""
+        """Test _add_base_joints_to_floating_bodies with base_joint dict creates a D6 joint."""
         builder = newton.ModelBuilder()
 
         # Use add_link to create body without auto joint
@@ -2298,8 +2298,8 @@ def Xform "Root" (
         parent_xform = builder.joint_X_p[0]
         assert_np_equal(np.array(parent_xform.p), np.array([1.0, 2.0, 3.0]), tol=1e-6)
 
-    def test__add_base_joints_to_floating_bodies_base_joint_dict(self):
-        """Test _add_base_joints_to_floating_bodies with base_joint dict creates specified joint."""
+    def test__add_base_joints_to_floating_bodies_base_joint_dict_revolute(self):
+        """Test _add_base_joints_to_floating_bodies with base_joint dict creates a revolute joint."""
         builder = newton.ModelBuilder()
 
         # Use add_link to create body without auto joint
@@ -4780,6 +4780,62 @@ def Xform "Articulation" (
 
         # Verify joint count: arm (1 fixed + 2 revolute) + gripper (1 fixed + 1 revolute) + sensor (1 fixed) = 6
         self.assertEqual(model.joint_count, 6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_xform_relative_to_parent_body(self):
+        """Test that xform is interpreted relative to parent_body when attaching."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        def create_simple_body_stage(name):
+            """Create a stage with a single rigid body."""
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+            body = UsdGeom.Cube.Define(stage, f"/{name}")
+            body.CreateSizeAttr().Set(0.1)
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).GetMassAttr().Set(1.0)
+
+            return stage
+
+        # Build the model
+        builder = newton.ModelBuilder()
+
+        # Add parent body at world position (0, 0, 2)
+        parent_stage = create_simple_body_stage("parent")
+        builder.add_usd(parent_stage, xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()), floating=False)
+
+        parent_body_idx = builder.body_key.index("/parent")
+
+        # Attach child to parent with xform (0, 0, 0.5) - interpreted as parent-relative offset
+        child_stage = create_simple_body_stage("child")
+        builder.add_usd(
+            child_stage, parent_body=parent_body_idx, xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity())
+        )
+
+        child_body_idx = builder.body_key.index("/child")
+
+        # Finalize and compute forward kinematics to get world-space positions
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        parent_world_pos = body_q[parent_body_idx, :3]  # Extract x, y, z
+        child_world_pos = body_q[child_body_idx, :3]  # Extract x, y, z
+
+        # Verify parent is at specified world position
+        self.assertAlmostEqual(parent_world_pos[0], 0.0, places=5)
+        self.assertAlmostEqual(parent_world_pos[1], 0.0, places=5)
+        self.assertAlmostEqual(parent_world_pos[2], 2.0, places=5, msg="Parent should be at Z=2.0")
+
+        # Verify child is offset by +0.5 in Z from parent
+        self.assertAlmostEqual(child_world_pos[0], parent_world_pos[0], places=5)
+        self.assertAlmostEqual(child_world_pos[1], parent_world_pos[1], places=5)
+        self.assertAlmostEqual(
+            child_world_pos[2], parent_world_pos[2] + 0.5, places=5, msg="Child should be offset by +0.5 in Z"
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_many_independent_articulations(self):
