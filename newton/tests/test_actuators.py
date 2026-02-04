@@ -131,10 +131,12 @@ class TestActuatorBuilder(unittest.TestCase):
 
         dofs = [builder.joint_qd_start[j] for j in joints]
 
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0], dofs[1]], kp=100.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=150.0)
         builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[2]], kp=200.0, delay=3)
         builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[3]], kp=250.0, delay=3)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[4], dofs[5]], kp=300.0, delay=7)
+        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[4]], kp=300.0, delay=7)
+        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[5]], kp=350.0, delay=7)
 
         model = builder.finalize()
 

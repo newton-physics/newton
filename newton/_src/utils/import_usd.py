@@ -117,7 +117,7 @@ def parse_usd(
             The callback accepts a single ``pxr.Usd.Prim`` and returns either ``None`` (to skip the prim) or an
             object with the following attributes:
 
-            - ``target_paths`` (list[str]): List of joint prim paths that this actuator controls.
+            - ``target_paths`` (list[str]): List of prim paths that this actuator controls.
             - ``actuator_class`` (type): The actuator class to instantiate (e.g., ``ActuatorPD``).
             - ``kwargs`` (dict): Dictionary of extra keyword arguments passed to ``ModelBuilder.add_actuator()``.
 

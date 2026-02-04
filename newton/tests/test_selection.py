@@ -23,6 +23,7 @@ import newton.examples
 from newton.selection import ArticulationView
 from newton.tests.unittest_utils import assert_np_equal
 
+
 class TestSelection(unittest.TestCase):
     def test_no_match(self):
         builder = newton.ModelBuilder()

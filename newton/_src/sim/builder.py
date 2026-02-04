@@ -71,15 +71,6 @@ from .joints import (
 from .model import Model
 
 
-@dataclass
-class ActuatorEntry:
-    """Stores accumulated indices and arguments for one actuator type + scalar params combo."""
-
-    input_indices: list[int]
-    output_indices: list[int]
-    args: list[dict]  # Only array params, scalar params are in the dict key
-
-
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
 
@@ -152,6 +143,14 @@ class ModelBuilder:
         than creating your own Model object directly, however it is possible to do so if
         desired.
     """
+
+    @dataclass
+    class ActuatorEntry:
+        """Stores accumulated indices and arguments for one actuator type + scalar params combo."""
+
+        input_indices: list[int]
+        output_indices: list[int]
+        args: list[dict[str, Any]]  # Only array params, scalar params are in the dict key
 
     @dataclass
     class ShapeConfig:
@@ -1218,7 +1217,7 @@ class ModelBuilder:
         entry_key = (actuator_class, scalar_key)
         entry = self.actuator_entries.setdefault(
             entry_key,
-            ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+            ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
         )
 
         # Filter out scalar params from args (they're already in the key)
@@ -1226,8 +1225,7 @@ class ModelBuilder:
 
         entry.input_indices.extend(input_indices)
         entry.output_indices.extend(output_indices)
-        for _ in output_indices:
-            entry.args.append(array_params)
+        entry.args.append(array_params)
 
     def _stack_args_to_arrays(self, args_list: list[dict], device=None, requires_grad: bool = False) -> dict:
         """Convert list of per-index arg dicts into dict of warp arrays.
@@ -1643,7 +1641,7 @@ class ModelBuilder:
                 The callback accepts a single ``pxr.Usd.Prim`` and returns either ``None`` (to skip the prim) or an
                 object with the following attributes:
 
-                - ``target_paths`` (list[str]): List of joint prim paths that this actuator controls.
+                - ``target_paths`` (list[str]): List of prim paths that this actuator controls.
                 - ``actuator_class`` (type): The actuator class to instantiate (e.g., ``ActuatorPD``).
                 - ``kwargs`` (dict): Dictionary of extra keyword arguments passed to ``ModelBuilder.add_actuator()``.
 
@@ -2381,7 +2379,7 @@ class ModelBuilder:
         for entry_key, sub_entry in builder.actuator_entries.items():
             entry = self.actuator_entries.setdefault(
                 entry_key,
-                ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+                ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
             )
             # Offset indices by start_joint_dof_idx
             entry.input_indices.extend([idx + start_joint_dof_idx for idx in sub_entry.input_indices])

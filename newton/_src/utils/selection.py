@@ -24,6 +24,7 @@ from ..sim import Control, JointType, Model, State, eval_fk
 
 AttributeFrequency = Model.AttributeFrequency
 
+
 @wp.kernel
 def set_model_articulation_mask_kernel(
     world_arti_mask: wp.array2d(dtype=bool),  # (world, arti) mask in ArticulationView
