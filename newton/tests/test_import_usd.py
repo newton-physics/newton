@@ -3289,10 +3289,12 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_numeric_once_parsing(self):
-        """Test parsing of ONCE frequency numeric options from USD PhysicsScene (3 options)."""
+        """Test parsing of ONCE frequency numeric options from USD PhysicsScene (5 options)."""
         from pxr import Usd  # noqa: PLC0415
 
         test_cases = [
+            ("iterations", "30", 30),
+            ("ls_iterations", "15", 15),
             ("ccd_iterations", "25", 25),
             ("sdf_iterations", "20", 20),
             ("sdf_initpoints", "50", 50),
