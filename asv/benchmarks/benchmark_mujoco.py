@@ -191,12 +191,13 @@ def _setup_cartpole(articulation_builder):
         enable_self_collisions=False,
         collapse_fixed_joints=True,
     )
-    # set initial joint positions
-    articulation_builder.joint_q[-3:] = [0.0, 0.3, 0.0]
+    # set initial joint positions (cartpole has 2 joints: prismatic slider + revolute pole)
+    # joint_q[0] = slider position, joint_q[1] = pole angle
+    articulation_builder.joint_q[0] = 0.0  # slider at origin
+    articulation_builder.joint_q[1] = 0.3  # pole tilted
 
     # Setting root pose
     root_dofs = 1
-    articulation_builder.joint_q[:3] = [0.0, 0.3, 0.0]
 
     return root_dofs
 
