@@ -38,6 +38,8 @@
 
 We standardize on `uv` for local workflows when available. If `uv` is not installed, fall back to a virtual environment created with `venv` or `conda`.
 
+- **Use `uv run python -c` for inline Python**: When running one-off Python commands, use `uv run python -c "..."` instead of `python3 -c "..."`.
+
 Example commands using `uv` (from `docs/guide/development.rst`):
 
 ### Run examples
@@ -85,10 +87,15 @@ uvx --with virtualenv asv run --launch-method spawn main^^!
 ## Commit and Pull Request Guidelines
 
 Follow conventional commit message practices.
+
+- **Use feature branches**: All development work should be on branches named `<username>/feature-desc` (e.g., `jdoe/docs-versioning`). Do not commit directly to `main`.
 - **Always run pre-commit hooks before committing**: Execute `uvx pre-commit run -a` to check all files for linting, formatting, and other issues. Fix any errors before creating commits. Consider installing the hooks with `uvx pre-commit install` to run them automatically on every commit.
-- Use clear, descriptive commit messages that explain what changed and why.
 - Keep commits focused and atomic—one logical change per commit.
 - Reference related issues in commit messages when applicable.
 - **Do not include AI attribution or co-authorship lines** (e.g., "Co-Authored-By: Claude...") in commit messages. Commits should represent human contributions without explicit AI attribution.
-
-For detailed guidance on writing good commit messages and structuring pull requests, see [Apache Airflow's Pull Request Guidelines](https://github.com/apache/airflow/blob/main/AGENTS.md#pull-request-guidelines).
+- **Commit message format**:
+  - Separate subject from body with a blank line
+  - Subject: imperative mood, capitalized, ~50 chars, no trailing period
+    - Write as a command: "Fix bug" not "Fixed bug" or "Fixes bug"
+    - Test: "If applied, this commit will _[your subject]_"
+  - Body: wrap at 72 chars, explain _what_ and _why_ (not _how_—the diff shows that)
