@@ -707,6 +707,20 @@ add_example_test(
     test_options={"num-frames": 600},
     use_viewer=True,
 )
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_poker_cards_stacking",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 600},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_softbody_dropping_to_cloth",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 600},
+    use_viewer=True,
+)
 
 
 if __name__ == "__main__":

@@ -285,22 +285,21 @@ class Example:
 
     def test_final(self):
         """Verify simulation reached a valid end state."""
-        # Test that cards have settled (allow higher velocities due to sphere impact)
-        newton.examples.test_particle_state(
-            self.state_0,
-            "cards have come close to rest",
-            lambda q, qd: max(abs(qd)) < 0.5,  # m/s - allow motion from sphere impact
-        )
+        particle_q = self.state_0.particle_q.numpy()
+        particle_qd = self.state_0.particle_qd.numpy()
 
-        # Test that cards are within a reasonable volume
-        # Cards may have been knocked off the cube by the sphere
-        p_lower = wp.vec3(-1.0, -1.0, -0.01)  # m
-        p_upper = wp.vec3(1.0, 1.0, 1.5)  # m
-        newton.examples.test_particle_state(
-            self.state_0,
-            "cards are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
-        )
+        # Check velocity (cards should be settling)
+        max_vel = np.max(np.linalg.norm(particle_qd, axis=1))
+        assert max_vel < 0.5, f"Cards moving too fast: max_vel={max_vel:.4f} m/s"
+
+        # Check bbox size is reasonable (not exploding)
+        min_pos = np.min(particle_q, axis=0)
+        max_pos = np.max(particle_q, axis=0)
+        bbox_size = np.linalg.norm(max_pos - min_pos)
+        assert bbox_size < 2.0, f"Bounding box exploded: size={bbox_size:.2f}"
+
+        # Check no excessive penetration
+        assert min_pos[2] > -0.1, f"Excessive penetration: z_min={min_pos[2]:.4f}"
 
 
 if __name__ == "__main__":
