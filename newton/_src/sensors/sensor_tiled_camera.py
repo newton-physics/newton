@@ -291,11 +291,11 @@ class SensorTiledCamera:
         """
 
         if isinstance(camera_fovs, float):
-            camera_fovs = wp.array([camera_fovs], dtype=wp.float32)
+            camera_fovs = wp.array([camera_fovs], dtype=wp.float32, device=self.model.device)
         elif isinstance(camera_fovs, list):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32)
+            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.model.device)
         elif isinstance(camera_fovs, np.ndarray):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32)
+            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.model.device)
         return self.render_context.utils.compute_pinhole_camera_rays(width, height, camera_fovs)
 
     def flatten_color_image_to_rgba(
