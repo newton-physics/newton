@@ -587,8 +587,10 @@ def parse_mjcf(
 
             elif geom_type == "plane":
                 # Use tf (which has incoming_xform applied) for plane normal/distance
+                # For plane equation n·x + d = 0, and plane passing through point p0:
+                # d = -n·p0 (negative dot product to get correct sign)
                 normal = wp.quat_rotate(tf.q, wp.vec3(0.0, 0.0, 1.0))
-                p = wp.dot(tf.p, normal)
+                p = -wp.dot(tf.p, normal)  # Note: negative sign for correct plane equation
                 s = builder.add_shape_plane(
                     plane=(*normal, p),
                     width=geom_size[0],
