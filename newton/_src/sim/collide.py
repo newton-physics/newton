@@ -40,6 +40,7 @@ class CollisionPipeline:
     def __init__(
         self,
         model: Model,
+        *,
         rigid_contact_max_per_pair: int | None = None,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,

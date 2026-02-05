@@ -134,7 +134,7 @@ def build_stacked_cubes_scene(
     # Hydroelastic without contact reduction can generate many contacts
     rigid_contact_max = 6000 if not reduce_contacts else 100
 
-    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+    collision_pipeline = newton.CollisionPipelineUnified(
         model,
         rigid_contact_max=rigid_contact_max,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
@@ -333,7 +333,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     sdf_config = SDFHydroelasticConfig(output_contact_surface=True)
-    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+    collision_pipeline = newton.CollisionPipelineUnified(
         model,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
         sdf_hydroelastic_config=sdf_config,

@@ -862,7 +862,7 @@ class ClothSim:
 
         # Create collision pipeline (unified or standard based on flag)
         if self.use_unified_pipeline:
-            self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+            self.collision_pipeline = newton.CollisionPipelineUnified(
                 self.model,
                 broad_phase_mode=newton.BroadPhaseMode.NXN,
                 soft_contact_margin=self.soft_contact_margin,

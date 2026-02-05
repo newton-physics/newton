@@ -99,7 +99,7 @@ class CollisionSetup:
 
         # Initialize collision pipeline
         if use_unified_pipeline:
-            self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+            self.collision_pipeline = newton.CollisionPipelineUnified(
                 self.model,
                 broad_phase_mode=broad_phase_mode,
             )
@@ -577,13 +577,13 @@ def test_particle_shape_contacts(test, device, use_unified_pipeline: bool, shape
 
         # Create appropriate collision pipeline
         if use_unified_pipeline:
-            collision_pipeline = newton.CollisionPipelineUnified.from_model(
+            collision_pipeline = newton.CollisionPipelineUnified(
                 model,
                 broad_phase_mode=newton.BroadPhaseMode.NXN,
                 soft_contact_margin=soft_contact_margin,
             )
         else:
-            collision_pipeline = newton.CollisionPipeline.from_model(
+            collision_pipeline = newton.CollisionPipeline(
                 model,
                 soft_contact_margin=soft_contact_margin,
             )

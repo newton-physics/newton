@@ -329,6 +329,7 @@ class CollisionPipelineUnified:
     def __init__(
         self,
         model: Model,
+        *,
         reduce_contacts: bool = True,
         rigid_contact_max: int | None = None,
         soft_contact_max: int | None = None,
