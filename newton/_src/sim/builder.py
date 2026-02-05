@@ -4100,13 +4100,9 @@ class ModelBuilder:
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
             # compute position and rotation from plane equation
-            # For plane equation ax + by + cz + d = 0, the closest point to origin is -(d/||n||) * (n/||n||)
-            # where n = (a, b, c). Both the normal and d need to be normalized.
             normal = np.array(plane[:3])
-            norm = np.linalg.norm(normal)
-            normal /= norm
-            d_normalized = plane[3] / norm
-            pos = -d_normalized * normal
+            normal /= np.linalg.norm(normal)
+            pos = plane[3] * normal
             # compute rotation from local +Z axis to plane normal
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
             xform = wp.transform(pos, rot)
