@@ -266,18 +266,94 @@ class RenderContext:
                 assert width % self.options.tile_width == 0, "render width must be a multiple of tile_width"
                 assert height % self.options.tile_height == 0, "render height must be a multiple of tile_height"
 
-            render_megakernel(
-                self,
-                width,
-                height,
-                num_cameras,
-                camera_transforms,
-                camera_rays,
-                color_image,
-                depth_image,
-                shape_index_image,
-                normal_image,
-                albedo_image,
+            # Reshaping output images to one dimension, slightly improves performance in the Kernel.
+            if color_image is not None:
+                color_image = color_image.reshape(self.num_worlds * num_cameras * width * height)
+            if depth_image is not None:
+                depth_image = depth_image.reshape(self.num_worlds * num_cameras * width * height)
+            if shape_index_image is not None:
+                shape_index_image = shape_index_image.reshape(self.num_worlds * num_cameras * width * height)
+            if normal_image is not None:
+                normal_image = normal_image.reshape(self.num_worlds * num_cameras * width * height)
+            if albedo_image is not None:
+                albedo_image = albedo_image.reshape(self.num_worlds * num_cameras * width * height)
+
+            wp.launch(
+                kernel=render_megakernel,
+                dim=(self.num_worlds * num_cameras * width * height),
+                inputs=[
+                    # Model and Options
+                    self.num_worlds,
+                    num_cameras,
+                    self.num_lights,
+                    width,
+                    height,
+                    self.options.render_order,
+                    self.options.tile_width,
+                    self.options.tile_height,
+                    self.options.enable_shadows,
+                    self.options.enable_textures,
+                    self.options.enable_ambient_lighting,
+                    self.options.enable_particles and self.has_particles,
+                    self.options.enable_backface_culling,
+                    self.options.enable_global_world,
+                    self.options.max_distance,
+                    # Camera
+                    camera_rays,
+                    camera_transforms,
+                    # Shape BVH
+                    self.num_shapes_enabled,
+                    self.bvh_shapes.id if self.bvh_shapes else 0,
+                    self.bvh_shapes_group_roots,
+                    # Shapes
+                    self.shape_enabled,
+                    self.shape_types,
+                    self.shape_mesh_indices,
+                    self.shape_materials,
+                    self.shape_sizes,
+                    self.shape_colors,
+                    self.shape_transforms,
+                    # Meshes
+                    self.mesh_ids,
+                    self.mesh_face_offsets,
+                    self.mesh_face_vertices,
+                    self.mesh_texcoord,
+                    self.mesh_texcoord_offsets,
+                    # Particle BVH
+                    self.num_particles_total,
+                    self.bvh_particles.id if self.bvh_particles else 0,
+                    self.bvh_particles_group_roots,
+                    # Particles
+                    self.particles_position,
+                    self.particles_radius,
+                    # Triangle Mesh
+                    self.triangle_mesh.id if self.triangle_mesh is not None else 0,
+                    # Textures
+                    self.material_texture_ids,
+                    self.material_texture_repeat,
+                    self.material_rgba,
+                    self.texture_offsets,
+                    self.texture_data,
+                    self.texture_height,
+                    self.texture_width,
+                    # Lights
+                    self.lights_active,
+                    self.lights_type,
+                    self.lights_cast_shadow,
+                    self.lights_position,
+                    self.lights_orientation,
+                    # Outputs
+                    color_image is not None,
+                    depth_image is not None,
+                    shape_index_image is not None,
+                    normal_image is not None,
+                    albedo_image is not None,
+                    color_image,
+                    depth_image,
+                    shape_index_image,
+                    normal_image,
+                    albedo_image,
+                ],
             )
 
     def __compute_bvh_shape_bounds(self):
