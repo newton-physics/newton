@@ -29,7 +29,7 @@ from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
 from ..sim import ActuatorMode, JointType, ModelBuilder
-from ..sim.model import ModelAttributeFrequency
+from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
@@ -122,6 +122,9 @@ def _load_and_expand_mjcf(
             parent.insert(idx + i, child)
 
     return root, base_dir
+
+
+AttributeFrequency = Model.AttributeFrequency
 
 
 def parse_mjcf(
@@ -229,19 +232,19 @@ def parse_mjcf(
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.SHAPE]
+        [AttributeFrequency.SHAPE]
     )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.BODY]
+        [AttributeFrequency.BODY]
     )
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT]
+        [AttributeFrequency.JOINT]
     )
     builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT_DOF]
+        [AttributeFrequency.JOINT_DOF]
     )
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.EQUALITY_CONSTRAINT]
+        [AttributeFrequency.EQUALITY_CONSTRAINT]
     )
     # MuJoCo actuator custom attributes (from "mujoco:actuator" frequency)
     builder_custom_attr_actuator: list[ModelBuilder.CustomAttribute] = [
@@ -260,7 +263,7 @@ def parse_mjcf(
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-            [ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD]
+            [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
         option_elem = root.find("option")
         if option_elem is not None and builder_custom_attr_option:
@@ -593,11 +596,10 @@ def parse_mjcf(
                     shapes.append(s)
 
             elif geom_type == "plane":
-                # Use tf (which has incoming_xform applied) for plane normal/distance
-                normal = wp.quat_rotate(tf.q, wp.vec3(0.0, 0.0, 1.0))
-                p = wp.dot(tf.p, normal)
+                # Use xform directly - plane has local normal (0,0,1) and passes through origin
+                # The transform tf positions and orients the plane in world space
                 s = builder.add_shape_plane(
-                    plane=(*normal, p),
+                    xform=tf,
                     width=geom_size[0],
                     length=geom_size[1],
                     **shape_kwargs,
@@ -1039,7 +1041,12 @@ def parse_mjcf(
                 else:
                     linear_axes.append(ax)
 
-                dof_attr = parse_custom_attributes(joint_attrib, builder_custom_attr_dof, parsing_mode="mjcf")
+                dof_attr = parse_custom_attributes(
+                    joint_attrib,
+                    builder_custom_attr_dof,
+                    parsing_mode="mjcf",
+                    context={"use_degrees": use_degrees, "joint_type": joint_type_str},
+                )
                 # assemble custom attributes for each DOF (dict mapping DOF index to value)
                 # Only store values that were explicitly specified in the source
                 for key, value in dof_attr.items():
@@ -1632,19 +1639,14 @@ def parse_mjcf(
         and attr.name not in ("tendon_world", "tendon_joint_adr", "tendon_joint_num", "tendon_joint", "tendon_coef")
     ]
 
-    def parse_tendons(tendon_section, tendon_counter: int) -> int:
+    def parse_tendons(tendon_section):
         """Parse tendons from a tendon section.
 
         Args:
             tendon_section: XML element containing tendon definitions.
-            tendon_counter: Running counter for stable tendon indices.
-
-        Returns:
-            Updated tendon counter after processing all tendons in this section.
         """
         for fixed in tendon_section.findall("fixed"):
             tendon_name = fixed.attrib.get("name", "")
-            tendon_idx = tendon_counter
 
             # Parse joint elements within this fixed tendon
             joint_entries = []
@@ -1701,19 +1703,16 @@ def parse_mjcf(
             for attr in builder_custom_attr_tendon:
                 tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
 
-            builder.add_custom_values(**tendon_values)
+            indices = builder.add_custom_values(**tendon_values)
 
-            # Track tendon name for actuator resolution
+            # Track tendon name for actuator resolution (get index from add_custom_values return)
             if tendon_name:
+                tendon_idx = indices.get("mujoco:tendon_world", 0)
                 tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
 
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
                 print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
-
-            tendon_counter += 1
-
-        return tendon_counter
 
     # -----------------
     # parse actuators
@@ -1931,9 +1930,8 @@ def parse_mjcf(
     if has_tendon_attrs:
         # Find all sections marked <tendon></tendon>
         tendon_sections = root.findall(".//tendon")
-        tendon_counter = 0
         for tendon_section in tendon_sections:
-            tendon_counter = parse_tendons(tendon_section, tendon_counter)
+            parse_tendons(tendon_section)
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:

@@ -99,7 +99,11 @@ class Example:
 
         self.num_worlds = num_worlds
 
+        # increase contact stiffness
+        contact_ke = 1.0e4
+
         world = newton.ModelBuilder()
+        world.default_shape_cfg.ke = contact_ke
         world.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
@@ -115,6 +119,7 @@ class Example:
         )
 
         scene = newton.ModelBuilder()
+        scene.default_shape_cfg.ke = contact_ke
 
         scene.add_ground_plane()
         scene.replicate(world, num_worlds=self.num_worlds)

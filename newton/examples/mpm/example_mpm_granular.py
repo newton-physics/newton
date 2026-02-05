@@ -35,6 +35,10 @@ class Example:
         # save a reference to the viewer
         self.viewer = viewer
         builder = newton.ModelBuilder()
+
+        # Register MPM custom attributes before adding particles
+        SolverImplicitMPM.register_custom_attributes(builder)
+
         Example.emit_particles(builder, options)
 
         # Setup collision geometry
@@ -85,32 +89,23 @@ class Example:
         builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
 
         self.model = builder.finalize()
-        self.model.particle_mu = options.friction_coeff
         self.model.set_gravity(options.gravity)
 
-        # Disable model's particle material parameters,
-        # we want to read directly from MPM options instead
-        self.model.particle_ke = None
-        self.model.particle_kd = None
-        self.model.particle_cohesion = None
-        self.model.particle_adhesion = None
-
-        # Copy all remaining CLI arguments to MPM options
+        # Copy all remaining CLI arguments to MPM options or per-particle material custom attributes
         mpm_options = SolverImplicitMPM.Options()
         for key in vars(options):
             if hasattr(mpm_options, key):
                 setattr(mpm_options, key, getattr(options, key))
 
-        # Create MPM model from Newton model
-        mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
+            # Copy per-particle material options to model custom attributes
+            if hasattr(self.model.mpm, key):
+                getattr(self.model.mpm, key).fill_(getattr(options, key))
+
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
-        # Initialize MPM solver and add supplemental state variables
-        self.solver = SolverImplicitMPM(mpm_model, mpm_options)
-
-        self.solver.enrich_state(self.state_0)
-        self.solver.enrich_state(self.state_1)
+        # Initialize MPM solver
+        self.solver = SolverImplicitMPM(self.model, mpm_options)
 
         self.viewer.set_model(self.model)
 
@@ -146,7 +141,7 @@ class Example:
         self.sim_time += self.frame_dt
 
     def test_final(self):
-        voxel_size = self.solver.mpm_model.voxel_size
+        voxel_size = self.solver.voxel_size
         newton.examples.test_particle_state(
             self.state_0,
             "all particles are above the ground",
@@ -161,7 +156,7 @@ class Example:
             newton.examples.test_particle_state(
                 self.state_0,
                 "all particles are outside the cube",
-                lambda q, qd: not newton.utils.vec_inside_limits(q, cube_lower, cube_upper),
+                lambda q, qd: not newton.math.vec_inside_limits(q, cube_lower, cube_upper),
             )
 
         # Test that some particles are still high-enough
@@ -178,7 +173,7 @@ class Example:
             _impulses, pos, _cid = self.solver.collect_collider_impulses(self.state_0)
             normals = self.state_0.collider_normal_field.dof_values
 
-            normal_vecs = 0.25 * self.solver.mpm_model.voxel_size * normals
+            normal_vecs = 0.25 * self.solver.voxel_size * normals
             root = pos
             mid = pos + normal_vecs
             tip = mid + normal_vecs
@@ -259,7 +254,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--young-modulus", "-ym", type=float, default=1.0e15)
     parser.add_argument("--poisson-ratio", "-nu", type=float, default=0.3)
-    parser.add_argument("--friction-coeff", "-mu", type=float, default=0.68)
+    parser.add_argument("--friction", "-mu", type=float, default=0.68)
     parser.add_argument("--damping", type=float, default=0.0)
     parser.add_argument("--yield-pressure", "-yp", type=float, default=1.0e12)
     parser.add_argument("--tensile-yield-ratio", "-tyr", type=float, default=0.0)

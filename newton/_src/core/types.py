@@ -17,23 +17,34 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import IntEnum
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import numpy as np
 import warp as wp
 from warp import DeviceLike as Devicelike
 
-try:
-    from typing import override
-except ImportError:
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _override_noop(func: _F, /) -> _F:
+    """Fallback no-op decorator when override is unavailable."""
+    return func
+
+
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
     try:
-        from typing_extensions import override
+        from typing import override as _override
     except ImportError:
-        # Fallback no-op decorator if override is not available
-        def override(func):
-            return func
+        try:
+            from typing_extensions import override as _override
+        except ImportError:
+            _override = _override_noop
+
+    override = _override
 
 
 warp_int_types = (wp.int8, wp.uint8, wp.int16, wp.uint16, wp.int32, wp.uint32, wp.int64, wp.uint64)
@@ -174,6 +185,12 @@ class Axis(IntEnum):
             wp.vec3: The unit vector corresponding to the axis.
         """
         return wp.vec3(*self.to_vector())
+
+    def quat_between_axes(self, other: Axis) -> wp.quat:
+        """
+        Return the quaternion between two axes.
+        """
+        return wp.quat_between_vectors(self.to_vec3(), other.to_vec3())
 
 
 AxisType = Axis | Literal["X", "Y", "Z"] | Literal[0, 1, 2] | int | str
