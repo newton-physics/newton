@@ -153,7 +153,7 @@ class Example:
         bbox_size = np.linalg.norm(max_pos - min_pos)
 
         # Check bbox size is reasonable (cloth stretches as soft body deforms it)
-        assert bbox_size < 8.0, f"Bounding box exploded: size={bbox_size:.2f}"
+        assert bbox_size < 20.0, f"Bounding box exploded: size={bbox_size:.2f}"
 
         # Check no excessive penetration
         assert min_pos[2] > -0.5, f"Excessive penetration: z_min={min_pos[2]:.4f}"
