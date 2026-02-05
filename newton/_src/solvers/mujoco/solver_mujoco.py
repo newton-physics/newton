@@ -500,8 +500,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tolerance",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1e-8,
                 namespace="mujoco",
@@ -512,8 +512,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ls_tolerance",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.01,
                 namespace="mujoco",
@@ -524,8 +524,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ccd_tolerance",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1e-6,
                 namespace="mujoco",
@@ -536,8 +536,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="density",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -548,8 +548,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="viscosity",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
                 namespace="mujoco",
@@ -560,8 +560,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="wind",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec3,
                 default=wp.vec3(0.0, 0.0, 0.0),
                 namespace="mujoco",
@@ -572,8 +572,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="magnetic",
-                frequency=ModelAttributeFrequency.WORLD,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.WORLD,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.vec3,
                 default=wp.vec3(0.0, -0.5, 0.0),
                 namespace="mujoco",
@@ -586,8 +586,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="iterations",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=100,
                 namespace="mujoco",
@@ -598,8 +598,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ls_iterations",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=50,
                 namespace="mujoco",
@@ -610,8 +610,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="ccd_iterations",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=50,
                 namespace="mujoco",
@@ -622,8 +622,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="sdf_iterations",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=10,
                 namespace="mujoco",
@@ -634,8 +634,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="sdf_initpoints",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=40,
                 namespace="mujoco",
@@ -646,8 +646,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="integrator",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=3,  # Newton default: implicitfast (not MuJoCo's 0/Euler)
                 namespace="mujoco",
@@ -659,8 +659,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="solver",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=2,  # Newton
                 namespace="mujoco",
@@ -672,8 +672,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="cone",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,  # pyramidal
                 namespace="mujoco",
@@ -685,8 +685,8 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="jacobian",
-                frequency=ModelAttributeFrequency.ONCE,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=2,  # auto
                 namespace="mujoco",
