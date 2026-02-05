@@ -45,10 +45,10 @@ def rotate_cylinder(
     """Rotate cylinder vertices around their center axis."""
     i = wp.tid()
     particle_index = indices[i]
-    c0 = math.cos(-angular_speed * (t - dt))
-    s0 = math.sin(-angular_speed * (t - dt))
-    c1 = math.cos(angular_speed * t)
-    s1 = math.sin(angular_speed * t)
+    c0 = wp.cos(-angular_speed * (t - dt))
+    s0 = wp.sin(-angular_speed * (t - dt))
+    c1 = wp.cos(angular_speed * t)
+    s1 = wp.sin(angular_speed * t)
 
     # Translate to center, rotate, translate back
     x0 = q0[particle_index][0] - center_x
