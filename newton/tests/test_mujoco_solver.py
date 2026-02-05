@@ -23,6 +23,7 @@ import newton
 from newton import JointType, Mesh
 from newton._src.core.types import vec5
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton.tests import get_asset
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 
@@ -4963,6 +4964,30 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert hasattr(model, "mujoco")
         assert hasattr(model.mujoco, "condim")
         assert np.allclose(model.mujoco.condim.numpy(), [6])
+        assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_actuators_from_usd(self):
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+
+        builder.add_usd(
+            get_asset("cartpole_mjc.usda"),
+            collapse_fixed_joints=True,
+        )
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "condim")
+
+        # uniform token mjc:ctrlLimited = "true"
+        #     uniform double mjc:ctrlRange:max = 1
+        #     uniform double mjc:ctrlRange:min = -1
+        #     uniform double[] mjc:gear = [50, 0, 0, 0, 0, 0]
+        assert np.allclose(model.mujoco.actuator_ctrllimited.numpy(), [True])
+        assert np.allclose(model.mujoco.actuator_ctrlrange.numpy(), [[-1.0, 1.0]])
+        assert np.allclose(model.mujoco.actuator_gear.numpy(), [[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
     def test_ref_fk_matches_mujoco(self):
