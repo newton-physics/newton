@@ -334,7 +334,6 @@ class CollisionPipelineUnified:
         rigid_contact_max: int | None = None,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
-        edge_sdf_iter: int = 10,
         iterate_mesh_vertices: bool = True,
         requires_grad: bool | None = None,
         broad_phase_mode: BroadPhaseMode = BroadPhaseMode.NXN,
@@ -353,7 +352,6 @@ class CollisionPipelineUnified:
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
-            edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
             iterate_mesh_vertices (bool, optional): Whether to iterate mesh vertices for collision. Defaults to True.
             requires_grad (bool | None, optional): Whether to enable gradient computation. If None, uses model.requires_grad.
             broad_phase_mode (BroadPhaseMode, optional): Broad phase collision detection mode. Defaults to BroadPhaseMode.NXN.
@@ -462,7 +460,6 @@ class CollisionPipelineUnified:
         self.soft_contact_margin = soft_contact_margin
         self.soft_contact_max = soft_contact_max
         self.requires_grad = requires_grad
-        self.edge_sdf_iter = edge_sdf_iter
 
     def contacts(self) -> Contacts:
         """
@@ -479,18 +476,32 @@ class CollisionPipelineUnified:
             per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
         )
 
-    def collide(self, state: State, contacts: Contacts):
+    def collide(
+        self,
+        state: State,
+        contacts: Contacts,
+        *,
+        soft_contact_margin: float = 0.01,
+    ):
         """
         Run the collision pipeline using NarrowPhase.
 
         Args:
-            state: The current simulation state
-            contacts: The contacts object to populate (will be cleared first).
+            state: The current simulation state.
+            contacts: The contacts buffer to populate (will be cleared first).
+            soft_contact_margin: Margin for soft contact generation. Default is 0.01.
+
+        Note:
+            Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`.
         """
+
         contacts.clear()
         # TODO: validate contacts dimensions & compatibility
 
         model = self.model
+
+        # update any additional parameters
+        soft_contact_margin = soft_contact_margin if soft_contact_margin is not None else self.soft_contact_margin
 
         # Clear counters
         self.broad_phase_pair_count.zero_()
@@ -631,7 +642,7 @@ class CollisionPipelineUnified:
                     model.shape_scale,
                     model.shape_source_ptr,
                     model.shape_world,
-                    self.soft_contact_margin,
+                    soft_contact_margin,
                     self.soft_contact_max,
                     model.shape_count,
                     model.shape_flags,

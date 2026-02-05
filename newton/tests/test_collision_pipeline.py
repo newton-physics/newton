@@ -103,10 +103,10 @@ class CollisionSetup:
                 self.model,
                 broad_phase_mode=broad_phase_mode,
             )
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.contacts = self.collision_pipeline.contacts()
         else:
-            self.collision_pipeline = None
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.solver = solver_fn(self.model)
 
@@ -156,17 +156,13 @@ class CollisionSetup:
             self.graph = None
 
     def simulate(self):
-        if self.use_unified_pipeline:
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-        else:
-            self.contacts = self.model.collide(self.state_0)
-
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -591,10 +587,8 @@ def test_particle_shape_contacts(test, device, use_unified_pipeline: bool, shape
         state = model.state()
 
         # Run collision detection
-        if use_unified_pipeline:
-            contacts = collision_pipeline.collide(model, state)
-        else:
-            contacts = collision_pipeline.collide(model, state)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
 
         # Verify soft contacts were generated
         soft_count = contacts.soft_contact_count.numpy()[0]

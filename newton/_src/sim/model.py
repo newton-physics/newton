@@ -825,12 +825,9 @@ class Model:
         the model for subsequent use by :meth:`collide`.
 
         """
-        from .collide_unified import BroadPhaseMode, CollisionPipelineUnified  # noqa: PLC0415
+        from .collide import CollisionPipeline  # noqa: PLC0415
 
-        self._collision_pipeline = CollisionPipelineUnified(
-            model=self,
-            broad_phase_mode=BroadPhaseMode.EXPLICIT,
-        )
+        self._collision_pipeline = CollisionPipeline(model=self)
 
     def contacts(
         self: Model,

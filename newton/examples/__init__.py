@@ -404,7 +404,7 @@ def create_collision_pipeline(
     """Create a collision pipeline based on command-line arguments or explicit parameters.
 
     This helper function creates either a CollisionPipelineUnified or returns None for the
-    standard CollisionPipeline (which is created implicitly by model.collide()).
+    standard CollisionPipeline (which is created implicitly by model.contacts()).
 
     Args:
         model: The Newton model to create the pipeline for
@@ -423,7 +423,6 @@ def create_collision_pipeline(
         viewer, args = newton.examples.init()
         model = builder.finalize()
         pipeline = newton.examples.create_collision_pipeline(model, args)
-        contacts = model.collide(state, collision_pipeline=pipeline)
 
         # Using explicit parameters
         pipeline = newton.examples.create_collision_pipeline(
@@ -431,6 +430,9 @@ def create_collision_pipeline(
             collision_pipeline_type="unified",
             broad_phase_mode="nxn"
         )
+
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
     """
     import newton  # noqa: PLC0415
 

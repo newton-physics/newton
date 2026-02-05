@@ -116,19 +116,35 @@ class CollisionPipeline:
             device=self.model.device,
         )
 
-    def collide(self, state: State, contacts: Contacts):
+    def collide(
+        self,
+        state: State,
+        contacts: Contacts,
+        *,
+        soft_contact_margin: float = 0.01,
+        edge_sdf_iter: int = 10,
+    ):
         """
         Run collision detection and populate the contacts buffer.
 
         Args:
-            state (State): The current simulation state.
-            contacts (Contacts): The contacts buffer to populate (will be cleared first).
+            state: The current simulation state.
+            contacts: The contacts buffer to populate (will be cleared first).
+            soft_contact_margin: Margin for soft contact generation. Default is 0.01.
+            edge_sdf_iter: Number of search iterations for finding closest contact points between edges and SDF. Default is 10.
+
+        Note:
+            Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`.
         """
         contacts.clear()
 
         model = self.model
         shape_count = self.shape_count
         particle_count = len(state.particle_q) if state.particle_q else 0
+
+        # update any additional parameters
+        soft_contact_margin = soft_contact_margin if soft_contact_margin is not None else self.soft_contact_margin
+        edge_sdf_iter = edge_sdf_iter if edge_sdf_iter is not None else self.edge_sdf_iter
 
         # generate soft contacts for particles and shapes
         if state.particle_q and shape_count > 0:
@@ -147,7 +163,7 @@ class CollisionPipeline:
                     model.shape_scale,
                     model.shape_source_ptr,
                     model.shape_world,
-                    self.soft_contact_margin,
+                    soft_contact_margin,
                     self.soft_contact_max,
                     shape_count,
                     model.shape_flags,
@@ -219,7 +235,7 @@ class CollisionPipeline:
                     self.rigid_pair_shape1,
                     self.rigid_pair_point_id,
                     self.rigid_pair_point_limit,
-                    self.edge_sdf_iter,
+                    edge_sdf_iter,
                 ],
                 outputs=[
                     contacts.rigid_contact_count,

@@ -124,7 +124,6 @@ class Example:
         self.collision_pipeline = newton.examples.create_collision_pipeline(
             self.model,
             args,
-            collision_pipeline_type="standard",
         )
         self.contacts = self.collision_pipeline.contacts()
 

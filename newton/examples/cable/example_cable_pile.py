@@ -253,11 +253,15 @@ class Example:
 
         # Create collision pipeline (unified if enabled, otherwise standard)
         if USE_UNIFIED_COLLISION:
-            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline = newton.examples.create_collision_pipeline(
+                self.model, args, collision_pipeline_type="unified"
+            )
         else:
-            self.collision_pipeline = None
-            self.contacts = self.model.collide(self.state_0)
+            self.collision_pipeline = newton.examples.create_collision_pipeline(
+                self.model, args, collision_pipeline_type="standard"
+            )
+
+        self.contacts = self.collision_pipeline.contacts()
         self.viewer.set_model(self.model)
 
         # Optional capture for CUDA
@@ -281,10 +285,7 @@ class Example:
             self.viewer.apply_forces(self.state_0)
 
             # Collide for contact detection
-            if USE_UNIFIED_COLLISION:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-            else:
-                self.contacts = self.model.collide(self.state_0)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(
                 self.state_0,
