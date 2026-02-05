@@ -120,7 +120,7 @@ def construct_tetmesh_graph_edges(tet_indices: np.array, tet_active_mask):
             tet_np = np.asarray(tet_indices, dtype=np.int32)
 
         if tet_active_mask is not None:
-            mask_arr = np.asarray(tet_active_mask > 0, dtype=bool)
+            mask_arr = np.asarray(tet_active_mask, dtype=bool)
             # Handle scalar mask (True means all active, False means none active)
             if mask_arr.ndim == 0:
                 if not mask_arr:
