@@ -6044,8 +6044,6 @@ class ModelBuilder:
         tri_kd: float = 0.0,
         tri_drag: float = 0.0,
         tri_lift: float = 0.0,
-        edge_ke: float = 0.0,
-        edge_kd: float = 0.0,
         particle_radius: float | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
@@ -6077,10 +6075,10 @@ class ModelBuilder:
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
             tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
             tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
-            edge_ke: Stiffness for surface mesh edges (for collision). Defaults to 0.0.
-            edge_kd: Damping for surface mesh edges (for collision). Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
         """
+        edge_ke = 0.0
+        edge_kd = 0.0
 
         start_vertex = len(self.particle_q)
 
@@ -6191,8 +6189,6 @@ class ModelBuilder:
         tri_kd: float = 0.0,
         tri_drag: float = 0.0,
         tri_lift: float = 0.0,
-        edge_ke: float = 0.0,
-        edge_kd: float = 0.0,
         particle_radius: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
@@ -6212,10 +6208,10 @@ class ModelBuilder:
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
             tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
             tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
-            edge_ke: Stiffness for surface mesh edges (for collision). Defaults to 0.0.
-            edge_kd: Damping for surface mesh edges (for collision). Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
         """
+        edge_ke = 0.0
+        edge_kd = 0.0
 
         num_tets = int(len(indices) / 4)
 
