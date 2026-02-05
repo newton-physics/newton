@@ -392,14 +392,30 @@ class TestJacobianMassMatrix(unittest.TestCase):
 
 devices = get_test_devices()
 
-add_function_test(TestJacobianMassMatrix, "test_jacobian_simple_pendulum", test_jacobian_simple_pendulum, devices=devices)
-add_function_test(TestJacobianMassMatrix, "test_jacobian_numerical_verification", test_jacobian_numerical_verification, devices=devices)
+add_function_test(
+    TestJacobianMassMatrix, "test_jacobian_simple_pendulum", test_jacobian_simple_pendulum, devices=devices
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_jacobian_numerical_verification",
+    test_jacobian_numerical_verification,
+    devices=devices,
+)
 add_function_test(TestJacobianMassMatrix, "test_mass_matrix_symmetry", test_mass_matrix_symmetry, devices=devices)
-add_function_test(TestJacobianMassMatrix, "test_mass_matrix_positive_definite", test_mass_matrix_positive_definite, devices=devices)
-add_function_test(TestJacobianMassMatrix, "test_jacobian_multiple_articulations", test_jacobian_multiple_articulations, devices=devices)
+add_function_test(
+    TestJacobianMassMatrix, "test_mass_matrix_positive_definite", test_mass_matrix_positive_definite, devices=devices
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_jacobian_multiple_articulations",
+    test_jacobian_multiple_articulations,
+    devices=devices,
+)
 add_function_test(TestJacobianMassMatrix, "test_jacobian_with_mask", test_jacobian_with_mask, devices=devices)
 add_function_test(TestJacobianMassMatrix, "test_mass_matrix_with_mask", test_mass_matrix_with_mask, devices=devices)
-add_function_test(TestJacobianMassMatrix, "test_prismatic_joint_jacobian", test_prismatic_joint_jacobian, devices=devices)
+add_function_test(
+    TestJacobianMassMatrix, "test_prismatic_joint_jacobian", test_prismatic_joint_jacobian, devices=devices
+)
 add_function_test(TestJacobianMassMatrix, "test_empty_model", test_empty_model, devices=devices)
 
 
