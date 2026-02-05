@@ -76,7 +76,7 @@ def parse_urdf(
     up_axis: AxisType = Axis.Z,
     force_show_colliders: bool = False,
     enable_self_collisions: bool = True,
-    ignore_inertial_definitions: bool = True,
+    ignore_inertial_definitions: bool = False,
     ensure_nonstatic_links: bool = True,
     static_link_mass: float = 1e-2,
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",

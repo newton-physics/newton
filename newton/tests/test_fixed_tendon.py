@@ -74,7 +74,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
         individual_builder = newton.ModelBuilder(gravity=0.0)
         SolverMuJoCo.register_custom_attributes(individual_builder)
-        individual_builder.add_mjcf(mjcf)
+        # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
+        individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
         builder = newton.ModelBuilder(gravity=0.0)
         for _i in range(0, 2):
             builder.add_world(individual_builder)
@@ -202,7 +203,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
         individual_builder = newton.ModelBuilder(gravity=0.0)
         SolverMuJoCo.register_custom_attributes(individual_builder)
-        individual_builder.add_mjcf(mjcf)
+        # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
+        individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
         builder = newton.ModelBuilder(gravity=0.0)
         for _i in range(0, 2):
             builder.add_world(individual_builder)
