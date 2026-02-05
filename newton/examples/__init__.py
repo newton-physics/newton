@@ -443,7 +443,7 @@ def create_collision_pipeline(
 
     # If standard pipeline requested, return None (model.collide will create it implicitly)
     if collision_pipeline_type == "standard":
-        return None
+        return newton.CollisionPipeline.from_model(model)
 
     # Determine broad phase mode for unified pipeline
     if broad_phase_mode is None:
