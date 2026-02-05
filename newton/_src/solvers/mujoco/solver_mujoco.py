@@ -34,12 +34,11 @@ from ...sim import (
     Model,
     ModelBuilder,
     State,
-    color_graph,
-    plot_graph,
 )
+from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
-from ...utils.import_utils import parse_warp_value_from_string
+from ...utils.import_utils import string_to_warp
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
@@ -205,7 +204,7 @@ class SolverMuJoCo(SolverBase):
         For attributes like springref and ref that represent angles,
         parses the string value and multiplies by pi/180 when use_degrees=True and joint is angular.
         """
-        parsed = parse_warp_value_from_string(value, wp.float32, 0.0)
+        parsed = string_to_warp(value, wp.float32, 0.0)
         if context is not None:
             joint_type = context.get("joint_type")
             use_degrees = context.get("use_degrees", False)
@@ -221,7 +220,7 @@ class SolverMuJoCo(SolverBase):
         For attributes like stiffness (Nm/rad) and damping (Nm·s/rad) that have angle in the denominator,
         parses the string value and multiplies by 180/pi when use_degrees=True and joint is angular.
         """
-        parsed = parse_warp_value_from_string(value, wp.float32, 0.0)
+        parsed = string_to_warp(value, wp.float32, 0.0)
         if context is not None:
             joint_type = context.get("joint_type")
             use_degrees = context.get("use_degrees", False)

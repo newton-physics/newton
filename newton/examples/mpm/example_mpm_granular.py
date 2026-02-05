@@ -156,7 +156,7 @@ class Example:
             newton.examples.test_particle_state(
                 self.state_0,
                 "all particles are outside the cube",
-                lambda q, qd: not newton.utils.vec_inside_limits(q, cube_lower, cube_upper),
+                lambda q, qd: not newton.math.vec_inside_limits(q, cube_lower, cube_upper),
             )
 
         # Test that some particles are still high-enough
