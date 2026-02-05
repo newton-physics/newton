@@ -1187,11 +1187,11 @@ class SolverVBD(SolverBase):
                     self.pos_prev_collision_detection,  # pos: wp.array(dtype=wp.vec3),
                     self.particle_displacements,  # displacement_in: wp.array(dtype=wp.vec3),
                     self.truncation_ts,  # truncation_ts: wp.array(dtype=float),
+                    wp.inf,  # max_displacement: float (input threshold)
                 ],
                 outputs=[
                     self.particle_displacements,  # displacement_out: wp.array(dtype=wp.vec3),
                     particle_q_out,  # pos_out: wp.array(dtype=wp.vec3),
-                    wp.inf,  # max_displacement: float
                 ],
                 device=self.device,
             )
@@ -1224,11 +1224,13 @@ class SolverVBD(SolverBase):
                     self.pos_prev_collision_detection,
                     self.particle_displacements,
                     self.truncation_ts,
-                    self.particle_displacements,
-                    particle_q_out,
                     self.particle_self_contact_margin
                     * self.particle_conservative_bound_relaxation
-                    * 0.5,  # degenerate to isotropic truncation
+                    * 0.5,  # max_displacement: degenerate to isotropic truncation
+                ],
+                outputs=[
+                    self.particle_displacements,
+                    particle_q_out,
                 ],
                 device=self.device,
             )
