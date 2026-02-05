@@ -237,7 +237,7 @@ class Example:
             outputs=[self.tet_activations[frame].reshape((self.padded_tet_count, 1))],
             block_dim=TILE_THREADS,
         )
-        self.control.tet_activations = self.tet_activations[frame]
+        self.control.tet_activations = self.tet_activations[frame][: self.model.tet_count]
 
         # run simulation loop
         for i in range(self.sim_substeps):
