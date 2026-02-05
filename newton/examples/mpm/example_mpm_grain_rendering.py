@@ -35,28 +35,22 @@ class Example:
         # save a reference to the viewer
         self.viewer = viewer
         builder = newton.ModelBuilder()
+
+        # Register MPM custom attributes before adding particles
+        SolverImplicitMPM.register_custom_attributes(builder)
+
         Example.emit_particles(builder, options)
         builder.add_ground_plane()
-
         self.model = builder.finalize()
-        self.model.particle_mu = 0.5
-        self.model.particle_ke = 1.0e12
-        self.model.particle_kd = 0.0
 
         mpm_options = SolverImplicitMPM.Options()
         mpm_options.voxel_size = options.voxel_size
-        mpm_options.points_per_particle = options.points_per_particle
-        # Create MPM model from Newton model
-        mpm_model = SolverImplicitMPM.Model(self.model, mpm_options)
 
-        # Initialize MPM solver and add supplemental state variables
-        self.solver = SolverImplicitMPM(mpm_model, mpm_options)
+        # Initialize MPM solver
+        self.solver = SolverImplicitMPM(self.model, mpm_options)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-
-        self.solver.enrich_state(self.state_0)
-        self.solver.enrich_state(self.state_1)
 
         # Setup grain rendering
 

@@ -231,6 +231,7 @@ class Example:
         )
 
         self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(2.25, 0.0, 0.0), 0.0, -180.0)
 
         # put graph capture into it's own function
         self.capture()
@@ -300,7 +301,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
         newton.examples.test_particle_state(
             self.state_0,

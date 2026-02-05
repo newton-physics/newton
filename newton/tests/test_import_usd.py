@@ -84,7 +84,9 @@ def Xform "Root" (
         builder = newton.ModelBuilder()
 
         asset_path = newton.examples.get_asset("boxes_fourbar.usda")
-        builder.add_usd(asset_path)
+        with self.assertWarns(UserWarning) as cm:
+            builder.add_usd(asset_path)
+        self.assertIn("No articulation was found but 4 joints were parsed", str(cm.warning))
 
         self.assertEqual(builder.body_count, 4)
         self.assertEqual(builder.joint_type.count(newton.JointType.REVOLUTE), 4)
@@ -1934,6 +1936,207 @@ def PhysicsRevoluteJoint "Joint2"
         self.assertTrue(found_explicit_1, f"Expected gap {expected_explicit_1} not found in model")
         self.assertTrue(found_default, f"Expected default gap {expected_default} not found in model")
         self.assertTrue(found_explicit_2, f"Expected gap {expected_explicit_2} not found in model")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_actuator_mode_inference_from_drive(self):
+        """Test that ActuatorMode is correctly inferred from USD joint drives."""
+        from pxr import Usd  # noqa: PLC0415
+
+        from newton._src.sim.joints import ActuatorMode  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "PhysicsScene"
+{
+}
+
+def Xform "Root" (
+    prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+)
+{
+    def Xform "Body0" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision0" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body1" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision1" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body2" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (2, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body3" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (3, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision3" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body4" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (4, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision4" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def Xform "Body5" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (5, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def Cube "Collision5" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            double size = 0.2
+        }
+    }
+
+    def PhysicsRevoluteJoint "joint_effort" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Root/Body0>
+        rel physics:body1 = </Root/Body1>
+        float drive:angular:physics:stiffness = 0.0
+        float drive:angular:physics:damping = 0.0
+    }
+
+    def PhysicsRevoluteJoint "joint_passive"
+    {
+        rel physics:body0 = </Root/Body1>
+        rel physics:body1 = </Root/Body2>
+    }
+
+    def PhysicsRevoluteJoint "joint_position" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Root/Body2>
+        rel physics:body1 = </Root/Body3>
+        float drive:angular:physics:stiffness = 100.0
+        float drive:angular:physics:damping = 0.0
+    }
+
+    def PhysicsRevoluteJoint "joint_velocity" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Root/Body3>
+        rel physics:body1 = </Root/Body4>
+        float drive:angular:physics:stiffness = 0.0
+        float drive:angular:physics:damping = 10.0
+    }
+
+    def PhysicsRevoluteJoint "joint_both_gains" (
+        prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+    )
+    {
+        rel physics:body0 = </Root/Body4>
+        rel physics:body1 = </Root/Body5>
+        float drive:angular:physics:stiffness = 100.0
+        float drive:angular:physics:damping = 10.0
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        def get_qd_start(b, joint_name):
+            joint_idx = b.joint_key.index(joint_name)
+            return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
+
+        self.assertEqual(
+            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_effort")],
+            int(ActuatorMode.EFFORT),
+        )
+        self.assertEqual(
+            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_passive")],
+            int(ActuatorMode.NONE),
+        )
+        self.assertEqual(
+            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_position")],
+            int(ActuatorMode.POSITION),
+        )
+        self.assertEqual(
+            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_velocity")],
+            int(ActuatorMode.VELOCITY),
+        )
+        self.assertEqual(
+            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_both_gains")],
+            int(ActuatorMode.POSITION),
+        )
+
+        stage2 = Usd.Stage.CreateInMemory()
+        stage2.GetRootLayer().ImportFromString(usd_content)
+
+        builder2 = newton.ModelBuilder()
+        builder2.add_usd(stage2, force_position_velocity_actuation=True)
+
+        self.assertEqual(
+            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_both_gains")],
+            int(ActuatorMode.POSITION_VELOCITY),
+        )
+        self.assertEqual(
+            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_position")],
+            int(ActuatorMode.POSITION),
+        )
+        self.assertEqual(
+            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_velocity")],
+            int(ActuatorMode.VELOCITY),
+        )
 
 
 class TestImportSampleAssets(unittest.TestCase):

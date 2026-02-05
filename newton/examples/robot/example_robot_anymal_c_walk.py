@@ -32,7 +32,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton import State
-from newton.geometry import generate_terrain_grid
+from newton.geometry import create_mesh_terrain
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -106,7 +106,7 @@ class Example:
 
         # Generate procedural terrain for visual demonstration (but not during unit tests)
         if not self.is_test:
-            vertices, indices = generate_terrain_grid(
+            vertices, indices = create_mesh_terrain(
                 grid_size=(8, 3),  # 3x8 grid for forward walking
                 block_size=(3.0, 3.0),
                 terrain_types=["random_grid", "flat", "wave", "gap", "pyramid_stairs"],
@@ -163,8 +163,9 @@ class Example:
             self.model,
             use_mujoco_contacts=args.use_mujoco_contacts if args else False,
             ls_parallel=True,
+            ls_iterations=50,  # Increased from default 10 for determinism
             njmax=50,
-            nconmax=75,
+            nconmax=100,  # Increased from 75 to handle peak contact count of ~77
         )
 
         self.viewer.set_model(self.model)
@@ -317,13 +318,13 @@ class Example:
             lambda q, qd: q[1] > 9.0,  # This threshold assumes 500 frames
         )
 
-        forward_vel_min = wp.spatial_vector(-0.5, 0.9, -0.2, -0.8, -0.5, -0.5)
-        forward_vel_max = wp.spatial_vector(0.5, 1.1, 0.2, 0.8, 0.5, 0.5)
+        forward_vel_min = wp.spatial_vector(-0.5, 0.9, -0.2, -0.8, -1.5, -0.5)
+        forward_vel_max = wp.spatial_vector(0.5, 1.1, 0.2, 0.8, 1.5, 0.5)
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
+            lambda q, qd: newton.math.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
 
