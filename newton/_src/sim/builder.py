@@ -29,6 +29,7 @@ from typing import Any, Literal
 import numpy as np
 import warp as wp
 
+from ..core.spatial import quat_between_vectors_robust
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -5168,16 +5169,7 @@ class ModelBuilder:
 
             if quaternions is None:
                 seg_dir = wp.normalize(seg_vec)
-                # Robustly align local +Z to seg_dir, including the anti-parallel (180-degree) case.
-                local_z = wp.vec3(0.0, 0.0, 1.0)
-                d = float(wp.dot(local_z, seg_dir))
-                if d >= 1.0 - 1.0e-8:
-                    q = wp.quat_identity()
-                elif d <= -1.0 + 1.0e-8:
-                    # Deterministic axis for 180-degree rotation.
-                    q = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi)
-                else:
-                    q = wp.quat_between_vectors(local_z, seg_dir)
+                q = quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), seg_dir)
             else:
                 q = quaternions[e_idx]
 
@@ -5271,9 +5263,12 @@ class ModelBuilder:
                     child_xform = _edge_anchor_xform(child_edge, node_idx)
 
                     # Normalize stiffness by segment length, consistent with add_rod().
+                    # Use a symmetric length so stiffness is traversal/order invariant.
                     L_parent = edge_len[parent_edge]
-                    stretch_ke_eff = stretch_stiffness / L_parent
-                    bend_ke_eff = bend_stiffness / L_parent
+                    L_child = edge_len[child_edge]
+                    L_sym = 0.5 * (L_parent + L_child)
+                    stretch_ke_eff = stretch_stiffness / L_sym
+                    bend_ke_eff = bend_stiffness / L_sym
 
                     joint_counter += 1
                     joint_key = f"{key}_cable_{joint_counter}" if key else None
@@ -5331,10 +5326,12 @@ class ModelBuilder:
                             child_xform = _edge_anchor_xform(child_edge, shared_node)
 
                             # Normalize stiffness by segment length, consistent with add_rod().
-                            # Use the *parent* segment length L (the edge on which parent_xform is at z=L).
+                            # Use a symmetric length so stiffness is traversal/order invariant.
                             L_parent = edge_len[parent_edge]
-                            stretch_ke_eff = stretch_stiffness / L_parent
-                            bend_ke_eff = bend_stiffness / L_parent
+                            L_child = edge_len[child_edge]
+                            L_sym = 0.5 * (L_parent + L_child)
+                            stretch_ke_eff = stretch_stiffness / L_sym
+                            bend_ke_eff = bend_stiffness / L_sym
 
                             joint_counter += 1
                             joint_key = f"{key}_cable_{joint_counter}" if key else None

@@ -84,6 +84,7 @@ __all__ += [
 # ==================================================================================
 from ._src.core.spatial import (  # noqa: E402
     quat_between_axes,
+    quat_between_vectors_robust,
     quat_decompose,
     quat_from_euler,
     quat_to_euler,
@@ -97,6 +98,7 @@ from ._src.core.spatial import (  # noqa: E402
 
 __all__ += [
     "quat_between_axes",
+    "quat_between_vectors_robust",
     "quat_decompose",
     "quat_from_euler",
     "quat_to_euler",

@@ -20,6 +20,8 @@ from collections.abc import Sequence
 
 import warp as wp
 
+from ..core.spatial import quat_between_vectors_robust
+
 
 def create_cable_stiffness_from_elastic_moduli(
     youngs_modulus: float,
@@ -143,23 +145,8 @@ def create_parallel_transport_cable_quaternions(
         to_direction = seg / seg_len
 
         # Robustly handle the anti-parallel (180-degree) case, e.g. +Z -> -Z.
-        d = float(wp.dot(from_direction, to_direction))
-        if d >= 1.0 - eps:
-            dq_dir = wp.quat_identity()
-        elif d <= -1.0 + eps:
-            # Deterministic axis orthogonal to from_direction.
-            helper = wp.vec3(1.0, 0.0, 0.0) if abs(float(from_direction[0])) < 0.9 else wp.vec3(0.0, 1.0, 0.0)
-            axis = wp.cross(from_direction, helper)
-            axis_len = float(wp.length(axis))
-            if axis_len <= 0.0:
-                axis = wp.cross(from_direction, wp.vec3(0.0, 0.0, 1.0))
-                axis_len = float(wp.length(axis))
-            if axis_len <= 0.0:
-                raise RuntimeError("failed to find a rotation axis for anti-parallel directions")
-            axis = axis / axis_len
-            dq_dir = wp.quat_from_axis_angle(axis, wp.pi)
-        else:
-            dq_dir = wp.quat_between_vectors(from_direction, to_direction)
+        dq_dir = quat_between_vectors_robust(from_direction, to_direction, eps)
+
         q = dq_dir if i == 0 else wp.mul(dq_dir, quats[i - 1])
 
         if twist_total_rad != 0.0:
