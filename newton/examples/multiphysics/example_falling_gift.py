@@ -20,7 +20,7 @@
 # straps wrapped around them. The blocks fall under gravity, and the cloth
 # straps hold them together.
 #
-# Command: python -m newton.examples.cloth.06_FallingGift.falling_gift
+# Command: uv run -m newton.examples.multiphysics.example_falling_gift
 #
 ###########################################################################
 
