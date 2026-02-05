@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import warnings
-from collections.abs import Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
