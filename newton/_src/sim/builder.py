@@ -7708,7 +7708,6 @@ class ModelBuilder:
 
             # enable ground plane
             m.up_axis = self.up_axis
-            m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity - create per-world gravity array for multi-world support
             if self.world_gravity:
