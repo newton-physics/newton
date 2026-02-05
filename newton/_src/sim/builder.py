@@ -6044,6 +6044,9 @@ class ModelBuilder:
         tri_kd: float = 0.0,
         tri_drag: float = 0.0,
         tri_lift: float = 0.0,
+        add_surface_mesh_edges: bool = True,
+        edge_ke: float = 0.0,
+        edge_kd: float = 0.0,
         particle_radius: float | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
@@ -6075,11 +6078,18 @@ class ModelBuilder:
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
             tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
             tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
+            add_surface_mesh_edges: Whether to create zero-stiffness bending edges on the
+                generated surface mesh. These edges improve collision robustness for VBD solver. Defaults to True.
+            edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
-        """
-        edge_ke = 0.0
-        edge_kd = 0.0
 
+        Note:
+            The generated surface triangles and optional edges are for collision purposes.
+            Their stiffness and damping values default to zero so they do not introduce additional
+            elastic forces. Set the triangle stiffness parameters above to non-zero values if you
+            want the surface to behave like a thin skin.
+        """
         start_vertex = len(self.particle_q)
 
         mass = cell_x * cell_y * cell_z * density
@@ -6160,17 +6170,18 @@ class ModelBuilder:
             self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
         end_tri = len(self.tri_indices)
 
-        # add surface mesh edges (for collision)
-        if end_tri > start_tri:
-            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
-            edge_indices = np.fromiter(
-                (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
-                int,
-            ).reshape(-1, 4)
-            if len(edge_indices) > 0:
-                # Add edges with specified stiffness/damping (for collision)
-                for o1, o2, v1, v2 in edge_indices:
-                    self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+        if add_surface_mesh_edges:
+            # add surface mesh edges (for collision)
+            if end_tri > start_tri:
+                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
+                edge_indices = np.fromiter(
+                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                    int,
+                ).reshape(-1, 4)
+                if len(edge_indices) > 0:
+                    # Add edges with specified stiffness/damping (for collision)
+                    for o1, o2, v1, v2 in edge_indices:
+                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     def add_soft_mesh(
         self,
@@ -6189,6 +6200,9 @@ class ModelBuilder:
         tri_kd: float = 0.0,
         tri_drag: float = 0.0,
         tri_lift: float = 0.0,
+        add_surface_mesh_edges: bool = True,
+        edge_ke: float = 0.0,
+        edge_kd: float = 0.0,
         particle_radius: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
@@ -6208,10 +6222,18 @@ class ModelBuilder:
             tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
             tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
             tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
+            add_surface_mesh_edges: Whether to create zero-stiffness bending edges on the
+                generated surface mesh. These edges improve collision robustness for VBD solver. Defaults to True.
+            edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
+
+        Note:
+            The generated surface triangles and optional edges are for collision purposes.
+            Their stiffness and damping values default to zero so they do not introduce additional
+            elastic forces. Set the stiffness parameters above to non-zero values if you
+            want the surface to behave like a thin skin.
         """
-        edge_ke = 0.0
-        edge_kd = 0.0
 
         num_tets = int(len(indices) / 4)
 
@@ -6263,17 +6285,18 @@ class ModelBuilder:
             self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
         end_tri = len(self.tri_indices)
 
-        # add surface mesh edges (for collision)
-        if end_tri > start_tri:
-            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
-            edge_indices = np.fromiter(
-                (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
-                int,
-            ).reshape(-1, 4)
-            if len(edge_indices) > 0:
-                # Add edges with specified stiffness/damping (for collision)
-                for o1, o2, v1, v2 in edge_indices:
-                    self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
+        if add_surface_mesh_edges:
+            # add surface mesh edges (for collision)
+            if end_tri > start_tri:
+                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
+                edge_indices = np.fromiter(
+                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                    int,
+                ).reshape(-1, 4)
+                if len(edge_indices) > 0:
+                    # Add edges with specified stiffness/damping (for collision)
+                    for o1, o2, v1, v2 in edge_indices:
+                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
@@ -6642,273 +6665,6 @@ class ModelBuilder:
             )
         return len(shapes_with_bad_margin) == 0
 
-    def _validate_structure(self) -> None:
-        """Validate structural invariants of the model.
-
-        This method performs consolidated validation of all structural constraints,
-        using vectorized numpy operations for efficiency:
-
-        - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
-        - Joint references: equality_constraint_joint1/2
-        - Self-referential joints: joint_parent[i] != joint_child[i]
-        - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start
-        - Array length consistency: per-DOF and per-coord arrays
-
-        Raises:
-            ValueError: If any structural validation check fails.
-        """
-        body_count = self.body_count
-        joint_count = self.joint_count
-
-        # Validate shape_body references: must be in [-1, body_count-1]
-        if self.shape_count > 0:
-            shape_body = np.array(self.shape_body, dtype=np.int32)
-            invalid_mask = (shape_body < -1) | (shape_body >= body_count)
-            if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                shape_key = self.shape_key[idx] or f"shape_{idx}"
-                raise ValueError(
-                    f"Invalid body reference in shape_body: shape {idx} ('{shape_key}') references body {shape_body[idx]}, "
-                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
-                )
-
-        # Validate joint_parent references: must be in [-1, body_count-1]
-        if joint_count > 0:
-            joint_parent = np.array(self.joint_parent, dtype=np.int32)
-            invalid_mask = (joint_parent < -1) | (joint_parent >= body_count)
-            if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                joint_key = self.joint_key[idx] or f"joint_{idx}"
-                raise ValueError(
-                    f"Invalid body reference in joint_parent: joint {idx} ('{joint_key}') references parent body {joint_parent[idx]}, "
-                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
-                )
-
-            # Validate joint_child references: must be in [0, body_count-1] (child cannot be world)
-            joint_child = np.array(self.joint_child, dtype=np.int32)
-            invalid_mask = (joint_child < 0) | (joint_child >= body_count)
-            if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                joint_key = self.joint_key[idx] or f"joint_{idx}"
-                raise ValueError(
-                    f"Invalid body reference in joint_child: joint {idx} ('{joint_key}') references child body {joint_child[idx]}, "
-                    f"but valid range is [0, {body_count - 1}] (body_count={body_count}). Child cannot be the world (-1)."
-                )
-
-            # Validate self-referential joints: parent != child
-            self_ref_mask = joint_parent == joint_child
-            if np.any(self_ref_mask):
-                invalid_indices = np.where(self_ref_mask)[0]
-                idx = invalid_indices[0]
-                joint_key = self.joint_key[idx] or f"joint_{idx}"
-                raise ValueError(
-                    f"Self-referential joint: joint {idx} ('{joint_key}') has parent and child both set to body {joint_parent[idx]}."
-                )
-
-        # Validate equality constraint body references
-        equality_count = len(self.equality_constraint_type)
-        if equality_count > 0:
-            eq_body1 = np.array(self.equality_constraint_body1, dtype=np.int32)
-            invalid_mask = (eq_body1 < -1) | (eq_body1 >= body_count)
-            if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
-                raise ValueError(
-                    f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{eq_key}') references body {eq_body1[idx]}, "
-                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
-                )
-
-            eq_body2 = np.array(self.equality_constraint_body2, dtype=np.int32)
-            invalid_mask = (eq_body2 < -1) | (eq_body2 >= body_count)
-            if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
-                raise ValueError(
-                    f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{eq_key}') references body {eq_body2[idx]}, "
-                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
-                )
-
-            # Validate equality constraint joint references
-            eq_joint1 = np.array(self.equality_constraint_joint1, dtype=np.int32)
-            invalid_mask = (eq_joint1 < -1) | (eq_joint1 >= joint_count)
-            if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
-                raise ValueError(
-                    f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{eq_key}') references joint {eq_joint1[idx]}, "
-                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
-                )
-
-            eq_joint2 = np.array(self.equality_constraint_joint2, dtype=np.int32)
-            invalid_mask = (eq_joint2 < -1) | (eq_joint2 >= joint_count)
-            if np.any(invalid_mask):
-                invalid_indices = np.where(invalid_mask)[0]
-                idx = invalid_indices[0]
-                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
-                raise ValueError(
-                    f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{eq_key}') references joint {eq_joint2[idx]}, "
-                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
-                )
-
-        # Validate start array monotonicity
-        if joint_count > 0:
-            joint_q_start = np.array(self.joint_q_start, dtype=np.int32)
-            if len(joint_q_start) > 1:
-                diffs = np.diff(joint_q_start)
-                if np.any(diffs < 0):
-                    idx = np.where(diffs < 0)[0][0]
-                    raise ValueError(
-                        f"joint_q_start is not monotonically increasing: "
-                        f"joint_q_start[{idx}]={joint_q_start[idx]} > joint_q_start[{idx + 1}]={joint_q_start[idx + 1]}."
-                    )
-
-            joint_qd_start = np.array(self.joint_qd_start, dtype=np.int32)
-            if len(joint_qd_start) > 1:
-                diffs = np.diff(joint_qd_start)
-                if np.any(diffs < 0):
-                    idx = np.where(diffs < 0)[0][0]
-                    raise ValueError(
-                        f"joint_qd_start is not monotonically increasing: "
-                        f"joint_qd_start[{idx}]={joint_qd_start[idx]} > joint_qd_start[{idx + 1}]={joint_qd_start[idx + 1]}."
-                    )
-
-        articulation_count = self.articulation_count
-        if articulation_count > 0:
-            articulation_start = np.array(self.articulation_start, dtype=np.int32)
-            if len(articulation_start) > 1:
-                diffs = np.diff(articulation_start)
-                if np.any(diffs < 0):
-                    idx = np.where(diffs < 0)[0][0]
-                    raise ValueError(
-                        f"articulation_start is not monotonically increasing: "
-                        f"articulation_start[{idx}]={articulation_start[idx]} > articulation_start[{idx + 1}]={articulation_start[idx + 1]}."
-                    )
-
-        # Validate array length consistency
-        if joint_count > 0:
-            # Per-DOF arrays should have length == joint_dof_count
-            dof_arrays = [
-                ("joint_axis", self.joint_axis),
-                ("joint_armature", self.joint_armature),
-                ("joint_target_ke", self.joint_target_ke),
-                ("joint_target_kd", self.joint_target_kd),
-                ("joint_limit_lower", self.joint_limit_lower),
-                ("joint_limit_upper", self.joint_limit_upper),
-                ("joint_limit_ke", self.joint_limit_ke),
-                ("joint_limit_kd", self.joint_limit_kd),
-                ("joint_target_pos", self.joint_target_pos),
-                ("joint_target_vel", self.joint_target_vel),
-                ("joint_effort_limit", self.joint_effort_limit),
-                ("joint_velocity_limit", self.joint_velocity_limit),
-                ("joint_friction", self.joint_friction),
-                ("joint_act_mode", self.joint_act_mode),
-            ]
-            for name, arr in dof_arrays:
-                if len(arr) != self.joint_dof_count:
-                    raise ValueError(
-                        f"Array length mismatch: {name} has length {len(arr)}, "
-                        f"but expected {self.joint_dof_count} (joint_dof_count)."
-                    )
-
-            # Per-coord arrays should have length == joint_coord_count
-            coord_arrays = [
-                ("joint_q", self.joint_q),
-            ]
-            for name, arr in coord_arrays:
-                if len(arr) != self.joint_coord_count:
-                    raise ValueError(
-                        f"Array length mismatch: {name} has length {len(arr)}, "
-                        f"but expected {self.joint_coord_count} (joint_coord_count)."
-                    )
-
-            # Start arrays should have length == joint_count
-            start_arrays = [
-                ("joint_q_start", self.joint_q_start),
-                ("joint_qd_start", self.joint_qd_start),
-            ]
-            for name, arr in start_arrays:
-                if len(arr) != joint_count:
-                    raise ValueError(
-                        f"Array length mismatch: {name} has length {len(arr)}, "
-                        f"but expected {joint_count} (joint_count)."
-                    )
-
-    def validate_joint_ordering(self) -> bool:
-        """Validate that joints within articulations follow DFS topological ordering.
-
-        This check ensures that joints are ordered such that parent bodies are processed
-        before child bodies within each articulation. This ordering is required by some
-        solvers (e.g., MuJoCo) for correct kinematic computations.
-
-        This method is public and opt-in because the check has O(n log n) complexity
-        due to topological sorting. It is skipped by default in finalize().
-
-        Warns:
-            UserWarning: If joints are not in DFS topological order.
-
-        Returns:
-            bool: True if joints are correctly ordered, False otherwise.
-        """
-        from ..utils import topological_sort  # noqa: PLC0415
-
-        if self.joint_count == 0:
-            return True
-
-        joint_parent = np.array(self.joint_parent, dtype=np.int32)
-        joint_child = np.array(self.joint_child, dtype=np.int32)
-        joint_articulation = np.array(self.joint_articulation, dtype=np.int32)
-
-        # Get unique articulations (excluding -1 which means not in any articulation)
-        articulation_ids = np.unique(joint_articulation)
-        articulation_ids = articulation_ids[articulation_ids >= 0]
-
-        all_ordered = True
-
-        for art_id in articulation_ids:
-            # Get joints in this articulation
-            art_joints = np.where(joint_articulation == art_id)[0]
-            if len(art_joints) <= 1:
-                continue
-
-            # Build joint list for topological sort
-            joints_simple = [(int(joint_parent[i]), int(joint_child[i])) for i in art_joints]
-
-            try:
-                joint_order = topological_sort(joints_simple, use_dfs=True, custom_indices=list(art_joints))
-
-                # Check if current order matches expected DFS order
-                if any(joint_order[i] != art_joints[i] for i in range(len(joints_simple))):
-                    art_key = (
-                        self.articulation_key[art_id]
-                        if art_id < len(self.articulation_key)
-                        else f"articulation_{art_id}"
-                    )
-                    warnings.warn(
-                        f"Joints in articulation '{art_key}' (id={art_id}) are not in DFS topological order. "
-                        f"This may cause issues with some solvers (e.g., MuJoCo). "
-                        f"Current order: {list(art_joints)}, expected: {joint_order}.",
-                        stacklevel=2,
-                    )
-                    all_ordered = False
-            except ValueError as e:
-                # Topological sort failed (e.g., cycle detected)
-                art_key = (
-                    self.articulation_key[art_id] if art_id < len(self.articulation_key) else f"articulation_{art_id}"
-                )
-                warnings.warn(
-                    f"Failed to validate joint ordering for articulation '{art_key}' (id={art_id}): {e}",
-                    stacklevel=2,
-                )
-                all_ordered = False
-
-        return all_ordered
-
     def _build_world_starts(self):
         """
         Constructs the per-world entity start indices.
@@ -7113,12 +6869,9 @@ class ModelBuilder:
         self,
         device: Devicelike | None = None,
         requires_grad: bool = False,
-        skip_all_validations: bool = False,
         skip_validation_worlds: bool = False,
         skip_validation_joints: bool = False,
         skip_validation_shapes: bool = False,
-        skip_validation_structure: bool = False,
-        skip_validation_joint_ordering: bool = True,
     ) -> Model:
         """
         Finalize the builder and create a concrete :class:`~newton.Model` for simulation.
@@ -7130,15 +6883,9 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
-            skip_all_validations: If True, skips all validation checks. Use for maximum performance when
-                you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips validation of joints belonging to an articulation. Default is False.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
-            skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
-                array lengths, monotonicity). Default is False.
-            skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
-                articulations. Default is True (opt-in) because this check has O(n log n) complexity.
 
         Returns:
             Model: A fully constructed Model object containing all simulation data on the specified device.
@@ -7154,24 +6901,16 @@ class ModelBuilder:
         self.num_worlds = max(1, self.num_worlds)
 
         # validate world ordering and contiguity
-        if not skip_all_validations and not skip_validation_worlds:
+        if not skip_validation_worlds:
             self._validate_world_ordering()
 
         # validate joints belong to an articulation
-        if not skip_all_validations and not skip_validation_joints:
+        if not skip_validation_joints:
             self._validate_joints()
 
         # validate shapes have valid contact margins
-        if not skip_all_validations and not skip_validation_shapes:
+        if not skip_validation_shapes:
             self._validate_shapes()
-
-        # validate structural invariants (body/joint references, array lengths)
-        if not skip_all_validations and not skip_validation_structure:
-            self._validate_structure()
-
-        # validate DFS topological joint ordering (opt-in, skipped by default)
-        if not skip_all_validations and not skip_validation_joint_ordering:
-            self.validate_joint_ordering()
 
         # construct world starts by ensuring they are cumulative and appending
         # tail-end global counts and sum total counts over the entire model.
@@ -7290,56 +7029,21 @@ class ModelBuilder:
             voxel_resolution = []
             voxel_budget = 100  # Maximum voxels per shape for contact reduction
 
-            # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
-            # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
-            shape_aabb_cache = {}
+            # Cache per unique (mesh_id, scale) to avoid redundant AABB computation
+            # for instanced meshes (e.g., 256 robots sharing the same mesh sources)
+            mesh_aabb_cache = {}
 
-            def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget):
-                """Compute voxel resolution from AABB with given budget."""
-                size = aabb_upper - aabb_lower
-                size = np.maximum(size, 1e-6)  # Avoid division by zero
-
-                # Target voxel size for approximately cubic voxels
-                volume = size[0] * size[1] * size[2]
-                v = (volume / voxel_budget) ** (1.0 / 3.0)
-                v = max(v, 1e-6)
-
-                # Initial resolution
-                nx = max(1, round(size[0] / v))
-                ny = max(1, round(size[1] / v))
-                nz = max(1, round(size[2] / v))
-
-                # Reduce until under budget (reduce largest axis first for more cubic voxels)
-                while nx * ny * nz > voxel_budget:
-                    if nx >= ny and nx >= nz and nx > 1:
-                        nx -= 1
-                    elif ny >= nz and ny > 1:
-                        ny -= 1
-                    elif nz > 1:
-                        nz -= 1
-                    else:
-                        break
-
-                return nx, ny, nz
-
-            for shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, self.shape_scale, strict=True
             ):
-                # Get margin to expand AABB (SDF extends beyond shape bounds by margin + thickness)
-                margin = self.shape_contact_margin[shape_idx] + self.shape_thickness[shape_idx]
-
-                # Create cache key based on shape type and parameters
                 if shape_type == GeoType.MESH and shape_src is not None:
-                    cache_key = (shape_type, id(shape_src), tuple(shape_scale), margin)
-                else:
-                    cache_key = (shape_type, tuple(shape_scale), margin)
+                    # Use mesh id and scale as cache key
+                    cache_key = (id(shape_src), tuple(shape_scale))
 
-                # Check cache first
-                if cache_key in shape_aabb_cache:
-                    aabb_lower, aabb_upper, nx, ny, nz = shape_aabb_cache[cache_key]
-                else:
-                    # Compute AABB based on shape type
-                    if shape_type == GeoType.MESH and shape_src is not None:
+                    if cache_key in mesh_aabb_cache:
+                        # Reuse cached result
+                        aabb_lower, aabb_upper, nx, ny, nz = mesh_aabb_cache[cache_key]
+                    else:
                         # Compute local AABB from mesh vertices
                         vertices = shape_src.vertices
                         aabb_lower = vertices.min(axis=0)
@@ -7349,59 +7053,38 @@ class ModelBuilder:
                         aabb_lower = aabb_lower * np.array(shape_scale)
                         aabb_upper = aabb_upper * np.array(shape_scale)
 
-                        # Expand by margin (SDF extends beyond mesh bounds)
-                        aabb_lower = aabb_lower - margin
-                        aabb_upper = aabb_upper + margin
+                        # Compute voxel resolution
+                        size = aabb_upper - aabb_lower
+                        size = np.maximum(size, 1e-6)  # Avoid division by zero
 
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+                        # Target voxel size for approximately cubic voxels
+                        volume = size[0] * size[1] * size[2]
+                        v = (volume / voxel_budget) ** (1.0 / 3.0)
+                        v = max(v, 1e-6)
 
-                    elif shape_type == GeoType.BOX:
-                        # Box: shape_scale = (hx, hy, hz) half-extents
-                        hx, hy, hz = shape_scale
-                        aabb_lower = np.array([-hx - margin, -hy - margin, -hz - margin])
-                        aabb_upper = np.array([hx + margin, hy + margin, hz + margin])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+                        # Initial resolution
+                        nx = max(1, round(size[0] / v))
+                        ny = max(1, round(size[1] / v))
+                        nz = max(1, round(size[2] / v))
 
-                    elif shape_type == GeoType.SPHERE:
-                        # Sphere: shape_scale = (radius, radius, radius)
-                        r = shape_scale[0] + margin
-                        aabb_lower = np.array([-r, -r, -r])
-                        aabb_upper = np.array([r, r, r])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+                        # Reduce until under budget (reduce largest axis first for more cubic voxels)
+                        while nx * ny * nz > voxel_budget:
+                            if nx >= ny and nx >= nz and nx > 1:
+                                nx -= 1
+                            elif ny >= nz and ny > 1:
+                                ny -= 1
+                            elif nz > 1:
+                                nz -= 1
+                            else:
+                                break
 
-                    elif shape_type == GeoType.CAPSULE:
-                        # Capsule: shape_scale = (radius, half_height, radius)
-                        # Capsule is along Z axis with hemispherical caps (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        r_expanded = r + margin
-                        aabb_lower = np.array([-r_expanded, -r_expanded, -half_height - r_expanded])
-                        aabb_upper = np.array([r_expanded, r_expanded, half_height + r_expanded])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CYLINDER:
-                        # Cylinder: shape_scale = (radius, half_height, radius)
-                        # Cylinder is along Z axis (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r - margin, -r - margin, -half_height - margin])
-                        aabb_upper = np.array([r + margin, r + margin, half_height + margin])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    elif shape_type == GeoType.CONE:
-                        # Cone: shape_scale = (radius, half_height, radius)
-                        # Cone is along Z axis (matches SDF in kernels.py)
-                        r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r - margin, -r - margin, -half_height - margin])
-                        aabb_upper = np.array([r + margin, r + margin, half_height + margin])
-                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
-
-                    else:
-                        # Other shapes (PLANE, HFIELD, etc.): use default unit cube with 1x1x1 voxel grid
-                        aabb_lower = np.array([-1.0, -1.0, -1.0])
-                        aabb_upper = np.array([1.0, 1.0, 1.0])
-                        nx, ny, nz = 1, 1, 1
-
-                    # Cache the result for reuse by identical shapes
-                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                        # Cache the result
+                        mesh_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                else:
+                    # Non-mesh shapes: use a default 1x1x1 voxel grid (effectively no voxel binning)
+                    aabb_lower = np.array([-1.0, -1.0, -1.0])
+                    aabb_upper = np.array([1.0, 1.0, 1.0])
+                    nx, ny, nz = 1, 1, 1
 
                 local_aabb_lower.append(aabb_lower)
                 local_aabb_upper.append(aabb_upper)
@@ -7827,6 +7510,7 @@ class ModelBuilder:
 
             # enable ground plane
             m.up_axis = self.up_axis
+            m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity - create per-world gravity array for multi-world support
             if self.world_gravity:
