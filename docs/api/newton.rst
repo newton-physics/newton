@@ -62,7 +62,6 @@ newton
    eval_ik
    get_joint_constraint_count
    get_joint_dof_count
-   infer_actuator_mode
 
 .. rubric:: Constants
 

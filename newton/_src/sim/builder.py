@@ -66,7 +66,6 @@ from .joints import (
     JointType,
     get_joint_constraint_count,
     get_joint_dof_count,
-    infer_actuator_mode,
 )
 from .model import Model
 
@@ -1465,7 +1464,7 @@ class ModelBuilder:
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
                 :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -1557,7 +1556,7 @@ class ModelBuilder:
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
             force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
                 :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -2570,7 +2569,7 @@ class ModelBuilder:
                 # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
                 # This ensures freejoints (gains=0) get NONE, while joints with gains get appropriate mode.
                 has_drive = dim.target_ke != 0.0 or dim.target_kd != 0.0
-                mode = int(infer_actuator_mode(dim.target_ke, dim.target_kd, has_drive=has_drive))
+                mode = int(ActuatorMode.from_gains(dim.target_ke, dim.target_kd, has_drive=has_drive))
 
             # Store per-DOF actuator properties
             self.joint_act_mode.append(mode)

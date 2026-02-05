@@ -70,7 +70,6 @@ from ._src.sim import (  # noqa: E402
     eval_ik,
     get_joint_constraint_count,
     get_joint_dof_count,
-    infer_actuator_mode,
 )
 
 __all__ += [
@@ -89,7 +88,6 @@ __all__ += [
     "eval_ik",
     "get_joint_constraint_count",
     "get_joint_dof_count",
-    "infer_actuator_mode",
 ]
 
 # ==================================================================================
