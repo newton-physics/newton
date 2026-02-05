@@ -254,7 +254,7 @@ class TestSelection(unittest.TestCase):
         # Create the model
         model = builder.finalize()
         state_0 = model.state()
-        # control = model.control()
+        control = model.control()
 
         # Create a view of "art1/joint3"
         joints_to_include = ["joint3"]
@@ -284,7 +284,7 @@ class TestSelection(unittest.TestCase):
 
         expected_dof_positions = []
         # expected_joint_limit_lower = []
-        # expected_joint_target_pos = []
+        expected_joint_target_pos = []
         if use_mask:
             if use_multiple_artics_per_view:
                 expected_dof_positions = [
@@ -327,26 +327,26 @@ class TestSelection(unittest.TestCase):
                 #    -50.5,
                 #    -50.5,
                 # ]
-                # expected_joint_target_pos = [
-                #    0.0,  # world0/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world0/artic1
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world1/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world1/artic1
-                #    0.0,
-                #    8.0,
-                #    0.0,  # world2/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world2/artic1
-                #    0.0,
-                #    0.0,
-                # ]
+                expected_joint_target_pos = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    8.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    0.0,
+                ]
             else:
                 expected_dof_positions = [
                     0.0,  # world0/artic0
@@ -388,26 +388,26 @@ class TestSelection(unittest.TestCase):
                 #    -50.5,
                 #    -50.5,
                 # ]
-                # expected_joint_target_pos = [
-                #    0.0,  # world0/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world0/artic1
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world1/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world1/artic1
-                #    0.0,
-                #    4.0,
-                #    0.0,  # world2/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world2/artic1
-                #    0.0,
-                #    0.0,
-                # ]
+                expected_joint_target_pos = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    4.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    0.0,
+                ]
         else:
             if use_multiple_artics_per_view:
                 expected_dof_positions = [
@@ -450,26 +450,26 @@ class TestSelection(unittest.TestCase):
                 #    -50.5,
                 #    -44.5,
                 # ]
-                # expected_joint_target_pos = [
-                #    0.0,  # world0/artic0
-                #    0.0,
-                #    2.0,
-                #    0.0,  # world0/artic1
-                #    0.0,
-                #    4.0,
-                #    0.0,  # world1/artic0
-                #    0.0,
-                #    6.0,
-                #    0.0,  # world1/artic1
-                #    0.0,
-                #    8.0,
-                #    0.0,  # world2/artic0
-                #    0.0,
-                #    10.0,
-                #    0.0,  # world2/artic1
-                #    0.0,
-                #    12.0,
-                # ]
+                expected_joint_target_pos = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    2.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    4.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    6.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    8.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    10.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    12.0,
+                ]
             else:
                 expected_dof_positions = [
                     0.0,  # world0/artic0
@@ -511,42 +511,42 @@ class TestSelection(unittest.TestCase):
                 #    -50.5,
                 #    -47.5,
                 # ]
-                # expected_joint_target_pos = [
-                #    0.0,  # world0/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world0/artic1
-                #    0.0,
-                #    2.0,
-                #    0.0,  # world1/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world1/artic1
-                #    0.0,
-                #    4.0,
-                #    0.0,  # world2/artic0
-                #    0.0,
-                #    0.0,
-                #    0.0,  # world2/artic1
-                #    0.0,
-                #    6.0,
-                # ]
+                expected_joint_target_pos = [
+                    0.0,  # world0/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world0/artic1
+                    0.0,
+                    2.0,
+                    0.0,  # world1/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world1/artic1
+                    0.0,
+                    4.0,
+                    0.0,  # world2/artic0
+                    0.0,
+                    0.0,
+                    0.0,  # world2/artic1
+                    0.0,
+                    6.0,
+                ]
 
         # Set the values associated with "joint3"
         wp_joint_dof_positions = wp.array(joint_dof_positions, dtype=float, device=model.device)
         # wp_joint_limit_lowers = wp.array(joint_limit_lower, dtype=float, device=model.device)
-        # wp_joint_target_pos = wp.array(joint_target_pos, dtype=float, device=model.device)
+        wp_joint_target_pos = wp.array(joint_target_pos, dtype=float, device=model.device)
         joint_view.set_dof_positions(state_0, wp_joint_dof_positions, mask)
         # joint_view.set_dof_positions(model, wp_joint_dof_positions, mask)
         # joint_view.set_attribute("joint_limit_lower", model, wp_joint_limit_lowers, mask)
-        # joint_view.set_attribute("joint_target_pos", control, wp_joint_target_pos, mask)
+        joint_view.set_attribute("joint_target_pos", control, wp_joint_target_pos, mask)
         # joint_view.set_attribute("joint_target_pos", model, wp_joint_target_pos, mask)
 
         # Get the updated values from model, state, control.
         measured_state_joint_dof_positions = state_0.joint_q.numpy()
         # measured_model_joint_dof_positions = model.joint_q.numpy()
         # measured_model_joint_limit_lower = model.joint_limit_lower.numpy()
-        # measured_control_joint_target_pos = control.joint_target_pos.numpy()
+        measured_control_joint_target_pos = control.joint_target_pos.numpy()
         # measured_model_joint_target_pos = model.joint_target_pos.numpy()
 
         # Test that the modified values were correctly set in model, state and control
@@ -578,14 +578,14 @@ class TestSelection(unittest.TestCase):
             #    msg=f"Expected model joint limit lower value {i}: {expected}, Measured value: {measured}",
             # )
 
-            # measured = measured_control_joint_target_pos[i]
-            # expected = expected_joint_target_pos[i]
-            # self.assertAlmostEqual(
-            #    expected,
-            #    measured,
-            #    places=4,
-            #    msg=f"Expected model joint target pos value {i}: {expected}, Measured value: {measured}",
-            # )
+            measured = measured_control_joint_target_pos[i]
+            expected = expected_joint_target_pos[i]
+            self.assertAlmostEqual(
+                expected,
+                measured,
+                places=4,
+                msg=f"Expected control joint target pos value {i}: {expected}, Measured value: {measured}",
+            )
 
             # measured = measured_model_joint_target_pos[i]
             # expected = expected_joint_target_pos[i]
@@ -631,14 +631,14 @@ class TestSelection(unittest.TestCase):
         num_links = num_links_per_articulation * num_articulations_per_world * num_worlds
 
         # Create a single articulation
-        single_articuation_builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(single_articuation_builder)
-        single_articuation_builder.add_mjcf(mjcf)
+        single_articulation_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(single_articulation_builder)
+        single_articulation_builder.add_mjcf(mjcf)
 
         # Create a world with 2 articulations
         single_world_builder = newton.ModelBuilder()
         for _i in range(0, num_articulations_per_world):
-            single_world_builder.add_builder(single_articuation_builder)
+            single_world_builder.add_builder(single_articulation_builder)
 
         # Customise the articulation keys in single_world_builder
         single_world_builder.articulation_key[0] = "art0"
