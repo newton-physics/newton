@@ -5,7 +5,7 @@ Collisions
 
 Newton provides a flexible collision detection system for rigid-rigid and soft-rigid contacts. The pipeline handles broad phase culling, narrow phase contact generation, and filtering.
 
-Newton's collision system is also compatible with MuJoCo-imported models via MJWarp, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes. See ``examples/mjwarp/`` for usage.
+Newton's collision system can also be used with ``SolverMuJoCo``, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes.
 
 .. _Collision Pipelines Overview:
 
@@ -25,16 +25,18 @@ Basic usage:
 .. code-block:: python
 
     # Default: uses CollisionPipeline with precomputed pairs
-    contacts = model.collide(state)
+    contacts = model.contacts()
+    model.collide(state, contacts)
 
     # Or explicitly create a pipeline
     from newton import CollisionPipelineUnified, BroadPhaseMode
-    
-    pipeline = CollisionPipelineUnified.from_model(
+
+    pipeline = CollisionPipelineUnified(
         model,
         broad_phase_mode=BroadPhaseMode.SAP,
     )
-    contacts = model.collide(state, collision_pipeline=pipeline)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Supported Shape Types:
 
@@ -492,14 +494,15 @@ Unified Pipeline
 .. code-block:: python
 
     from newton import CollisionPipelineUnified, BroadPhaseMode
-    
+
     # NxN for small scenes
-    pipeline = CollisionPipelineUnified.from_model(model, broad_phase_mode=BroadPhaseMode.NXN)
-    
+    pipeline = CollisionPipelineUnified(model, broad_phase_mode=BroadPhaseMode.NXN)
+
     # SAP for larger scenes
-    pipeline = CollisionPipelineUnified.from_model(model, broad_phase_mode=BroadPhaseMode.SAP)
-    
-    contacts = model.collide(state, collision_pipeline=pipeline)
+    pipeline = CollisionPipelineUnified(model, broad_phase_mode=BroadPhaseMode.SAP)
+
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Shape Compatibility:
 
@@ -706,7 +709,7 @@ For hydroelastic and SDF-based contacts, use :class:`~newton.SDFHydroelasticConf
         moment_matching=False,          # Match friction moments (experimental)
     )
 
-    pipeline = CollisionPipelineUnified.from_model(model, sdf_hydroelastic_config=config)
+    pipeline = CollisionPipelineUnified(model, sdf_hydroelastic_config=config)
 
 **Understanding betas:**
 
