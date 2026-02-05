@@ -1101,6 +1101,9 @@ class Model:
         """
         from ..geometry.kernels import count_contact_points  # noqa: PLC0415
 
+        if self.shape_contact_pair_count == 0:
+            return 0
+
         if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
             rigid_contact_max_per_pair = 0
         # calculate the potential number of shape pair contact points
