@@ -16,10 +16,7 @@
 # ==================================================================================
 # sim utils
 # ==================================================================================
-from ._src.sim import (
-    color_graph,
-    plot_graph,
-)
+from ._src.sim.graph_coloring import color_graph, plot_graph
 
 __all__ = [
     "color_graph",
@@ -31,7 +28,6 @@ __all__ = [
 # ==================================================================================
 from ._src.utils.mesh import (
     MeshAdjacency,
-    MeshEdge,
     create_box_mesh,
     create_capsule_mesh,
     create_cone_mesh,
@@ -44,7 +40,6 @@ from ._src.utils.mesh import (
 
 __all__ += [
     "MeshAdjacency",
-    "MeshEdge",
     "create_box_mesh",
     "create_capsule_mesh",
     "create_cone_mesh",
@@ -60,12 +55,10 @@ __all__ += [
 # ==================================================================================
 from ._src.utils.render import (  # noqa: E402
     bourke_color_map,
-    copy_rgb_frame_uint8,
 )
 
 __all__ += [
     "bourke_color_map",
-    "copy_rgb_frame_uint8",
 ]
 
 # ==================================================================================
@@ -119,9 +112,8 @@ __all__ += [
 # math utils
 # TODO: move math utils to Warp?
 # ==================================================================================
-from ._src.utils import (  # noqa: E402
+from ._src.math import (  # noqa: E402
     boltzmann,
-    compute_world_offsets,
     leaky_max,
     leaky_min,
     smooth_max,
@@ -134,6 +126,7 @@ from ._src.utils import (  # noqa: E402
     vec_max,
     vec_min,
 )
+from ._src.utils import compute_world_offsets  # noqa: E402
 
 __all__ += [
     "boltzmann",
@@ -161,16 +154,6 @@ __all__ += [
 ]
 
 # ==================================================================================
-# recorders
-# ==================================================================================
-from ._src.utils.recorder import RecorderBasic, RecorderModelAndState  # noqa: E402
-
-__all__ += [
-    "RecorderBasic",
-    "RecorderModelAndState",
-]
-
-# ==================================================================================
 # run benchmark
 # ==================================================================================
 
@@ -186,8 +169,8 @@ __all__ += [
 # import utils
 # ==================================================================================
 
-from ._src.utils.import_utils import parse_warp_value_from_string  # noqa: E402
+from ._src.utils.import_utils import string_to_warp  # noqa: E402
 
 __all__ += [
-    "parse_warp_value_from_string",
+    "string_to_warp",
 ]

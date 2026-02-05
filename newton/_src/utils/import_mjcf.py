@@ -586,11 +586,10 @@ def parse_mjcf(
                     shapes.append(s)
 
             elif geom_type == "plane":
-                # Use tf (which has incoming_xform applied) for plane normal/distance
-                normal = wp.quat_rotate(tf.q, wp.vec3(0.0, 0.0, 1.0))
-                p = wp.dot(tf.p, normal)
+                # Use xform directly - plane has local normal (0,0,1) and passes through origin
+                # The transform tf positions and orients the plane in world space
                 s = builder.add_shape_plane(
-                    plane=(*normal, p),
+                    xform=tf,
                     width=geom_size[0],
                     length=geom_size[1],
                     **shape_kwargs,
@@ -1868,6 +1867,22 @@ def parse_mjcf(
 
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
+
+            # Resolve MuJoCo limited flags based on range values
+            # MuJoCo behavior: if *limited is not explicitly set and range[0]<range[1], then limited=True
+            # Use merged_attrib to respect defaults for both presence check and range values
+            for limited_attr, range_attr, limited_key in [
+                ("ctrllimited", "ctrlrange", "mujoco:actuator_ctrllimited"),
+                ("forcelimited", "forcerange", "mujoco:actuator_forcelimited"),
+                ("actlimited", "actrange", "mujoco:actuator_actlimited"),
+            ]:
+                # Only auto-resolve if *limited was not explicitly specified (including defaults)
+                if limited_attr not in merged_attrib:
+                    range_str = merged_attrib.get(range_attr, "")
+                    if range_str:
+                        range_vals = [float(x) for x in range_str.split()[:2]]
+                        if len(range_vals) == 2 and range_vals[0] < range_vals[1]:
+                            parsed_attrs[limited_key] = 1
 
             # Build full values dict
             actuator_values: dict[str, Any] = {}

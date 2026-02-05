@@ -576,7 +576,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
         newton.examples.test_particle_state(
             self.state_0,
