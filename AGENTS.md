@@ -99,3 +99,7 @@ Follow conventional commit message practices.
     - Write as a command: "Fix bug" not "Fixed bug" or "Fixes bug"
     - Test: "If applied, this commit will _[your subject]_"
   - Body: wrap at 72 chars, explain _what_ and _why_ (not _how_—the diff shows that)
+
+## GitHub Actions and CI/CD
+
+- IMPORTANT: Pin actions by SHA hash. Use `action@<sha>  # vX.Y.Z` format for supply-chain security. Check existing workflows in `.github/workflows/` for the allowlisted hashes. New actions or versions require repo admin approval to be added to the allowlist.
