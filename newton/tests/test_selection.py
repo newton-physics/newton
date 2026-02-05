@@ -709,7 +709,7 @@ class TestSelection(unittest.TestCase):
                     0.01,
                     0.01,  # world2/artic0
                     0.01,
-                    00.01,
+                    0.01,
                     0.01,
                     0.01,  # world2/artic1
                     0.01,
