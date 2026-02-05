@@ -16,18 +16,28 @@
 """Tests for actuator integration with ModelBuilder."""
 
 import math
+import os
 import unittest
 
 import numpy as np
+import warp as wp
 
 import newton
+from newton.selection import ArticulationView
 
 try:
-    from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID
+    from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID, parse_actuator_prim
 
     HAS_ACTUATORS = True
 except ImportError:
     HAS_ACTUATORS = False
+
+try:
+    from pxr import Usd
+
+    HAS_USD = True
+except ImportError:
+    HAS_USD = False
 
 
 @unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
@@ -218,17 +228,12 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIn("dimension mismatch", str(ctx.exception))
 
 
-@unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
+@unittest.skipUnless(HAS_ACTUATORS and HAS_USD, "newton-actuators or pxr not installed")
 class TestActuatorUSDParsing(unittest.TestCase):
     """Tests for parsing actuators from USD files."""
 
     def test_usd_parsing(self):
         """Test USD parsing with and without actuator parse function, verify parameters."""
-        import os
-
-        from newton_actuators import parse_actuator_prim
-        from pxr import Usd
-
         from newton._src.utils.import_usd import parse_usd
 
         test_dir = os.path.dirname(__file__)
@@ -298,9 +303,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     def test_get_actuator_parameter_single_world(self):
         """Test getting actuator parameters in single world."""
-        from newton.selection import ArticulationView
-
-        model, dofs = self._build_single_world_model()
+        model, _dofs = self._build_single_world_model()
         view = ArticulationView(model, pattern="robot")
         actuator = model.actuators[0]
         kp_values = view.get_actuator_parameter(actuator, "kp")
@@ -309,8 +312,6 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     def test_get_actuator_parameter_multi_world(self):
         """Test getting actuator parameters in multi-world setup."""
-        from newton.selection import ArticulationView
-
         num_worlds = 3
         model, _ = self._build_multi_world_model(num_worlds)
         view = ArticulationView(model, pattern="robot*")
@@ -322,11 +323,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     def test_set_actuator_parameter_single_world(self):
         """Test setting actuator parameters in single world."""
-        import warp as wp
-
-        from newton.selection import ArticulationView
-
-        model, dofs = self._build_single_world_model()
+        model, _dofs = self._build_single_world_model()
         view = ArticulationView(model, pattern="robot")
         actuator = model.actuators[0]
         new_kp = wp.array([[500.0, 600.0, 700.0]], dtype=float, device=model.device)
@@ -335,10 +332,6 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     def test_set_actuator_parameter_multi_world(self):
         """Test setting actuator parameters in multi-world setup."""
-        import warp as wp
-
-        from newton.selection import ArticulationView
-
         num_worlds = 3
         model, _ = self._build_multi_world_model(num_worlds)
         view = ArticulationView(model, pattern="robot*")
@@ -358,10 +351,6 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     def test_set_actuator_parameter_with_mask(self):
         """Test setting actuator parameters with per-world mask."""
-        import warp as wp
-
-        from newton.selection import ArticulationView
-
         num_worlds = 3
         model, _ = self._build_multi_world_model(num_worlds)
         view = ArticulationView(model, pattern="robot*")

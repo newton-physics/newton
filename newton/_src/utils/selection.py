@@ -1311,7 +1311,7 @@ class ArticulationView:
     # ========================================================================================
     # Actuator parameter access
 
-    @functools.cache
+    @functools.cache  # noqa: B019 - cache is tied to view lifetime
     def _get_actuator_dof_mapping(self, actuator: "Actuator") -> wp.array:
         """
         Build mapping from view DOF positions to actuator parameter indices.
