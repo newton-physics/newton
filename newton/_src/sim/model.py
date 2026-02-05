@@ -524,8 +524,6 @@ class Model:
         self.rigid_contact_max = 0
         """Number of potential contact points between rigid bodies."""
 
-        self.up_vector = np.array((0.0, 0.0, 1.0))
-        """Up vector of the world, shape [3], float."""
         self.up_axis = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity = None
