@@ -208,8 +208,14 @@ def construct_trimesh_graph_edges(
         bend_np = np.asarray(bending_edge_indices, dtype=np.int32)
         if bend_np.size > 0:
             if bending_edge_active_mask is not None:
-                mask = np.asarray(bending_edge_active_mask, dtype=np.int32) != 0
-                bend_np = bend_np[mask]
+                mask_arr = np.asarray(bending_edge_active_mask, dtype=bool)
+                # Handle scalar mask (True means all active, False means none active)
+                if mask_arr.ndim == 0:
+                    if not mask_arr:
+                        bend_np = bend_np[:0]  # Empty array
+                    # else: all active, no filtering needed
+                else:
+                    bend_np = bend_np[mask_arr]
             if bend_np.size > 0:
                 v0 = bend_np[:, 0:1]
                 v1 = bend_np[:, 1:2]
