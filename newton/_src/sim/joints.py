@@ -156,7 +156,6 @@ class ActuatorMode(IntEnum):
     """A drive is applied but no gains are configured. No MuJoCo actuator is created for this DOF.
     The user is expected to supply force via joint_f."""
 
-
     @staticmethod
     def from_gains(
         target_ke: float,
