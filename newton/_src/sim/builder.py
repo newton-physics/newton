@@ -6805,7 +6805,6 @@ class ModelBuilder:
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
         """
-        from .collide import count_rigid_contact_points  # noqa: PLC0415
 
         # ensure the world count is set correctly
         self.num_worlds = max(1, self.num_worlds)
@@ -7411,7 +7410,7 @@ class ModelBuilder:
             m.equality_constraint_count = len(self.equality_constraint_type)
 
             self.find_shape_contact_pairs(m)
-            m.rigid_contact_max = count_rigid_contact_points(m)
+            m.rigid_contact_max = m._count_rigid_contact_points()
 
             # enable ground plane
             m.up_axis = self.up_axis

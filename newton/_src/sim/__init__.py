@@ -16,7 +16,7 @@
 from . import ik
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
-from .collide import CollisionPipeline, count_rigid_contact_points
+from .collide import CollisionPipeline
 from .collide_unified import BroadPhaseMode, CollisionPipelineUnified
 from .contacts import Contacts
 from .control import Control
@@ -45,7 +45,6 @@ __all__ = [
     "ModelBuilder",
     "State",
     "color_graph",
-    "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
     "get_joint_constraint_count",

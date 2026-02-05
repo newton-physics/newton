@@ -1084,3 +1084,40 @@ class Model:
 
         attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes
+
+    def _count_rigid_contact_points(self, rigid_contact_max_per_pair: int | None = None) -> int:
+        """
+        Counts the maximum number of rigid contact points that need to be allocated for a given model.
+
+        This function estimates the upper bound on the number of rigid contact points that may be generated
+        during collision detection, based on the current set of shape contact pairs and their geometry.
+
+        Args:
+            model (Model): The simulation model containing shape and geometry information.
+            rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
+                If None or <= 0, no limit is applied.
+        Returns:
+            int: The potential number of rigid contact points that may need to be allocated.
+        """
+        from ..geometry.kernels import count_contact_points  # noqa: PLC0415
+
+        if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
+            rigid_contact_max_per_pair = 0
+        # calculate the potential number of shape pair contact points
+        contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=count_contact_points,
+            dim=self.shape_contact_pair_count,
+            inputs=[
+                self.shape_contact_pairs,
+                self.shape_type,
+                self.shape_scale,
+                self.shape_source_ptr,
+                rigid_contact_max_per_pair,
+            ],
+            outputs=[contact_count],
+            device=self.device,
+            record_tape=False,
+        )
+        counts = contact_count.numpy()
+        return int(counts[0])
