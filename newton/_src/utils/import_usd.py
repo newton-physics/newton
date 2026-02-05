@@ -1373,11 +1373,15 @@ def parse_usd(
             continue
         if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
             continue
-        # Skip body-to-world joints (where one body is empty/world).
-        # These bodies already get FREE joints from remaining body processing.
+        # Skip body-to-world joints (where one body is empty/world) only when
+        # FREE joints will be auto-inserted for remaining bodies.
+        # When no_articulations=True and has_joints=True, FREE joints are NOT
+        # auto-inserted, so we should parse body-to-world joints in that case.
         body0_path = str(joint_desc.body0)
         body1_path = str(joint_desc.body1)
-        if body0_path in ("", "/") or body1_path in ("", "/"):
+        is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
+        free_joints_auto_inserted = not (no_articulations and has_joints)
+        if is_body_to_world and free_joints_auto_inserted:
             continue
         try:
             parse_joint(joint_desc, incoming_xform=incoming_world_xform)
