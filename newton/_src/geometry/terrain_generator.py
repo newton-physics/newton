@@ -443,7 +443,6 @@ def _heightfield_terrain(
     if center_y is None:
         center_y = size[1] / 2
 
-    # Use heightfield_to_mesh to convert heightfield to mesh
     vertices, indices = create_mesh_heightfield(
         heightfield=heightfield,
         extent_x=size[0],
