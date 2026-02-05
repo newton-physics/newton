@@ -333,6 +333,13 @@ add_example_test(
     test_options={"num-frames": 100},
     use_viewer=True,
 )
+add_example_test(
+    TestClothExamples,
+    name="cloth.example_rolling_cloth",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 800},
+    use_viewer=True,
+)
 
 
 class TestRobotExamples(unittest.TestCase):

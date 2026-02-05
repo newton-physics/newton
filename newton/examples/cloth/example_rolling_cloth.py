@@ -495,6 +495,32 @@ class Example:
         self.viewer.log_state(self.viz_state)
         self.viewer.end_frame()
 
+    def test_final(self):
+        """Test that cloth has unrolled from cylinder 1 to cylinder 2."""
+        # Get cloth particle positions (exclude cylinder particles)
+        particle_q = self.state_0.particle_q.numpy()
+        cloth_q = particle_q[: self.num_cloth_verts]
+
+        # Calculate center of mass
+        com = np.mean(cloth_q, axis=0)
+
+        # Initial COM is at X ≈ -25.72 (near cylinder 1 at X=-27.2)
+        # Cylinder 2 is at X=40.0
+        # After ~12.7 revolutions (800 frames), expect COM to shift significantly
+        initial_com_x = -25.72
+        expected_shift = 40.0 - initial_com_x  # ≈ 65.72
+        min_shift = expected_shift * 0.6  # ≈ 39.4 (60% progress is reasonable)
+
+        actual_shift = com[0] - initial_com_x
+
+        assert actual_shift > min_shift, (
+            f"Cloth not unrolled enough: shift={actual_shift:.1f} < {min_shift:.1f}, COM X={com[0]:.1f}"
+        )
+
+        # Ensure bbox hasn't exploded
+        bbox_size = np.linalg.norm(np.max(cloth_q, axis=0) - np.min(cloth_q, axis=0))
+        assert bbox_size < 150.0, f"Bbox exploded: size={bbox_size:.2f}"
+
 
 if __name__ == "__main__":
     # Create parser with base arguments
