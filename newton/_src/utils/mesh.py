@@ -32,7 +32,7 @@ class MeshAdjacency:
     triangles (if they exist) along with the opposite vertices.
 
     Attributes:
-        edges: Dictionary mapping edge keys (min_vertex, max_vertex) to MeshEdge objects.
+        edges: Dictionary mapping edge keys (min_vertex, max_vertex) to MeshAdjacency.Edge objects.
         indices: The original triangle indices used to build the adjacency.
     """
 
