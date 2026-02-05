@@ -526,11 +526,11 @@ if __name__ == "__main__":
     # Create parser with base arguments
     parser = newton.examples.create_parser()
 
-    parser.add_argument("--cloth_length", type=float, default=800.0, help="Length of cloth spiral")
-    parser.add_argument("--cloth_nu", type=int, default=300, help="Number of rows along cloth length")
-    parser.add_argument("--cloth_thickness", type=float, default=0.4, help="Thickness of rolled cloth mesh")
-    parser.add_argument("--angular_speed", type=float, default=-2 * np.pi, help="Base rotation speed (rad/sec)")
-    parser.add_argument("--spin_duration", type=float, default=20.0, help="Duration of spinning (seconds)")
+    parser.add_argument("--cloth-length", type=float, default=800.0, help="Length of cloth spiral")
+    parser.add_argument("--cloth-nu", type=int, default=300, help="Number of rows along cloth length")
+    parser.add_argument("--cloth-thickness", type=float, default=0.4, help="Thickness of rolled cloth mesh")
+    parser.add_argument("--angular-speed", type=float, default=-2 * np.pi, help="Base rotation speed (rad/sec)")
+    parser.add_argument("--spin-duration", type=float, default=20.0, help="Duration of spinning (seconds)")
 
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
