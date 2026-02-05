@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..core.spatial import quat_decompose, quat_twist
+from ..core.spatial import quat_decompose, quat_twist, transform_twist
 from .joints import JointType
 from .model import Model
 from .state import State
@@ -801,3 +801,455 @@ def eval_ik(model, state, joint_q, joint_qd, mask=None, indices=None):
         outputs=[joint_q, joint_qd],
         device=model.device,
     )
+
+
+@wp.func
+def jcalc_motion_subspace(
+    type: int,
+    joint_axis: wp.array(dtype=wp.vec3),
+    lin_axis_count: int,
+    ang_axis_count: int,
+    X_sc: wp.transform,
+    qd_start: int,
+    # outputs
+    joint_S_s: wp.array(dtype=wp.spatial_vector),
+):
+    """Compute motion subspace (joint Jacobian columns) for a joint.
+
+    This populates joint_S_s with the motion subspace vectors for each DoF,
+    which represent how each joint coordinate affects the spatial velocity.
+    """
+    if type == JointType.PRISMATIC:
+        axis = joint_axis[qd_start]
+        S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+        joint_S_s[qd_start] = S_s
+
+    elif type == JointType.REVOLUTE:
+        axis = joint_axis[qd_start]
+        S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+        joint_S_s[qd_start] = S_s
+
+    elif type == JointType.D6:
+        if lin_axis_count > 0:
+            axis = joint_axis[qd_start + 0]
+            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            joint_S_s[qd_start + 0] = S_s
+        if lin_axis_count > 1:
+            axis = joint_axis[qd_start + 1]
+            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            joint_S_s[qd_start + 1] = S_s
+        if lin_axis_count > 2:
+            axis = joint_axis[qd_start + 2]
+            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            joint_S_s[qd_start + 2] = S_s
+        if ang_axis_count > 0:
+            axis = joint_axis[qd_start + lin_axis_count + 0]
+            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            joint_S_s[qd_start + lin_axis_count + 0] = S_s
+        if ang_axis_count > 1:
+            axis = joint_axis[qd_start + lin_axis_count + 1]
+            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            joint_S_s[qd_start + lin_axis_count + 1] = S_s
+        if ang_axis_count > 2:
+            axis = joint_axis[qd_start + lin_axis_count + 2]
+            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            joint_S_s[qd_start + lin_axis_count + 2] = S_s
+
+    elif type == JointType.BALL:
+        S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+        joint_S_s[qd_start + 0] = S_0
+        joint_S_s[qd_start + 1] = S_1
+        joint_S_s[qd_start + 2] = S_2
+
+    elif type == JointType.FREE or type == JointType.DISTANCE:
+        joint_S_s[qd_start + 0] = transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 1] = transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 2] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 3] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        joint_S_s[qd_start + 4] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        joint_S_s[qd_start + 5] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+
+
+@wp.kernel
+def eval_articulation_jacobian(
+    articulation_start: wp.array(dtype=int),
+    articulation_count: int,
+    articulation_mask: wp.array(dtype=bool),
+    joint_type: wp.array(dtype=int),
+    joint_parent: wp.array(dtype=int),
+    joint_ancestor: wp.array(dtype=int),
+    joint_qd_start: wp.array(dtype=int),
+    joint_X_p: wp.array(dtype=wp.transform),
+    joint_axis: wp.array(dtype=wp.vec3),
+    joint_dof_dim: wp.array(dtype=int, ndim=2),
+    body_q: wp.array(dtype=wp.transform),
+    # outputs
+    J: wp.array3d(dtype=float),
+    joint_S_s: wp.array(dtype=wp.spatial_vector),
+):
+    """Compute spatial Jacobian for articulations.
+
+    The Jacobian J maps joint velocities to spatial velocities of each link.
+    Output shape: (articulation_count, max_links*6, max_dofs)
+    """
+    art_idx = wp.tid()
+
+    if art_idx >= articulation_count:
+        return
+
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    joint_start = articulation_start[art_idx]
+    joint_end = articulation_start[art_idx + 1]
+    joint_count = joint_end - joint_start
+
+    articulation_dof_start = joint_qd_start[joint_start]
+
+    # First pass: compute body transforms and motion subspaces
+    for i in range(joint_count):
+        j = joint_start + i
+        parent = joint_parent[j]
+        type = joint_type[j]
+
+        X_pj = joint_X_p[j]
+
+        # parent anchor frame in world space
+        X_wpj = X_pj
+        if parent >= 0:
+            X_wp = body_q[parent]
+            X_wpj = X_wp * X_pj
+
+        qd_start = joint_qd_start[j]
+        lin_axis_count = joint_dof_dim[j, 0]
+        ang_axis_count = joint_dof_dim[j, 1]
+
+        # compute motion subspace in world frame
+        jcalc_motion_subspace(
+            type,
+            joint_axis,
+            lin_axis_count,
+            ang_axis_count,
+            X_wpj,
+            qd_start,
+            joint_S_s,
+        )
+
+    # Second pass: build Jacobian by walking kinematic chain
+    for i in range(joint_count):
+        row_start = i * 6
+
+        j = joint_start + i
+        while j != -1:
+            joint_dof_start = joint_qd_start[j]
+            joint_dof_end = joint_qd_start[j + 1]
+            joint_dof_count = joint_dof_end - joint_dof_start
+
+            # Fill out each row of the Jacobian walking up the tree
+            for dof in range(joint_dof_count):
+                col = (joint_dof_start - articulation_dof_start) + dof
+                S = joint_S_s[joint_dof_start + dof]
+
+                for k in range(6):
+                    J[art_idx, row_start + k, col] = S[k]
+
+            j = joint_ancestor[j]
+
+
+def eval_jacobian(
+    model: Model,
+    state: State,
+    J: wp.array | None = None,
+    joint_S_s: wp.array | None = None,
+    mask: wp.array | None = None,
+) -> wp.array | None:
+    """Evaluate spatial Jacobian for articulations.
+
+    Computes the spatial Jacobian J that maps joint velocities to spatial
+    velocities of each link in world frame. The Jacobian is computed for
+    each articulation in the model.
+
+    Args:
+        model: The model containing articulation definitions.
+        state: The state containing body transforms (body_q).
+        J: Optional output array for the Jacobian, shape (articulation_count, max_links*6, max_dofs).
+           If None, allocates internally.
+        joint_S_s: Optional pre-allocated temp array for motion subspaces,
+                   shape (joint_dof_count,), dtype wp.spatial_vector.
+                   If None, allocates internally.
+        mask: Optional boolean mask to select which articulations to compute.
+              Shape [articulation_count]. If None, computes for all articulations.
+
+    Returns:
+        The Jacobian array J, or None if the model has no articulations.
+    """
+    if model.articulation_count == 0:
+        return None
+
+    # Allocate output if not provided
+    if J is None:
+        max_links = model.max_joints_per_articulation
+        max_dofs = model.max_dofs_per_articulation
+        J = wp.zeros(
+            (model.articulation_count, max_links * 6, max_dofs),
+            dtype=float,
+            device=model.device,
+        )
+
+    # Allocate temp if not provided
+    if joint_S_s is None:
+        joint_S_s = wp.zeros(
+            model.joint_dof_count,
+            dtype=wp.spatial_vector,
+            device=model.device,
+        )
+
+    wp.launch(
+        kernel=eval_articulation_jacobian,
+        dim=model.articulation_count,
+        inputs=[
+            model.articulation_start,
+            model.articulation_count,
+            mask,
+            model.joint_type,
+            model.joint_parent,
+            model.joint_ancestor,
+            model.joint_qd_start,
+            model.joint_X_p,
+            model.joint_axis,
+            model.joint_dof_dim,
+            state.body_q,
+        ],
+        outputs=[J, joint_S_s],
+        device=model.device,
+    )
+
+    return J
+
+
+@wp.func
+def transform_spatial_inertia(t: wp.transform, I: wp.spatial_matrix):
+    """Transform a spatial inertia tensor to a new coordinate frame.
+
+    Note: This is duplicated from featherstone/kernels.py to avoid circular imports.
+    """
+    t_inv = wp.transform_inverse(t)
+
+    q = wp.transform_get_rotation(t_inv)
+    p = wp.transform_get_translation(t_inv)
+
+    r1 = wp.quat_rotate(q, wp.vec3(1.0, 0.0, 0.0))
+    r2 = wp.quat_rotate(q, wp.vec3(0.0, 1.0, 0.0))
+    r3 = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
+
+    R = wp.matrix_from_cols(r1, r2, r3)
+    S = wp.skew(p) @ R
+
+    # fmt: off
+    T = wp.spatial_matrix(
+        R[0, 0], R[0, 1], R[0, 2], S[0, 0], S[0, 1], S[0, 2],
+        R[1, 0], R[1, 1], R[1, 2], S[1, 0], S[1, 1], S[1, 2],
+        R[2, 0], R[2, 1], R[2, 2], S[2, 0], S[2, 1], S[2, 2],
+        0.0, 0.0, 0.0, R[0, 0], R[0, 1], R[0, 2],
+        0.0, 0.0, 0.0, R[1, 0], R[1, 1], R[1, 2],
+        0.0, 0.0, 0.0, R[2, 0], R[2, 1], R[2, 2],
+    )
+    # fmt: on
+
+    return wp.mul(wp.mul(wp.transpose(T), I), T)
+
+
+@wp.kernel
+def compute_body_spatial_inertia(
+    body_inertia: wp.array(dtype=wp.mat33),
+    body_mass: wp.array(dtype=float),
+    body_com: wp.array(dtype=wp.vec3),
+    body_q: wp.array(dtype=wp.transform),
+    # outputs
+    body_I_s: wp.array(dtype=wp.spatial_matrix),
+):
+    """Compute spatial inertia for each body in world frame."""
+    tid = wp.tid()
+
+    I_local = body_inertia[tid]
+    m = body_mass[tid]
+    com = body_com[tid]
+    X_wb = body_q[tid]
+
+    # Build spatial inertia in body COM frame
+    # fmt: off
+    I_m = wp.spatial_matrix(
+        m,   0.0, 0.0, 0.0,           0.0,           0.0,
+        0.0, m,   0.0, 0.0,           0.0,           0.0,
+        0.0, 0.0, m,   0.0,           0.0,           0.0,
+        0.0, 0.0, 0.0, I_local[0, 0], I_local[0, 1], I_local[0, 2],
+        0.0, 0.0, 0.0, I_local[1, 0], I_local[1, 1], I_local[1, 2],
+        0.0, 0.0, 0.0, I_local[2, 0], I_local[2, 1], I_local[2, 2],
+    )
+    # fmt: on
+
+    # Transform from COM frame to world frame
+    X_com = wp.transform(com, wp.quat_identity())
+    X_sm = X_wb * X_com
+    I_s = transform_spatial_inertia(X_sm, I_m)
+
+    body_I_s[tid] = I_s
+
+
+@wp.kernel
+def eval_articulation_mass_matrix(
+    articulation_start: wp.array(dtype=int),
+    articulation_count: int,
+    articulation_mask: wp.array(dtype=bool),
+    joint_child: wp.array(dtype=int),
+    joint_qd_start: wp.array(dtype=int),
+    body_I_s: wp.array(dtype=wp.spatial_matrix),
+    J: wp.array3d(dtype=float),
+    # outputs
+    H: wp.array3d(dtype=float),
+):
+    """Compute generalized mass matrix H = J^T * M * J.
+
+    The mass matrix H relates joint accelerations to joint forces/torques.
+    Output shape: (articulation_count, max_dofs, max_dofs)
+    """
+    art_idx = wp.tid()
+
+    if art_idx >= articulation_count:
+        return
+
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    joint_start = articulation_start[art_idx]
+    joint_end = articulation_start[art_idx + 1]
+    joint_count = joint_end - joint_start
+
+    articulation_dof_start = joint_qd_start[joint_start]
+    articulation_dof_end = joint_qd_start[joint_end]
+    articulation_dof_count = articulation_dof_end - articulation_dof_start
+
+    # H = J^T * M * J
+    # M is block diagonal with 6x6 spatial inertia blocks
+    # We compute this as: for each link i, H += J_i^T * I_i * J_i
+
+    for link_idx in range(joint_count):
+        j = joint_start + link_idx
+        child = joint_child[j]
+        I_s = body_I_s[child]
+
+        row_start = link_idx * 6
+
+        # Compute contribution from this link: H += J_i^T * I_i * J_i
+        for dof_i in range(articulation_dof_count):
+            for dof_j in range(articulation_dof_count):
+                sum_val = float(0.0)
+
+                # J_i^T * I_i * J_j (for the 6 rows of this link)
+                for k in range(6):
+                    for l in range(6):
+                        J_ik = J[art_idx, row_start + k, dof_i]
+                        J_jl = J[art_idx, row_start + l, dof_j]
+                        sum_val += J_ik * I_s[k, l] * J_jl
+
+                H[art_idx, dof_i, dof_j] = H[art_idx, dof_i, dof_j] + sum_val
+
+
+def eval_mass_matrix(
+    model: Model,
+    state: State,
+    H: wp.array | None = None,
+    J: wp.array | None = None,
+    body_I_s: wp.array | None = None,
+    joint_S_s: wp.array | None = None,
+    mask: wp.array | None = None,
+) -> wp.array | None:
+    """Evaluate generalized mass matrix for articulations.
+
+    Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
+    Jacobian and M is the block-diagonal spatial mass matrix. The mass matrix
+    relates joint accelerations to joint forces/torques.
+
+    Args:
+        model: The model containing articulation definitions.
+        state: The state containing body transforms (body_q).
+        H: Optional output array for mass matrix, shape (articulation_count, max_dofs, max_dofs).
+           If None, allocates internally.
+        J: Optional pre-computed Jacobian. If None, computes internally.
+           Shape (articulation_count, max_links*6, max_dofs).
+        body_I_s: Optional pre-allocated temp array for spatial inertias,
+                  shape (body_count,), dtype wp.spatial_matrix. If None, allocates internally.
+        joint_S_s: Optional pre-allocated temp array for motion subspaces (only used if J is None),
+                   shape (joint_dof_count,), dtype wp.spatial_vector. If None, allocates internally.
+        mask: Optional boolean mask to select which articulations to compute.
+              Shape [articulation_count]. If None, computes for all articulations.
+
+    Returns:
+        The mass matrix array H, or None if the model has no articulations.
+    """
+    if model.articulation_count == 0:
+        return None
+
+    # Allocate output if not provided
+    if H is None:
+        max_dofs = model.max_dofs_per_articulation
+        H = wp.zeros(
+            (model.articulation_count, max_dofs, max_dofs),
+            dtype=float,
+            device=model.device,
+        )
+
+    # Allocate or use provided body_I_s
+    if body_I_s is None:
+        body_I_s = wp.zeros(
+            model.body_count,
+            dtype=wp.spatial_matrix,
+            device=model.device,
+        )
+
+    # Compute spatial inertias in world frame
+    wp.launch(
+        kernel=compute_body_spatial_inertia,
+        dim=model.body_count,
+        inputs=[
+            model.body_inertia,
+            model.body_mass,
+            model.body_com,
+            state.body_q,
+        ],
+        outputs=[body_I_s],
+        device=model.device,
+    )
+
+    # Compute Jacobian if not provided
+    if J is None:
+        max_links = model.max_joints_per_articulation
+        max_dofs = model.max_dofs_per_articulation
+        J = wp.zeros(
+            (model.articulation_count, max_links * 6, max_dofs),
+            dtype=float,
+            device=model.device,
+        )
+        eval_jacobian(model, state, J, joint_S_s=joint_S_s, mask=mask)
+
+    wp.launch(
+        kernel=eval_articulation_mass_matrix,
+        dim=model.articulation_count,
+        inputs=[
+            model.articulation_start,
+            model.articulation_count,
+            mask,
+            model.joint_child,
+            model.joint_qd_start,
+            body_I_s,
+            J,
+        ],
+        outputs=[H],
+        device=model.device,
+    )
+
+    return H
