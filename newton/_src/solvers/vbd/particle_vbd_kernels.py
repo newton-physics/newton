@@ -2330,6 +2330,8 @@ def evaluate_spring_force_and_hessian_both_vertices(
 
     diff = pos[v0] - pos[v1]
     spring_length = wp.length(diff)
+    # Clamp to epsilon to avoid division by zero for coincident vertices
+    spring_length = wp.max(spring_length, 1e-8)
     l0 = spring_rest_length[spring_idx]
 
     # Base spring force for v0 (v1 gets the opposite)
