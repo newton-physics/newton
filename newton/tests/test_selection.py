@@ -278,11 +278,9 @@ class TestSelection(unittest.TestCase):
         mask = None
         if use_mask:
             if use_multiple_artics_per_view:
-                mask = [False] * (num_worlds * num_articulations_per_world)
-                mask[num_articulations_per_world + 1] = True  # world1/artic1
+                mask = wp.array([[False, False], [False, True], [False, False]], dtype=bool, device=model.device)
             else:
-                mask = [False] * num_worlds
-                mask[1] = True  # world1/artic
+                mask = wp.array([[False], [True], [False]], dtype=bool, device=model.device)
 
         expected_dof_positions = []
         expected_joint_limit_lower = []
@@ -535,11 +533,14 @@ class TestSelection(unittest.TestCase):
                 ]
 
         # Set the values associated with "joint3"
-        joint_view.set_dof_positions(state_0, joint_dof_positions, mask)
-        joint_view.set_dof_positions(model, joint_dof_positions, mask)
-        joint_view.set_attribute("joint_limit_lower", model, joint_limit_lower, mask)
-        joint_view.set_attribute("joint_target_pos", control, joint_target_pos, mask)
-        joint_view.set_attribute("joint_target_pos", model, joint_target_pos, mask)
+        wp_joint_dof_positions = wp.array(joint_dof_positions, dtype=float, device=model.device)
+        wp_joint_limit_lowers = wp.array(joint_limit_lower, dtype=float, device=model.device)
+        wp_joint_target_pos = wp.array(joint_target_pos, dtype=float, device=model.device)
+        joint_view.set_dof_positions(state_0, wp_joint_dof_positions, mask)
+        joint_view.set_dof_positions(model, wp_joint_dof_positions, mask)
+        joint_view.set_attribute("joint_limit_lower", model, wp_joint_limit_lowers, mask)
+        joint_view.set_attribute("joint_target_pos", control, wp_joint_target_pos, mask)
+        joint_view.set_attribute("joint_target_pos", model, wp_joint_target_pos, mask)
 
         # Get the updated values from model, state, control.
         measured_state_joint_dof_positions = state_0.joint_q.numpy()
@@ -675,15 +676,15 @@ class TestSelection(unittest.TestCase):
         mask = None
         if use_mask:
             if use_multiple_artics_per_view:
-                mask = [False] * (num_worlds * num_articulations_per_world)
-                mask[num_articulations_per_world + 1] = True  # world1/artic1
+                mask = wp.array([[False, False], [False, True], [False, False]], dtype=bool, device=model.device)
             else:
-                mask = [False] * num_worlds
-                mask[1] = True  # world1/artic
+                mask = wp.array([[False], [True], [False]], dtype=bool, device=model.device)
 
-        link_view.set_attribute("body_mass", model, link_masses, mask)
-        link_view.set_attribute("body_qd", model, link_vels, mask)
-        link_view.set_attribute("body_qd", state_0, link_vels, mask)
+        wp_link_masses = wp.array(link_masses, dtype=float, device=model.device)
+        wp_link_vels = wp.array(link_vels, dtype=float, device=model.device)
+        link_view.set_attribute("body_mass", model, wp_link_masses, mask)
+        link_view.set_attribute("body_qd", model, wp_link_vels, mask)
+        link_view.set_attribute("body_qd", state_0, wp_link_vels, mask)
 
         expected_body_masses = []
         expected_body_vels = []
