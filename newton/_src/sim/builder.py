@@ -64,9 +64,6 @@ from .joints import (
     ActuatorMode,
     EqType,
     JointType,
-    get_joint_constraint_count,
-    get_joint_dof_count,
-    infer_actuator_mode,
 )
 from .model import Model
 
@@ -1465,7 +1462,7 @@ class ModelBuilder:
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
                 :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -1557,7 +1554,7 @@ class ModelBuilder:
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
             force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
                 :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -2570,7 +2567,7 @@ class ModelBuilder:
                 # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
                 # This ensures freejoints (gains=0) get NONE, while joints with gains get appropriate mode.
                 has_drive = dim.target_ke != 0.0 or dim.target_kd != 0.0
-                mode = int(infer_actuator_mode(dim.target_ke, dim.target_kd, has_drive=has_drive))
+                mode = int(ActuatorMode.from_gains(dim.target_ke, dim.target_kd, has_drive=has_drive))
 
             # Store per-DOF actuator properties
             self.joint_act_mode.append(mode)
@@ -2596,8 +2593,8 @@ class ModelBuilder:
         for dim in angular_axes:
             add_axis_dim(dim)
 
-        dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
-        cts_count = get_joint_constraint_count(joint_type, len(linear_axes) + len(angular_axes))
+        dof_count, coord_count = joint_type.dof_count(len(linear_axes) + len(angular_axes))
+        cts_count = joint_type.constraint_count(len(linear_axes) + len(angular_axes))
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
@@ -5880,7 +5877,7 @@ class ModelBuilder:
 
         end_tri = len(self.tri_indices)
 
-        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
 
         edge_indices = np.fromiter(
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
@@ -6811,7 +6808,6 @@ class ModelBuilder:
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
         """
-        from .collide import count_rigid_contact_points  # noqa: PLC0415
 
         # ensure the world count is set correctly
         self.num_worlds = max(1, self.num_worlds)
@@ -7417,7 +7413,7 @@ class ModelBuilder:
             m.equality_constraint_count = len(self.equality_constraint_type)
 
             self.find_shape_contact_pairs(m)
-            m.rigid_contact_max = count_rigid_contact_points(m)
+            m.rigid_contact_max = m._count_rigid_contact_points()
 
             # enable ground plane
             m.up_axis = self.up_axis

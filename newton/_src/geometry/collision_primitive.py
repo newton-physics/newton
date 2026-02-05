@@ -37,11 +37,10 @@ Returns (multi contact): (distances: vecN, positions: matNx3, normals: vecN or m
                         Use MAXVAL for unpopulated contact slots.
 """
 
-from typing import Any
-
 import warp as wp
 
 from newton._src.core.types import MAXVAL
+from newton._src.math import normalize_with_norm, safe_div
 
 # Local type definitions for use within kernels
 _vec8f = wp.types.vector(8, wp.float32)
@@ -50,19 +49,6 @@ _mat43f = wp.types.matrix((4, 3), wp.float32)
 _mat83f = wp.types.matrix((8, 3), wp.float32)
 
 MINVAL = 1e-15
-
-
-@wp.func
-def safe_div(x: Any, y: Any) -> Any:
-    return x / wp.where(y != 0.0, y, MINVAL)
-
-
-@wp.func
-def normalize_with_norm(x: Any):
-    norm = wp.length(x)
-    if norm == 0.0:
-        return x, 0.0
-    return x / norm, norm
 
 
 @wp.func

@@ -11,9 +11,6 @@ newton.utils
 
    EventTracer
    MeshAdjacency
-   MeshEdge
-   RecorderBasic
-   RecorderModelAndState
 
 .. rubric:: Functions
 
@@ -25,7 +22,6 @@ newton.utils
    bourke_color_map
    color_graph
    compute_world_offsets
-   copy_rgb_frame_uint8
    create_box_mesh
    create_capsule_mesh
    create_cone_mesh
@@ -37,7 +33,6 @@ newton.utils
    event_scope
    leaky_max
    leaky_min
-   parse_warp_value_from_string
    plot_graph
    quat_between_axes
    quat_decompose
@@ -50,6 +45,7 @@ newton.utils
    smooth_max
    smooth_min
    solidify_mesh
+   string_to_warp
    transform_twist
    transform_wrench
    vec_abs

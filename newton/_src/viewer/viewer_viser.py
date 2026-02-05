@@ -675,6 +675,16 @@ class ViewerViser(ViewerBase):
         )
         self._scene_handles[name] = handle
 
+    @override
+    def log_array(self, name, array):
+        """Viser viewer doesn't log arrays visually, so this is a no-op."""
+        pass
+
+    @override
+    def log_scalar(self, name, value):
+        """Viser viewer doesn't log scalars visually, so this is a no-op."""
+        pass
+
     def show_notebook(self, width: int | str = "100%", height: int | str = 400):
         """
         Show the viewer in a Jupyter notebook.
