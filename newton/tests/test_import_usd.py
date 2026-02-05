@@ -149,6 +149,7 @@ def Xform "Root" (
         the joint should still be parsed as REVOLUTE (not FREE).
 
         This can happen when:
+        - An articulation exists in the USD
         - A body has physics:rigidBodyEnabled = 0 (disabled for physics simulation)
         - A joint is defined inside that body or references it
         - The USD physics utilities may not include the body in articulatedBodies
@@ -158,6 +159,11 @@ def Xform "Root" (
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create an articulation root - this is key to reproducing the bug!
+        # When an articulation exists, orphan joints were previously not processed.
+        world = UsdGeom.Xform.Define(stage, "/World")
+        UsdPhysics.ArticulationRootAPI.Apply(world.GetPrim())
 
         # Create body0 with rigidBodyEnabled = False (this is the key part of the bug)
         body0_xform = UsdGeom.Xform.Define(stage, "/World/Body0")

@@ -1086,6 +1086,11 @@ def parse_usd(
     # even when articulations are present in the USD.
     processed_joints: set[str] = set()
 
+    # Track which body paths are part of articulations.
+    # Used to avoid parsing orphan joints that would create duplicates with
+    # joints already created by articulation processing.
+    articulation_body_paths: set[str] = set()
+
     # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
 
@@ -1186,6 +1191,7 @@ def parse_usd(
 
                 body_ids[key] = current_body_id
                 body_keys.append(key)
+                articulation_body_paths.add(key)
                 current_body_id += 1
 
             if len(body_ids) == 0:
@@ -1342,7 +1348,33 @@ def parse_usd(
         for joint_key, joint_desc in joint_descriptions.items()
     )
 
+    # Collect body paths referenced by unprocessed joints that connect two actual bodies.
+    # These bodies should not get FREE joints since the orphan joints will handle them.
+    # Joints that connect a body to world (one body is empty) are not considered here
+    # because those bodies should get FREE joints (the world connection is implicit).
+    bodies_referenced_by_orphan_joints: set[str] = set()
+    for joint_key, joint_desc in joint_descriptions.items():
+        if joint_key in processed_joints:
+            continue
+        if only_load_enabled_joints and not joint_desc.jointEnabled:
+            continue
+        if any(re.match(p, joint_key) for p in ignore_paths):
+            continue
+        if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
+            continue
+        body0_path = str(joint_desc.body0)
+        body1_path = str(joint_desc.body1)
+        # Only consider joints that connect two actual bodies (not body-to-world joints)
+        body0_is_world = body0_path == "" or body0_path == "/"
+        body1_is_world = body1_path == "" or body1_path == "/"
+        if body0_is_world or body1_is_world:
+            continue
+        bodies_referenced_by_orphan_joints.add(body0_path)
+        bodies_referenced_by_orphan_joints.add(body1_path)
+
     # insert remaining bodies that were not part of any articulation so far
+    # Track body paths that receive FREE joints so orphan joint parsing can skip them.
+    bodies_with_free_joints: set[str] = set()
     for path, rigid_body_desc in body_specs.items():
         key = str(path)
         body_id: int = parse_body(  # pyright: ignore[reportAssignmentType]
@@ -1351,10 +1383,12 @@ def parse_usd(
             incoming_xform=incoming_world_xform,
             add_body_to_builder=True,
         )
-        if not (no_articulations and has_joints):
+        # Only create FREE joints for bodies not referenced by orphan joints
+        if not (no_articulations and has_joints) and key not in bodies_referenced_by_orphan_joints:
             # add articulation and free joint for this body
             joint_id = builder.add_joint_free(child=body_id)
             builder.add_articulation([joint_id], key=key)
+            bodies_with_free_joints.add(key)
 
     # Parse orphan joints: joints that exist in the USD but were not included in any articulation.
     # This can happen when:
@@ -1372,6 +1406,32 @@ def parse_usd(
         if any(re.match(p, joint_key) for p in ignore_paths):
             continue
         if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
+            continue
+        # Skip joints where bodies already have FREE joints assigned (from articulation
+        # processing or remaining body processing). Parsing these as orphans would
+        # create duplicate constraints.
+        body0_path = str(joint_desc.body0)
+        body1_path = str(joint_desc.body1)
+        body0_has_free = body0_path in articulation_body_paths or body0_path in bodies_with_free_joints
+        body1_has_free = body1_path in articulation_body_paths or body1_path in bodies_with_free_joints
+        body0_is_world = body0_path == "" or body0_path == "/"
+        body1_is_world = body1_path == "" or body1_path == "/"
+        # Skip if both bodies already have FREE joints
+        if body0_has_free and body1_has_free:
+            if verbose:
+                print(f"Skipping joint {joint_key}: both bodies already have joints")
+            continue
+        # Skip if one body has a FREE joint and the other is world (empty path).
+        # This would create a duplicate world-to-body joint.
+        if (body0_has_free and body1_is_world) or (body1_has_free and body0_is_world):
+            if verbose:
+                print(f"Skipping joint {joint_key}: body already has world connection")
+            continue
+        # Skip body-to-world joints that are not part of articulations.
+        # These are handled by FREE joints created for remaining bodies.
+        if body0_is_world or body1_is_world:
+            if verbose:
+                print(f"Skipping joint {joint_key}: body-to-world joint will use FREE joint instead")
             continue
         try:
             parse_joint(joint_desc, incoming_xform=incoming_world_xform)
