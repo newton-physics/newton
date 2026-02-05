@@ -25,8 +25,6 @@ from .joints import (
     ActuatorMode,
     EqType,
     JointType,
-    get_joint_constraint_count,
-    get_joint_dof_count,
 )
 from .model import Model
 from .state import State
@@ -46,8 +44,6 @@ __all__ = [
     "color_graph",
     "eval_fk",
     "eval_ik",
-    "get_joint_constraint_count",
-    "get_joint_dof_count",
     "ik",
     "plot_graph",
 ]

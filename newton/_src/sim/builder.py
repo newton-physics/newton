@@ -64,8 +64,6 @@ from .joints import (
     ActuatorMode,
     EqType,
     JointType,
-    get_joint_constraint_count,
-    get_joint_dof_count,
 )
 from .model import Model
 
@@ -2595,8 +2593,8 @@ class ModelBuilder:
         for dim in angular_axes:
             add_axis_dim(dim)
 
-        dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
-        cts_count = get_joint_constraint_count(joint_type, len(linear_axes) + len(angular_axes))
+        dof_count, coord_count = joint_type.dof_count(len(linear_axes) + len(angular_axes))
+        cts_count = joint_type.constraint_count(len(linear_axes) + len(angular_axes))
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)

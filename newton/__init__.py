@@ -68,8 +68,6 @@ from ._src.sim import (  # noqa: E402
     State,
     eval_fk,
     eval_ik,
-    get_joint_constraint_count,
-    get_joint_dof_count,
 )
 
 __all__ += [
@@ -86,8 +84,6 @@ __all__ += [
     "State",
     "eval_fk",
     "eval_ik",
-    "get_joint_constraint_count",
-    "get_joint_dof_count",
 ]
 
 # ==================================================================================
