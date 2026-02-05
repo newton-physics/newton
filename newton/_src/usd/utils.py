@@ -902,7 +902,7 @@ def get_mesh(
 
     if normals is not None:
         normals = np.array(normals, dtype=np.float64)
-        if normals_interpolation == "faceVarying":
+        if normals_interpolation == UsdGeom.Tokens.faceVarying:
             prim_path = str(prim.GetPath())
             if normal_indices is not None and len(normal_indices) > 0:
                 normals_fv = _expand_indexed_primvar(normals, normal_indices, "Normal", prim_path)
@@ -948,7 +948,7 @@ def get_mesh(
                     clusters_per_v[v].append([n_dir.copy(), 1, new_vid])
                     if new_uvs is not None:
                         # Use corner UV if faceVarying, otherwise use vertex UV
-                        if uvs_interpolation == "faceVarying":
+                        if uvs_interpolation == UsdGeom.Tokens.faceVarying:
                             new_uvs.append(uvs[corner_idx])
                         else:
                             new_uvs.append(uvs[v])
@@ -1038,7 +1038,7 @@ def get_mesh(
         uvs = np.array(uvs, dtype=np.float32)
         # If vertices were already split for faceVarying normals, UVs (if any)
         # were converted to per-vertex. Avoid a second split here.
-        if uvs_interpolation == "faceVarying" and not did_split_vertices:
+        if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
                 warnings.warn(
                     f"UV primvar length ({len(uvs)}) does not match indices length ({len(indices)}) for mesh {prim.GetPath()}; "
