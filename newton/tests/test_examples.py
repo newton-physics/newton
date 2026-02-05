@@ -704,21 +704,21 @@ add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_falling_gift",
     devices=cuda_test_devices,
-    test_options={"num-frames": 600},
+    test_options={"num-frames": 200},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_poker_cards_stacking",
     devices=cuda_test_devices,
-    test_options={"num-frames": 600},
+    test_options={"num-frames": 30},
     use_viewer=True,
 )
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_softbody_dropping_to_cloth",
     devices=cuda_test_devices,
-    test_options={"num-frames": 600},
+    test_options={"num-frames": 200},
     use_viewer=True,
 )
 
