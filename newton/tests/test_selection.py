@@ -283,7 +283,7 @@ class TestSelection(unittest.TestCase):
                 mask = wp.array([[False], [True], [False]], dtype=bool, device=model.device)
 
         expected_dof_positions = []
-        # expected_joint_limit_lower = []
+        expected_joint_limit_lower = []
         expected_joint_target_pos = []
         if use_mask:
             if use_multiple_artics_per_view:
@@ -307,26 +307,26 @@ class TestSelection(unittest.TestCase):
                     0.0,
                     0.0,
                 ]
-                # expected_joint_limit_lower = [
-                #    -50.5,  # world0/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world0/artic1
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world1/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world1/artic1
-                #    -50.5,
-                #    -46.5,
-                #    -50.5,  # world2/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world2/artic1
-                #    -50.5,
-                #    -50.5,
-                # ]
+                expected_joint_limit_lower = [
+                    -50.5,  # world0/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world0/artic1
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic1
+                    -50.5,
+                    -46.5,
+                    -50.5,  # world2/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world2/artic1
+                    -50.5,
+                    -50.5,
+                ]
                 expected_joint_target_pos = [
                     0.0,  # world0/artic0
                     0.0,
@@ -368,26 +368,26 @@ class TestSelection(unittest.TestCase):
                     0.0,
                     0.0,
                 ]
-                # expected_joint_limit_lower = [
-                #    -50.5,  # world0/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world0/artic1
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world1/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world1/artic1
-                #    -50.5,
-                #    -48.5,
-                #    -50.5,  # world2/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world2/artic1
-                #    -50.5,
-                #    -50.5,
-                # ]
+                expected_joint_limit_lower = [
+                    -50.5,  # world0/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world0/artic1
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic1
+                    -50.5,
+                    -48.5,
+                    -50.5,  # world2/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world2/artic1
+                    -50.5,
+                    -50.5,
+                ]
                 expected_joint_target_pos = [
                     0.0,  # world0/artic0
                     0.0,
@@ -430,26 +430,26 @@ class TestSelection(unittest.TestCase):
                     0.0,
                     6.0,
                 ]
-                # expected_joint_limit_lower = [
-                #    -50.5,  # world0/artic0
-                #    -50.5,
-                #    -49.5,
-                #    -50.5,  # world0/artic1
-                #    -50.5,
-                #    -48.5,
-                #    -50.5,  # world1/artic0
-                #    -50.5,
-                #    -47.5,
-                #    -50.5,  # world1/artic1
-                #    -50.5,
-                #    -46.5,
-                #    -50.5,  # world2/artic0
-                #    -50.5,
-                #    -45.5,
-                #    -50.5,  # world2/artic1
-                #    -50.5,
-                #    -44.5,
-                # ]
+                expected_joint_limit_lower = [
+                    -50.5,  # world0/artic0
+                    -50.5,
+                    -49.5,
+                    -50.5,  # world0/artic1
+                    -50.5,
+                    -48.5,
+                    -50.5,  # world1/artic0
+                    -50.5,
+                    -47.5,
+                    -50.5,  # world1/artic1
+                    -50.5,
+                    -46.5,
+                    -50.5,  # world2/artic0
+                    -50.5,
+                    -45.5,
+                    -50.5,  # world2/artic1
+                    -50.5,
+                    -44.5,
+                ]
                 expected_joint_target_pos = [
                     0.0,  # world0/artic0
                     0.0,
@@ -491,26 +491,26 @@ class TestSelection(unittest.TestCase):
                     0.0,
                     3.0,
                 ]
-                # expected_joint_limit_lower = [
-                #    -50.5,  # world0/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world0/artic1
-                #    -50.5,
-                #    -49.5,
-                #    -50.5,  # world1/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world1/artic1
-                #    -50.5,
-                #    -48.5,
-                #    -50.5,  # world2/artic0
-                #    -50.5,
-                #    -50.5,
-                #    -50.5,  # world2/artic1
-                #    -50.5,
-                #    -47.5,
-                # ]
+                expected_joint_limit_lower = [
+                    -50.5,  # world0/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world0/artic1
+                    -50.5,
+                    -49.5,
+                    -50.5,  # world1/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world1/artic1
+                    -50.5,
+                    -48.5,
+                    -50.5,  # world2/artic0
+                    -50.5,
+                    -50.5,
+                    -50.5,  # world2/artic1
+                    -50.5,
+                    -47.5,
+                ]
                 expected_joint_target_pos = [
                     0.0,  # world0/artic0
                     0.0,
@@ -534,18 +534,18 @@ class TestSelection(unittest.TestCase):
 
         # Set the values associated with "joint3"
         wp_joint_dof_positions = wp.array(joint_dof_positions, dtype=float, device=model.device)
-        # wp_joint_limit_lowers = wp.array(joint_limit_lower, dtype=float, device=model.device)
+        wp_joint_limit_lowers = wp.array(joint_limit_lower, dtype=float, device=model.device)
         wp_joint_target_pos = wp.array(joint_target_pos, dtype=float, device=model.device)
         joint_view.set_dof_positions(state_0, wp_joint_dof_positions, mask)
         # joint_view.set_dof_positions(model, wp_joint_dof_positions, mask)
-        # joint_view.set_attribute("joint_limit_lower", model, wp_joint_limit_lowers, mask)
+        joint_view.set_attribute("joint_limit_lower", model, wp_joint_limit_lowers, mask)
         joint_view.set_attribute("joint_target_pos", control, wp_joint_target_pos, mask)
         # joint_view.set_attribute("joint_target_pos", model, wp_joint_target_pos, mask)
 
         # Get the updated values from model, state, control.
         measured_state_joint_dof_positions = state_0.joint_q.numpy()
         # measured_model_joint_dof_positions = model.joint_q.numpy()
-        # measured_model_joint_limit_lower = model.joint_limit_lower.numpy()
+        measured_model_joint_limit_lower = model.joint_limit_lower.numpy()
         measured_control_joint_target_pos = control.joint_target_pos.numpy()
         # measured_model_joint_target_pos = model.joint_target_pos.numpy()
 
@@ -569,14 +569,14 @@ class TestSelection(unittest.TestCase):
             #    msg=f"Expected model joint dof position value {i}: {expected}, Measured value: {measured}",
             # )
 
-            # measured = measured_model_joint_limit_lower[i]
-            # expected = expected_joint_limit_lower[i]
-            # self.assertAlmostEqual(
-            #    expected,
-            #    measured,
-            #    places=4,
-            #    msg=f"Expected model joint limit lower value {i}: {expected}, Measured value: {measured}",
-            # )
+            measured = measured_model_joint_limit_lower[i]
+            expected = expected_joint_limit_lower[i]
+            self.assertAlmostEqual(
+                expected,
+                measured,
+                places=4,
+                msg=f"Expected model joint limit lower value {i}: {expected}, Measured value: {measured}",
+            )
 
             measured = measured_control_joint_target_pos[i]
             expected = expected_joint_target_pos[i]
