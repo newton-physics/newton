@@ -661,7 +661,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,
+                default=0,  # MJCF parser auto-enables if ctrlrange is specified
                 namespace="mujoco",
                 mjcf_attribute_name="ctrllimited",
                 mjcf_value_transformer=parse_bool_int,
@@ -673,7 +673,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,
+                default=0,  # MJCF parser auto-enables if forcerange is specified
                 namespace="mujoco",
                 mjcf_attribute_name="forcelimited",
                 mjcf_value_transformer=parse_bool_int,
@@ -755,7 +755,7 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,
+                default=0,  # MJCF parser auto-enables if actrange is specified
                 namespace="mujoco",
                 mjcf_attribute_name="actlimited",
                 mjcf_value_transformer=parse_bool_int,
