@@ -110,10 +110,16 @@ To use binary format, install the optional dependency:
 
 **Loading and playing back recordings:**
 
+.. note::
+
+  The RecorderModelAndState class is deprecated and will be removed in a future version.
+  Use the :class:`~newton.viewers.ViewerFile` class instead.
+
 .. code-block:: python
 
     # Load a recording for playback
-    recorder = newton.utils.RecorderModelAndState()
+    from newton._src.utils.recorder import RecorderModelAndState
+    recorder = RecorderModelAndState()
     recorder.load_from_file("simulation.bin")
 
     # Create model and state for playback
@@ -131,7 +137,7 @@ To use binary format, install the optional dependency:
     viewer.set_model(model)
     viewer.log_state(state)
 
-For a complete example with UI controls for playback, see ``newton/examples/example_replay_viewer.py``.
+For a complete example with UI controls for playback, see ``newton/examples/basic/example_replay_viewer.py``.
 
 Key parameters:
 

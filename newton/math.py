@@ -13,23 +13,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Inverse-kinematics submodule."""
 
-from .ik_common import IKJacobianType
-from .ik_lbfgs_optimizer import IKOptimizerLBFGS
-from .ik_lm_optimizer import IKOptimizerLM
-from .ik_objectives import IKObjective, IKObjectiveJointLimit, IKObjectivePosition, IKObjectiveRotation
-from .ik_solver import IKOptimizer, IKSampler, IKSolver
+from ._src.math import (
+    boltzmann,
+    leaky_max,
+    leaky_min,
+    normalize_with_norm,
+    orthonormal_basis,
+    safe_div,
+    smooth_max,
+    smooth_min,
+    vec_abs,
+    vec_allclose,
+    vec_inside_limits,
+    vec_leaky_max,
+    vec_leaky_min,
+    vec_max,
+    vec_min,
+)
 
 __all__ = [
-    "IKJacobianType",
-    "IKObjective",
-    "IKObjectiveJointLimit",
-    "IKObjectivePosition",
-    "IKObjectiveRotation",
-    "IKOptimizer",
-    "IKOptimizerLBFGS",
-    "IKOptimizerLM",
-    "IKSampler",
-    "IKSolver",
+    "boltzmann",
+    "leaky_max",
+    "leaky_min",
+    "normalize_with_norm",
+    "orthonormal_basis",
+    "safe_div",
+    "smooth_max",
+    "smooth_min",
+    "vec_abs",
+    "vec_allclose",
+    "vec_inside_limits",
+    "vec_leaky_max",
+    "vec_leaky_min",
+    "vec_max",
+    "vec_min",
 ]
