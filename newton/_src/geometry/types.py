@@ -14,13 +14,31 @@
 # limitations under the License.
 
 import enum
+import os
 from collections.abc import Sequence
 
 import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike, Mat33, Vec2, Vec3, nparray, override
-from ..utils.texture import compute_texture_hash, load_texture
+from ..utils.texture import compute_texture_hash
+
+
+def _normalize_texture_input(texture: str | os.PathLike[str] | nparray | None) -> str | nparray | None:
+    """Normalize texture input for lazy storage.
+
+    String paths and PathLike objects are stored as strings (no decoding).
+    Arrays are normalized to contiguous arrays.
+    Decoding of paths is deferred until the viewer requests the image data.
+    """
+    if texture is None:
+        return None
+    if isinstance(texture, os.PathLike):
+        return os.fspath(texture)
+    if isinstance(texture, str):
+        return texture
+    # Array input: make it contiguous
+    return np.ascontiguousarray(np.asarray(texture))
 
 
 class GeoType(enum.IntEnum):
@@ -186,7 +204,8 @@ class Mesh:
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
         self.color = color
-        self._texture = load_texture(texture)
+        # Store texture lazily: strings/paths are kept as-is, arrays are normalized
+        self._texture = _normalize_texture_input(texture)
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
@@ -233,7 +252,9 @@ class Mesh:
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
             color=self.color,
-            texture=self._texture.copy() if self._texture is not None else None,
+            texture=self._texture
+            if isinstance(self._texture, str)
+            else (self._texture.copy() if self._texture is not None else None),
             roughness=self._roughness,
             metallic=self._metallic,
         )
@@ -284,7 +305,8 @@ class Mesh:
 
     @texture.setter
     def texture(self, value: str | nparray | None):
-        self._texture = load_texture(value)
+        # Store texture lazily: strings/paths are kept as-is, arrays are normalized
+        self._texture = _normalize_texture_input(value)
         self._texture_hash = None
         self._cached_hash = None
 

@@ -264,7 +264,12 @@ def parse_urdf(
                 resolved, tmpfile = resolve_urdf_asset(texture_name)
                 try:
                     if resolved is not None:
-                        texture = load_texture(resolved)
+                        if tmpfile is not None:
+                            # Temp file will be deleted, so load texture eagerly
+                            texture = load_texture(resolved)
+                        else:
+                            # Local file, pass path for lazy loading by viewer
+                            texture = resolved
                 finally:
                     if tmpfile is not None:
                         os.remove(tmpfile.name)

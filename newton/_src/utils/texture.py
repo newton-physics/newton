@@ -150,18 +150,25 @@ def normalize_texture(
     return np.ascontiguousarray(image)
 
 
-def compute_texture_hash(texture: nparray | None) -> int:
-    """Compute a stable hash for a texture array.
+def compute_texture_hash(texture: str | os.PathLike[str] | nparray | None) -> int:
+    """Compute a stable hash for a texture (path or array).
 
     Args:
-        texture: Texture image array (H, W, C) or None.
+        texture: Texture path/URL string, PathLike, or image array (H, W, C), or None.
 
     Returns:
-        Hash of the texture metadata and sampled contents, or 0 for None.
+        Hash of the texture path or array contents, or 0 for None.
     """
     if texture is None:
         return 0
 
+    # Handle string paths and PathLike - hash the path string without decoding
+    if isinstance(texture, os.PathLike):
+        return hash(os.fspath(texture))
+    if isinstance(texture, str):
+        return hash(texture)
+
+    # Array input - hash based on shape and sampled content
     texture = np.ascontiguousarray(texture)
     flat_size = texture.size
     if flat_size == 0:

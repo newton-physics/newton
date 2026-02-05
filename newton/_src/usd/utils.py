@@ -1446,20 +1446,14 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
                 source_shader = UsdShade.Shader(child)
                 break
 
-    if source_shader is not None:
-        try:
-            shader_id = source_shader.GetIdAttr().Get()
-        except Exception:
-            shader_id = None
-        if not shader_id:
-            source_shader = None
-
     if source_shader is None:
         material_props = _extract_material_input_properties(material, target_prim)
         if any(value is not None for value in material_props.values()):
             return material_props
         return None
 
+    # Always call _extract_shader_properties even if shader_id is None (e.g., for MDL shaders like OmniPBR)
+    # because _extract_shader_properties has fallback logic for common input names
     properties = _extract_shader_properties(source_shader, target_prim)
     material_props = _extract_material_input_properties(material, target_prim)
     for key in ("texture", "color", "metallic", "roughness"):
