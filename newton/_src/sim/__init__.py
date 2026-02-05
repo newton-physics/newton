@@ -13,14 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import ik
 from .articulation import eval_fk, eval_ik
 from .builder import ModelBuilder
 from .collide import CollisionPipeline
 from .collide_unified import BroadPhaseMode, CollisionPipelineUnified
 from .contacts import Contacts
 from .control import Control
-from .graph_coloring import color_graph, plot_graph
 from .joints import (
     ActuatorMode,
     EqType,
@@ -41,9 +39,6 @@ __all__ = [
     "Model",
     "ModelBuilder",
     "State",
-    "color_graph",
     "eval_fk",
     "eval_ik",
-    "ik",
-    "plot_graph",
 ]

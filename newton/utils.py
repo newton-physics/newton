@@ -16,10 +16,7 @@
 # ==================================================================================
 # sim utils
 # ==================================================================================
-from ._src.sim import (
-    color_graph,
-    plot_graph,
-)
+from ._src.sim.graph_coloring import color_graph, plot_graph
 
 __all__ = [
     "color_graph",

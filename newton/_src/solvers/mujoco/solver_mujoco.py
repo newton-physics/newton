@@ -34,9 +34,8 @@ from ...sim import (
     Model,
     ModelBuilder,
     State,
-    color_graph,
-    plot_graph,
 )
+from ...sim.graph_coloring import color_graph, plot_graph
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
