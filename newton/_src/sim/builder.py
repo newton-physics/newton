@@ -6397,7 +6397,9 @@ class ModelBuilder:
             bending_edge_active_mask = None
             if include_bending and self.edge_indices:
                 bending_edge_indices = np.array(self.edge_indices, dtype=np.int32)
-                bending_edge_active_mask = np.array(self.edge_bending_properties)[:, 1]
+                bending_edge_props = np.array(self.edge_bending_properties)
+                # Active if either stiffness or damping is non-zero
+                bending_edge_active_mask = (bending_edge_props[:, 0] != 0.0) | (bending_edge_props[:, 1] != 0.0)
 
             graph_edge_indices = construct_particle_graph(
                 tri_indices,
