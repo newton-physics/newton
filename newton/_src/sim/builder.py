@@ -4101,7 +4101,10 @@ class ModelBuilder:
             assert plane is not None, "Either xform or plane must be provided"
             # compute position and rotation from plane equation
             normal = np.array(plane[:3])
-            normal /= np.linalg.norm(normal)
+            norm = np.linalg.norm(normal)
+            if norm < 1e-8:
+                raise ValueError(f"Plane normal must be non-zero, got {plane[:3]} with norm {norm}")
+            normal /= norm
             pos = plane[3] * normal
             # compute rotation from local +Z axis to plane normal
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
