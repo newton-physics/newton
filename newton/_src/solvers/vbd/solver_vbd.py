@@ -199,6 +199,7 @@ class SolverVBD(SolverBase):
             integrate_with_external_rigid_solver: Indicator for coupled rigid body-cloth simulation. When set to `True`,
                 the solver assumes rigid bodies are integrated by an external solver (one-way coupling).
             particle_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
+                Default is 0.85, which approximately doubles the CCD safety margin to ~1.70x the contact margin.
             particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision buffer.
             particle_edge_contact_buffer_size: Preallocation size for edge's edge-edge collision buffer.
             particle_collision_detection_interval: Controls how frequently particle self-contact detection is applied
@@ -924,6 +925,7 @@ class SolverVBD(SolverBase):
                         particle_adjacency.v_adj_faces,
                     ],
                     dim=1,
+                    device="cpu",
                 )
             else:
                 particle_adjacency.v_adj_faces_offsets = wp.empty(shape=(0,), dtype=wp.int32)
@@ -937,6 +939,7 @@ class SolverVBD(SolverBase):
                     kernel=count_num_adjacent_tets,
                     inputs=[tet_indices, num_vertex_adjacent_tets],
                     dim=1,
+                    device="cpu",
                 )
 
                 num_vertex_adjacent_tets = num_vertex_adjacent_tets.numpy()
@@ -959,6 +962,7 @@ class SolverVBD(SolverBase):
                         particle_adjacency.v_adj_tets,
                     ],
                     dim=1,
+                    device="cpu",
                 )
             else:
                 particle_adjacency.v_adj_tets_offsets = wp.empty(shape=(0,), dtype=wp.int32)
@@ -973,6 +977,7 @@ class SolverVBD(SolverBase):
                     kernel=count_num_adjacent_springs,
                     inputs=[spring_array, num_vertex_adjacent_spring],
                     dim=1,
+                    device="cpu",
                 )
 
                 num_vertex_adjacent_spring = num_vertex_adjacent_spring.numpy()
@@ -994,6 +999,7 @@ class SolverVBD(SolverBase):
                         particle_adjacency.v_adj_springs,
                     ],
                     dim=1,
+                    device="cpu",
                 )
 
             else:
@@ -1094,6 +1100,7 @@ class SolverVBD(SolverBase):
                     kernel=count_num_adjacent_joints,
                     inputs=[joint_parent_cpu, joint_child_cpu, num_body_adjacent_joints],
                     dim=1,
+                    device="cpu",
                 )
 
                 num_body_adjacent_joints = num_body_adjacent_joints.numpy()
@@ -1115,6 +1122,7 @@ class SolverVBD(SolverBase):
                         adjacency.body_adj_joints,
                     ],
                     dim=1,
+                    device="cpu",
                 )
             else:
                 # No joints: create offset array of zeros (size body_count + 1) so indexing works
