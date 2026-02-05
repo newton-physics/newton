@@ -694,7 +694,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         _shape_voxel_resolution: wp.array(dtype=wp.vec3i),  # Unused but kept for API compatibility
         shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_mesh_count: wp.array(dtype=int),
-        betas: wp.array(dtype=wp.float32),  # Unused, kept for API compatibility
         writer_data: Any,
         total_num_blocks: int,
     ):
@@ -909,7 +908,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
         shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_mesh_count: wp.array(dtype=int),
-        betas: wp.array(dtype=wp.float32),
         writer_data: Any,
         total_num_blocks: int,
     ):
@@ -1104,7 +1102,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         c,
                         contacts_shared_mem,
                         active_contacts_shared_mem,
-                        betas,
                         empty_marker,
                         voxel_idx,
                     )
