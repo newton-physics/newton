@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import numpy as np
@@ -360,8 +359,8 @@ class SolverVBD(SolverBase):
         self.particle_q_rest = model.particle_q
 
         # Tile solve settings
-        if model.device.is_cpu and particle_enable_tile_solve:
-            warnings.warn("Tiled solve requires model.device='cuda'. Tiled solve is disabled.", stacklevel=2)
+        if model.device.is_cpu and particle_enable_tile_solve and wp.config.verbose:
+            print("Info: Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
 
