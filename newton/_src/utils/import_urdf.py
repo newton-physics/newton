@@ -397,8 +397,8 @@ def parse_urdf(
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
-            joint_data["mimic_multiplier"] = float(el_mimic.get("multiplier", 1))
-            joint_data["mimic_offset"] = float(el_mimic.get("offset", 0))
+            joint_data["mimic_coef0"] = float(el_mimic.get("offset", 0))
+            joint_data["mimic_coef1"] = float(el_mimic.get("multiplier", 1))
 
         parent_child_joint[(parent, child)] = joint_data
         joints.append(joint_data)
@@ -685,8 +685,8 @@ def parse_urdf(
             builder.add_constraint_mimic(
                 joint1=follower_idx,
                 joint2=leader_idx,
-                multiplier=joint.get("mimic_multiplier", 1.0),
-                offset=joint.get("mimic_offset", 0.0),
+                coef0=joint.get("mimic_coef0", 0.0),
+                coef1=joint.get("mimic_coef1", 1.0),
                 key=f"mimic_{joint['name']}",
             )
 

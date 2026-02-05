@@ -717,8 +717,8 @@ class TestMimicConstraints(unittest.TestCase):
         # Check the constraint values
         joint1 = model.constraint_mimic_joint1.numpy()[0]
         joint2 = model.constraint_mimic_joint2.numpy()[0]
-        multiplier = model.constraint_mimic_multiplier.numpy()[0]
-        offset = model.constraint_mimic_offset.numpy()[0]
+        coef0 = model.constraint_mimic_coef0.numpy()[0]
+        coef1 = model.constraint_mimic_coef1.numpy()[0]
         enabled = model.constraint_mimic_enabled.numpy()[0]
 
         # Find joint indices by name
@@ -727,12 +727,12 @@ class TestMimicConstraints(unittest.TestCase):
 
         self.assertEqual(joint1, follower_idx)  # follower joint (joint1)
         self.assertEqual(joint2, leader_idx)  # leader joint (joint2)
-        self.assertAlmostEqual(multiplier, 2.0, places=5)
-        self.assertAlmostEqual(offset, 0.5, places=5)
+        self.assertAlmostEqual(coef0, 0.5, places=5)
+        self.assertAlmostEqual(coef1, 2.0, places=5)
         self.assertTrue(enabled)
 
     def test_mimic_constraint_default_values(self):
-        """Test mimic constraints with default multiplier and offset."""
+        """Test mimic constraints with default coef1 and coef0."""
         urdf = """
         <robot name="mimic_defaults">
             <link name="base"/>
@@ -754,12 +754,12 @@ class TestMimicConstraints(unittest.TestCase):
         model = builder.finalize()
 
         self.assertEqual(model.constraint_mimic_count, 1)
-        multiplier = model.constraint_mimic_multiplier.numpy()[0]
-        offset = model.constraint_mimic_offset.numpy()[0]
+        coef0 = model.constraint_mimic_coef0.numpy()[0]
+        coef1 = model.constraint_mimic_coef1.numpy()[0]
 
         # Default values from URDF spec
-        self.assertAlmostEqual(multiplier, 1.0, places=5)
-        self.assertAlmostEqual(offset, 0.0, places=5)
+        self.assertAlmostEqual(coef0, 0.0, places=5)
+        self.assertAlmostEqual(coef1, 1.0, places=5)
 
     def test_mimic_constraint_programmatic(self):
         """Test programmatic creation of mimic constraints."""
@@ -793,15 +793,15 @@ class TestMimicConstraints(unittest.TestCase):
         _c1 = builder.add_constraint_mimic(
             joint1=j2,
             joint2=j1,
-            multiplier=1.5,
-            offset=-0.25,
+            coef0=-0.25,
+            coef1=1.5,
             key="mimic1",
         )
         _c2 = builder.add_constraint_mimic(
             joint1=j3,
             joint2=j1,
-            multiplier=-1.0,
-            offset=0.0,
+            coef0=0.0,
+            coef1=-1.0,
             enabled=False,
             key="mimic2",
         )
@@ -813,16 +813,16 @@ class TestMimicConstraints(unittest.TestCase):
         # Check first constraint
         self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j2)
         self.assertEqual(model.constraint_mimic_joint2.numpy()[0], j1)
-        self.assertAlmostEqual(model.constraint_mimic_multiplier.numpy()[0], 1.5)
-        self.assertAlmostEqual(model.constraint_mimic_offset.numpy()[0], -0.25)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
         self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
         self.assertEqual(model.constraint_mimic_key[0], "mimic1")
 
         # Check second constraint
         self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j3)
         self.assertEqual(model.constraint_mimic_joint2.numpy()[1], j1)
-        self.assertAlmostEqual(model.constraint_mimic_multiplier.numpy()[1], -1.0)
-        self.assertAlmostEqual(model.constraint_mimic_offset.numpy()[1], 0.0)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
         self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
         self.assertEqual(model.constraint_mimic_key[1], "mimic2")
 

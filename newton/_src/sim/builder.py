@@ -783,8 +783,8 @@ class ModelBuilder:
         # mimic constraints
         self.constraint_mimic_joint1 = []
         self.constraint_mimic_joint2 = []
-        self.constraint_mimic_multiplier = []
-        self.constraint_mimic_offset = []
+        self.constraint_mimic_coef0 = []
+        self.constraint_mimic_coef1 = []
         self.constraint_mimic_enabled = []
         self.constraint_mimic_key = []
         self.constraint_mimic_world = []
@@ -2100,8 +2100,8 @@ class ModelBuilder:
             self.constraint_mimic_joint2.extend(
                 [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint2]
             )
-            self.constraint_mimic_multiplier.extend(builder.constraint_mimic_multiplier)
-            self.constraint_mimic_offset.extend(builder.constraint_mimic_offset)
+            self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
+            self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
             self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
             self.constraint_mimic_key.extend(builder.constraint_mimic_key)
 
@@ -3385,15 +3385,15 @@ class ModelBuilder:
         self,
         joint1: int,
         joint2: int,
-        multiplier: float = 1.0,
-        offset: float = 0.0,
+        coef0: float = 0.0,
+        coef1: float = 1.0,
         enabled: bool = True,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a mimic constraint to the model.
 
-        A mimic constraint enforces that ``joint1 = multiplier * joint2 + offset``,
+        A mimic constraint enforces that ``joint1 = coef1 * joint2 + coef0``,
         following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
         multi-DOF joints are supported. For multi-DOF joints, the mimic behavior is
         applied equally to all degrees of freedom.
@@ -3401,8 +3401,8 @@ class ModelBuilder:
         Args:
             joint1: Index of the follower joint (the one being constrained)
             joint2: Index of the leader joint (the one being mimicked)
-            multiplier: Scale factor applied to joint2's position/angle
-            offset: Offset added after scaling
+            coef0: Offset added after scaling
+            coef1: Scale factor applied to joint2's position/angle
             enabled: Whether constraint is active
             key: Optional constraint name
             custom_attributes: Custom attributes to set on the constraint
@@ -3412,8 +3412,8 @@ class ModelBuilder:
         """
         self.constraint_mimic_joint1.append(joint1)
         self.constraint_mimic_joint2.append(joint2)
-        self.constraint_mimic_multiplier.append(multiplier)
-        self.constraint_mimic_offset.append(offset)
+        self.constraint_mimic_coef0.append(coef0)
+        self.constraint_mimic_coef1.append(coef1)
         self.constraint_mimic_enabled.append(enabled)
         self.constraint_mimic_key.append(key)
         self.constraint_mimic_world.append(self.current_world)
@@ -7766,8 +7766,8 @@ class ModelBuilder:
             # mimic constraints
             m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
             m.constraint_mimic_joint2 = wp.array(self.constraint_mimic_joint2, dtype=wp.int32)
-            m.constraint_mimic_multiplier = wp.array(self.constraint_mimic_multiplier, dtype=wp.float32)
-            m.constraint_mimic_offset = wp.array(self.constraint_mimic_offset, dtype=wp.float32)
+            m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
+            m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
             m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
             m.constraint_mimic_key = self.constraint_mimic_key
             m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)

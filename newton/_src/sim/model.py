@@ -575,10 +575,10 @@ class Model:
         """First joint index (the follower joint), shape [constraint_mimic_count], int."""
         self.constraint_mimic_joint2 = None
         """Second joint index (the leader joint), shape [constraint_mimic_count], int."""
-        self.constraint_mimic_multiplier = None
-        """Multiplier for the mimic constraint, shape [constraint_mimic_count], float."""
-        self.constraint_mimic_offset = None
-        """Offset for the mimic constraint, shape [constraint_mimic_count], float."""
+        self.constraint_mimic_coef0 = None
+        """Offset coefficient (coef0) for the mimic constraint, shape [constraint_mimic_count], float."""
+        self.constraint_mimic_coef1 = None
+        """Scale coefficient (coef1) for the mimic constraint, shape [constraint_mimic_count], float."""
         self.constraint_mimic_enabled = None
         """Whether constraint is active, shape [constraint_mimic_count], bool."""
         self.constraint_mimic_key = []
