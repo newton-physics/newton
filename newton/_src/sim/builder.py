@@ -570,16 +570,6 @@ class ModelBuilder:
         self.default_tri_drag = 0.0
         self.default_tri_lift = 0.0
 
-        # Default triangle soft mesh settings for surficial mesh of a soft tetmesh
-        self.default_surface_mesh_tri_ke = 0.0
-        self.default_surface_mesh_tri_ka = 0.0
-        self.default_surface_mesh_tri_kd = 0.0
-        self.default_surface_mesh_tri_drag = 0.0
-        self.default_surface_mesh_tri_lift = 0.0
-
-        self.default_surface_mesh_edge_ke = 0.0
-        self.default_surface_mesh_edge_kd = 0.0
-
         # Default distance constraint properties
         self.default_spring_ke = 100.0
         self.default_spring_kd = 0.0
@@ -6049,11 +6039,13 @@ class ModelBuilder:
         fix_right: bool = False,
         fix_top: bool = False,
         fix_bottom: bool = False,
-        tri_ke: float | None = None,
-        tri_ka: float | None = None,
-        tri_kd: float | None = None,
-        tri_drag: float | None = None,
-        tri_lift: float | None = None,
+        tri_ke: float = 0.0,
+        tri_ka: float = 0.0,
+        tri_kd: float = 0.0,
+        tri_drag: float = 0.0,
+        tri_lift: float = 0.0,
+        edge_ke: float = 0.0,
+        edge_kd: float = 0.0,
         particle_radius: float | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
@@ -6080,15 +6072,15 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
+            tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
+            tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
+            tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
+            edge_ke: Stiffness for surface mesh edges (for collision). Defaults to 0.0.
+            edge_kd: Damping for surface mesh edges (for collision). Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
-        edge_ke = self.default_surface_mesh_edge_ke
-        edge_kd = self.default_surface_mesh_edge_kd
 
         start_vertex = len(self.particle_q)
 
@@ -6172,13 +6164,13 @@ class ModelBuilder:
 
         # add surface mesh edges (for collision)
         if end_tri > start_tri:
-            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
             edge_indices = np.fromiter(
                 (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
                 int,
             ).reshape(-1, 4)
             if len(edge_indices) > 0:
-                # Add edges with zero stiffness by default (just for collision)
+                # Add edges with specified stiffness/damping (for collision)
                 for o1, o2, v1, v2 in edge_indices:
                     self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
@@ -6194,11 +6186,13 @@ class ModelBuilder:
         k_mu: float,
         k_lambda: float,
         k_damp: float,
-        tri_ke: float | None = None,
-        tri_ka: float | None = None,
-        tri_kd: float | None = None,
-        tri_drag: float | None = None,
-        tri_lift: float | None = None,
+        tri_ke: float = 0.0,
+        tri_ka: float = 0.0,
+        tri_kd: float = 0.0,
+        tri_drag: float = 0.0,
+        tri_lift: float = 0.0,
+        edge_ke: float = 0.0,
+        edge_kd: float = 0.0,
         particle_radius: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
@@ -6213,15 +6207,15 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
+            tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
+            tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
+            tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
+            edge_ke: Stiffness for surface mesh edges (for collision). Defaults to 0.0.
+            edge_kd: Damping for surface mesh edges (for collision). Defaults to 0.0.
             particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
         """
-        tri_ke = tri_ke if tri_ke is not None else self.default_surface_mesh_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_surface_mesh_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_surface_mesh_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_surface_mesh_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_surface_mesh_tri_lift
-        edge_ke = self.default_surface_mesh_edge_ke
-        edge_kd = self.default_surface_mesh_edge_kd
 
         num_tets = int(len(indices) / 4)
 
@@ -6275,13 +6269,13 @@ class ModelBuilder:
 
         # add surface mesh edges (for collision)
         if end_tri > start_tri:
-            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+            adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
             edge_indices = np.fromiter(
                 (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
                 int,
             ).reshape(-1, 4)
             if len(edge_indices) > 0:
-                # Add edges with zero stiffness by default (just for collision)
+                # Add edges with specified stiffness/damping (for collision)
                 for o1, o2, v1, v2 in edge_indices:
                     self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
