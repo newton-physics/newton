@@ -4099,9 +4099,13 @@ class ModelBuilder:
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
             # compute position and rotation from plane equation
+            # For plane equation ax + by + cz + d = 0, the closest point to origin is -(d/||n||) * (n/||n||)
+            # where n = (a, b, c). Both the normal and d need to be normalized.
             normal = np.array(plane[:3])
-            normal /= np.linalg.norm(normal)
-            pos = plane[3] * normal
+            norm = np.linalg.norm(normal)
+            normal /= norm
+            d_normalized = plane[3] / norm
+            pos = -d_normalized * normal
             # compute rotation from local +Z axis to plane normal
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
             xform = wp.transform(pos, rot)
@@ -4121,12 +4125,14 @@ class ModelBuilder:
 
     def add_ground_plane(
         self,
+        height: float = 0.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
 
         Args:
+            height (float): The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
@@ -4134,7 +4140,7 @@ class ModelBuilder:
             int: The index of the newly added shape.
         """
         return self.add_shape_plane(
-            plane=(*self.up_vector, 0.0),
+            plane=(*self.up_vector, -height),
             width=0.0,
             length=0.0,
             cfg=cfg,
