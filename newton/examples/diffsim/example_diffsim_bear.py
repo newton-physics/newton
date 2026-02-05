@@ -181,16 +181,19 @@ class Example:
         for _i in range(self.sim_steps):
             self.phases.append(wp.zeros(self.phase_count, dtype=float, requires_grad=True))
 
+        # Pad tet count to multiple of TILE_TETS for safe tiled kernel access
+        self.padded_tet_count = math.ceil(self.model.tet_count / TILE_TETS) * TILE_TETS
+
         # weights matrix for linear network
         rng = np.random.default_rng(42)
         k = 1.0 / self.phase_count
-        weights = rng.uniform(-np.sqrt(k), np.sqrt(k), (self.model.tet_count, self.phase_count))
+        weights = rng.uniform(-np.sqrt(k), np.sqrt(k), (self.padded_tet_count, self.phase_count))
         self.weights = wp.array(weights, dtype=float, requires_grad=True)
 
         # tanh activation layer array
         self.tet_activations = []
         for _i in range(self.sim_steps):
-            self.tet_activations.append(wp.zeros(self.model.tet_count, dtype=float, requires_grad=True))
+            self.tet_activations.append(wp.zeros(self.padded_tet_count, dtype=float, requires_grad=True))
 
         # optimization
         self.loss = wp.zeros(1, dtype=float, requires_grad=True)
@@ -229,9 +232,9 @@ class Example:
         # apply linear network with tanh activation
         wp.launch_tiled(
             kernel=network,
-            dim=math.ceil(self.model.tet_count / TILE_TETS),
+            dim=self.padded_tet_count // TILE_TETS,
             inputs=[self.phases[frame].reshape((self.phase_count, 1)), self.weights],
-            outputs=[self.tet_activations[frame].reshape((self.model.tet_count, 1))],
+            outputs=[self.tet_activations[frame].reshape((self.padded_tet_count, 1))],
             block_dim=TILE_THREADS,
         )
         self.control.tet_activations = self.tet_activations[frame]
