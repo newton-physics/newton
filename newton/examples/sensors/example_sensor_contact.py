@@ -34,7 +34,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton import Contacts
-from newton.sensors import SensorContact, populate_contacts
+from newton.sensors import SensorContact
 from newton.tests.unittest_utils import find_nonfinite_members
 
 
@@ -59,8 +59,6 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         builder.add_ground_plane()
-        # used for storing contact info required by contact sensors
-        self.contacts = Contacts(0, 0)
 
         # finalize model
         self.model = builder.finalize()
@@ -82,6 +80,13 @@ class Example:
             nconmax=100,
             cone="pyramidal",
             impratio=1,
+        )
+
+        # used for storing contact info required by contact sensor
+        self.contacts = Contacts(
+            self.solver.get_max_contact_count(),
+            0,
+            requested_attributes=self.model.get_requested_contact_attributes(),
         )
 
         self.viewer.set_model(self.model)
@@ -123,7 +128,7 @@ class Example:
     def simulate(self):
         self.state_0.clear_forces()
         self.viewer.apply_forces(self.state_0)
-        self.solver.step(self.state_0, self.state_0, self.control, self.contacts, self.sim_dt)
+        self.solver.step(self.state_0, self.state_0, self.control, None, self.sim_dt)
 
     def step(self):
         if self.sim_time >= self.next_reset:
@@ -138,7 +143,7 @@ class Example:
             else:
                 self.simulate()
 
-        populate_contacts(self.contacts, self.solver)
+        self.solver.update_contacts(self.contacts, self.state_0)
         self.plate_contact_sensor.eval(self.contacts)
 
         net_force = self.plate_contact_sensor.net_force.numpy()
