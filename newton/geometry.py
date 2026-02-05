@@ -29,8 +29,8 @@ from ._src.geometry import (
     collide_sphere_capsule,
     collide_sphere_cylinder,
     collide_sphere_sphere,
-    generate_terrain_grid,
-    heightfield_to_mesh,
+    create_mesh_heightfield,
+    create_mesh_terrain,
 )
 from ._src.geometry.inertia import compute_shape_inertia, transform_inertia
 from ._src.geometry.sdf_hydroelastic import SDFHydroelasticConfig
@@ -59,8 +59,8 @@ __all__ = [
     "compute_shape_inertia",
     "create_box_mesh",
     "create_empty_sdf_data",
-    "generate_terrain_grid",
-    "heightfield_to_mesh",
+    "create_mesh_heightfield",
+    "create_mesh_terrain",
     "remesh_mesh",
     "transform_inertia",
 ]

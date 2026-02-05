@@ -23,7 +23,7 @@ import warp as wp
 from ..sim.builder import ModelBuilder
 
 
-def parse_warp_value_from_string(value: str, warp_dtype: Any, default: Any = None) -> Any:
+def string_to_warp(value: str, warp_dtype: Any, default: Any = None) -> Any:
     """
     Parse a Warp value from a string. This is useful for parsing values from XML files.
     For example, "1.0 2.0 3.0" will be parsed as wp.vec3(1.0, 2.0, 3.0).
@@ -77,6 +77,8 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any, default: Any = Non
         return warp_dtype(float(value))
     if warp_dtype is wp.bool or warp_dtype is bool:
         return warp_dtype(get_bool(value))
+    if warp_dtype is str:
+        return value  # String values are used as-is
     if wp.types.type_is_vector(warp_dtype) or wp.types.type_is_matrix(warp_dtype):
         scalar_type = warp_dtype._wp_scalar_type_
         parsed_values = None
@@ -100,7 +102,7 @@ def parse_warp_value_from_string(value: str, warp_dtype: Any, default: Any = Non
             parsed_values.extend(default_values[len(parsed_values) : expected_length])
 
         return warp_dtype(*parsed_values)
-    raise ValueError(f"Invalid dtype: {warp_dtype}. Must be a valid Warp dtype.")
+    raise ValueError(f"Invalid dtype: {warp_dtype}. Must be a valid Warp dtype or str.")
 
 
 def parse_custom_attributes(
@@ -141,7 +143,7 @@ def parse_custom_attributes(
             def transform(
                 x: str, _context: dict[str, Any] | None, dtype: Any = attr.dtype, default: Any = attr.default
             ) -> Any:
-                return parse_warp_value_from_string(x, dtype, default)
+                return string_to_warp(x, dtype, default)
 
             transformer = transform
 

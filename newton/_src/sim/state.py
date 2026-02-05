@@ -29,7 +29,7 @@ class State:
     store and update the simulation's current configuration and derived data.
     """
 
-    EXTENDED_STATE_ATTRIBUTES: frozenset[str] = frozenset(
+    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(
         (
             "body_qdd",
             "body_parent_f",
@@ -45,19 +45,25 @@ class State:
     """
 
     @classmethod
-    def validate_extended_state_attributes(cls, attributes: tuple[str, ...]) -> None:
+    def validate_extended_attributes(cls, attributes: tuple[str, ...]) -> None:
         """Validate names passed to request_state_attributes().
 
-        Only extended state attributes listed in :attr:`EXTENDED_STATE_ATTRIBUTES` are accepted.
+        Only extended state attributes listed in :attr:`EXTENDED_ATTRIBUTES` are accepted.
+
+        Args:
+            attributes: Tuple of attribute names to validate.
+
+        Raises:
+            ValueError: If any attribute name is not in :attr:`EXTENDED_ATTRIBUTES`.
         """
         if not attributes:
             return
 
-        invalid = sorted(set(attributes).difference(cls.EXTENDED_STATE_ATTRIBUTES))
+        invalid = sorted(set(attributes).difference(cls.EXTENDED_ATTRIBUTES))
         if invalid:
-            allowed = ", ".join(sorted(cls.EXTENDED_STATE_ATTRIBUTES))
+            allowed = ", ".join(sorted(cls.EXTENDED_ATTRIBUTES))
             bad = ", ".join(invalid)
-            raise ValueError(f"Unknown extended State attribute(s): {bad}. Allowed extended attributes: {allowed}.")
+            raise ValueError(f"Unknown extended state attribute(s): {bad}. Allowed: {allowed}.")
 
     def __init__(self) -> None:
         """
@@ -106,6 +112,9 @@ class State:
         First three entries: linear force; last three: torque.
 
         This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
+
+        .. note::
+            :attr:`body_parent_f` represents incoming joint wrenches in world frame, referenced to the body's center of mass (COM).
         """
 
         self.joint_q: wp.array | None = None
