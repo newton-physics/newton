@@ -2257,6 +2257,8 @@ def evaluate_spring_force_and_hessian(
 
     diff = pos[v0] - pos[v1]
     spring_length = wp.length(diff)
+    # Clamp to epsilon to avoid division by zero for coincident vertices
+    spring_length = wp.max(spring_length, 1e-8)
     l0 = spring_rest_length[spring_idx]
 
     force_sign = 1.0 if particle_idx == v0 else -1.0
