@@ -1087,17 +1087,17 @@ class Model:
 
     def _count_rigid_contact_points(self, rigid_contact_max_per_pair: int | None = None) -> int:
         """
-        Counts the maximum number of rigid contact points that need to be allocated for a given model.
+        Count the maximum number of rigid contact points that need to be allocated.
 
-        This function estimates the upper bound on the number of rigid contact points that may be generated
+        This method estimates the upper bound on the number of rigid contact points that may be generated
         during collision detection, based on the current set of shape contact pairs and their geometry.
 
         Args:
-            model (Model): The simulation model containing shape and geometry information.
-            rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
+            rigid_contact_max_per_pair: Maximum number of contact points per shape pair.
                 If None or <= 0, no limit is applied.
+
         Returns:
-            int: The potential number of rigid contact points that may need to be allocated.
+            The potential number of rigid contact points that may need to be allocated.
         """
         from ..geometry.kernels import count_contact_points  # noqa: PLC0415
 
