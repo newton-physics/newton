@@ -1179,8 +1179,10 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
     if shader_id == "UsdUVTexture":
         file_input = shader.GetInput("file")
         if file_input:
-            asset = file_input.Get()
-            return _resolve_asset_path(asset, prim, file_input.GetAttr())
+            attrs = UsdShade.Utils.GetValueProducingAttributes(file_input)
+            if attrs:
+                asset = attrs[0].Get()
+                return _resolve_asset_path(asset, prim, attrs[0])
         return None
     if shader_id == "UsdPreviewSurface":
         for input_name in ("diffuseColor", "baseColor"):
@@ -1195,8 +1197,8 @@ def _find_texture_in_shader(shader: UsdShade.Shader | None, prim: Usd.Prim) -> s
     return None
 
 
-def _get_unconnected_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
-    """Fetch the first unconnected input value from a shader."""
+def _get_input_value(shader: UsdShade.Shader | None, names: tuple[str, ...]) -> Any | None:
+    """Fetch the effective input value from a shader, following connections."""
     if shader is None:
         return None
     try:
@@ -1210,13 +1212,13 @@ def _get_unconnected_input_value(shader: UsdShade.Shader | None, names: tuple[st
         if inp is None:
             continue
         try:
-            if inp.HasConnectedSource():
-                continue
+            attrs = UsdShade.Utils.GetValueProducingAttributes(inp)
         except Exception:
             continue
-        value = inp.Get()
-        if value is not None:
-            return value
+        if attrs:
+            value = attrs[0].Get()
+            if value is not None:
+                return value
     return None
 
 
@@ -1269,7 +1271,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             source_shader = UsdShade.Shader(source[0].GetPrim())
             properties["texture"] = _find_texture_in_shader(source_shader, prim)
             if properties["texture"] is None:
-                color_value = _get_unconnected_input_value(
+                color_value = _get_input_value(
                     source_shader,
                     (
                         "diffuseColor",
@@ -1293,7 +1295,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         if has_metallic_source:
             source = metallic_input.GetConnectedSource()
             source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
-            metallic_value = _get_unconnected_input_value(source_shader, ("metallic", "metallic_constant"))
+            metallic_value = _get_input_value(source_shader, ("metallic", "metallic_constant"))
             properties["metallic"] = _coerce_float(metallic_value)
             if properties["metallic"] is None:
                 warnings.warn(
@@ -1312,7 +1314,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
         if has_roughness_source:
             source = roughness_input.GetConnectedSource()
             source_shader = UsdShade.Shader(source[0].GetPrim()) if source else None
-            roughness_value = _get_unconnected_input_value(
+            roughness_value = _get_input_value(
                 source_shader,
                 ("roughness", "roughness_constant", "reflection_roughness_constant"),
             )
@@ -1351,7 +1353,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         return properties
 
     if properties["color"] is None:
-        color_value = _get_unconnected_input_value(
+        color_value = _get_input_value(
             shader,
             (
                 "diffuse_color_constant",
@@ -1364,10 +1366,10 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         )
         properties["color"] = _coerce_color(color_value)
     if properties["metallic"] is None:
-        metallic_value = _get_unconnected_input_value(shader, ("metallic_constant", "metallic"))
+        metallic_value = _get_input_value(shader, ("metallic_constant", "metallic"))
         properties["metallic"] = _coerce_float(metallic_value)
     if properties["roughness"] is None:
-        roughness_value = _get_unconnected_input_value(
+        roughness_value = _get_input_value(
             shader, ("reflection_roughness_constant", "roughness_constant", "roughness")
         )
         properties["roughness"] = _coerce_float(roughness_value)
