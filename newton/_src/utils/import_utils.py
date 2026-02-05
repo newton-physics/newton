@@ -23,7 +23,7 @@ import warp as wp
 from ..sim.builder import ModelBuilder
 
 
-def parse_warp_value_from_string(value: str, warp_dtype: Any, default: Any = None) -> Any:
+def string_to_warp(value: str, warp_dtype: Any, default: Any = None) -> Any:
     """
     Parse a Warp value from a string. This is useful for parsing values from XML files.
     For example, "1.0 2.0 3.0" will be parsed as wp.vec3(1.0, 2.0, 3.0).
@@ -143,7 +143,7 @@ def parse_custom_attributes(
             def transform(
                 x: str, _context: dict[str, Any] | None, dtype: Any = attr.dtype, default: Any = attr.default
             ) -> Any:
-                return parse_warp_value_from_string(x, dtype, default)
+                return string_to_warp(x, dtype, default)
 
             transformer = transform
 

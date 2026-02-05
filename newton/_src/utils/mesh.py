@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import warnings
+from collections.abs import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,33 +22,6 @@ import warp as wp
 
 # Default number of segments for mesh generation
 default_num_segments = 32
-
-
-@dataclass
-class MeshEdge:
-    """Represents an edge in a triangle mesh with adjacency information.
-
-    Stores the two vertices of the edge, the opposite vertices from each
-    adjacent triangle, and the indices of those triangles. The winding order
-    is consistent: the first triangle is reconstructed as {v0, v1, o0}, and
-    the second triangle as {v1, v0, o1}.
-
-    For boundary edges (edges with only one adjacent triangle), o1 and f1
-    are set to -1.
-    """
-
-    v0: int
-    """Index of the first vertex of the edge."""
-    v1: int
-    """Index of the second vertex of the edge."""
-    o0: int
-    """Index of the vertex opposite to the edge in the first adjacent triangle."""
-    o1: int
-    """Index of the vertex opposite to the edge in the second adjacent triangle, or -1 if boundary."""
-    f0: int
-    """Index of the first adjacent triangle."""
-    f1: int
-    """Index of the second adjacent triangle, or -1 if boundary edge."""
 
 
 class MeshAdjacency:
@@ -62,15 +36,40 @@ class MeshAdjacency:
         indices: The original triangle indices used to build the adjacency.
     """
 
-    def __init__(self, indices, num_tris):
+    @dataclass
+    class Edge:
+        """Represents an edge in a triangle mesh with adjacency information.
+
+        Stores the two vertices of the edge, the opposite vertices from each
+        adjacent triangle, and the indices of those triangles. The winding order
+        is consistent: the first triangle is reconstructed as {v0, v1, o0}, and
+        the second triangle as {v1, v0, o1}.
+
+        For boundary edges (edges with only one adjacent triangle), o1 and f1
+        are set to -1.
+        """
+
+        v0: int
+        """Index of the first vertex of the edge."""
+        v1: int
+        """Index of the second vertex of the edge."""
+        o0: int
+        """Index of the vertex opposite to the edge in the first adjacent triangle."""
+        o1: int
+        """Index of the vertex opposite to the edge in the second adjacent triangle, or -1 if boundary."""
+        f0: int
+        """Index of the first adjacent triangle."""
+        f1: int
+        """Index of the second adjacent triangle, or -1 if boundary edge."""
+
+    def __init__(self, indices: Sequence[Sequence[int]] | np.ndarray):
         """Build edge adjacency from triangle indices.
 
         Args:
             indices: Array-like of triangle indices, where each element is a
                 sequence of 3 vertex indices defining a triangle.
-            num_tris: Number of triangles (currently unused, kept for API compatibility).
         """
-        self.edges = {}
+        self.edges: dict[tuple[int, int], MeshAdjacency.Edge] = {}
         self.indices = indices
 
         for index, tri in enumerate(indices):
@@ -78,7 +77,7 @@ class MeshAdjacency:
             self.add_edge(tri[1], tri[2], tri[0], index)
             self.add_edge(tri[2], tri[0], tri[1], index)
 
-    def add_edge(self, i0, i1, o, f):
+    def add_edge(self, i0: int, i1: int, o: int, f: int):
         """Add or update an edge in the adjacency structure.
 
         If the edge already exists, updates it with the second adjacent triangle.
@@ -106,7 +105,7 @@ class MeshAdjacency:
                 edge.f1 = f
         else:
             # create new edge with opposite yet to be filled
-            edge = MeshEdge(i0, i1, o, -1, f, -1)
+            edge = MeshAdjacency.Edge(i0, i1, o, -1, f, -1)
 
         self.edges[key] = edge
 

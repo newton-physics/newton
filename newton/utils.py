@@ -31,7 +31,6 @@ __all__ = [
 # ==================================================================================
 from ._src.utils.mesh import (
     MeshAdjacency,
-    MeshEdge,
     create_box_mesh,
     create_capsule_mesh,
     create_cone_mesh,
@@ -44,7 +43,6 @@ from ._src.utils.mesh import (
 
 __all__ += [
     "MeshAdjacency",
-    "MeshEdge",
     "create_box_mesh",
     "create_capsule_mesh",
     "create_cone_mesh",
@@ -60,12 +58,10 @@ __all__ += [
 # ==================================================================================
 from ._src.utils.render import (  # noqa: E402
     bourke_color_map,
-    copy_rgb_frame_uint8,
 )
 
 __all__ += [
     "bourke_color_map",
-    "copy_rgb_frame_uint8",
 ]
 
 # ==================================================================================
@@ -144,16 +140,6 @@ __all__ += [
 ]
 
 # ==================================================================================
-# recorders
-# ==================================================================================
-from ._src.utils.recorder import RecorderBasic, RecorderModelAndState  # noqa: E402
-
-__all__ += [
-    "RecorderBasic",
-    "RecorderModelAndState",
-]
-
-# ==================================================================================
 # run benchmark
 # ==================================================================================
 
@@ -169,8 +155,8 @@ __all__ += [
 # import utils
 # ==================================================================================
 
-from ._src.utils.import_utils import parse_warp_value_from_string  # noqa: E402
+from ._src.utils.import_utils import string_to_warp  # noqa: E402
 
 __all__ += [
-    "parse_warp_value_from_string",
+    "string_to_warp",
 ]
