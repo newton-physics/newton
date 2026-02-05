@@ -438,11 +438,9 @@ def _normalize_color(color) -> tuple[float, float, float] | None:
     return None
 
 
-def _extract_trimesh_texture(visual, base_dir: str) -> np.ndarray | str | None:
-    if visual is None or not hasattr(visual, "material"):
-        return None
-
-    material = visual.material
+def _extract_trimesh_texture(visual_or_material, base_dir: str) -> np.ndarray | str | None:
+    """Extract texture from a trimesh visual or a single material object."""
+    material = getattr(visual_or_material, "material", visual_or_material)
     if material is None:
         return None
 
@@ -749,6 +747,7 @@ def load_meshes_from_file(
                 material = materials[int(mat_index)] if int(mat_index) < len(materials) else None
                 roughness, metallic, base_color = _extract_trimesh_material_params(material)
                 mat_color = base_color
+                mat_texture = _extract_trimesh_texture(material, base_dir)
                 if mat_color is None and hasattr(tri_mesh.visual, "main_color"):
                     mat_color = _normalize_color(tri_mesh.visual.main_color)
                 add_mesh_from_faces(
@@ -759,7 +758,7 @@ def load_meshes_from_file(
                     mesh_vertices=vertices,
                     mesh_normals=normals,
                     mesh_uvs=uvs,
-                    mesh_texture=texture,
+                    mesh_texture=mat_texture,
                 )
             continue
 
