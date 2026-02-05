@@ -6577,6 +6577,273 @@ class ModelBuilder:
             )
         return len(shapes_with_bad_margin) == 0
 
+    def _validate_structure(self) -> None:
+        """Validate structural invariants of the model.
+
+        This method performs consolidated validation of all structural constraints,
+        using vectorized numpy operations for efficiency:
+
+        - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
+        - Joint references: equality_constraint_joint1/2
+        - Self-referential joints: joint_parent[i] != joint_child[i]
+        - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start
+        - Array length consistency: per-DOF and per-coord arrays
+
+        Raises:
+            ValueError: If any structural validation check fails.
+        """
+        body_count = self.body_count
+        joint_count = self.joint_count
+
+        # Validate shape_body references: must be in [-1, body_count-1]
+        if self.shape_count > 0:
+            shape_body = np.array(self.shape_body, dtype=np.int32)
+            invalid_mask = (shape_body < -1) | (shape_body >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                shape_key = self.shape_key[idx] or f"shape_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in shape_body: shape {idx} ('{shape_key}') references body {shape_body[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+        # Validate joint_parent references: must be in [-1, body_count-1]
+        if joint_count > 0:
+            joint_parent = np.array(self.joint_parent, dtype=np.int32)
+            invalid_mask = (joint_parent < -1) | (joint_parent >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in joint_parent: joint {idx} ('{joint_key}') references parent body {joint_parent[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            # Validate joint_child references: must be in [0, body_count-1] (child cannot be world)
+            joint_child = np.array(self.joint_child, dtype=np.int32)
+            invalid_mask = (joint_child < 0) | (joint_child >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in joint_child: joint {idx} ('{joint_key}') references child body {joint_child[idx]}, "
+                    f"but valid range is [0, {body_count - 1}] (body_count={body_count}). Child cannot be the world (-1)."
+                )
+
+            # Validate self-referential joints: parent != child
+            self_ref_mask = joint_parent == joint_child
+            if np.any(self_ref_mask):
+                invalid_indices = np.where(self_ref_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Self-referential joint: joint {idx} ('{joint_key}') has parent and child both set to body {joint_parent[idx]}."
+                )
+
+        # Validate equality constraint body references
+        equality_count = len(self.equality_constraint_type)
+        if equality_count > 0:
+            eq_body1 = np.array(self.equality_constraint_body1, dtype=np.int32)
+            invalid_mask = (eq_body1 < -1) | (eq_body1 >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{eq_key}') references body {eq_body1[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            eq_body2 = np.array(self.equality_constraint_body2, dtype=np.int32)
+            invalid_mask = (eq_body2 < -1) | (eq_body2 >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{eq_key}') references body {eq_body2[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            # Validate equality constraint joint references
+            eq_joint1 = np.array(self.equality_constraint_joint1, dtype=np.int32)
+            invalid_mask = (eq_joint1 < -1) | (eq_joint1 >= joint_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{eq_key}') references joint {eq_joint1[idx]}, "
+                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
+                )
+
+            eq_joint2 = np.array(self.equality_constraint_joint2, dtype=np.int32)
+            invalid_mask = (eq_joint2 < -1) | (eq_joint2 >= joint_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{eq_key}') references joint {eq_joint2[idx]}, "
+                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
+                )
+
+        # Validate start array monotonicity
+        if joint_count > 0:
+            joint_q_start = np.array(self.joint_q_start, dtype=np.int32)
+            if len(joint_q_start) > 1:
+                diffs = np.diff(joint_q_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"joint_q_start is not monotonically increasing: "
+                        f"joint_q_start[{idx}]={joint_q_start[idx]} > joint_q_start[{idx + 1}]={joint_q_start[idx + 1]}."
+                    )
+
+            joint_qd_start = np.array(self.joint_qd_start, dtype=np.int32)
+            if len(joint_qd_start) > 1:
+                diffs = np.diff(joint_qd_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"joint_qd_start is not monotonically increasing: "
+                        f"joint_qd_start[{idx}]={joint_qd_start[idx]} > joint_qd_start[{idx + 1}]={joint_qd_start[idx + 1]}."
+                    )
+
+        articulation_count = self.articulation_count
+        if articulation_count > 0:
+            articulation_start = np.array(self.articulation_start, dtype=np.int32)
+            if len(articulation_start) > 1:
+                diffs = np.diff(articulation_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"articulation_start is not monotonically increasing: "
+                        f"articulation_start[{idx}]={articulation_start[idx]} > articulation_start[{idx + 1}]={articulation_start[idx + 1]}."
+                    )
+
+        # Validate array length consistency
+        if joint_count > 0:
+            # Per-DOF arrays should have length == joint_dof_count
+            dof_arrays = [
+                ("joint_axis", self.joint_axis),
+                ("joint_armature", self.joint_armature),
+                ("joint_target_ke", self.joint_target_ke),
+                ("joint_target_kd", self.joint_target_kd),
+                ("joint_limit_lower", self.joint_limit_lower),
+                ("joint_limit_upper", self.joint_limit_upper),
+                ("joint_limit_ke", self.joint_limit_ke),
+                ("joint_limit_kd", self.joint_limit_kd),
+                ("joint_target_pos", self.joint_target_pos),
+                ("joint_target_vel", self.joint_target_vel),
+                ("joint_effort_limit", self.joint_effort_limit),
+                ("joint_velocity_limit", self.joint_velocity_limit),
+                ("joint_friction", self.joint_friction),
+                ("joint_act_mode", self.joint_act_mode),
+            ]
+            for name, arr in dof_arrays:
+                if len(arr) != self.joint_dof_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {self.joint_dof_count} (joint_dof_count)."
+                    )
+
+            # Per-coord arrays should have length == joint_coord_count
+            coord_arrays = [
+                ("joint_q", self.joint_q),
+            ]
+            for name, arr in coord_arrays:
+                if len(arr) != self.joint_coord_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {self.joint_coord_count} (joint_coord_count)."
+                    )
+
+            # Start arrays should have length == joint_count
+            start_arrays = [
+                ("joint_q_start", self.joint_q_start),
+                ("joint_qd_start", self.joint_qd_start),
+            ]
+            for name, arr in start_arrays:
+                if len(arr) != joint_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {joint_count} (joint_count)."
+                    )
+
+    def validate_joint_ordering(self) -> bool:
+        """Validate that joints within articulations follow DFS topological ordering.
+
+        This check ensures that joints are ordered such that parent bodies are processed
+        before child bodies within each articulation. This ordering is required by some
+        solvers (e.g., MuJoCo) for correct kinematic computations.
+
+        This method is public and opt-in because the check has O(n log n) complexity
+        due to topological sorting. It is skipped by default in finalize().
+
+        Warns:
+            UserWarning: If joints are not in DFS topological order.
+
+        Returns:
+            bool: True if joints are correctly ordered, False otherwise.
+        """
+        from ..utils import topological_sort  # noqa: PLC0415
+
+        if self.joint_count == 0:
+            return True
+
+        joint_parent = np.array(self.joint_parent, dtype=np.int32)
+        joint_child = np.array(self.joint_child, dtype=np.int32)
+        joint_articulation = np.array(self.joint_articulation, dtype=np.int32)
+
+        # Get unique articulations (excluding -1 which means not in any articulation)
+        articulation_ids = np.unique(joint_articulation)
+        articulation_ids = articulation_ids[articulation_ids >= 0]
+
+        all_ordered = True
+
+        for art_id in articulation_ids:
+            # Get joints in this articulation
+            art_joints = np.where(joint_articulation == art_id)[0]
+            if len(art_joints) <= 1:
+                continue
+
+            # Build joint list for topological sort
+            joints_simple = [(int(joint_parent[i]), int(joint_child[i])) for i in art_joints]
+
+            try:
+                joint_order = topological_sort(joints_simple, use_dfs=True, custom_indices=list(art_joints))
+
+                # Check if current order matches expected DFS order
+                if any(joint_order[i] != art_joints[i] for i in range(len(joints_simple))):
+                    art_key = (
+                        self.articulation_key[art_id]
+                        if art_id < len(self.articulation_key)
+                        else f"articulation_{art_id}"
+                    )
+                    warnings.warn(
+                        f"Joints in articulation '{art_key}' (id={art_id}) are not in DFS topological order. "
+                        f"This may cause issues with some solvers (e.g., MuJoCo). "
+                        f"Current order: {list(art_joints)}, expected: {joint_order}.",
+                        stacklevel=2,
+                    )
+                    all_ordered = False
+            except ValueError as e:
+                # Topological sort failed (e.g., cycle detected)
+                art_key = (
+                    self.articulation_key[art_id] if art_id < len(self.articulation_key) else f"articulation_{art_id}"
+                )
+                warnings.warn(
+                    f"Failed to validate joint ordering for articulation '{art_key}' (id={art_id}): {e}",
+                    stacklevel=2,
+                )
+                all_ordered = False
+
+        return all_ordered
+
     def _build_world_starts(self):
         """
         Constructs the per-world entity start indices.
@@ -6781,9 +7048,12 @@ class ModelBuilder:
         self,
         device: Devicelike | None = None,
         requires_grad: bool = False,
+        skip_all_validations: bool = False,
         skip_validation_worlds: bool = False,
         skip_validation_joints: bool = False,
         skip_validation_shapes: bool = False,
+        skip_validation_structure: bool = False,
+        skip_validation_joint_ordering: bool = True,
     ) -> Model:
         """
         Finalize the builder and create a concrete :class:`~newton.Model` for simulation.
@@ -6795,9 +7065,15 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            skip_all_validations: If True, skips all validation checks. Use for maximum performance when
+                you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips validation of joints belonging to an articulation. Default is False.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
+                array lengths, monotonicity). Default is False.
+            skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
+                articulations. Default is True (opt-in) because this check has O(n log n) complexity.
 
         Returns:
             Model: A fully constructed Model object containing all simulation data on the specified device.
@@ -6813,16 +7089,24 @@ class ModelBuilder:
         self.num_worlds = max(1, self.num_worlds)
 
         # validate world ordering and contiguity
-        if not skip_validation_worlds:
+        if not skip_all_validations and not skip_validation_worlds:
             self._validate_world_ordering()
 
         # validate joints belong to an articulation
-        if not skip_validation_joints:
+        if not skip_all_validations and not skip_validation_joints:
             self._validate_joints()
 
         # validate shapes have valid contact margins
-        if not skip_validation_shapes:
+        if not skip_all_validations and not skip_validation_shapes:
             self._validate_shapes()
+
+        # validate structural invariants (body/joint references, array lengths)
+        if not skip_all_validations and not skip_validation_structure:
+            self._validate_structure()
+
+        # validate DFS topological joint ordering (opt-in, skipped by default)
+        if not skip_all_validations and not skip_validation_joint_ordering:
+            self.validate_joint_ordering()
 
         # construct world starts by ensuring they are cumulative and appending
         # tail-end global counts and sum total counts over the entire model.

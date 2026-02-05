@@ -1207,6 +1207,284 @@ class TestModel(unittest.TestCase):
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
 
+    def test_validate_structure_invalid_shape_body(self):
+        """Test that _validate_structure catches invalid shape_body references."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        builder.add_shape_sphere(body=body, radius=0.5, key="test_shape")
+
+        # Manually set invalid body reference
+        builder.shape_body[0] = 999  # Invalid body index
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid body reference", error_msg)
+        self.assertIn("shape_body", error_msg)
+        self.assertIn("test_shape", error_msg)
+        self.assertIn("999", error_msg)
+
+    def test_validate_structure_invalid_joint_parent(self):
+        """Test that _validate_structure catches invalid joint_parent references."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, key="test_joint")
+        builder.add_articulation([joint])
+
+        # Manually set invalid parent body reference
+        builder.joint_parent[0] = 999  # Invalid body index
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid body reference", error_msg)
+        self.assertIn("joint_parent", error_msg)
+        self.assertIn("test_joint", error_msg)
+
+    def test_validate_structure_invalid_joint_child(self):
+        """Test that _validate_structure catches invalid joint_child references."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, key="test_joint")
+        builder.add_articulation([joint])
+
+        # Manually set invalid child body reference (child cannot be -1)
+        builder.joint_child[0] = -1  # Invalid: child cannot be world
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid body reference", error_msg)
+        self.assertIn("joint_child", error_msg)
+        self.assertIn("Child cannot be the world", error_msg)
+
+    def test_validate_structure_self_referential_joint(self):
+        """Test that _validate_structure catches self-referential joints."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, key="self_ref_joint")
+        builder.add_articulation([joint])
+
+        # Manually set parent == child (self-referential)
+        builder.joint_parent[0] = body
+        builder.joint_child[0] = body
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Self-referential joint", error_msg)
+        self.assertIn("self_ref_joint", error_msg)
+
+    def test_validate_structure_invalid_equality_constraint_body(self):
+        """Test that _validate_structure catches invalid equality constraint body references."""
+        builder = ModelBuilder()
+        body1 = builder.add_body(mass=1.0)
+        body2 = builder.add_body(mass=1.0)
+        builder.add_equality_constraint_weld(
+            body1=body1,
+            body2=body2,
+            key="test_constraint",
+        )
+
+        # Manually set invalid body reference
+        builder.equality_constraint_body1[0] = 999
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid body reference", error_msg)
+        self.assertIn("equality_constraint_body1", error_msg)
+        self.assertIn("test_constraint", error_msg)
+
+    def test_validate_structure_invalid_equality_constraint_joint(self):
+        """Test that _validate_structure catches invalid equality constraint joint references."""
+        builder = ModelBuilder()
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        builder.add_articulation([joint1, joint2])
+
+        # Add a joint equality constraint
+        builder.add_equality_constraint_joint(
+            joint1=joint1,
+            joint2=joint2,
+            key="joint_constraint",
+        )
+
+        # Manually set invalid joint reference
+        builder.equality_constraint_joint1[0] = 999
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid joint reference", error_msg)
+        self.assertIn("equality_constraint_joint1", error_msg)
+        self.assertIn("joint_constraint", error_msg)
+
+    def test_validate_structure_array_length_mismatch(self):
+        """Test that _validate_structure catches array length mismatches."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_articulation([joint])
+
+        # Manually corrupt array length
+        builder.joint_armature.append(0.0)  # Add extra element
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Array length mismatch", error_msg)
+        self.assertIn("joint_armature", error_msg)
+
+    def test_validate_joint_ordering_correct_order(self):
+        """Test that validate_joint_ordering passes for correctly ordered joints."""
+        builder = ModelBuilder()
+
+        # Create a simple chain in DFS order
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        body3 = builder.add_link(mass=1.0)
+
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        joint3 = builder.add_joint_revolute(parent=body2, child=body3)
+        builder.add_articulation([joint1, joint2, joint3])
+
+        # Should not warn
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = builder.validate_joint_ordering()
+            ordering_warnings = [warning for warning in w if "DFS topological order" in str(warning.message)]
+            self.assertEqual(len(ordering_warnings), 0)
+
+        self.assertTrue(result)
+
+    def test_validate_joint_ordering_incorrect_order(self):
+        """Test that validate_joint_ordering warns for incorrectly ordered joints."""
+        builder = ModelBuilder()
+
+        # Create a chain: world -> body1 -> body2 -> body3
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        body3 = builder.add_link(mass=1.0)
+
+        # Create joints in WRONG order: joint3 (body2->body3) comes BEFORE joint2 (body1->body2)
+        # This is invalid because body2 hasn't been processed yet when we try to process joint3
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint3 = builder.add_joint_revolute(parent=body2, child=body3)  # Out of order - parent not processed
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        builder.add_articulation([joint1, joint3, joint2])  # Wrong order: should be [joint1, joint2, joint3]
+
+        # Should warn about non-DFS order
+        with self.assertWarns(UserWarning) as cm:
+            result = builder.validate_joint_ordering()
+
+        self.assertFalse(result)
+        self.assertIn("DFS topological order", str(cm.warning))
+
+    def test_skip_all_validations(self):
+        """Test that skip_all_validations skips all validation checks."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=body, key="orphan_joint")
+        # Don't add articulation - this would normally fail _validate_joints
+
+        # Without skip_all_validations, should raise ValueError about orphan joint
+        with self.assertRaises(ValueError) as context:
+            builder.finalize(skip_all_validations=False)
+        self.assertIn("orphan_joint", str(context.exception))
+
+        # With skip_all_validations=True, should NOT raise the validation error
+        # Create a fresh builder for clean test
+        builder2 = ModelBuilder()
+        body2 = builder2.add_link(mass=1.0)
+        builder2.add_joint_revolute(parent=-1, child=body2, key="orphan_joint2")
+        # This should succeed (validation skipped)
+        model = builder2.finalize(skip_all_validations=True)
+        self.assertIsNotNone(model)
+
+    def test_skip_validation_structure(self):
+        """Test that skip_validation_structure skips structural validation."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_articulation([joint])
+
+        # Manually corrupt array length to trigger structure validation error
+        builder.joint_armature.append(0.0)  # Add extra element
+
+        # Without skip_validation_structure, should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            builder.finalize(skip_validation_structure=False)
+        self.assertIn("Array length mismatch", str(context.exception))
+
+        # Create fresh builder with same corruption
+        builder2 = ModelBuilder()
+        body2 = builder2.add_link(mass=1.0)
+        joint2 = builder2.add_joint_revolute(parent=-1, child=body2)
+        builder2.add_articulation([joint2])
+        builder2.joint_armature.append(0.0)
+
+        # With skip_validation_structure=True, should skip the structure check
+        # Model creation will likely fail, but not from structure validation
+        try:
+            builder2.finalize(skip_validation_structure=True)
+        except ValueError as e:
+            # If it raises ValueError, it should NOT be about array length mismatch
+            self.assertNotIn("Array length mismatch", str(e))
+
+    def test_skip_validation_joint_ordering_default(self):
+        """Test that joint ordering validation is skipped by default."""
+        builder = ModelBuilder()
+
+        # Create a chain: world -> body1 -> body2 -> body3
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        body3 = builder.add_link(mass=1.0)
+
+        # Create joints in WRONG order for the chain
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint3 = builder.add_joint_revolute(parent=body2, child=body3)  # Out of order
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        builder.add_articulation([joint1, joint3, joint2])
+
+        # By default (skip_validation_joint_ordering=True), should not warn
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.finalize()
+            ordering_warnings = [warning for warning in w if "DFS topological order" in str(warning.message)]
+            self.assertEqual(len(ordering_warnings), 0)
+
+    def test_enable_validation_joint_ordering(self):
+        """Test that joint ordering validation can be enabled."""
+        builder = ModelBuilder()
+
+        # Create a chain: world -> body1 -> body2 -> body3
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        body3 = builder.add_link(mass=1.0)
+
+        # Create joints in WRONG order for the chain
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint3 = builder.add_joint_revolute(parent=body2, child=body3)  # Out of order
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        builder.add_articulation([joint1, joint3, joint2])
+
+        # With skip_validation_joint_ordering=False, should warn
+        with self.assertWarns(UserWarning) as cm:
+            builder.finalize(skip_validation_joint_ordering=False)
+
+        self.assertIn("DFS topological order", str(cm.warning))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
