@@ -856,6 +856,7 @@ class SolverVBD(SolverBase):
                     kernel=count_num_adjacent_edges,
                     inputs=[edges_array, num_vertex_adjacent_edges],
                     dim=1,
+                    device="cpu",
                 )
 
                 num_vertex_adjacent_edges = num_vertex_adjacent_edges.numpy()
@@ -880,6 +881,7 @@ class SolverVBD(SolverBase):
                         particle_adjacency.v_adj_edges,
                     ],
                     dim=1,
+                    device="cpu",
                 )
             else:
                 particle_adjacency.v_adj_edges_offsets = wp.empty(shape=(0,), dtype=wp.int32)
@@ -889,8 +891,15 @@ class SolverVBD(SolverBase):
                 face_indices = self.model.tri_indices.to("cpu")
                 # compute adjacent triangles
                 # count number of adjacent faces for each vertex
-                num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32)
-                wp.launch(kernel=count_num_adjacent_faces, inputs=[face_indices, num_vertex_adjacent_faces], dim=1)
+                num_vertex_adjacent_faces = wp.zeros(
+                    shape=(self.model.particle_count,), dtype=wp.int32, device=self.device
+                )
+                wp.launch(
+                    kernel=count_num_adjacent_faces,
+                    inputs=[face_indices, num_vertex_adjacent_faces],
+                    dim=1,
+                    device=self.device,
+                )
 
                 # preallocate memory based on counting results
                 num_vertex_adjacent_faces = num_vertex_adjacent_faces.numpy()
