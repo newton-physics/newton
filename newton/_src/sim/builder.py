@@ -4122,7 +4122,8 @@ class ModelBuilder:
             if norm < 1e-8:
                 raise ValueError(f"Plane normal must be non-zero, got {plane[:3]} with norm {norm}")
             normal /= norm
-            pos = plane[3] * normal
+            d_normalized = plane[3] / norm
+            pos = -d_normalized * normal
 
             # compute rotation from local +Z axis to plane normal
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
