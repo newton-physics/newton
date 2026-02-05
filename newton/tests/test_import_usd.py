@@ -143,6 +143,50 @@ def Xform "Root" (
         self.assertEqual(set(builder.joint_articulation), {0, 1})
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_import_revolute_joint_with_disabled_rigid_body(self):
+        """
+        When a PhysicsRevoluteJoint references a body with rigidBodyEnabled = False,
+        the joint should still be parsed as REVOLUTE (not FREE).
+
+        This can happen when:
+        - A body has physics:rigidBodyEnabled = 0 (disabled for physics simulation)
+        - A joint is defined inside that body or references it
+        - The USD physics utilities may not include the body in articulatedBodies
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create body0 with rigidBodyEnabled = False (this is the key part of the bug)
+        body0_xform = UsdGeom.Xform.Define(stage, "/World/Body0")
+        body0_rb = UsdPhysics.RigidBodyAPI.Apply(body0_xform.GetPrim())
+        body0_rb.CreateRigidBodyEnabledAttr().Set(False)
+
+        # Create body1 as a normal rigid body
+        body1_xform = UsdGeom.Xform.Define(stage, "/World/Body1")
+        UsdPhysics.RigidBodyAPI.Apply(body1_xform.GetPrim())
+
+        # Create a revolute joint connecting them (nested inside body0, as in the issue)
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Body0/RevoluteJoint")
+        joint.CreateBody0Rel().SetTargets([body0_xform.GetPath()])
+        joint.CreateBody1Rel().SetTargets([body1_xform.GetPath()])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarns(UserWarning) as cm:
+            builder.add_usd(stage)
+        self.assertIn("joints were", str(cm.warning).lower())
+        revolute_count = builder.joint_type.count(newton.JointType.REVOLUTE)
+        self.assertGreaterEqual(revolute_count, 1, "Expected at least one REVOLUTE joint")
+        self.assertEqual(builder.body_count, 2)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
         from pxr import Usd  # noqa: PLC0415
 
