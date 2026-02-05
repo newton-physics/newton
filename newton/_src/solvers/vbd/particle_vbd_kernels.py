@@ -2865,9 +2865,9 @@ def apply_truncation_ts(
     pos: wp.array(dtype=wp.vec3),
     displacement_in: wp.array(dtype=wp.vec3),
     truncation_ts: wp.array(dtype=float),
+    max_displacement: float,
     displacement_out: wp.array(dtype=wp.vec3),
     pos_out: wp.array(dtype=wp.vec3),
-    max_displacement: float = 1e10,
 ):
     i = wp.tid()
     t = truncation_ts[i]

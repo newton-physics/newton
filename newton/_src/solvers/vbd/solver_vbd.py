@@ -891,14 +891,12 @@ class SolverVBD(SolverBase):
                 face_indices = self.model.tri_indices.to("cpu")
                 # compute adjacent triangles
                 # count number of adjacent faces for each vertex
-                num_vertex_adjacent_faces = wp.zeros(
-                    shape=(self.model.particle_count,), dtype=wp.int32, device=self.device
-                )
+                num_vertex_adjacent_faces = wp.zeros(shape=(self.model.particle_count,), dtype=wp.int32, device="cpu")
                 wp.launch(
                     kernel=count_num_adjacent_faces,
                     inputs=[face_indices, num_vertex_adjacent_faces],
                     dim=1,
-                    device=self.device,
+                    device="cpu",
                 )
 
                 # preallocate memory based on counting results

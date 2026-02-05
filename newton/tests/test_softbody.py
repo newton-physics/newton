@@ -447,6 +447,7 @@ def test_tet_energy(test, device):
                     tet_energy,
                     particle_forces,
                 ],
+                device=model.device,
             )
 
         tape.backward(tet_energy)
@@ -495,6 +496,7 @@ def test_tet_energy(test, device):
                 particle_forces_vec3,
                 particle_hessian,
             ],
+            device=model.device,
         )
         particle_forces_analytical_2 = particle_forces_vec3.numpy()
         particle_hessian_analytical = particle_hessian.numpy()
