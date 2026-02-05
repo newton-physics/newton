@@ -298,7 +298,7 @@ class Example:
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
+            lambda q, qd: newton.math.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
         voxel_size = self.mpm_solver.voxel_size

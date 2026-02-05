@@ -387,21 +387,21 @@ class Example:
         self.ee_tf = wp.transform(*body_q_np[self.ee_index])
 
         # Position objective (single IK problem)
-        self.pos_obj = ik.IKPositionObjective(
+        self.pos_obj = ik.IKObjectivePosition(
             link_index=self.ee_index,
             link_offset=wp.vec3(0.0, 0.0, 0.0),
             target_positions=wp.array([wp.transform_get_translation(self.ee_tf)], dtype=wp.vec3),
         )
 
         # Rotation objective (single IK problem)
-        self.rot_obj = ik.IKRotationObjective(
+        self.rot_obj = ik.IKObjectiveRotation(
             link_index=self.ee_index,
             link_offset_rotation=wp.quat_identity(),
             target_rotations=wp.array([quat_to_vec4(wp.transform_get_rotation(self.ee_tf))], dtype=wp.vec4),
         )
 
         # Joint limit objective
-        self.obj_joint_limits = ik.IKJointLimitObjective(
+        self.obj_joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.model_single.joint_limit_lower,
             joint_limit_upper=self.model_single.joint_limit_upper,
         )
@@ -415,7 +415,7 @@ class Example:
             n_problems=1,
             objectives=[self.pos_obj, self.rot_obj, self.obj_joint_limits],
             lambda_initial=0.1,
-            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
         self.time_in_waypoint = 0.0
         self.current_waypoint = 0

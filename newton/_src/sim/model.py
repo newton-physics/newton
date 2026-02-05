@@ -173,6 +173,19 @@ class Model:
         """Maximum particle velocity (to prevent instability)."""
         self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
+        self.particle_world_start = None
+        """Start index of the first particle per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the particles belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global particles (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total particle count.
+
+        The number of particles in a given world `w` can be computed as:
+            `num_particles_in_world = particle_world_start[w + 1] - particle_world_start[w]`.
+
+        The total number of global particles can be computed as:
+            `num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]`.
+        """
 
         self.shape_key = []
         """List of keys for each shape."""
@@ -235,6 +248,19 @@ class Model:
         """Number of shape contact pairs."""
         self.shape_world = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
+        self.shape_world_start = None
+        """Start index of the first shape per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the shapes belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global shapes (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total shape count.
+
+        The number of shapes in a given world `w` can be computed as:
+            `num_shapes_in_world = shape_world_start[w + 1] - shape_world_start[w]`.
+
+        The total number of global shapes can be computed as:
+            `num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]`.
+        """
 
         # Mesh SDF storage
         self.shape_sdf_data = None
@@ -331,6 +357,19 @@ class Model:
         """Rigid body keys, shape [body_count], str."""
         self.body_world = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
+        self.body_world_start = None
+        """Start index of the first body per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the bodies belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global bodies (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total body count.
+
+        The number of bodies in a given world `w` can be computed as:
+            `num_bodies_in_world = body_world_start[w + 1] - body_world_start[w]`.
+
+        The total number of global bodies can be computed as:
+            `num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]`.
+        """
 
         self.joint_q = None
         """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
@@ -396,12 +435,78 @@ class Model:
         """Joint keys, shape [joint_count], str."""
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
+        self.joint_world_start = None
+        """Start index of the first joint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint count.
+
+        The number of joints in a given world `w` can be computed as:
+            `num_joints_in_world = joint_world_start[w + 1] - joint_world_start[w]`.
+
+        The total number of global joints can be computed as:
+            `num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]`.
+        """
+        self.joint_dof_world_start = None
+        """Start index of the first joint degree of freedom per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint DOFs belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint DOFs (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint DOF count.
+
+        The number of joint DOFs in a given world `w` can be computed as:
+            `num_joint_dofs_in_world = joint_dof_world_start[w + 1] - joint_dof_world_start[w]`.
+
+        The total number of global joint DOFs can be computed as:
+            `num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]`.
+        """
+        self.joint_coord_world_start = None
+        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint coordinates belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint coordinates (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint coordinate count.
+
+        The number of joint coordinates in a given world `w` can be computed as:
+            `num_joint_coords_in_world = joint_coord_world_start[w + 1] - joint_coord_world_start[w]`.
+
+        The total number of global joint coordinates can be computed as:
+            `num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]`.
+        """
+        self.joint_constraint_world_start = None
+        """Start index of the first joint constraint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint constraints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint constraints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint constraint count.
+
+        The number of joint constraints in a given world `w` can be computed as:
+            `num_joint_constraints_in_world = joint_constraint_world_start[w + 1] - joint_constraint_world_start[w]`.
+
+        The total number of global joint constraints can be computed as:
+            `num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]`.
+        """
+
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
         self.articulation_world = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
+        self.articulation_world_start = None
+        """Start index of the first articulation per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the articulations belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global articulations (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total articulation count.
+
+        The number of articulations in a given world `w` can be computed as:
+            `num_articulations_in_world = articulation_world_start[w + 1] - articulation_world_start[w]`.
+
+        The total number of global articulations can be computed as:
+            `num_global_articulations = articulation_world_start[-1] - articulation_world_start[-2] + articulation_world_start[0]`.
+        """
         self.max_joints_per_articulation = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
 
@@ -450,6 +555,19 @@ class Model:
         """Whether constraint is active, shape [equality_constraint_count], bool."""
         self.equality_constraint_world = None
         """World index for each constraint, shape [equality_constraint_count], int."""
+        self.equality_constraint_world_start = None
+        """Start index of the first equality constraint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the equality constraints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global equality constraints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total equality constraint count.
+
+        The number of equality constraints in a given world `w` can be computed as:
+            `num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]`.
+
+        The total number of global equality constraints can be computed as:
+            `num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]`.
+        """
 
         self.particle_count = 0
         """Total number of particles in the system."""
@@ -506,6 +624,7 @@ class Model:
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=Model.AttributeAssignment.MODEL)."""
 
         self._requested_state_attributes: set[str] = set()
+        self._requested_contact_attributes: set[str] = set()
 
         # attributes per body
         self.attribute_frequency["body_q"] = Model.AttributeFrequency.BODY
@@ -768,8 +887,27 @@ class Model:
         Args:
             *attributes: Variable number of attribute names (strings).
         """
-        State.validate_extended_state_attributes(attributes)
+        State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
+
+    def request_contact_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific contact attributes be allocated when creating a Contacts object.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        Contacts.validate_extended_attributes(attributes)
+        self._requested_contact_attributes.update(attributes)
+
+    def get_requested_contact_attributes(self) -> set[str]:
+        """
+        Get the set of requested contact attribute names.
+
+        Returns:
+            set[str]: The set of requested contact attributes.
+        """
+        return self._requested_contact_attributes
 
     def _add_custom_attributes(
         self,
@@ -829,7 +967,7 @@ class Model:
     def add_attribute(
         self,
         name: str,
-        attrib: wp.array,
+        attrib: wp.array | list,
         frequency: Model.AttributeFrequency | str,
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
@@ -839,7 +977,8 @@ class Model:
 
         Args:
             name (str): Name of the attribute.
-            attrib (wp.array): The array to add as an attribute.
+            attrib (wp.array | list): The array to add as an attribute. Can be a wp.array for
+                numeric types or a list for string attributes.
             frequency (Model.AttributeFrequency | str): The frequency of the attribute.
                 Can be a Model.AttributeFrequency enum value or a string for custom frequencies.
             assignment (Model.AttributeAssignment, optional): The assignment category using Model.AttributeAssignment enum.
@@ -849,12 +988,9 @@ class Model:
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
 
         Raises:
-            TypeError: If the attribute is not a wp.array.
             AttributeError: If the attribute already exists or is on the wrong device.
         """
-        if not isinstance(attrib, wp.array):
-            raise TypeError(f"Attribute '{name}' must be a wp.array")
-        if attrib.device != self.device:
+        if isinstance(attrib, wp.array) and attrib.device != self.device:
             raise AttributeError(f"Attribute '{name}' device mismatch (model={self.device}, got={attrib.device})")
 
         # Handle namespaced attributes
@@ -948,3 +1084,43 @@ class Model:
 
         attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes
+
+    def _count_rigid_contact_points(self, rigid_contact_max_per_pair: int | None = None) -> int:
+        """
+        Count the maximum number of rigid contact points that need to be allocated.
+
+        This method estimates the upper bound on the number of rigid contact points that may be generated
+        during collision detection, based on the current set of shape contact pairs and their geometry.
+
+        Args:
+            rigid_contact_max_per_pair: Maximum number of contact points per shape pair.
+                If None or <= 0, no limit is applied.
+
+        Returns:
+            The potential number of rigid contact points that may need to be allocated.
+        """
+        from ..geometry.kernels import count_contact_points  # noqa: PLC0415
+
+        if self.shape_contact_pair_count == 0:
+            return 0
+
+        if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
+            rigid_contact_max_per_pair = 0
+        # calculate the potential number of shape pair contact points
+        contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=count_contact_points,
+            dim=self.shape_contact_pair_count,
+            inputs=[
+                self.shape_contact_pairs,
+                self.shape_type,
+                self.shape_scale,
+                self.shape_source_ptr,
+                rigid_contact_max_per_pair,
+            ],
+            outputs=[contact_count],
+            device=self.device,
+            record_tape=False,
+        )
+        counts = contact_count.numpy()
+        return int(counts[0])

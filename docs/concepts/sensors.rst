@@ -175,7 +175,7 @@ SensorIMU
 Basic Usage
 ~~~~~~~~~~~
 
-``SensorIMU`` takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the :doc:`extended state attribute <extended_state_attributes>` :attr:`State.body_qdd <newton.State.body_qdd>`.
+``SensorIMU`` takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the :doc:`extended attribute <extended_attributes>` :attr:`State.body_qdd <newton.State.body_qdd>`.
 
 By default, the sensor requests ``body_qdd`` from the model during construction, so that subsequent calls to :meth:`Model.state() <newton.Model.state>` allocate it.
 If you need to allocate the State before constructing the sensor, you must request ``body_qdd`` on the model yourself before calling :meth:`Model.state() <newton.Model.state>`.
@@ -212,7 +212,7 @@ See Also
 
 * :doc:`sites` — Using sites as reference frames
 * :doc:`../api/newton_sensors` — Full sensor API reference
-* :doc:`extended_state_attributes` — Optional State arrays (e.g., ``body_qdd``) required by some sensors.
+* :doc:`extended_attributes` — Optional State/Contacts arrays (e.g., ``State.body_qdd``, ``Contacts.force``) required by some sensors.
 * ``newton.examples.sensors.example_sensor_contact`` — SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` — SensorIMU example
 * ``newton.examples.sensors.example_sensor_tiled_camera`` — SensorTiledCamera example
