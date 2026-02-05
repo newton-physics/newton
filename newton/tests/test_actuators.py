@@ -23,6 +23,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.utils.import_usd import parse_usd
 from newton.selection import ArticulationView
 
 try:
@@ -234,8 +235,6 @@ class TestActuatorUSDParsing(unittest.TestCase):
 
     def test_usd_parsing(self):
         """Test USD parsing with and without actuator parse function, verify parameters."""
-        from newton._src.utils.import_usd import parse_usd
-
         test_dir = os.path.dirname(__file__)
         usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
 
