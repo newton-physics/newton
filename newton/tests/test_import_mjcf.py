@@ -4472,6 +4472,126 @@ class TestMjcfMultipleWorldbody(unittest.TestCase):
         self.assertIn("main_geom", builder.shape_key)
 
 
+class TestMjcfActuatorAutoLimited(unittest.TestCase):
+    """Test auto-enabling of actuator *limited flags when *range is specified."""
+
+    def test_ctrllimited_auto_enabled_when_ctrlrange_specified(self):
+        """Test that ctrllimited is auto-enabled when ctrlrange is specified."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <!-- ctrlrange specified but ctrllimited not explicitly set -->
+                <general name="act1" joint="joint1" ctrlrange="-1 1"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # ctrllimited should be auto-enabled (1) because ctrlrange was specified
+        ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
+        self.assertEqual(ctrllimited[0], 1)
+
+    def test_ctrllimited_not_auto_enabled_without_ctrlrange(self):
+        """Test that ctrllimited stays disabled when ctrlrange is not specified."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <!-- No ctrlrange specified -->
+                <general name="act1" joint="joint1"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # ctrllimited should be disabled (0) because ctrlrange was not specified
+        ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
+        self.assertEqual(ctrllimited[0], 0)
+
+    def test_ctrllimited_explicit_false_not_overridden(self):
+        """Test that explicit ctrllimited=false is not overridden."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <!-- ctrlrange specified but ctrllimited explicitly set to false -->
+                <general name="act1" joint="joint1" ctrlrange="-1 1" ctrllimited="false"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # ctrllimited should stay disabled (0) because it was explicitly set
+        ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
+        self.assertEqual(ctrllimited[0], 0)
+
+    def test_forcelimited_auto_enabled_when_forcerange_specified(self):
+        """Test that forcelimited is auto-enabled when forcerange is specified."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="act1" joint="joint1" forcerange="-100 100"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        forcelimited = model.mujoco.actuator_forcelimited.numpy()
+        self.assertEqual(forcelimited[0], 1)
+
+    def test_actlimited_auto_enabled_when_actrange_specified(self):
+        """Test that actlimited is auto-enabled when actrange is specified."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="base">
+                    <joint name="joint1" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="act1" joint="joint1" actrange="0 1" dyntype="integrator"/>
+            </actuator>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        actlimited = model.mujoco.actuator_actlimited.numpy()
+        self.assertEqual(actlimited[0], 1)
+
+
 class TestMjcfActuatorClassDefaults(unittest.TestCase):
     """Test that actuator elements properly inherit from default classes."""
 
@@ -4522,15 +4642,15 @@ class TestMjcfActuatorClassDefaults(unittest.TestCase):
         # Should have 3 actuators
         self.assertEqual(biasprm_values.shape[0], 3)
 
-        # act1 and act2 should inherit from "robot" class: biasprm="0 -2000 -400"
-        np.testing.assert_allclose(biasprm_values[0, :3], [0.0, -2000.0, -400.0], atol=1.0)
-        np.testing.assert_allclose(biasprm_values[1, :3], [0.0, -2000.0, -400.0], atol=1.0)
+        # act1 and act2 use "robot" class: biasprm="0 -2000 -400"
+        np.testing.assert_allclose(biasprm_values[0, :3], [0, -2000, -400], rtol=1e-5)
+        np.testing.assert_allclose(biasprm_values[1, :3], [0, -2000, -400], rtol=1e-5)
 
-        # act3 should inherit from "small" class (child of "robot"): biasprm="0 -500 -100"
-        np.testing.assert_allclose(biasprm_values[2, :3], [0.0, -500.0, -100.0], atol=1.0)
+        # act3 uses "small" class (nested under robot): biasprm="0 -500 -100"
+        np.testing.assert_allclose(biasprm_values[2, :3], [0, -500, -100], rtol=1e-5)
 
-    def test_general_actuator_inherits_gainprm_from_class(self):
-        """Test that general actuators inherit gainprm from default class."""
+    def test_general_actuator_class_with_gainprm_override(self):
+        """Test that gainprm can be inherited from class and overridden inline."""
         mjcf_content = """
         <mujoco>
             <default>
