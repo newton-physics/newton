@@ -528,6 +528,11 @@ def get_custom_attribute_values(
     out: dict[str, Any] = {}
     for attr in custom_attributes:
         usd_attr_name = attr.usd_attribute_name
+        if usd_attr_name == "*":
+            # Just apply the transformer to all prims of this frequency
+            if attr.usd_value_transformer is not None:
+                out[attr.key] = attr.usd_value_transformer(None, {"prim": prim, "attr": attr})
+            continue
         usd_attr = prim.GetAttribute(usd_attr_name)
         if usd_attr is not None and usd_attr.HasAuthoredValue():
             if attr.usd_value_transformer is not None:

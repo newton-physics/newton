@@ -640,6 +640,53 @@ class SolverMuJoCo(SolverBase):
                 return None
             return wp.vec2(rmin, rmax)
 
+        def resolve_dof_name(_: str, context: dict[str, Any]):
+            """For each DOF, return the prim path of the DOF."""
+            prim = context["prim"]
+            if prim.GetTypeName() in ["PhysicsRevoluteJoint", "PhysicsPrismaticJoint"]:
+                return [str(prim.GetPath())]
+            warnings.warn(f"Only single-dof joints are supported for now: {prim.GetTypeName()}", stacklevel=2)
+            return str(prim.GetPath())
+
+        # First we get a list of all joint DOF names from USD
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="dof_name",
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
+                dtype=str,
+                default="",
+                namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_dof_name,
+            )
+        )
+        return
+        # Then we get the target USD path for each actuator so that we can later resolve
+        # the DOF index from the path given the Model.mujoco.dof_name list
+        def resolve_actuator_target_path(_: str, context: dict[str, Any]):
+            """For each actuator, return the target USD path."""
+            prim = context["prim"]
+            rel = prim.GetRelationship("mjc:target")
+
+            # Get the first target as a string
+            target_paths = rel.GetTargets()
+            target_str = str(target_paths[0]) if target_paths else None
+            return target_str
+
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_target_path",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=str,
+                default="",
+                namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_actuator_target_path,
+            )
+        )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_trntype",
