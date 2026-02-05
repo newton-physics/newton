@@ -199,7 +199,6 @@ class SolverVBD(SolverBase):
             integrate_with_external_rigid_solver: Indicator for coupled rigid body-cloth simulation. When set to `True`,
                 the solver assumes rigid bodies are integrated by an external solver (one-way coupling).
             particle_conservative_bound_relaxation: Relaxation factor for conservative penetration-free projection.
-                Default is 0.85, which approximately doubles the CCD safety margin to ~1.70x the contact margin.
             particle_vertex_contact_buffer_size: Preallocation size for each vertex's vertex-triangle collision buffer.
             particle_edge_contact_buffer_size: Preallocation size for edge's edge-edge collision buffer.
             particle_collision_detection_interval: Controls how frequently particle self-contact detection is applied
