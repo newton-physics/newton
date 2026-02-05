@@ -468,7 +468,7 @@ class ViewerBase:
         Args:
             contact_surface_data: A HydroelasticContactSurfaceData instance containing vertex arrays
                 for visualization, or None if hydroelastic collision is not enabled.
-            penetrating_only: If True, only render penetrating contacts (depth > 0).
+            penetrating_only: If True, only render penetrating contacts (depth < 0).
         """
         if contact_surface_data is None or not self.show_hydro_contact_surface:
             self.log_lines("/hydro_contact_surface", None, None, None)
