@@ -722,6 +722,27 @@ def _expand_indexed_primvar(
     return values[indices]
 
 
+def _triangulate_face_varying_indices(counts: Sequence[int], flip_winding: bool) -> np.ndarray:
+    """Return flattened corner indices for fan-triangulated face-varying data."""
+    counts_i32 = np.asarray(counts, dtype=np.int32)
+    num_tris = int(np.sum(counts_i32 - 2))
+    if num_tris <= 0:
+        return np.zeros((0,), dtype=np.int32)
+
+    tri_face_ids = np.repeat(np.arange(len(counts_i32), dtype=np.int32), counts_i32 - 2)
+    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts_i32])
+    face_bases = np.concatenate([[0], np.cumsum(counts_i32[:-1], dtype=np.int32)])
+
+    corner_faces = np.empty((num_tris, 3), dtype=np.int32)
+    corner_faces[:, 0] = face_bases[tri_face_ids]
+    corner_faces[:, 1] = face_bases[tri_face_ids] + tri_local_ids + 1
+    corner_faces[:, 2] = face_bases[tri_face_ids] + tri_local_ids + 2
+    if flip_winding:
+        corner_faces = corner_faces[:, ::-1]
+    return corner_faces.reshape(-1)
+
+
+@overload
 def get_mesh(
     prim: Usd.Prim,
     load_normals: bool = False,
@@ -731,7 +752,38 @@ def get_mesh(
         "vertex_averaging", "angle_weighted", "vertex_splitting"
     ] = "vertex_splitting",
     vertex_splitting_angle_threshold_deg: float = 25.0,
-) -> Mesh:
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: Literal[False] = False,
+) -> Mesh: ...
+
+
+@overload
+def get_mesh(
+    prim: Usd.Prim,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int = MESH_MAXHULLVERT,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: Literal[True] = True,
+) -> tuple[Mesh, np.ndarray | None]: ...
+
+
+def get_mesh(
+    prim: Usd.Prim,
+    load_normals: bool = False,
+    load_uvs: bool = False,
+    maxhullvert: int = MESH_MAXHULLVERT,
+    face_varying_normal_conversion: Literal[
+        "vertex_averaging", "angle_weighted", "vertex_splitting"
+    ] = "vertex_splitting",
+    vertex_splitting_angle_threshold_deg: float = 25.0,
+    preserve_facevarying_uvs: bool = False,
+    return_uv_indices: bool = False,
+) -> Mesh | tuple[Mesh, np.ndarray | None]:
     """
     Load a triangle mesh from a USD prim that has the ``UsdGeom.Mesh`` schema.
 
@@ -780,9 +832,19 @@ def get_mesh(
 
         vertex_splitting_angle_threshold_deg (float): The threshold angle in degrees for splitting vertices based on the face normals in case of faceVarying normals and ``face_varying_normal_conversion`` is "vertex_splitting". Corners whose normals differ by more than angle_deg will be split
             into different vertex clusters. Lower = more splits (sharper), higher = fewer splits (smoother).
+        preserve_facevarying_uvs (bool): If True, keep faceVarying UVs in their
+            original corner layout and avoid UV-driven vertex splitting. The
+            returned mesh keeps its original topology. This is useful when the
+            caller needs the original UV indexing (e.g., panel-space cloth).
+        return_uv_indices (bool): If True, return a tuple ``(mesh, uv_indices)``
+            where ``uv_indices`` is a flattened triangle index buffer for the
+            UVs when available. For faceVarying UVs and
+            ``preserve_facevarying_uvs=True``, these indices reference the
+            face-varying UV array.
 
     Returns:
-        newton.Mesh: The loaded mesh.
+        newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
+        ``return_uv_indices`` is True.
     """
 
     mesh = UsdGeom.Mesh(prim)
@@ -971,6 +1033,7 @@ def get_mesh(
     if flip_winding:
         faces = faces[:, ::-1]
 
+    uv_indices = None
     if uvs is not None:
         uvs = np.array(uvs, dtype=np.float32)
         # If vertices were already split for faceVarying normals, UVs (if any)
@@ -984,19 +1047,8 @@ def get_mesh(
                 )
                 uvs = None
             else:
-                counts_i32 = np.asarray(counts, dtype=np.int32)
-                num_tris = int(np.sum(counts_i32 - 2))
-                if num_tris > 0:
-                    tri_face_ids = np.repeat(np.arange(len(counts_i32), dtype=np.int32), counts_i32 - 2)
-                    tri_local_ids = np.concatenate([np.arange(n - 2, dtype=np.int32) for n in counts_i32])
-                    face_bases = np.concatenate([[0], np.cumsum(counts_i32[:-1], dtype=np.int32)])
-                    corner_faces = np.empty((num_tris, 3), dtype=np.int32)
-                    corner_faces[:, 0] = face_bases[tri_face_ids]
-                    corner_faces[:, 1] = face_bases[tri_face_ids] + tri_local_ids + 1
-                    corner_faces[:, 2] = face_bases[tri_face_ids] + tri_local_ids + 2
-                    if flip_winding:
-                        corner_faces = corner_faces[:, ::-1]
-                    corner_flat = corner_faces.reshape(-1)
+                corner_flat = _triangulate_face_varying_indices(counts, flip_winding)
+                if not preserve_facevarying_uvs:
                     points_original = points
                     points = points_original[indices[corner_flat]]
                     if normals is not None:
@@ -1013,8 +1065,16 @@ def get_mesh(
                             normals = None
                     uvs = uvs[corner_flat]
                     faces = np.arange(len(corner_flat), dtype=np.int32).reshape(-1, 3)
+                elif return_uv_indices:
+                    uv_indices = corner_flat
 
-    return Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
+    if return_uv_indices and uvs is not None and uv_indices is None:
+        uv_indices = faces.reshape(-1)
+
+    mesh_out = Mesh(points, faces.flatten(), normals=normals, uvs=uvs, maxhullvert=maxhullvert)
+    if return_uv_indices:
+        return mesh_out, uv_indices
+    return mesh_out
 
 
 def _resolve_asset_path(
