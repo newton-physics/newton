@@ -261,5 +261,130 @@ class TestActuatorUSDParsing(unittest.TestCase):
         self.assertEqual(parsed.kwargs.get("kd"), 10.0)
 
 
+@unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
+class TestActuatorSelectionAPI(unittest.TestCase):
+    """Tests for actuator parameter access via ArticulationView."""
+
+    def _build_single_world_model(self):
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_body() for _ in range(3)]
+        joints = []
+        for i, body in enumerate(bodies):
+            parent = -1 if i == 0 else bodies[i - 1]
+            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
+        builder.add_articulation(joints, key="robot")
+        dofs = [builder.joint_qd_start[j] for j in joints]
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=200.0)
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[2]], kp=300.0)
+        return builder.finalize(), dofs
+
+    def _build_multi_world_model(self, num_worlds=3):
+        template = newton.ModelBuilder()
+        bodies = [template.add_body() for _ in range(3)]
+        joints = []
+        for i, body in enumerate(bodies):
+            parent = -1 if i == 0 else bodies[i - 1]
+            joints.append(template.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
+        template.add_articulation(joints, key="robot")
+        dofs = [template.joint_qd_start[j] for j in joints]
+        template.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+        template.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=200.0)
+        template.add_actuator(ActuatorPD, input_indices=[dofs[2]], kp=300.0)
+        builder = newton.ModelBuilder()
+        for _ in range(num_worlds):
+            builder.add_world(template)
+        return builder.finalize(), num_worlds
+
+    def test_get_actuator_parameter_single_world(self):
+        """Test getting actuator parameters in single world."""
+        from newton.selection import ArticulationView
+
+        model, dofs = self._build_single_world_model()
+        view = ArticulationView(model, pattern="robot")
+        actuator = model.actuators[0]
+        kp_values = view.get_actuator_parameter(actuator, "kp")
+        self.assertEqual(kp_values.shape, (1, 3))
+        np.testing.assert_array_almost_equal(kp_values.numpy().flatten(), [100.0, 200.0, 300.0])
+
+    def test_get_actuator_parameter_multi_world(self):
+        """Test getting actuator parameters in multi-world setup."""
+        from newton.selection import ArticulationView
+
+        num_worlds = 3
+        model, _ = self._build_multi_world_model(num_worlds)
+        view = ArticulationView(model, pattern="robot*")
+        actuator = model.actuators[0]
+        kp_values = view.get_actuator_parameter(actuator, "kp")
+        self.assertEqual(kp_values.shape, (num_worlds, 3))
+        for w in range(num_worlds):
+            np.testing.assert_array_almost_equal(kp_values.numpy()[w], [100.0, 200.0, 300.0])
+
+    def test_set_actuator_parameter_single_world(self):
+        """Test setting actuator parameters in single world."""
+        import warp as wp
+
+        from newton.selection import ArticulationView
+
+        model, dofs = self._build_single_world_model()
+        view = ArticulationView(model, pattern="robot")
+        actuator = model.actuators[0]
+        new_kp = wp.array([[500.0, 600.0, 700.0]], dtype=float, device=model.device)
+        view.set_actuator_parameter(actuator, "kp", new_kp)
+        np.testing.assert_array_almost_equal(actuator.kp.numpy(), [500.0, 600.0, 700.0])
+
+    def test_set_actuator_parameter_multi_world(self):
+        """Test setting actuator parameters in multi-world setup."""
+        import warp as wp
+
+        from newton.selection import ArticulationView
+
+        num_worlds = 3
+        model, _ = self._build_multi_world_model(num_worlds)
+        view = ArticulationView(model, pattern="robot*")
+        actuator = model.actuators[0]
+        new_kp = wp.array(
+            [
+                [500.0, 600.0, 700.0],
+                [800.0, 900.0, 1000.0],
+                [1100.0, 1200.0, 1300.0],
+            ],
+            dtype=float,
+            device=model.device,
+        )
+        view.set_actuator_parameter(actuator, "kp", new_kp)
+        expected = [500.0, 600.0, 700.0, 800.0, 900.0, 1000.0, 1100.0, 1200.0, 1300.0]
+        np.testing.assert_array_almost_equal(actuator.kp.numpy(), expected)
+
+    def test_set_actuator_parameter_with_mask(self):
+        """Test setting actuator parameters with per-world mask."""
+        import warp as wp
+
+        from newton.selection import ArticulationView
+
+        num_worlds = 3
+        model, _ = self._build_multi_world_model(num_worlds)
+        view = ArticulationView(model, pattern="robot*")
+        actuator = model.actuators[0]
+        mask = wp.array([False, True, False], dtype=bool, device=model.device)
+        new_kp = wp.array(
+            [
+                [999.0, 999.0, 999.0],
+                [500.0, 600.0, 700.0],
+                [999.0, 999.0, 999.0],
+            ],
+            dtype=float,
+            device=model.device,
+        )
+        view.set_actuator_parameter(actuator, "kp", new_kp, mask=mask)
+        kp_np = actuator.kp.numpy()
+        # World 0 unchanged
+        np.testing.assert_array_almost_equal(kp_np[0:3], [100.0, 200.0, 300.0])
+        # World 1 updated
+        np.testing.assert_array_almost_equal(kp_np[3:6], [500.0, 600.0, 700.0])
+        # World 2 unchanged
+        np.testing.assert_array_almost_equal(kp_np[6:9], [100.0, 200.0, 300.0])
+
+
 if __name__ == "__main__":
     unittest.main()
