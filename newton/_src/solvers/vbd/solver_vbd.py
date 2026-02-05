@@ -1177,7 +1177,7 @@ class SolverVBD(SolverBase):
         update_rigid_history = self.update_rigid_history
         self.update_rigid_history = True
 
-        self.initialize_rigid_bodies(state_in, state_out, contacts, dt, update_rigid_history)
+        self.initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history)
         self.initialize_particles(state_in, state_out, dt)
 
         for iter_num in range(self.iterations):
@@ -1291,7 +1291,6 @@ class SolverVBD(SolverBase):
     def initialize_rigid_bodies(
         self,
         state_in: State,
-        state_out: State,
         contacts: Contacts | None,
         dt: float,
         update_rigid_history: bool,
