@@ -106,7 +106,7 @@ class CollisionSetup:
             self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         else:
             self.collision_pipeline = None
-            self.contacts = self.model.collide(self.state_0)
+            self.model.collide(self.state_0, self.contacts)
 
         self.solver = solver_fn(self.model)
 

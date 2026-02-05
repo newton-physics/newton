@@ -825,19 +825,11 @@ class Model:
         the model for subsequent use by :meth:`collide`.
 
         """
-        from .collide import CollisionPipeline, CollisionPipelineType  # noqa: PLC0415
         from .collide_unified import BroadPhaseMode, CollisionPipelineUnified  # noqa: PLC0415
 
-        if requires_grad is None:
-            requires_grad = self.requires_grad
-
-        self._init_collision_pipeline = CollisionPipelineUnified.from_model(
+        self._collision_pipeline = CollisionPipelineUnified(
             model=self,
             broad_phase_mode=BroadPhaseMode.EXPLICIT,
-            soft_contact_max=None,
-            soft_contact_margin=0.01,
-            edge_sdf_iter=10,
-            requires_grad=requires_grad,
         )
 
     def contacts(
@@ -852,19 +844,13 @@ class Model:
 
         Returns:
             Contacts: The contact object containing collision information.
-
-        Note:
-            Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`, which is populated
-            from ``ShapeConfig.contact_margin`` during model building. If a shape doesn't specify a contact margin,
-            it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
-            :meth:`ModelBuilder.finalize`.
         """
-        if self.collision_pipeline is not None:
+        if self._collision_pipeline is None:
             self._init_collision_pipeline()
 
-        contacts = self._collision_pipeline.contacts(self)
+        contacts = self._collision_pipeline.contacts()
         # attach custom attributes with assignment==CONTACT
-        self._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=requires_grad)
+        self._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
         return contacts
 
     def collide(
@@ -887,7 +873,7 @@ class Model:
                 "or use a your collision pipeline directly: CollisionPipeline.collide(contacts)."
             )
 
-        self._collision_pipeline.collide(self, state, contacts)
+        self._collision_pipeline.collide(state, contacts)
 
     def request_state_attributes(self, *attributes: str) -> None:
         """

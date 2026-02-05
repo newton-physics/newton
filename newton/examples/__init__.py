@@ -441,9 +441,8 @@ def create_collision_pipeline(
         else:
             collision_pipeline_type = "unified"  # Default
 
-    # If standard pipeline requested, return None (model.collide will create it implicitly)
     if collision_pipeline_type == "standard":
-        return newton.CollisionPipeline.from_model(model)
+        return newton.CollisionPipeline(model)
 
     # Determine broad phase mode for unified pipeline
     if broad_phase_mode is None:
@@ -461,7 +460,7 @@ def create_collision_pipeline(
     broad_phase_enum = broad_phase_map.get(broad_phase_mode.lower(), newton.BroadPhaseMode.NXN)
 
     # Create and return CollisionPipelineUnified
-    return newton.CollisionPipelineUnified.from_model(
+    return newton.CollisionPipelineUnified(
         model,
         broad_phase_mode=broad_phase_enum,
     )
