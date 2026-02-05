@@ -1369,9 +1369,7 @@ def _extract_shader_properties(shader: UsdShade.Shader | None, prim: Usd.Prim) -
         metallic_value = _get_input_value(shader, ("metallic_constant", "metallic"))
         properties["metallic"] = _coerce_float(metallic_value)
     if properties["roughness"] is None:
-        roughness_value = _get_input_value(
-            shader, ("reflection_roughness_constant", "roughness_constant", "roughness")
-        )
+        roughness_value = _get_input_value(shader, ("reflection_roughness_constant", "roughness_constant", "roughness"))
         properties["roughness"] = _coerce_float(roughness_value)
 
     if properties["texture"] is None:

@@ -33,6 +33,8 @@ newton.utils
    event_scope
    leaky_max
    leaky_min
+   load_texture
+   normalize_texture
    plot_graph
    quat_between_axes
    quat_decompose
