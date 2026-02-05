@@ -61,14 +61,13 @@ class SensorTiledCameraBenchmark:
 
         self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
-            num_cameras=1,
-            width=resolution,
-            height=resolution,
             options=SensorTiledCamera.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
         )
-        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(math.radians(45.0))
-        self.color_image = self.tiled_camera_sensor.create_color_image_output()
-        self.depth_image = self.tiled_camera_sensor.create_depth_image_output()
+        self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
+            resolution, resolution, math.radians(45.0)
+        )
+        self.color_image = self.tiled_camera_sensor.create_color_image_output(resolution, resolution)
+        self.depth_image = self.tiled_camera_sensor.create_depth_image_output(resolution, resolution)
 
         self.tiled_camera_sensor.update_from_state(self.state)
 
@@ -88,7 +87,7 @@ class SensorTiledCameraBenchmark:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_pixel(self, resolution: int, num_worlds: int, iterations: int):
-        self.tiled_camera_sensor.render_context.options.tile_rendering = False
+        self.tiled_camera_sensor.render_context.options.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         with wp.ScopedTimer("Rendering", synchronize=True, print=True) as timer:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(
@@ -104,8 +103,9 @@ class SensorTiledCameraBenchmark:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_tiled(self, resolution: int, num_worlds: int, iterations: int):
-        self.tiled_camera_sensor.render_context.options.tile_rendering = True
-        self.tiled_camera_sensor.render_context.options.tile_size = 8
+        self.tiled_camera_sensor.render_context.options.render_order = SensorTiledCamera.RenderOrder.TILED
+        self.tiled_camera_sensor.render_context.options.tile_width = 8
+        self.tiled_camera_sensor.render_context.options.tile_height = 8
         with wp.ScopedTimer("Tiled Rendering", synchronize=True, print=False) as timer:
             for _ in range(iterations):
                 self.tiled_camera_sensor.render(
@@ -138,11 +138,12 @@ class SensorTiledCameraBenchmark:
             Image.fromarray(depth_image.numpy()).save("benchmark_depth.png")
 
     def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: SensorTiledCamera):
+        num_cameras = 1
         title = f"{name}"
         if iterations > 1:
             title += " average"
         average = f"{elapsed / iterations:.2f} ms"
-        fps = f"({(1000.0 / (elapsed / iterations) * (sensor.render_context.num_worlds * sensor.render_context.num_cameras)):,.2f} fps)"
+        fps = f"({(1000.0 / (elapsed / iterations) * (sensor.render_context.num_worlds * num_cameras)):,.2f} fps)"
 
         print(f"{title} {'.' * (40 - len(title) - len(average))} {average} {fps if iterations > 1 else ''}")
 
