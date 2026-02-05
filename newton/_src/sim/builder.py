@@ -4955,6 +4955,10 @@ class ModelBuilder:
         if num_segments < 1:
             raise ValueError("add_rod: positions must contain at least 2 points")
 
+        # Coerce all input positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
+        # always operate on Warp vector types even if the caller passed tuples/lists.
+        positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in positions]
+
         if quaternions is not None and len(quaternions) != num_segments:
             raise ValueError(
                 f"add_rod: quaternions must have {num_segments} elements for {num_segments} segments, "
@@ -4978,7 +4982,7 @@ class ModelBuilder:
         # - open chains are wrapped into a single articulation (tree), and
         # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
         link_bodies, link_joints = self.add_rod_graph(
-            node_positions=positions,
+            node_positions=positions_wp,
             edges=edges,
             radius=radius,
             cfg=cfg,
@@ -5013,7 +5017,7 @@ class ModelBuilder:
                 last_body = link_bodies[-1]
 
                 # Connect the end of the last segment to the start of the first segment.
-                L_last = float(wp.length(positions[-1] - positions[-2]))
+                L_last = float(wp.length(positions_wp[-1] - positions_wp[-2]))
                 min_segment_length = 1.0e-9
                 if L_last <= min_segment_length:
                     L_last = min_segment_length
@@ -5139,6 +5143,10 @@ class ModelBuilder:
         # Guard against near-zero lengths: edge length is used to normalize stiffness (EA/L, EI/L).
         min_segment_length = 1.0e-9
 
+        # Coerce all input node positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
+        # always operate on Warp vector types even if the caller passed tuples/lists.
+        node_positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in node_positions]
+
         # Build per-node incidence for spanning-tree traversal.
         node_incidence: list[list[int]] = [[] for _ in range(num_nodes)]
 
@@ -5157,8 +5165,8 @@ class ModelBuilder:
             if u == v:
                 raise ValueError(f"add_rod_graph: edge {e_idx} connects a node to itself ({u} -> {v})")
 
-            p0 = node_positions[u]
-            p1 = node_positions[v]
+            p0 = node_positions_wp[u]
+            p1 = node_positions_wp[v]
             seg_vec = p1 - p0
             seg_length = float(wp.length(seg_vec))
             if seg_length <= min_segment_length:
