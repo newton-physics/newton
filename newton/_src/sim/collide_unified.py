@@ -390,7 +390,6 @@ class CollisionPipelineUnified:
                 When False, mesh-related kernel launches in the narrow phase are skipped, improving performance
                 for scenes with only primitive shapes. Defaults to True for safety.
         """
-        self.contacts = None
         self.shape_count = shape_count
         self.broad_phase_mode = broad_phase_mode
         self.device = device
@@ -568,32 +567,36 @@ class CollisionPipelineUnified:
 
         return pipeline
 
-    def collide(self, model: Model, state: State) -> Contacts:
+    def contacts(self, model: Model) -> Contacts:
+        """
+        Allocate and return a new Contacts object for the model.
+
+        Args:
+            model: The simulation model
+
+        Returns:
+            Contacts: A newly allocated contacts object for the model.
+        """
+        return Contacts(
+            self.rigid_contact_max,
+            self.soft_contact_max,
+            requires_grad=self.requires_grad,
+            device=self.device,
+            per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
+        )
+
+    def collide(self, model: Model, state: State, contacts: Contacts):
         """
         Run the collision pipeline using NarrowPhase.
 
         Args:
             model: The simulation model
             state: The current simulation state
-
-        Returns:
-            Contacts: The generated contacts
+            contacts: The contacts object to populate (will be cleared first).
         """
 
-        # Allocate or clear contacts
-        if self.contacts is None or self.requires_grad:
-            self.contacts = Contacts(
-                self.rigid_contact_max,
-                self.soft_contact_max,
-                requires_grad=self.requires_grad,
-                device=self.device,
-                per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
-                requested_attributes=model.get_requested_contact_attributes(),
-            )
-        else:
-            self.contacts.clear()
-
-        contacts = self.contacts
+        contacts.clear()
+        # TODO: validate contacts dimensions & compatibility
 
         # Clear counters
         self.broad_phase_pair_count.zero_()

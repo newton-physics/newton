@@ -72,8 +72,6 @@ class CollisionPipeline:
         Note:
             Contact margins for rigid contacts are now controlled per-shape via ``model.shape_contact_margin``.
         """
-        # will be allocated during collide
-        self.contacts = None
 
         self.shape_count = shape_count
         self.shape_pairs_filtered = shape_pairs_filtered
@@ -152,34 +150,33 @@ class CollisionPipeline:
             model.device,
         )
 
-    def collide(self, model: Model, state: State) -> Contacts:
+    def contacts(self, model: Model) -> Contacts:
         """
-        Run the collision pipeline for the given model and state, generating contacts.
+        Allocate and return a new :class:`Contacts` object for the given model.
 
-        This method allocates or clears the contact buffer as needed, then generates
-        soft and rigid contacts using the current simulation state.
+        Args:
+            model (Model): The simulation model.
+
+        Returns:
+            Contacts: A newly allocated contacts buffer sized for this pipeline.
+        """
+        return Contacts(
+            self.rigid_contact_max,
+            self.soft_contact_max,
+            requires_grad=self.requires_grad,
+            device=model.device,
+        )
+
+    def collide(self, model: Model, state: State, contacts: Contacts):
+        """
+        Run collision detection and populate the contacts buffer.
 
         Args:
             model (Model): The simulation model.
             state (State): The current simulation state.
-
-        Returns:
-            Contacts: The generated contacts for the current state.
+            contacts (Contacts): The contacts buffer to populate (will be cleared first).
         """
-        # Allocate new contact memory for contacts if needed (e.g., for gradients)
-        if self.contacts is None or self.requires_grad:
-            self.contacts = Contacts(
-                self.rigid_contact_max,
-                self.soft_contact_max,
-                requires_grad=self.requires_grad,
-                device=model.device,
-                requested_attributes=model.get_requested_contact_attributes(),
-            )
-        else:
-            self.contacts.clear()
-
-        # output contacts buffer
-        contacts = self.contacts
+        contacts.clear()
 
         shape_count = self.shape_count
         particle_count = len(state.particle_q) if state.particle_q else 0
