@@ -6391,8 +6391,11 @@ class ModelBuilder:
         :class:`newton.solvers.SolverVBD`; :meth:`finalize` does not implicitly color the model.
 
         Args:
-            include_bending_energy: Whether to consider bending energy for trimeshes in the coloring process. If set to `True`, the generated
-                graph will contain all the edges connecting o1 and o2; otherwise, the graph will be equivalent to the trimesh.
+            include_bending: Whether to include bending edges in the coloring graph. Set to `True` if your
+                model contains bending edges (added via :meth:`add_edge`) that participate in bending constraints.
+                When enabled, the coloring graph includes connections between opposite vertices of each edge (o1-o2),
+                ensuring proper dependency handling for parallel bending computations. Leave as `False` if your model
+                has no bending edges or if bending edges should not affect the coloring.
             balance_colors: Whether to apply the color balancing algorithm to balance the size of each color
             target_max_min_color_ratio: the color balancing algorithm will stop when the ratio between the largest color and
                 the smallest color reaches this value
