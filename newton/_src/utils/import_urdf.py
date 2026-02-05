@@ -30,9 +30,11 @@ from ..core.types import Transform
 from ..geometry import MESH_MAXHULLVERT, Mesh
 from ..sim import ModelBuilder
 from ..sim.joints import ActuatorMode
-from ..sim.model import ModelAttributeFrequency
+from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content
 from .topology import topological_sort
+
+AttributeFrequency = Model.AttributeFrequency
 
 # Optional dependency for robust URI resolution
 try:
@@ -107,7 +109,7 @@ def parse_urdf(
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
             (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-            If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+            If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
             :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
             damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -154,16 +156,16 @@ def parse_urdf(
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.SHAPE]
+        [AttributeFrequency.SHAPE]
     )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.BODY]
+        [AttributeFrequency.BODY]
     )
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT]
+        [AttributeFrequency.JOINT]
     )
     builder_custom_attr_articulation: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.ARTICULATION]
+        [AttributeFrequency.ARTICULATION]
     )
 
     def parse_transform(element):

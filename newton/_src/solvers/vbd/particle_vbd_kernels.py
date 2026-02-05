@@ -27,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
+from newton._src.math import orthonormal_basis
 from newton._src.solvers.vbd.rigid_vbd_kernels import evaluate_body_particle_contact
 
 from ...geometry import ParticleFlags
@@ -304,39 +305,6 @@ def _test_compute_force_element_adjacency(
                     face_indices[face, 1],
                     face_indices[face, 2],
                 )
-
-
-@wp.func
-def build_orthonormal_basis(n: wp.vec3):
-    """
-    Builds an orthonormal basis given a normal vector `n`. Return the two axes that is perpendicular to `n`.
-
-    :param n: A 3D vector (list or array-like) representing the normal vector
-    """
-    b1 = wp.vec3()
-    b2 = wp.vec3()
-    if n[2] < 0.0:
-        a = 1.0 / (1.0 - n[2])
-        b = n[0] * n[1] * a
-        b1[0] = 1.0 - n[0] * n[0] * a
-        b1[1] = -b
-        b1[2] = n[0]
-
-        b2[0] = b
-        b2[1] = n[1] * n[1] * a - 1.0
-        b2[2] = -n[1]
-    else:
-        a = 1.0 / (1.0 + n[2])
-        b = -n[0] * n[1] * a
-        b1[0] = 1.0 - n[0] * n[0] * a
-        b1[1] = b
-        b1[2] = -n[0]
-
-        b2[0] = b
-        b2[1] = 1.0 - n[1] * n[1] * a
-        b2[2] = -n[1]
-
-    return b1, b2
 
 
 @wp.func
@@ -781,7 +749,7 @@ def evaluate_edge_edge_contact(
         c2_prev = pos_anchor[e2_v1] + (pos_anchor[e2_v2] - pos_anchor[e2_v1]) * t
 
         dx = (c1 - c1_prev) - (c2 - c2_prev)
-        axis_1, axis_2 = build_orthonormal_basis(collision_normal)
+        axis_1, axis_2 = orthonormal_basis(collision_normal)
 
         T = mat32(
             axis_1[0],
@@ -906,7 +874,7 @@ def evaluate_edge_edge_contact_2_vertices(
         c2_prev = pos_anchor[e2_v1] + (pos_anchor[e2_v2] - pos_anchor[e2_v1]) * t
 
         dx = (c1 - c1_prev) - (c2 - c2_prev)
-        axis_1, axis_2 = build_orthonormal_basis(collision_normal)
+        axis_1, axis_2 = orthonormal_basis(collision_normal)
 
         T = mat32(
             axis_1[0],
@@ -1024,7 +992,7 @@ def evaluate_vertex_triangle_collision_force_hessian(
 
         dx = dx_v - (closest_p - closest_p_prev)
 
-        e0, e1 = build_orthonormal_basis(collision_normal)
+        e0, e1 = orthonormal_basis(collision_normal)
 
         T = mat32(e0[0], e1[0], e0[1], e1[1], e0[2], e1[2])
 
@@ -1112,7 +1080,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
 
         dx = dx_v - (closest_p - closest_p_prev)
 
-        e0, e1 = build_orthonormal_basis(collision_normal)
+        e0, e1 = orthonormal_basis(collision_normal)
 
         T = mat32(e0[0], e1[0], e0[1], e1[1], e0[2], e1[2])
 
@@ -1901,15 +1869,17 @@ def _csr_row(vals: np.ndarray, offs: np.ndarray, i: int) -> np.ndarray:
     return vals[offs[i] : offs[i + 1]]
 
 
-def _set_to_csr(list_of_sets, dtype=np.int32, sort=True):
+def set_to_csr(
+    list_of_sets: list[set[int]], dtype: np.dtype = np.int32, sort: bool = True
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Convert a list of integer sets into CSR (Compressed Sparse Row) structure.
     Args:
         list_of_sets: Iterable where each entry is a set of ints.
         dtype: Output dtype for the flattened arrays.
-        sort: Whether to sort each row when writing into `flat`.
+        sort: Whether to sort each row when writing into ``flat``.
     Returns:
-        A tuple `(flat, offsets)` representing the CSR values and offsets.
+        A tuple ``(flat, offsets)`` representing the CSR values and offsets.
     """
     offsets = np.zeros(len(list_of_sets) + 1, dtype=dtype)
     sizes = np.fromiter((len(s) for s in list_of_sets), count=len(list_of_sets), dtype=dtype)

@@ -21,7 +21,7 @@ import warp as wp
 
 import newton
 import newton.ik as ik
-from newton._src.sim.ik.ik_common import _eval_fk_batched
+from newton._src.sim.ik.ik_common import eval_fk_batched
 from newton.tests.unittest_utils import add_function_test, get_selected_cuda_test_devices, get_test_devices
 
 
@@ -118,14 +118,14 @@ def _fk_end_effector_positions(
     return positions
 
 
-def _convergence_test_lbfgs_planar(test, device, mode: ik.IKJacobianMode):
+def _convergence_test_lbfgs_planar(test, device, mode: ik.IKJacobianType):
     """Test L-BFGS convergence on planar 2-link robot."""
     with wp.ScopedDevice(device):
         n_problems = 3
         model = _build_two_link_planar(device)
 
         # Create 2D joint_q array [n_problems, joint_coord_count]
-        requires_grad = mode in [ik.IKJacobianMode.AUTODIFF, ik.IKJacobianMode.MIXED]
+        requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
         joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
 
         # Create 2D joint_qd array [n_problems, joint_dof_count]
@@ -140,7 +140,7 @@ def _convergence_test_lbfgs_planar(test, device, mode: ik.IKJacobianMode):
         ee_link = 1
         ee_off = wp.vec3(0.5, 0.0, 0.0)
 
-        pos_obj = ik.IKPositionObjective(
+        pos_obj = ik.IKObjectivePosition(
             link_index=ee_link,
             link_offset=ee_off,
             target_positions=targets,
@@ -156,14 +156,14 @@ def _convergence_test_lbfgs_planar(test, device, mode: ik.IKJacobianMode):
         )
 
         # Run initial FK
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(body_q_2d, n_problems, ee_link, ee_off)
 
         # Solve with L-BFGS
         lbfgs_solver.step(joint_q_2d, joint_q_2d, iterations=70)
 
         # Run final FK
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(body_q_2d, n_problems, ee_link, ee_off)
 
         # Check convergence
@@ -174,12 +174,12 @@ def _convergence_test_lbfgs_planar(test, device, mode: ik.IKJacobianMode):
             test.assertLess(err1, 3e-3, f"L-BFGS mode {mode} problem {prob} final error too high ({err1:.4f})")
 
 
-def _convergence_test_lbfgs_free(test, device, mode: ik.IKJacobianMode):
+def _convergence_test_lbfgs_free(test, device, mode: ik.IKJacobianType):
     with wp.ScopedDevice(device):
         n_problems = 3
         model = _build_free_plus_revolute(device)
 
-        requires_grad = mode in [ik.IKJacobianMode.AUTODIFF, ik.IKJacobianMode.MIXED]
+        requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
         joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
         joint_q_2d.fill_(1e-3)
         joint_qd_2d = wp.zeros((n_problems, model.joint_dof_count), dtype=wp.float32)
@@ -190,7 +190,7 @@ def _convergence_test_lbfgs_free(test, device, mode: ik.IKJacobianMode):
         ee_link = 1
         ee_off = wp.vec3(0.5, 0.0, 0.0)
 
-        pos_obj = ik.IKPositionObjective(ee_link, ee_off, targets)
+        pos_obj = ik.IKObjectivePosition(ee_link, ee_off, targets)
 
         solver = ik.IKSolver(
             model,
@@ -203,12 +203,12 @@ def _convergence_test_lbfgs_free(test, device, mode: ik.IKJacobianMode):
             history_len=12,
         )
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(body_q_2d, n_problems, ee_link, ee_off)
 
         solver.step(joint_q_2d, joint_q_2d, iterations=10)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(body_q_2d, n_problems, ee_link, ee_off)
 
         for prob in range(n_problems):
@@ -218,12 +218,12 @@ def _convergence_test_lbfgs_free(test, device, mode: ik.IKJacobianMode):
             test.assertLess(err1, 5e-3, f"[FREE] L-BFGS mode {mode} problem {prob} final error too high ({err1:.4f})")
 
 
-def _convergence_test_lbfgs_d6(test, device, mode: ik.IKJacobianMode):
+def _convergence_test_lbfgs_d6(test, device, mode: ik.IKJacobianType):
     with wp.ScopedDevice(device):
         n_problems = 3
         model = _build_single_d6(device)
 
-        requires_grad = mode in [ik.IKJacobianMode.AUTODIFF, ik.IKJacobianMode.MIXED]
+        requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
         joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
         joint_qd_2d = wp.zeros((n_problems, model.joint_dof_count), dtype=wp.float32)
         body_q_2d = wp.zeros((n_problems, model.body_count), dtype=wp.transform)
@@ -233,8 +233,8 @@ def _convergence_test_lbfgs_d6(test, device, mode: ik.IKJacobianMode):
         angles = [math.pi / 6 + prob * math.pi / 8 for prob in range(n_problems)]
         rot_targets = wp.array([[0.0, 0.0, math.sin(a / 2), math.cos(a / 2)] for a in angles], dtype=wp.vec4)
 
-        pos_obj = ik.IKPositionObjective(0, wp.vec3(0.0, 0.0, 0.0), pos_targets)
-        rot_obj = ik.IKRotationObjective(0, wp.quat_identity(), rot_targets)
+        pos_obj = ik.IKObjectivePosition(0, wp.vec3(0.0, 0.0, 0.0), pos_targets)
+        rot_obj = ik.IKObjectiveRotation(0, wp.quat_identity(), rot_targets)
 
         solver = ik.IKSolver(
             model,
@@ -244,12 +244,12 @@ def _convergence_test_lbfgs_d6(test, device, mode: ik.IKJacobianMode):
             jacobian_mode=mode,
         )
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(body_q_2d, n_problems, 0, wp.vec3(0.0, 0.0, 0.0))
 
         solver.step(joint_q_2d, joint_q_2d, iterations=90)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(body_q_2d, n_problems, 0, wp.vec3(0.0, 0.0, 0.0))
 
         for prob in range(n_problems):
@@ -259,13 +259,13 @@ def _convergence_test_lbfgs_d6(test, device, mode: ik.IKJacobianMode):
             test.assertLess(err1, 1e-3, f"[D6] L-BFGS mode {mode} problem {prob} final error too high ({err1:.4f})")
 
 
-def _comparison_test_lm_vs_lbfgs(test, device, mode: ik.IKJacobianMode):
+def _comparison_test_lm_vs_lbfgs(test, device, mode: ik.IKJacobianType):
     """Compare L-BFGS vs LM solver performance."""
     with wp.ScopedDevice(device):
         n_problems = 2
         model = _build_two_link_planar(device)
 
-        requires_grad = mode in [ik.IKJacobianMode.AUTODIFF, ik.IKJacobianMode.MIXED]
+        requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
 
         # Create identical initial conditions for both solvers
         joint_q_lm = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
@@ -285,8 +285,8 @@ def _comparison_test_lm_vs_lbfgs(test, device, mode: ik.IKJacobianMode):
         ee_link, ee_off = 1, wp.vec3(0.5, 0.0, 0.0)
 
         # Create objectives
-        pos_obj_lm = ik.IKPositionObjective(ee_link, ee_off, targets)
-        pos_obj_lbfgs = ik.IKPositionObjective(ee_link, ee_off, targets)
+        pos_obj_lm = ik.IKObjectivePosition(ee_link, ee_off, targets)
+        pos_obj_lbfgs = ik.IKObjectivePosition(ee_link, ee_off, targets)
 
         # Create solvers
         lm_solver = ik.IKSolver(model, n_problems, [pos_obj_lm], lambda_initial=1e-3, jacobian_mode=mode)
@@ -300,10 +300,10 @@ def _comparison_test_lm_vs_lbfgs(test, device, mode: ik.IKJacobianMode):
         )
 
         # Get initial errors
-        _eval_fk_batched(model, joint_q_lm, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_lm, joint_qd_2d, body_q_2d, body_qd_2d)
         initial_lm = _fk_end_effector_positions(body_q_2d, n_problems, ee_link, ee_off)
 
-        _eval_fk_batched(model, joint_q_lbfgs, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_lbfgs, joint_qd_2d, body_q_2d, body_qd_2d)
         initial_lbfgs = _fk_end_effector_positions(body_q_2d, n_problems, ee_link, ee_off)
 
         # Solve with both methods
@@ -311,10 +311,10 @@ def _comparison_test_lm_vs_lbfgs(test, device, mode: ik.IKJacobianMode):
         lbfgs_solver.step(joint_q_lbfgs, joint_q_lbfgs, iterations=70)
 
         # Get final errors
-        _eval_fk_batched(model, joint_q_lm, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_lm, joint_qd_2d, body_q_2d, body_qd_2d)
         final_lm = _fk_end_effector_positions(body_q_2d, n_problems, ee_link, ee_off)
 
-        _eval_fk_batched(model, joint_q_lbfgs, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_lbfgs, joint_qd_2d, body_q_2d, body_qd_2d)
         final_lbfgs = _fk_end_effector_positions(body_q_2d, n_problems, ee_link, ee_off)
 
         # Both solvers should converge
@@ -340,51 +340,51 @@ def _comparison_test_lm_vs_lbfgs(test, device, mode: ik.IKJacobianMode):
 
 # Test functions
 def test_lbfgs_convergence_autodiff(test, device):
-    _convergence_test_lbfgs_planar(test, device, ik.IKJacobianMode.AUTODIFF)
+    _convergence_test_lbfgs_planar(test, device, ik.IKJacobianType.AUTODIFF)
 
 
 def test_lbfgs_convergence_analytic(test, device):
-    _convergence_test_lbfgs_planar(test, device, ik.IKJacobianMode.ANALYTIC)
+    _convergence_test_lbfgs_planar(test, device, ik.IKJacobianType.ANALYTIC)
 
 
 def test_lbfgs_convergence_mixed(test, device):
-    _convergence_test_lbfgs_planar(test, device, ik.IKJacobianMode.MIXED)
+    _convergence_test_lbfgs_planar(test, device, ik.IKJacobianType.MIXED)
 
 
 def test_lbfgs_convergence_autodiff_free(test, device):
-    _convergence_test_lbfgs_free(test, device, ik.IKJacobianMode.AUTODIFF)
+    _convergence_test_lbfgs_free(test, device, ik.IKJacobianType.AUTODIFF)
 
 
 def test_lbfgs_convergence_analytic_free(test, device):
-    _convergence_test_lbfgs_free(test, device, ik.IKJacobianMode.ANALYTIC)
+    _convergence_test_lbfgs_free(test, device, ik.IKJacobianType.ANALYTIC)
 
 
 def test_lbfgs_convergence_mixed_free(test, device):
-    _convergence_test_lbfgs_free(test, device, ik.IKJacobianMode.MIXED)
+    _convergence_test_lbfgs_free(test, device, ik.IKJacobianType.MIXED)
 
 
 def test_lbfgs_convergence_autodiff_d6(test, device):
-    _convergence_test_lbfgs_d6(test, device, ik.IKJacobianMode.AUTODIFF)
+    _convergence_test_lbfgs_d6(test, device, ik.IKJacobianType.AUTODIFF)
 
 
 def test_lbfgs_convergence_analytic_d6(test, device):
-    _convergence_test_lbfgs_d6(test, device, ik.IKJacobianMode.ANALYTIC)
+    _convergence_test_lbfgs_d6(test, device, ik.IKJacobianType.ANALYTIC)
 
 
 def test_lbfgs_convergence_mixed_d6(test, device):
-    _convergence_test_lbfgs_d6(test, device, ik.IKJacobianMode.MIXED)
+    _convergence_test_lbfgs_d6(test, device, ik.IKJacobianType.MIXED)
 
 
 def test_lm_vs_lbfgs_comparison_autodiff(test, device):
-    _comparison_test_lm_vs_lbfgs(test, device, ik.IKJacobianMode.AUTODIFF)
+    _comparison_test_lm_vs_lbfgs(test, device, ik.IKJacobianType.AUTODIFF)
 
 
 def test_lm_vs_lbfgs_comparison_analytic(test, device):
-    _comparison_test_lm_vs_lbfgs(test, device, ik.IKJacobianMode.ANALYTIC)
+    _comparison_test_lm_vs_lbfgs(test, device, ik.IKJacobianType.ANALYTIC)
 
 
 def test_lm_vs_lbfgs_comparison_mixed(test, device):
-    _comparison_test_lm_vs_lbfgs(test, device, ik.IKJacobianMode.MIXED)
+    _comparison_test_lm_vs_lbfgs(test, device, ik.IKJacobianType.MIXED)
 
 
 # Test registration

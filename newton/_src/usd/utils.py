@@ -23,7 +23,10 @@ import warp as wp
 
 from ..core.types import Axis, AxisType, nparray
 from ..geometry import MESH_MAXHULLVERT, Mesh
-from ..sim.model import ModelAttributeAssignment, ModelAttributeFrequency
+from ..sim.model import Model
+
+AttributeAssignment = Model.AttributeAssignment
+AttributeFrequency = Model.AttributeFrequency
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -324,7 +327,7 @@ def get_transform(prim: Usd.Prim, local: bool = True, xform_cache: UsdGeom.Xform
     return wp.transform(xform_pos, xform_rot)
 
 
-def convert_warp_value(v: Any, warp_dtype: Any | None = None) -> Any:
+def value_to_warp(v: Any, warp_dtype: Any | None = None) -> Any:
     """
     Convert a USD value (such as Gf.Quat, Gf.Vec3, or float) to a Warp value.
     If a dtype is given, the value will be converted to that dtype.
@@ -357,7 +360,7 @@ def convert_warp_value(v: Any, warp_dtype: Any | None = None) -> Any:
     return v
 
 
-def convert_warp_type(v: Any) -> Any:
+def type_to_warp(v: Any) -> Any:
     """
     Determine the Warp type, e.g. wp.quat, wp.vec3, or wp.float32, from a USD value.
 
@@ -469,8 +472,8 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
         if assignment_meta and frequency_meta:
             # Metadata format
             try:
-                assignment_val = ModelAttributeAssignment[assignment_meta.upper()]
-                frequency_val = ModelAttributeFrequency[frequency_meta.upper()]
+                assignment_val = AttributeAssignment[assignment_meta.upper()]
+                frequency_val = AttributeFrequency[frequency_meta.upper()]
             except KeyError:
                 print(
                     f"Warning: Custom attribute '{attr_name}' has invalid assignment or frequency in customData. Skipping."
@@ -484,8 +487,8 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
             continue
 
         # Infer dtype from default value
-        converted_value = convert_warp_value(default_value)
-        dtype = convert_warp_type(default_value)
+        converted_value = value_to_warp(default_value)
+        dtype = type_to_warp(default_value)
 
         # Create custom attribute specification
         # Note: name should be the local name, namespace is stored separately
@@ -526,7 +529,7 @@ def get_custom_attribute_values(
             if attr.usd_value_transformer is not None:
                 out[attr.key] = attr.usd_value_transformer(usd_attr.Get())
             else:
-                out[attr.key] = convert_warp_value(usd_attr.Get(), attr.dtype)
+                out[attr.key] = value_to_warp(usd_attr.Get(), attr.dtype)
     return out
 
 

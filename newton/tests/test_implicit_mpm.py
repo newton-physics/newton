@@ -34,6 +34,10 @@ def test_sand_cube_on_plane(test, device):
     dt = 0.04
 
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+
+    # Register MPM custom attributes before adding particles
+    SolverImplicitMPM.register_custom_attributes(builder)
+
     builder.add_particle_grid(
         pos=wp.vec3(0.5 * particle_spacing),
         rot=wp.quat_identity(),
@@ -46,12 +50,11 @@ def test_sand_cube_on_plane(test, device):
         cell_z=particle_spacing,
         mass=1.0,
         jitter=0.0,
+        custom_attributes={"mpm:friction": friction},
     )
     builder.add_ground_plane()
 
     model: newton.Model = builder.finalize(device=device)
-    model.particle_ke = 1.0e15
-    model.particle_mu = friction
 
     state_0: newton.State = model.state()
     state_1: newton.State = model.state()
@@ -61,9 +64,6 @@ def test_sand_cube_on_plane(test, device):
     options.voxel_size = voxel_size
 
     solver = SolverImplicitMPM(model, options)
-
-    solver.enrich_state(state_0)
-    solver.enrich_state(state_1)
 
     init_pos = state_0.particle_q.numpy()
 
@@ -119,6 +119,9 @@ def test_finite_difference_collider_velocity(test, device):
         """Run simulation with given velocity mode and return particle displacement."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
 
+        # Register MPM custom attributes before adding particles
+        SolverImplicitMPM.register_custom_attributes(builder)
+
         # Add particles resting on the platform
         builder.add_particle_grid(
             pos=wp.vec3(-0.05, 0.12, -0.05),
@@ -132,12 +135,13 @@ def test_finite_difference_collider_velocity(test, device):
             cell_z=particle_spacing,
             mass=1.0,
             jitter=0.0,
+            custom_attributes={"mpm:friction": 1.0},  # high friction
         )
 
         # Add a platform that particles rest on
         platform_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
         vertices, indices = newton.utils.create_box_mesh(extents=(0.5, 0.1, 0.5))
-        shape_cfg = newton.ModelBuilder.ShapeConfig()
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)  # kinematic
         shape_cfg.thickness = 0.02
         builder.add_shape_mesh(
             body=platform_body,
@@ -146,20 +150,16 @@ def test_finite_difference_collider_velocity(test, device):
         )
 
         model = builder.finalize(device=device)
-        model.particle_ke = 1.0e6
-        model.particle_mu = 1.0  # High friction
 
         state_0 = model.state()
         state_1 = model.state()
 
         options = SolverImplicitMPM.Options()
         options.voxel_size = voxel_size
-        options.grid_type = "fixed"
+        options.grid_type = "dense"
         options.collider_velocity_mode = velocity_mode
 
         solver = SolverImplicitMPM(model, options)
-        solver.enrich_state(state_0)
-        solver.enrich_state(state_1)
 
         init_mean_x = np.mean(state_0.particle_q.numpy()[:, 0])
 

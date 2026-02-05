@@ -13,10 +13,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .builder_style3d import Style3DModelBuilder
-from .model_style3d import Style3DModel
+
+from ._src.math import (
+    boltzmann,
+    leaky_max,
+    leaky_min,
+    normalize_with_norm,
+    orthonormal_basis,
+    safe_div,
+    smooth_max,
+    smooth_min,
+    vec_abs,
+    vec_allclose,
+    vec_inside_limits,
+    vec_leaky_max,
+    vec_leaky_min,
+    vec_max,
+    vec_min,
+)
 
 __all__ = [
-    "Style3DModel",
-    "Style3DModelBuilder",
+    "boltzmann",
+    "leaky_max",
+    "leaky_min",
+    "normalize_with_norm",
+    "orthonormal_basis",
+    "safe_div",
+    "smooth_max",
+    "smooth_min",
+    "vec_abs",
+    "vec_allclose",
+    "vec_inside_limits",
+    "vec_leaky_max",
+    "vec_leaky_min",
+    "vec_max",
+    "vec_min",
 ]

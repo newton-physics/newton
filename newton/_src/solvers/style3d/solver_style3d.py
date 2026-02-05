@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...sim import Contacts, Control, State, Style3DModel, Style3DModelBuilder
+from ...core.types import override
+from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder
 from .collision import Collision
@@ -35,45 +36,92 @@ from .kernels import (
 )
 from .linear_solver import PcgSolver, SparseMatrixELL
 
+AttributeAssignment = Model.AttributeAssignment
+AttributeFrequency = Model.AttributeFrequency
+
 ########################################################################################################################
 #################################################    Style3D Solver    #################################################
 ########################################################################################################################
 
 
 class SolverStyle3D(SolverBase):
-    """Projective dynamic based cloth simulator.
+    r"""Projective dynamics based cloth solver.
 
-    Ref[1]. Large Steps in Cloth Simulation, Baraff & Witkin.
-    Ref[2]. Fast Simulation of Mass-Spring Systems, Tiantian Liu etc.
+    References:
+        1. Baraff, D. & Witkin, A. "Large Steps in Cloth Simulation."
+        2. Liu, T. et al. "Fast Simulation of Mass-Spring Systems."
 
-    Implicit-Euler method solves the following non-linear equation::
+    Implicit-Euler method solves the following non-linear equation:
 
-        (M / dt^2 + H(x)) * dx = (M / dt^2) * (x_prev + v_prev * dt - x) + f_ext(x) + f_int(x)
-                               = (M / dt^2) * (x_prev + v_prev * dt + (dt^2 / M) * f_ext(x) - x) + f_int(x)
-                               = (M / dt^2) * (x_inertia - x) + f_int(x)
+    .. math::
+
+        (M / dt^2 + H(x)) \cdot dx &= (M / dt^2) \cdot (x_{prev} + v_{prev} \cdot dt - x) + f_{ext}(x) + f_{int}(x) \\
+                                   &= (M / dt^2) \cdot (x_{prev} + v_{prev} \cdot dt + (dt^2 / M) \cdot f_{ext}(x) - x) + f_{int}(x) \\
+                                   &= (M / dt^2) \cdot (x_{inertia} - x) + f_{int}(x)
 
     Notations:
-        M:  mass matrix
-        x:  unsolved particle position
-        H:  hessian matrix (function of x)
-        P:  PD-approximated hessian matrix (constant)
-        A:  M / dt^2 + H(x) or M / dt^2 + P
-        rhs:  Right hand side of the equation: (M / dt^2) * (inertia_x - x) + f_int(x)
-        res:  Residual: rhs - A * dx_init, or rhs if dx_init == 0
+        - :math:`M`: mass matrix
+        - :math:`x`: unsolved particle position
+        - :math:`H`: Hessian matrix (function of x)
+        - :math:`P`: PD-approximated Hessian matrix (constant)
+        - :math:`A`: :math:`M / dt^2 + H(x)` or :math:`M / dt^2 + P`
+        - :math:`rhs`: Right hand side of the equation: :math:`(M / dt^2) \cdot (x_{inertia} - x) + f_{int}(x)`
+        - :math:`res`: Residual: :math:`rhs - A \cdot dx_{init}`, or rhs if :math:`dx_{init} = 0`
+
+    See Also:
+        :doc:`newton.solvers.style3d </api/newton_solvers_style3d>` exposes
+        helper functions that populate Style3D cloth data on a
+        :class:`~newton.ModelBuilder`.
+
+    Example:
+        Build a mesh-based cloth with
+        :func:`newton.solvers.style3d.add_cloth_mesh`::
+
+            from newton.solvers import style3d
+
+            builder = newton.ModelBuilder()
+            SolverStyle3D.register_custom_attributes(builder)
+            style3d.add_cloth_mesh(
+                builder,
+                pos=wp.vec3(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                vertices=mesh.vertices.tolist(),
+                indices=mesh.indices.tolist(),
+                density=0.3,
+                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
+                edge_aniso_ke=wp.vec3(2.0e-5, 1.0e-5, 5.0e-6),
+            )
+
+        Or build a grid with :func:`newton.solvers.style3d.add_cloth_grid`::
+
+            style3d.add_cloth_grid(
+                builder,
+                pos=wp.vec3(-0.5, 0.0, 2.0),
+                rot=wp.quat_identity(),
+                dim_x=64,
+                dim_y=32,
+                cell_x=0.1,
+                cell_y=0.1,
+                vel=wp.vec3(0.0, 0.0, 0.0),
+                mass=0.1,
+                tri_aniso_ke=wp.vec3(1.0e2, 1.0e2, 1.0e1),
+                edge_aniso_ke=wp.vec3(2.0e-4, 1.0e-4, 5.0e-5),
+            )
 
     """
 
     def __init__(
         self,
-        model: Style3DModel,
-        iterations=10,
-        linear_iterations=10,
+        model: Model,
+        iterations: int = 10,
+        linear_iterations: int = 10,
         drag_spring_stiff: float = 1e2,
         enable_mouse_dragging: bool = False,
     ):
         """
         Args:
-            model: The `Style3DModel` to integrate.
+            model: The :class:`~newton.Model` containing Style3D attributes to integrate.
             iterations: Number of non-linear iterations per step.
             linear_iterations: Number of linear iterations (currently PCG iter) per non-linear iteration.
             drag_spring_stiff: The stiffness of spring connecting barycentric-weighted drag-point and target-point.
@@ -81,8 +129,13 @@ class SolverStyle3D(SolverBase):
         """
 
         super().__init__(model)
-        self.style3d_model = model
-        self.collision = Collision(model)  # set None to disable
+        if not hasattr(model, "style3d"):
+            raise AttributeError(
+                "Style3D custom attributes are missing from the model. "
+                "Call SolverStyle3D.register_custom_attributes() before building the model."
+            )
+        self.style3d = model.style3d
+        self.collision: Collision | None = Collision(model)  # set None to disable
         self.linear_iterations = linear_iterations
         self.nonlinear_iterations = iterations
         self.drag_spring_stiff = drag_spring_stiff
@@ -110,7 +163,22 @@ class SolverStyle3D(SolverBase):
         self.drag_index = wp.array([-1], dtype=int, device=self.device)
         self.drag_bary_coord = wp.zeros(1, dtype=wp.vec3, device=self.device)
 
+    @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
+        """Advance the Style3D solver by one time step.
+
+        The solver performs non-linear projective dynamics iterations with
+        optional collision handling. During the solve, positions in
+        ``state_in`` are updated in-place to the current iterate; the final
+        positions and velocities are written to ``state_out``.
+
+        Args:
+            state_in: Input :class:`newton.State` (positions updated in-place).
+            state_out: Output :class:`newton.State` with the final state.
+            control: :class:`newton.Control` input (currently unused).
+            contacts: :class:`newton.Contacts` used for collision response.
+            dt: Time step in seconds.
+        """
         if self.collision is not None:
             self.collision.frame_begin(state_in.particle_q, state_in.particle_qd, dt)
 
@@ -174,7 +242,7 @@ class SolverStyle3D(SolverBase):
                     self.model.tri_areas,
                     self.model.tri_poses,
                     self.model.tri_indices,
-                    self.style3d_model.tri_aniso_ke,
+                    self.style3d.tri_aniso_ke,
                 ],
                 outputs=[self.rhs],
                 device=self.device,
@@ -182,13 +250,13 @@ class SolverStyle3D(SolverBase):
 
             wp.launch(
                 eval_bend_kernel,
-                dim=len(self.style3d_model.edge_rest_area),
+                dim=len(self.style3d.edge_rest_area),
                 inputs=[
                     state_in.particle_q,
-                    self.style3d_model.edge_rest_area,
-                    self.style3d_model.edge_bending_cot,
-                    self.style3d_model.edge_indices,
-                    self.style3d_model.edge_bending_properties,
+                    self.style3d.edge_rest_area,
+                    self.style3d.edge_bending_cot,
+                    self.model.edge_indices,
+                    self.model.edge_bending_properties,
                 ],
                 outputs=[self.rhs],
                 device=self.device,
@@ -280,16 +348,81 @@ class SolverStyle3D(SolverBase):
         if self.collision is not None:
             self.collision.rebuild_bvh(state.particle_q)
 
-    def precompute(self, builder: Style3DModelBuilder):
+    @override
+    @classmethod
+    def register_custom_attributes(cls, builder: ModelBuilder) -> None:
+        """Declare Style3D custom attributes under the ``style3d`` namespace.
+
+        See Also:
+            :ref:`custom_attributes` for the custom attribute system overview.
+        """
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tri_aniso_ke",
+                frequency=AttributeFrequency.TRIANGLE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0),
+                namespace="style3d",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="edge_rest_area",
+                frequency=AttributeFrequency.EDGE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="style3d",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="edge_bending_cot",
+                frequency=AttributeFrequency.EDGE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec4,
+                default=wp.vec4(0.0, 0.0, 0.0, 0.0),
+                namespace="style3d",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="aniso_ke",
+                frequency=AttributeFrequency.EDGE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(0.0),
+                namespace="style3d",
+            )
+        )
+
+    def precompute(self, builder: ModelBuilder):
         with wp.ScopedTimer("SolverStyle3D::precompute()"):
+            tri_aniso_attr = builder.custom_attributes.get("style3d:tri_aniso_ke")
+            edge_rest_area_attr = builder.custom_attributes.get("style3d:edge_rest_area")
+            edge_bending_cot_attr = builder.custom_attributes.get("style3d:edge_bending_cot")
+
+            if tri_aniso_attr is None or edge_rest_area_attr is None or edge_bending_cot_attr is None:
+                raise AttributeError(
+                    "Style3D custom attributes are missing from the builder. "
+                    "Call SolverStyle3D.register_custom_attributes() before building the model."
+                )
+
+            tri_aniso_ke = tri_aniso_attr.build_array(len(builder.tri_indices), device="cpu").numpy().tolist()
+            edge_rest_area = edge_rest_area_attr.build_array(len(builder.edge_indices), device="cpu").numpy().tolist()
+            edge_bending_cot = (
+                edge_bending_cot_attr.build_array(len(builder.edge_indices), device="cpu").numpy().tolist()
+            )
+
             self.pd_matrix_builder.add_stretch_constraints(
-                builder.tri_indices, builder.tri_poses, builder.tri_aniso_ke, builder.tri_areas
+                builder.tri_indices, builder.tri_poses, tri_aniso_ke, builder.tri_areas
             )
             self.pd_matrix_builder.add_bend_constraints(
                 builder.edge_indices,
                 builder.edge_bending_properties,
-                builder.edge_rest_area,
-                builder.edge_bending_cot,
+                edge_rest_area,
+                edge_bending_cot,
             )
             self.pd_diags, self.pd_non_diags.num_nz, self.pd_non_diags.nz_ell = self.pd_matrix_builder.finalize(
                 self.device

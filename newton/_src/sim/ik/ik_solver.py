@@ -21,9 +21,9 @@ from enum import Enum
 import numpy as np
 import warp as wp
 
-from .ik_common import IKJacobianMode
-from .ik_lbfgs_optimizer import IKLBFGSOptimizer
-from .ik_lm_optimizer import IKLMOptimizer
+from .ik_common import IKJacobianType
+from .ik_lbfgs_optimizer import IKOptimizerLBFGS
+from .ik_lm_optimizer import IKOptimizerLM
 from .ik_objectives import IKObjective
 
 
@@ -211,7 +211,7 @@ class IKSolver:
         objectives: Sequence[IKObjective],
         *,
         optimizer: IKOptimizer | str = IKOptimizer.LM,
-        jacobian_mode: IKJacobianMode | str = IKJacobianMode.AUTODIFF,
+        jacobian_mode: IKJacobianType | str = IKJacobianType.AUTODIFF,
         sampler: IKSampler | str = IKSampler.NONE,
         n_seeds: int = 1,
         noise_std: float = 0.1,
@@ -232,7 +232,7 @@ class IKSolver:
         if isinstance(optimizer, str):
             optimizer = IKOptimizer(optimizer)
         if isinstance(jacobian_mode, str):
-            jacobian_mode = IKJacobianMode(jacobian_mode)
+            jacobian_mode = IKJacobianType(jacobian_mode)
         if isinstance(sampler, str):
             sampler = IKSampler(sampler)
 
@@ -279,7 +279,7 @@ class IKSolver:
             self.roberts_basis = None
 
         if optimizer is IKOptimizer.LM:
-            self._impl = IKLMOptimizer(
+            self._impl = IKOptimizerLM(
                 model,
                 self.n_expanded,
                 objectives,
@@ -292,7 +292,7 @@ class IKSolver:
                 rho_min=rho_min,
             )
         elif optimizer is IKOptimizer.LBFGS:
-            self._impl = IKLBFGSOptimizer(
+            self._impl = IKOptimizerLBFGS(
                 model,
                 self.n_expanded,
                 objectives,

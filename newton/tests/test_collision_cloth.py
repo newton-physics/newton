@@ -802,6 +802,53 @@ def test_mesh_ground_collision_index(test, device):
     assert_np_equal(contacts.rigid_contact_normal.numpy()[:3], np.tile([0.0, -1.0, 0.0], (3, 1)), tol=1e-6)
 
 
+def test_avbd_particle_ground_penalty_grows(test, device):
+    """Regression: AVBD soft-contact penalty updates with particles + static ground only.
+
+    When the model has particles and static shapes (shape_body == -1) but no rigid bodies
+    (body_count == 0), SolverVBD must still update the adaptive soft-contact penalty
+    (body-particle contact penalty k) so that particle-ground contacts do not remain
+    artificially soft.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+
+    # Ensure the contact stiffness cap is well above the initial k_start so we can observe growth.
+    builder.default_shape_cfg.ke = 1.0e9
+    builder.default_shape_cfg.kd = 0.0
+
+    # Place a particle with positive penetration against the ground plane at z=0.
+    radius = 0.1
+    builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.0), vel=wp.vec3(0.0, 0.0, 0.0), mass=1.0, radius=radius)
+    builder.add_ground_plane()
+    builder.color()
+
+    model = builder.finalize(device=device)
+    test.assertEqual(model.body_count, 0)
+    test.assertGreater(model.particle_count, 0)
+    test.assertGreater(model.shape_count, 0)
+
+    vbd = SolverVBD(model, iterations=1, rigid_contact_k_start=1.0e2, rigid_avbd_beta=1.0e5)
+
+    state_in = model.state()
+    state_out = model.state()
+    contacts = model.collide(state_in)
+
+    soft_count = int(contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(soft_count, 0)
+
+    dt = 1.0 / 60.0
+    vbd.initialize_rigid_bodies(state_in, contacts, dt, update_rigid_history=True)
+    wp.synchronize_device(device)
+
+    k_before = float(vbd.body_particle_contact_penalty_k.numpy()[0])
+
+    vbd.solve_rigid_body_iteration(state_in, state_out, contacts, dt)
+    wp.synchronize_device(device)
+
+    k_after = float(vbd.body_particle_contact_penalty_k.numpy()[0])
+    test.assertGreater(k_after, k_before)
+
+
 @wp.kernel
 def validate_vertex_collisions_distance_filter(
     max_query_radius: float,
@@ -1092,6 +1139,9 @@ add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_t
 add_function_test(TestCollision, "test_edge_edge_collision", test_edge_edge_collision, devices=devices)
 add_function_test(TestCollision, "test_particle_collision", test_particle_collision, devices=devices)
 add_function_test(TestCollision, "test_mesh_ground_collision_index", test_mesh_ground_collision_index, devices=devices)
+add_function_test(
+    TestCollision, "test_avbd_particle_ground_penalty_grows", test_avbd_particle_ground_penalty_grows, devices=devices
+)
 add_function_test(TestCollision, "test_collision_filtering", test_collision_filtering, devices=devices)
 
 if __name__ == "__main__":
