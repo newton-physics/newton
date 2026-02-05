@@ -557,7 +557,7 @@ class TestSelection(unittest.TestCase):
                 expected,
                 measured,
                 places=4,
-                msg=f"Expected state joint dof position value: {expected}, Measured value: {measured}",
+                msg=f"Expected state joint dof position value {i}: {expected}, Measured value: {measured}",
             )
 
             measured = measured_model_joint_dof_positions[i]
@@ -566,7 +566,7 @@ class TestSelection(unittest.TestCase):
                 expected,
                 measured,
                 places=4,
-                msg=f"Expected model joint dof position value: {expected}, Measured value: {measured}",
+                msg=f"Expected model joint dof position value {i}: {expected}, Measured value: {measured}",
             )
 
             measured = measured_model_joint_limit_lower[i]
@@ -575,7 +575,7 @@ class TestSelection(unittest.TestCase):
                 expected,
                 measured,
                 places=4,
-                msg=f"Expected model joint limit lower value: {expected}, Measured value: {measured}",
+                msg=f"Expected model joint limit lower value {i}: {expected}, Measured value: {measured}",
             )
 
             measured = measured_control_joint_target_pos[i]
@@ -584,7 +584,7 @@ class TestSelection(unittest.TestCase):
                 expected,
                 measured,
                 places=4,
-                msg=f"Expected model joint target pos value: {expected}, Measured value: {measured}",
+                msg=f"Expected model joint target pos value {i}: {expected}, Measured value: {measured}",
             )
 
             measured = measured_model_joint_target_pos[i]
@@ -593,7 +593,7 @@ class TestSelection(unittest.TestCase):
                 expected,
                 measured,
                 places=4,
-                msg=f"Expected model joint target pos value: {expected}, Measured value: {measured}",
+                msg=f"Expected model joint target pos value {i}: {expected}, Measured value: {measured}",
             )
 
     def run_test_link_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
@@ -916,7 +916,7 @@ class TestSelection(unittest.TestCase):
                 expected,
                 measured,
                 places=4,
-                msg=f"Expected body mass value: {expected}, Measured value: {measured}",
+                msg=f"Expected body mass value {i}: {expected}, Measured value: {measured}",
             )
 
             for j in range(0, 6):
@@ -926,7 +926,7 @@ class TestSelection(unittest.TestCase):
                     expected,
                     measured,
                     places=4,
-                    msg=f"Expected body velocity value: {expected}, Measured value: {measured}",
+                    msg=f"Expected body velocity value {i}: {expected}, Measured value: {measured}",
                 )
 
             for j in range(0, 6):
@@ -936,7 +936,7 @@ class TestSelection(unittest.TestCase):
                     expected,
                     measured,
                     places=4,
-                    msg=f"Expected body velocity value: {expected}, Measured value: {measured}",
+                    msg=f"Expected body velocity value {i}: {expected}, Measured value: {measured}",
                 )
 
     def test_joint_selection_one_per_view_no_mask(self):
