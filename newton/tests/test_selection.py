@@ -261,9 +261,9 @@ class TestSelection(unittest.TestCase):
         joint_view = ArticulationView(model, "art1", include_joints=joints_to_include)
 
         # Get the attributes associated with "joint3"
-        joint_dof_positions = joint_view.get_dof_positions(model).numpy()
-        joint_limit_lower = joint_view.get_attribute("joint_limit_lower", model).numpy()
-        joint_target_pos = joint_view.get_attribute("joint_target_pos", model).numpy()
+        joint_dof_positions = joint_view.get_dof_positions(model).numpy().copy()
+        joint_limit_lower = joint_view.get_attribute("joint_limit_lower", model).numpy().copy()
+        joint_target_pos = joint_view.get_attribute("joint_target_pos", model).numpy().copy()
 
         # Modify the attributes associated with "joint3"
         val = 1.0
@@ -537,17 +537,17 @@ class TestSelection(unittest.TestCase):
         wp_joint_limit_lowers = wp.array(joint_limit_lower, dtype=float, device=model.device)
         wp_joint_target_pos = wp.array(joint_target_pos, dtype=float, device=model.device)
         joint_view.set_dof_positions(state_0, wp_joint_dof_positions, mask)
-        # joint_view.set_dof_positions(model, wp_joint_dof_positions, mask)
+        joint_view.set_dof_positions(model, wp_joint_dof_positions, mask)
         joint_view.set_attribute("joint_limit_lower", model, wp_joint_limit_lowers, mask)
         joint_view.set_attribute("joint_target_pos", control, wp_joint_target_pos, mask)
-        # joint_view.set_attribute("joint_target_pos", model, wp_joint_target_pos, mask)
+        joint_view.set_attribute("joint_target_pos", model, wp_joint_target_pos, mask)
 
         # Get the updated values from model, state, control.
         measured_state_joint_dof_positions = state_0.joint_q.numpy()
-        # measured_model_joint_dof_positions = model.joint_q.numpy()
+        measured_model_joint_dof_positions = model.joint_q.numpy()
         measured_model_joint_limit_lower = model.joint_limit_lower.numpy()
         measured_control_joint_target_pos = control.joint_target_pos.numpy()
-        # measured_model_joint_target_pos = model.joint_target_pos.numpy()
+        measured_model_joint_target_pos = model.joint_target_pos.numpy()
 
         # Test that the modified values were correctly set in model, state and control
         for i in range(0, num_joints):
@@ -560,14 +560,14 @@ class TestSelection(unittest.TestCase):
                 msg=f"Expected state joint dof position value {i}: {expected}, Measured value: {measured}",
             )
 
-            # measured = measured_model_joint_dof_positions[i]
-            # expected = expected_dof_positions[i]
-            # self.assertAlmostEqual(
-            #    expected,
-            #    measured,
-            #    places=4,
-            #    msg=f"Expected model joint dof position value {i}: {expected}, Measured value: {measured}",
-            # )
+            measured = measured_model_joint_dof_positions[i]
+            expected = expected_dof_positions[i]
+            self.assertAlmostEqual(
+                expected,
+                measured,
+                places=4,
+                msg=f"Expected model joint dof position value {i}: {expected}, Measured value: {measured}",
+            )
 
             measured = measured_model_joint_limit_lower[i]
             expected = expected_joint_limit_lower[i]
@@ -587,14 +587,14 @@ class TestSelection(unittest.TestCase):
                 msg=f"Expected control joint target pos value {i}: {expected}, Measured value: {measured}",
             )
 
-            # measured = measured_model_joint_target_pos[i]
-            # expected = expected_joint_target_pos[i]
-            # self.assertAlmostEqual(
-            #    expected,
-            #    measured,
-            #    places=4,
-            #    msg=f"Expected model joint target pos value {i}: {expected}, Measured value: {measured}",
-            # )
+            measured = measured_model_joint_target_pos[i]
+            expected = expected_joint_target_pos[i]
+            self.assertAlmostEqual(
+                expected,
+                measured,
+                places=4,
+                msg=f"Expected model joint target pos value {i}: {expected}, Measured value: {measured}",
+            )
 
     def run_test_link_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
         """Test an ArticulationView that excludes a subset of links and that we
@@ -661,8 +661,8 @@ class TestSelection(unittest.TestCase):
         link_view = ArticulationView(model, "art0", exclude_links=links_to_exclude)
 
         # Get the attributes associated with "art0/link1" and "art0/link2"
-        link_masses = link_view.get_attribute("body_mass", model).numpy()
-        link_vels = link_view.get_attribute("body_qd", model).numpy()
+        link_masses = link_view.get_attribute("body_mass", model).numpy().copy()
+        link_vels = link_view.get_attribute("body_qd", model).numpy().copy()
 
         # Modify the attributes associated with "art0/link1" and "art0/link2"
         val = 1.0
