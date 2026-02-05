@@ -197,7 +197,7 @@ class SolverMuJoCo(SolverBase):
         return cls._mujoco, cls._mujoco_warp
 
     @staticmethod
-    def _parse_integrator(value: str | int) -> int:
+    def _parse_integrator(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3."""
         if not isinstance(value, str):
             return int(value)
@@ -208,7 +208,7 @@ class SolverMuJoCo(SolverBase):
         return int(value)
 
     @staticmethod
-    def _parse_solver(value: str | int) -> int:
+    def _parse_solver(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse solver option: CG=1, Newton=2. PGS (0) is not supported."""
         if not isinstance(value, str):
             return int(value)
@@ -219,7 +219,7 @@ class SolverMuJoCo(SolverBase):
         return int(value)
 
     @staticmethod
-    def _parse_cone(value: str | int) -> int:
+    def _parse_cone(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse cone option: pyramidal=0, elliptic=1."""
         if not isinstance(value, str):
             return int(value)
@@ -230,7 +230,7 @@ class SolverMuJoCo(SolverBase):
         return int(value)
 
     @staticmethod
-    def _parse_jacobian(value: str | int) -> int:
+    def _parse_jacobian(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse jacobian option: dense=0, sparse=1, auto=2."""
         if not isinstance(value, str):
             return int(value)
