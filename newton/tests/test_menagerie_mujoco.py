@@ -474,9 +474,19 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     "qfrc_actuator": 1e-4,
     # Composite quantities
     "subtree_com": 1e-6,
+    # Dynamics
+    "cvel": 1e-5,
+    "cacc": 1e-4,
+    "cfrc_int": 1e-4,
+    "energy": 1e-5,
+    "qM": 1e-5,
+    # Actuators
+    "actuator_length": 1e-6,
+    "actuator_velocity": 1e-5,
+    "actuator_force": 1e-4,
 }
 
-# Default fields to compare in MjData (core physics)
+# Default fields to compare in MjData (core physics + dynamics)
 DEFAULT_COMPARE_FIELDS: list[str] = [
     # Core state
     "qpos",
@@ -496,6 +506,16 @@ DEFAULT_COMPARE_FIELDS: list[str] = [
     "qfrc_actuator",
     # Composite quantities
     "subtree_com",
+    # Dynamics
+    "cvel",
+    "cacc",
+    "cfrc_int",
+    "energy",
+    "qM",
+    # Actuators
+    "actuator_length",
+    "actuator_velocity",
+    "actuator_force",
 ]
 
 # Default fields to skip in MjWarpModel comparison (internal/non-comparable)
