@@ -388,8 +388,8 @@ def evaluate_volumetric_neo_hookean_force_and_hessian(
     # For numerical stability, ensure lmbd has a reasonable minimum magnitude
     lmbd_safe = wp.sign(lmbd) * wp.max(wp.abs(lmbd), 1e-6)
     alpha = 1.0 + mu / lmbd_safe
-    F_inv = wp.inverse(F)
-    cof = J * wp.transpose(F_inv)
+    # Compute cofactor (adjugate) matrix directly for numerical stability when J ≈ 0
+    cof = compute_cofactor(F)
 
     cof_vec = vec9(
         cof[0, 0],
@@ -523,6 +523,29 @@ def compute_G_matrix(Dm_inv: wp.mat33, v_order: int) -> mat93:
         0.0,
         0.0,
         m[2],
+    )
+
+
+@wp.func
+def compute_cofactor(F: wp.mat33) -> wp.mat33:
+    """Compute the cofactor (adjugate) matrix directly without using inverse.
+
+    This is numerically stable even when det(F) ≈ 0, unlike J * transpose(inverse(F)).
+    """
+    F11, F21, F31 = F[0, 0], F[1, 0], F[2, 0]
+    F12, F22, F32 = F[0, 1], F[1, 1], F[2, 1]
+    F13, F23, F33 = F[0, 2], F[1, 2], F[2, 2]
+
+    return wp.mat33(
+        F22 * F33 - F23 * F32,
+        F23 * F31 - F21 * F33,
+        F21 * F32 - F22 * F31,
+        F13 * F32 - F12 * F33,
+        F11 * F33 - F13 * F31,
+        F12 * F31 - F11 * F32,
+        F12 * F23 - F13 * F22,
+        F13 * F21 - F11 * F23,
+        F11 * F22 - F12 * F21,
     )
 
 
@@ -2859,7 +2882,7 @@ def apply_planar_truncation_parallel_by_collision(
 
             collision_buffer_counter += NUM_THREADS_PER_COLLISION_PRIMITIVE
 
-    # dont forget to do the final truncation based on the maximum displament allowance!
+    # Don't forget to do the final truncation based on the maximum displacement allowance!
 
 
 @wp.kernel
@@ -3253,7 +3276,7 @@ def solve_elasticity(
             f[0], f[1], f[2], h[0, 0], h[0, 1], h[0, 2], h[1, 0], h[1, 1], h[1, 2], h[2, 0], h[2, 1], h[2, 2],
         )
 
-    # # fmt: on
+    # fmt: on
     h = h + particle_hessians[particle_index]
     f = f + particle_forces[particle_index]
 
