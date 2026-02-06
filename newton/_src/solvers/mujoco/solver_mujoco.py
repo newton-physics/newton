@@ -885,11 +885,20 @@ class SolverMuJoCo(SolverBase):
         def resolve_dof_name(_: str, context: dict[str, Any]):
             """For each DOF, return the prim path(s) of the DOF(s).
 
-            Returns a list of DOF name strings whose length must match the joint's DOF count:
+            The returned list length must match the joint's DOF count:
+
             - PhysicsRevoluteJoint / PhysicsPrismaticJoint: 1 DOF → [prim_path]
             - PhysicsFixedJoint: 0 DOFs → [] (empty list, no DOFs to name)
             - PhysicsSphericalJoint: 3 DOFs → [prim_path:rotX, prim_path:rotY, prim_path:rotZ]
             - PhysicsJoint (D6): N DOFs → one entry per free axis, determined from limit attributes
+
+            Args:
+                _: The attribute name (unused).
+                context: A dictionary containing at least a ``"prim"`` key with the USD prim
+                    for the joint being processed.
+
+            Returns:
+                A list of DOF name strings whose length matches the joint's DOF count.
             """
             prim = context["prim"]
             prim_type = prim.GetTypeName()
@@ -941,7 +950,25 @@ class SolverMuJoCo(SolverBase):
         # Then we get the target USD path for each actuator so that we can resolve
         # the DOF index from the path given the Model.mujoco.dof_name list
         def resolve_actuator_transmission_index(_: str, context: dict[str, Any]) -> wp.vec2i:
-            """For each actuator, return the target USD path."""
+            """Resolve the transmission target DOF index for a USD actuator prim.
+
+            Reads the ``mjc:target`` relationship from the actuator prim, looks up
+            the referenced path in the already-collected DOF name list, and returns
+            the matching DOF index packed into a ``wp.vec2i``.
+
+            Args:
+                _: The attribute name (unused).
+                context: A dictionary containing at least a ``"prim"`` key with the USD prim
+                    for the actuator being processed.
+
+            Returns:
+                A ``wp.vec2i`` where the first element is the DOF index of the transmission
+                target and the second element is unused (set to 0).
+
+            Raises:
+                ValueError: If the ``mjc:target`` relationship is missing or the target path
+                    cannot be found in the DOF name list.
+            """
             prim = context["prim"]
             rel = prim.GetRelationship("mjc:target")
 
