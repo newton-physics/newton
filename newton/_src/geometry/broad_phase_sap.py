@@ -13,6 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Sweep and Prune (SAP) broad phase collision detection.
+
+Provides O(N log N) broad phase by projecting AABBs onto an axis and using
+sorted interval overlap tests. More efficient than NxN for larger scenes.
+
+See Also:
+    :class:`BroadPhaseAllPairs` in ``broad_phase_nxn.py`` for simpler O(N²) approach.
+"""
+
 from __future__ import annotations
 
 from enum import IntEnum

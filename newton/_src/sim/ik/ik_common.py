@@ -22,7 +22,7 @@ import warp as wp
 from ..articulation import eval_single_articulation_fk
 
 
-class IKJacobianMode(Enum):
+class IKJacobianType(Enum):
     """
     Specifies the backend used for Jacobian computation in inverse kinematics.
     """
@@ -82,7 +82,7 @@ def _eval_fk_articulation_batched(
     )
 
 
-def _eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
+def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
     """Compute batched forward kinematics for a set of articulations."""
     n_problems = joint_q.shape[0]
     wp.launch(
@@ -110,7 +110,7 @@ def _eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
 
 
 @wp.kernel
-def _fk_accum(
+def fk_accum(
     joint_parent: wp.array1d(dtype=wp.int32),
     X_local: wp.array2d(dtype=wp.transform),
     body_q: wp.array2d(dtype=wp.transform),
@@ -125,7 +125,7 @@ def _fk_accum(
 
 
 @wp.kernel
-def _compute_costs(
+def compute_costs(
     residuals: wp.array2d(dtype=wp.float32),
     num_residuals: int,
     costs: wp.array1d(dtype=wp.float32),

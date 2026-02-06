@@ -27,11 +27,13 @@ import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh
+from ..geometry import MESH_MAXHULLVERT
 from ..sim import ModelBuilder
 from ..sim.joints import ActuatorMode
 from ..sim.model import Model
 from .import_utils import parse_custom_attributes, sanitize_xml_content
+from .mesh import load_meshes_from_file
+from .texture import load_texture
 from .topology import topological_sort
 
 AttributeFrequency = Model.AttributeFrequency
@@ -109,7 +111,7 @@ def parse_urdf(
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
         force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
             (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-            If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+            If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
             :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
             damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -153,6 +155,158 @@ def parse_urdf(
 
     # load shape defaults
     default_shape_density = builder.default_shape_cfg.density
+
+    def resolve_urdf_asset(filename: str | None) -> tuple[str | None, tempfile.NamedTemporaryFile | None]:
+        """Resolve a URDF asset URI/path to a local filename.
+
+        Args:
+            filename: Asset filename or URI from the URDF (may be None).
+
+        Returns:
+            A tuple of (resolved_filename, tmpfile). The tmpfile is only
+            populated for temporary downloads (e.g., http/https) and must be
+            cleaned up by the caller (e.g., remove tmpfile.name).
+        """
+        if filename is None:
+            return None, None
+
+        file_tmp = None
+        if filename.startswith(("package://", "model://")):
+            if resolve_robotics_uri is not None:
+                try:
+                    if filename.startswith("package://"):
+                        fn = filename.replace("package://", "")
+                        parent_urdf_folder = os.path.abspath(
+                            os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir)
+                        )
+                        package_dirs = [parent_urdf_folder]
+                    else:
+                        package_dirs = []
+                    filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
+                except FileNotFoundError:
+                    warnings.warn(
+                        f'Warning: could not resolve URI "{filename}". '
+                        f"Check that the package is installed and that relevant environment variables "
+                        f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
+                        f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
+                        stacklevel=2,
+                    )
+                    return None, None
+            else:
+                if not os.path.isfile(source):
+                    warnings.warn(
+                        f'Warning: cannot resolve URI "{filename}" when URDF is loaded from XML string. '
+                        f"Load URDF from a file path, or install resolve-robotics-uri-py: "
+                        f"pip install resolve-robotics-uri-py",
+                        stacklevel=2,
+                    )
+                    return None, None
+                if filename.startswith("package://"):
+                    fn = filename.replace("package://", "")
+                    package_name = fn.split("/")[0]
+                    urdf_folder = os.path.dirname(source)
+                    if package_name in urdf_folder:
+                        filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
+                    else:
+                        warnings.warn(
+                            f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
+                            f"For robust URI resolution, install resolve-robotics-uri-py: "
+                            f"pip install resolve-robotics-uri-py",
+                            stacklevel=2,
+                        )
+                        return None, None
+                else:
+                    warnings.warn(
+                        f'Warning: cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
+                        f"Install it with: pip install resolve-robotics-uri-py",
+                        stacklevel=2,
+                    )
+                    return None, None
+        elif filename.startswith(("http://", "https://")):
+            file_tmp = download_asset_tmpfile(filename)
+            filename = file_tmp.name
+        else:
+            if not os.path.isabs(filename):
+                if not os.path.isfile(source):
+                    warnings.warn(
+                        f'Warning: cannot resolve relative URI "{filename}" when URDF is loaded from XML string. '
+                        f"Load URDF from a file path.",
+                        stacklevel=2,
+                    )
+                    return None, None
+                filename = os.path.join(os.path.dirname(source), filename)
+
+        if not os.path.exists(filename):
+            warnings.warn(f"Warning: asset file {filename} does not exist", stacklevel=2)
+            return None, None
+
+        return filename, file_tmp
+
+    def _parse_material_properties(material_element):
+        if material_element is None:
+            return None, None
+
+        color = None
+        texture = None
+
+        color_el = material_element.find("color")
+        if color_el is not None:
+            rgba = color_el.get("rgba")
+            if rgba:
+                values = np.fromstring(rgba, sep=" ", dtype=np.float32)
+                if len(values) >= 3:
+                    color = (float(values[0]), float(values[1]), float(values[2]))
+
+        texture_el = material_element.find("texture")
+        if texture_el is not None:
+            texture_name = texture_el.get("filename")
+            if texture_name:
+                resolved, tmpfile = resolve_urdf_asset(texture_name)
+                try:
+                    if resolved is not None:
+                        if tmpfile is not None:
+                            # Temp file will be deleted, so load texture eagerly
+                            texture = load_texture(resolved)
+                        else:
+                            # Local file, pass path for lazy loading by viewer
+                            texture = resolved
+                finally:
+                    if tmpfile is not None:
+                        os.remove(tmpfile.name)
+
+        return color, texture
+
+    materials: dict[str, dict[str, np.ndarray | None]] = {}
+    for material in urdf_root.findall("material"):
+        mat_name = material.get("name")
+        if not mat_name:
+            continue
+        color, texture = _parse_material_properties(material)
+        materials[mat_name] = {
+            "color": color,
+            "texture": texture,
+        }
+
+    def resolve_material(material_element):
+        if material_element is None:
+            return {"color": None, "texture": None}
+        mat_name = material_element.get("name")
+        color, texture = _parse_material_properties(material_element)
+
+        if mat_name and mat_name in materials:
+            resolved = dict(materials[mat_name])
+        else:
+            resolved = {"color": None, "texture": None}
+
+        if color is not None:
+            resolved["color"] = color
+        if texture is not None:
+            resolved["texture"] = texture
+
+        if mat_name and mat_name not in materials and any(value is not None for value in (color, texture)):
+            materials[mat_name] = dict(resolved)
+
+        return resolved
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
@@ -202,6 +356,10 @@ def parse_urdf(
             if incoming_xform is not None:
                 tf = incoming_xform * tf
 
+            material_info = {"color": None, "texture": None}
+            if just_visual:
+                material_info = resolve_material(geom_group.find("material"))
+
             for box in geo.findall("box"):
                 size = box.get("size") or "1 1 1"
                 size = [float(x) for x in size.split()]
@@ -245,112 +403,36 @@ def parse_urdf(
                 shapes.append(s)
 
             for mesh in geo.findall("mesh"):
-                file_tmp = None
                 filename = mesh.get("filename")
                 if filename is None:
                     continue
-
-                if filename.startswith(("package://", "model://")):
-                    # Try to resolve package:// or model:// URIs
-                    if resolve_robotics_uri is not None:
-                        # Use the robust resolve-robotics-uri-py library
-                        try:
-                            if filename.startswith("package://"):
-                                fn = filename.replace("package://", "")
-                                package_name = fn.split("/")[0]
-                                parent_urdf_folder = os.path.abspath(
-                                    os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir)
-                                )
-                                package_dirs = [parent_urdf_folder]
-                            else:
-                                package_dirs = []
-                            filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
-                        except FileNotFoundError:
-                            warnings.warn(
-                                f'Warning: could not resolve URI "{filename}". '
-                                f"Check that the package is installed and that relevant environment variables "
-                                f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
-                                f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
-                                stacklevel=2,
-                            )
-                            continue
-                    else:
-                        # Fallback: basic resolution relative to URDF folder
-                        # Only works if source is a file path (not XML content)
-                        if not os.path.isfile(source):
-                            warnings.warn(
-                                f'Warning: cannot resolve URI "{filename}" when URDF is loaded from XML string. '
-                                f"Load URDF from a file path, or install resolve-robotics-uri-py: "
-                                f"pip install resolve-robotics-uri-py",
-                                stacklevel=2,
-                            )
-                            continue
-                        if filename.startswith("package://"):
-                            fn = filename.replace("package://", "")
-                            package_name = fn.split("/")[0]
-                            urdf_folder = os.path.dirname(source)
-                            # resolve file path from package name, i.e. find
-                            # the package folder from the URDF folder
-                            if package_name in urdf_folder:
-                                filename = os.path.join(urdf_folder[: urdf_folder.rindex(package_name)], fn)
-                            else:
-                                warnings.warn(
-                                    f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
-                                    f"For robust URI resolution, install resolve-robotics-uri-py: "
-                                    f"pip install resolve-robotics-uri-py",
-                                    stacklevel=2,
-                                )
-                                continue
-                        else:
-                            # model:// URIs require the external library
-                            warnings.warn(
-                                f'Warning: cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
-                                f"Install it with: pip install resolve-robotics-uri-py",
-                                stacklevel=2,
-                            )
-                            continue
-                elif filename.startswith(("http://", "https://")):
-                    # download mesh
-                    # note that the file must be deleted after use
-                    file_tmp = download_asset_tmpfile(filename)
-                    filename = file_tmp.name
-                else:
-                    filename = os.path.join(os.path.dirname(source), filename)
-
-                if not os.path.exists(filename):
-                    warnings.warn(f"Warning: mesh file {filename} does not exist", stacklevel=2)
-                    continue
-
-                import trimesh  # noqa: PLC0415
-
-                # use force='mesh' to load the mesh as a trimesh object
-                # with baked in transforms, e.g. from COLLADA files
-                m = trimesh.load(filename, force="mesh")
                 scaling = mesh.get("scale") or "1 1 1"
                 scaling = np.array([float(x) * scale for x in scaling.split()])
-                if hasattr(m, "geometry"):
-                    # multiple meshes are contained in a scene
-                    for m_geom in m.geometry.values():
-                        m_vertices = np.array(m_geom.vertices, dtype=np.float32) * scaling
-                        m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
-                        m_mesh = Mesh(m_vertices, m_faces, maxhullvert=mesh_maxhullvert)
-                        s = builder.add_shape_mesh(
-                            xform=tf,
-                            mesh=m_mesh,
-                            **shape_kwargs,
+                resolved, file_tmp = resolve_urdf_asset(filename)
+                if resolved is None:
+                    continue
+
+                m_meshes = load_meshes_from_file(
+                    resolved,
+                    scale=scaling,
+                    maxhullvert=mesh_maxhullvert,
+                    override_color=material_info["color"],
+                    override_texture=material_info["texture"],
+                )
+                for m_mesh in m_meshes:
+                    if m_mesh.texture is not None and m_mesh.uvs is None:
+                        warnings.warn(
+                            f"Warning: mesh {resolved} has a texture but no UVs; texture will be ignored.",
+                            stacklevel=2,
                         )
-                        shapes.append(s)
-                else:
-                    # a single mesh
-                    m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
-                    m_faces = np.array(m.faces.flatten(), dtype=np.int32)
-                    m_mesh = Mesh(m_vertices, m_faces, maxhullvert=mesh_maxhullvert)
+                        m_mesh.texture = None
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
                         **shape_kwargs,
                     )
                     shapes.append(s)
+
                 if file_tmp is not None:
                     os.remove(file_tmp.name)
                     file_tmp = None

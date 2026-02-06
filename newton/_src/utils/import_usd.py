@@ -30,7 +30,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
-from ..sim.joints import ActuatorMode, infer_actuator_mode
+from ..sim.joints import ActuatorMode
 from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -103,7 +103,7 @@ def parse_usd(
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
         force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
             are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-            If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+            If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
             :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
             damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -233,6 +233,8 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
+    # cache for resolved material properties (keyed by prim path)
+    material_props_cache: dict[str, dict[str, Any]] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -254,6 +256,13 @@ def parse_usd(
 
     def _xform_to_mat44(xform: wp.transform) -> wp.mat44:
         return wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
+
+    def _get_material_props_cached(prim: Usd.Prim) -> dict[str, Any]:
+        """Get material properties with caching to avoid repeated traversal."""
+        prim_path = str(prim.GetPath())
+        if prim_path not in material_props_cache:
+            material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
+        return material_props_cache[prim_path]
 
     def _load_visual_shapes_impl(
         parent_body_id: int,
@@ -412,7 +421,25 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "mesh":
-                mesh = usd.get_mesh(prim)
+                # Resolve material properties first (cached) to determine if we need UVs
+                material_props = _get_material_props_cached(prim)
+                texture = material_props.get("texture")
+                # Only load UVs if we have a texture to avoid expensive faceVarying expansion
+                mesh = usd.get_mesh(prim, load_uvs=(texture is not None))
+                if texture:
+                    mesh.texture = texture
+                if mesh.texture is not None and mesh.uvs is None:
+                    warnings.warn(
+                        f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                        stacklevel=2,
+                    )
+                    mesh.texture = None
+                if material_props.get("color") is not None and mesh.texture is None:
+                    mesh.color = material_props["color"]
+                if material_props.get("roughness") is not None:
+                    mesh.roughness = material_props["roughness"]
+                if material_props.get("metallic") is not None:
+                    mesh.metallic = material_props["metallic"]
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,
@@ -599,7 +626,7 @@ def parse_usd(
                 joint_params["target_kd"] = target_kd
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
-                joint_params["actuator_mode"] = infer_actuator_mode(
+                joint_params["actuator_mode"] = ActuatorMode.from_gains(
                     target_ke, target_kd, force_position_velocity_actuation, has_drive=True
                 )
             else:
@@ -691,7 +718,7 @@ def parse_usd(
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    actuator_mode = infer_actuator_mode(
+                    actuator_mode = ActuatorMode.from_gains(
                         target_ke, target_kd, force_position_velocity_actuation, has_drive=has_drive
                     )
                     return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode

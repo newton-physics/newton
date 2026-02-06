@@ -21,49 +21,12 @@ import warp as wp
 from ..core.types import Devicelike
 from ..geometry.kernels import (
     broadphase_collision_pairs,
-    count_contact_points,
     create_soft_contacts,
     generate_handle_contact_pairs_kernel,
 )
 from .contacts import Contacts
 from .model import Model
 from .state import State
-
-
-def count_rigid_contact_points(model: Model, rigid_contact_max_per_pair: int | None = None) -> int:
-    """
-    Counts the maximum number of rigid contact points that need to be allocated for a given model.
-
-    This function estimates the upper bound on the number of rigid contact points that may be generated
-    during collision detection, based on the current set of shape contact pairs and their geometry.
-
-    Args:
-        model (Model): The simulation model containing shape and geometry information.
-        rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
-            If None or <= 0, no limit is applied.
-    Returns:
-        int: The potential number of rigid contact points that may need to be allocated.
-    """
-    if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
-        rigid_contact_max_per_pair = 0
-    # calculate the potential number of shape pair contact points
-    contact_count = wp.zeros(1, dtype=wp.int32, device=model.device)
-    wp.launch(
-        kernel=count_contact_points,
-        dim=model.shape_contact_pair_count,
-        inputs=[
-            model.shape_contact_pairs,
-            model.shape_type,
-            model.shape_scale,
-            model.shape_source_ptr,
-            rigid_contact_max_per_pair,
-        ],
-        outputs=[contact_count],
-        device=model.device,
-        record_tape=False,
-    )
-    counts = contact_count.numpy()
-    return int(counts[0])
 
 
 class CollisionPipeline:
@@ -210,6 +173,7 @@ class CollisionPipeline:
                 self.soft_contact_max,
                 requires_grad=self.requires_grad,
                 device=model.device,
+                requested_attributes=model.get_requested_contact_attributes(),
             )
         else:
             self.contacts.clear()
@@ -343,5 +307,4 @@ class CollisionPipeline:
 
 __all__ = [
     "CollisionPipeline",
-    "count_rigid_contact_points",
 ]
