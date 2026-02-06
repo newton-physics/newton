@@ -3082,7 +3082,7 @@ class SolverMuJoCo(SolverBase):
                     # Retrieve heightfield source
                     hfield_src = model.shape_source[shape]
                     if hfield_src is None:
-                        if verbose:
+                        if wp.config.verbose:
                             print(f"Warning: Heightfield shape {shape} has no source data, skipping")
                         continue
 

@@ -477,10 +477,11 @@ class Heightfield:
 
             size_x, size_y, size_z, size_base = size
             avg_height = float(np.mean(self._data)) * size_z + size_base
+            # size_x, size_y are half-extents; compute_box_inertia expects full widths
             self.mass, self.com, self.I = compute_box_inertia(
                 1.0,
-                size_x,
-                size_y,
+                size_x * 2.0,
+                size_y * 2.0,
                 max(avg_height, 1e-6),
             )
         else:

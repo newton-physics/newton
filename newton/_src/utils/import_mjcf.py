@@ -318,7 +318,10 @@ def parse_mjcf(
             nrow = int(hfield.attrib.get("nrow", "100"))
             ncol = int(hfield.attrib.get("ncol", "100"))
             size_str = hfield.attrib.get("size", "1 1 1 0")
-            size = tuple(np.fromstring(size_str, sep=" ", dtype=np.float32))
+            size_arr = np.fromstring(size_str, sep=" ", dtype=np.float32)
+            if size_arr.size < 4:
+                size_arr = np.pad(size_arr, (0, 4 - size_arr.size), constant_values=0.0)
+            size = tuple(size_arr[:4])
             # Parse optional file path
             file_attr = hfield.attrib.get("file")
             file_path = None
@@ -650,11 +653,12 @@ def parse_mjcf(
                     continue
 
                 hfield_asset = hfield_assets[hfield_name]
+                hfield_size = tuple(s * scale for s in hfield_asset["size"])
                 heightfield = load_heightfield_from_file(
                     hfield_asset["file"],
                     hfield_asset["nrow"],
                     hfield_asset["ncol"],
-                    size=hfield_asset["size"],
+                    size=hfield_size,
                 )
 
                 s = builder.add_shape_heightfield(

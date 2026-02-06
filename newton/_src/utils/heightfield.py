@@ -91,5 +91,15 @@ def _load_elevation_data(
     # Header: (int32) nrow, (int32) ncol; payload: float32[nrow*ncol]
     with open(filename, "rb") as f:
         header = np.fromfile(f, dtype=np.int32, count=2)
-        data = np.fromfile(f, dtype=np.float32, count=header[0] * header[1])
+        if header.size != 2 or header[0] <= 0 or header[1] <= 0:
+            raise ValueError(
+                f"Invalid binary heightfield header in '{filename}': expected 2 positive int32 values, got {header}"
+            )
+        expected_count = int(header[0]) * int(header[1])
+        data = np.fromfile(f, dtype=np.float32, count=expected_count)
+        if data.size != expected_count:
+            raise ValueError(
+                f"Binary heightfield '{filename}' payload size mismatch: "
+                f"expected {expected_count} float32 values for {header[0]}x{header[1]} grid, got {data.size}"
+            )
     return data.reshape(header[0], header[1])
