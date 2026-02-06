@@ -1782,6 +1782,8 @@ def forward_step(
     pos_prev[particle] = pos[particle]
     if not particle_flags[particle] & ParticleFlags.ACTIVE or inv_mass[particle] == 0:
         inertia_out[particle] = pos_prev[particle]
+        if displacements_out:
+            displacements_out[particle] = wp.vec3(0.0, 0.0, 0.0)
         return
     vel_new = vel[particle] + (gravity[0] + external_force[particle] * inv_mass[particle]) * dt
     inertia = pos[particle] + vel_new * dt
