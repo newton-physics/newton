@@ -186,7 +186,7 @@ class Example:
         cloth_length=800.0,
         cloth_nu=300,
         cloth_thickness=0.4,
-        angular_speed=-2 * np.pi,
+        angular_speed=2 * np.pi,
         spin_duration=20.0,
     ):
         self.viewer = viewer
@@ -360,7 +360,7 @@ class Example:
         # Rotation parameters - match linear velocity at surface
         # v = omega * r, so for same v: omega2 = omega1 * r1 / r2
         self.angular_speed = angular_speed  # rad/sec
-        linear_velocity = abs(self.angular_speed) * self.cyl1_radius
+        linear_velocity = self.angular_speed * self.cyl1_radius
         self.angular_speed_cyl1 = linear_velocity / self.cyl1_radius  # = angular_speed
         self.angular_speed_cyl2 = linear_velocity / self.cyl2_radius  # slower due to larger radius
         self.spin_duration = spin_duration  # seconds
@@ -530,7 +530,7 @@ if __name__ == "__main__":
     parser.add_argument("--cloth-length", type=float, default=800.0, help="Length of cloth spiral")
     parser.add_argument("--cloth-nu", type=int, default=300, help="Number of rows along cloth length")
     parser.add_argument("--cloth-thickness", type=float, default=0.4, help="Thickness of rolled cloth mesh")
-    parser.add_argument("--angular-speed", type=float, default=-2 * np.pi, help="Base rotation speed (rad/sec)")
+    parser.add_argument("--angular-speed", type=float, default=2 * np.pi, help="Base rotation speed (rad/sec)")
     parser.add_argument("--spin-duration", type=float, default=20.0, help="Duration of spinning (seconds)")
 
     # Parse arguments and initialize viewer

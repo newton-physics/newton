@@ -6462,7 +6462,7 @@ class ModelBuilder:
 
             if len(graph_edge_indices) > 0:
                 self.particle_color_groups = color_graph(
-                    num_nodes,
+                    self.particle_count,
                     graph_edge_indices,
                     balance_colors,
                     target_max_min_color_ratio,
