@@ -2009,7 +2009,7 @@ class ModelBuilder:
             self.joint_child.extend(new_children)
 
             # Update parent/child lookups
-            for p, c in zip(new_parents, new_children):
+            for p, c in zip(new_parents, new_children, strict=True):
                 if c not in self.joint_parents:
                     self.joint_parents[c] = [p]
                 else:
@@ -3911,7 +3911,7 @@ class ModelBuilder:
         # Rebuild parent/child lookups
         self.joint_parents.clear()
         self.joint_children.clear()
-        for p, c in zip(self.joint_parent, self.joint_child):
+        for p, c in zip(self.joint_parent, self.joint_child, strict=True):
             if c not in self.joint_parents:
                 self.joint_parents[c] = [p]
             else:
