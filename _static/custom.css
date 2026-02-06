@@ -1,0 +1,33 @@
+/* Reduce spacing between class members */
+.py-attribute, .py-method, .py-property, .py-class {
+    margin-top: 0.5em !important;
+    margin-bottom: 0.5em !important;
+}
+
+/* Reduce spacing in docstring sections */
+.section > dl > dt {
+    margin-top: 0.2em !important;
+    margin-bottom: 0.2em !important;
+}
+
+/* Reduce padding in parameter lists */
+.field-list .field {
+    margin-bottom: 0.2em !important;
+    padding-bottom: 0.2em !important;
+}
+
+/* Reduce spacing between headings and content */
+h2, h3, h4, h5, h6 {
+    margin-top: 1em !important;
+    margin-bottom: 0.5em !important;
+}
+
+/* Reduce spacing in enum documentation */
+.py.class .py.attribute {
+    margin-bottom: 0.5em !important;
+}
+
+/* Reduce spacing between enum values */
+dl.py.attribute {
+    margin-bottom: 0.3em !important;
+}

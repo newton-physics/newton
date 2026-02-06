@@ -1,0 +1,1146 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Articulations &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true, "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]}, "displayMath": [["$$", "$$"], ["\\[", "\\]"]], "processEnvironments": true, "tags": "ams", "macros": {"RR": "{\\mathbb{R}}", "bold": ["{\\mathbf{#1}}", 1], "vec": ["{\\mathbf{#1}}", 1]}}, "options": {"ignoreHtmlClass": "annotation", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+    <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/articulations';</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Sites (Abstract Markers)" href="sites.html" />
+    <link rel="prev" title="Worlds" href="worlds.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Articulations</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="articulations">
+<span id="id1"></span><h1>Articulations<a class="headerlink" href="#articulations" title="Link to this heading">#</a></h1>
+<p>Articulations are a way to represent a collection of rigid bodies that are connected by joints.</p>
+<section id="generalized-and-maximal-coordinates">
+<span id="articulation-parameterization"></span><h2>Generalized and maximal coordinates<a class="headerlink" href="#generalized-and-maximal-coordinates" title="Link to this heading">#</a></h2>
+<p>There are two types of parameterizations to describe the configuration of an articulation:
+generalized coordinates and maximal coordinates.</p>
+<p>Generalized (sometimes also called “reduced”) coordinates describe the configuration of an articulation in terms of joint positions and velocities.
+For example, a double-pendulum articulation (two links serially attached to world by revolute joints) has two generalized coordinates corresponding to the two joint angles (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_q" title="newton.State.joint_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.joint_q</span></code></a>) and joint velocities (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_qd" title="newton.State.joint_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.joint_qd</span></code></a>).
+See the table below for the number of generalized coordinates for each joint type.
+Note that for a floating-base articulation (which is connected to the world by a free joint), the generalized coordinates include the maximal coordinates of the base link, i.e. the 3D position and 4D orientation of the base link.</p>
+<p>Maximal coordinates describe the configuration of an articulation in terms of the body link positions and velocities.
+Each rigid body’s pose is represented by 7 parameters (3D position and XYZW quaternion) in <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.body_q</span></code></a>,
+and its velocity by 6 parameters (3D linear and 3D angular) in <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.body_qd</span></code></a>.</p>
+<p>To convert between these two representations we use forward and inverse kinematics:
+forward kinematics (<a class="reference internal" href="../api/_generated/newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.eval_fk()</span></code></a>) converts generalized coordinates to maximal coordinates, and inverse kinematics (<a class="reference internal" href="../api/_generated/newton.eval_ik.html#newton.eval_ik" title="newton.eval_ik"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.eval_ik()</span></code></a>) converts maximal coordinates to generalized coordinates.</p>
+<p>In Newton, we support both parameterizations and it is up to the solver which one to use to read and write the configuration.
+For example, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> and <a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a> use generalized coordinates, while <a class="reference internal" href="../api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a> and <a class="reference internal" href="../api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> use maximal coordinates.
+Note that collision detection, e.g., via <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.Model.collide()</span></code></a> requires the maximal coordinates to be current in the state.</p>
+<p>To showcase how an articulation state is initialized using reduced coordinates, let’s consider an example where we create an articulation with a single revolute joint and initialize
+its joint angle to 0.5 and joint velocity to 10.0:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="c1"># create an articulation with a single revolute joint</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>  <span class="c1"># add a shape to the body to add some inertia</span>
+<span class="n">joint</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">body</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">))</span>  <span class="c1"># add a revolute joint to the body</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">joint</span><span class="p">])</span>  <span class="c1"># create articulation from the joint</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">joint_q</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.5</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="mf">10.0</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="c1"># The generalized coordinates have been initialized by the revolute joint:</span>
+<span class="k">assert</span> <span class="nb">all</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mf">0.5</span><span class="p">])</span>
+<span class="k">assert</span> <span class="nb">all</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">joint_qd</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="mf">10.0</span><span class="p">])</span>
+</pre></div>
+</div>
+<p>While the generalized coordinates have been initialized by the values we set through the <code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.ModelBuilder.joint_q</span></code> and <code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.ModelBuilder.joint_qd</span></code> definitions,
+the body poses (maximal coordinates) are still initialized by the identity transform (since we did not provide a <code class="docutils literal notranslate"><span class="pre">xform</span></code> argument to the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_link" title="newton.ModelBuilder.add_link"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_link()</span></code></a> call, it defaults to the identity transform).
+This is not a problem for generalized-coordinate solvers, as they do not use the body poses (maximal coordinates) to represent the state of the articulation but only the generalized coordinates.</p>
+<p>In order to update the body poses (maximal coordinates), we need to use the forward kinematics function <a class="reference internal" href="../api/_generated/newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-func docutils literal notranslate"><span class="pre">newton.eval_fk()</span></code></a>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">newton</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Now, the body poses (maximal coordinates) have been updated by the forward kinematics and a maximal-coordinate solver can simulate the scene starting from these initial conditions.
+As mentioned above, this call is not needed for generalized-coordinate solvers.</p>
+<p>When declaring an articulation using the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>, the rigid body poses (maximal coordinates <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.body_q</span></code></a>) are initialized by the <code class="docutils literal notranslate"><span class="pre">xform</span></code> argument:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">tf</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_from_axis_angle</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="n">wp</span><span class="o">.</span><span class="n">pi</span><span class="p">))</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">xform</span><span class="o">=</span><span class="n">tf</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>  <span class="c1"># add a shape to the body to add some inertia</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="c1"># The body poses (maximal coordinates) are initialized by the xform argument:</span>
+<span class="k">assert</span> <span class="nb">all</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">body_q</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="p">[</span><span class="o">*</span><span class="n">tf</span><span class="p">])</span>
+
+<span class="c1"># Note: add_body() automatically creates a free joint, so generalized coordinates exist:</span>
+<span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">)</span> <span class="o">==</span> <span class="mi">7</span>  <span class="c1"># 7 DOF for a free joint (3 position + 4 quaternion)</span>
+</pre></div>
+</div>
+<p>In this setup, we have a body with a box shape that both maximal-coordinate and generalized-coordinate solvers can simulate.
+Since <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_body" title="newton.ModelBuilder.add_body"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_body()</span></code></a> automatically adds a free joint, the body already has the necessary degrees of freedom in generalized coordinates (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.joint_q" title="newton.State.joint_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.joint_q</span></code></a>).</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">tf</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">3.0</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_from_axis_angle</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="n">wp</span><span class="o">.</span><span class="n">pi</span><span class="p">))</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">xform</span><span class="o">=</span><span class="n">tf</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>  <span class="c1"># add a shape to the body to add some inertia</span>
+<span class="n">joint</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_free</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>  <span class="c1"># add a free joint to connect the body to the world</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">joint</span><span class="p">])</span>  <span class="c1"># create articulation from the joint</span>
+<span class="c1"># The free joint&#39;s coordinates (joint_q) are initialized by its child body&#39;s pose,</span>
+<span class="c1"># so we do not need to specify them here</span>
+<span class="c1"># builder.joint_q[-7:] = *tf</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="c1"># The body poses (maximal coordinates) are initialized by the xform argument:</span>
+<span class="k">assert</span> <span class="nb">all</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">body_q</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="p">[</span><span class="o">*</span><span class="n">tf</span><span class="p">])</span>
+
+<span class="c1"># Now, the generalized coordinates are initialized by the free joint:</span>
+<span class="k">assert</span> <span class="nb">len</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">)</span> <span class="o">==</span> <span class="mi">7</span>
+<span class="k">assert</span> <span class="nb">all</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="o">==</span> <span class="p">[</span><span class="o">*</span><span class="n">tf</span><span class="p">])</span>
+</pre></div>
+</div>
+<p>This scene can now be simulated by both maximal-coordinate and generalized-coordinate solvers.</p>
+</section>
+<section id="joint-types">
+<span id="id2"></span><h2>Joint types<a class="headerlink" href="#joint-types" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Joint Type</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>DOFs in <code class="docutils literal notranslate"><span class="pre">joint_q</span></code></p></th>
+<th class="head"><p>DOFs in <code class="docutils literal notranslate"><span class="pre">joint_qd</span></code></p></th>
+<th class="head"><p>DOFs in <code class="docutils literal notranslate"><span class="pre">joint_axis</span></code></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">JointType.PRISMATIC</span></code></p></td>
+<td><p>Prismatic (slider) joint with 1 linear degree of freedom</p></td>
+<td><p>1</p></td>
+<td><p>1</p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">JointType.REVOLUTE</span></code></p></td>
+<td><p>Revolute (hinge) joint with 1 angular degree of freedom</p></td>
+<td><p>1</p></td>
+<td><p>1</p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">JointType.BALL</span></code></p></td>
+<td><p>Ball (spherical) joint with quaternion state representation</p></td>
+<td><p>4</p></td>
+<td><p>3</p></td>
+<td><p>3</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">JointType.FIXED</span></code></p></td>
+<td><p>Fixed (static) joint with no degrees of freedom</p></td>
+<td><p>0</p></td>
+<td><p>0</p></td>
+<td><p>0</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">JointType.FREE</span></code></p></td>
+<td><p>Free (floating) joint with 6 degrees of freedom in velocity space</p></td>
+<td><p>7 (3D position + 4D quaternion)</p></td>
+<td><p>6 (see <a class="reference internal" href="conventions.html#twist-conventions"><span class="std std-ref">Twist conventions in Newton</span></a>)</p></td>
+<td><p>0</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">JointType.DISTANCE</span></code></p></td>
+<td><p>Distance joint that keeps two bodies at a distance within its joint limits</p></td>
+<td><p>7</p></td>
+<td><p>6</p></td>
+<td><p>1</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">JointType.D6</span></code></p></td>
+<td><p>Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom</p></td>
+<td><p>up to 6</p></td>
+<td><p>up to 6</p></td>
+<td><p>up to 6</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">JointType.CABLE</span></code></p></td>
+<td><p>Cable joint with 1 linear (stretch/shear) and 1 angular (bend/twist) degree of freedom</p></td>
+<td><p>2</p></td>
+<td><p>2</p></td>
+<td><p>2</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>D6 joints are the most general joint type in Newton and can be used to represent any combination of translational and rotational degrees of freedom.
+Prismatic, revolute, planar, and universal joints can be seen as special cases of the D6 joint.</p>
+<section id="definition-of-joint-q">
+<h3>Definition of <code class="docutils literal notranslate"><span class="pre">joint_q</span></code><a class="headerlink" href="#definition-of-joint-q" title="Link to this heading">#</a></h3>
+<p>The <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_q" title="newton.Model.joint_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_q</span></code></a> array stores the generalized joint positions for all joints in the model.
+The positional dofs for each joint can be queried as follows:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">q_start</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_q_start</span><span class="p">[</span><span class="n">joint_id</span><span class="p">]</span>
+<span class="n">q_end</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_q_start</span><span class="p">[</span><span class="n">joint_id</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+<span class="c1"># now the positional dofs can be queried as follows:</span>
+<span class="n">q0</span> <span class="o">=</span> <span class="n">State</span><span class="o">.</span><span class="n">joint_q</span><span class="p">[</span><span class="n">q_start</span><span class="p">]</span>
+<span class="n">q1</span> <span class="o">=</span> <span class="n">State</span><span class="o">.</span><span class="n">joint_q</span><span class="p">[</span><span class="n">q_start</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+</section>
+<section id="definition-of-joint-qd">
+<h3>Definition of <code class="docutils literal notranslate"><span class="pre">joint_qd</span></code><a class="headerlink" href="#definition-of-joint-qd" title="Link to this heading">#</a></h3>
+<p>The <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_qd" title="newton.Model.joint_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_qd</span></code></a> array stores the generalized joint velocities for all joints in the model.
+The generalized joint forces at <a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Control.joint_f</span></code></a> are stored in the same order.</p>
+<p>The velocity dofs for each joint can be queried as follows:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">qd_start</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_qd_start</span><span class="p">[</span><span class="n">joint_id</span><span class="p">]</span>
+<span class="n">qd_end</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_qd_start</span><span class="p">[</span><span class="n">joint_id</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+<span class="c1"># now the velocity dofs can be queried as follows:</span>
+<span class="n">qd0</span> <span class="o">=</span> <span class="n">State</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">[</span><span class="n">qd_start</span><span class="p">]</span>
+<span class="n">qd1</span> <span class="o">=</span> <span class="n">State</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">[</span><span class="n">qd_start</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+<span class="o">...</span>
+<span class="c1"># the generalized joint forces can be queried as follows:</span>
+<span class="n">f0</span> <span class="o">=</span> <span class="n">Control</span><span class="o">.</span><span class="n">joint_f</span><span class="p">[</span><span class="n">qd_start</span><span class="p">]</span>
+<span class="n">f1</span> <span class="o">=</span> <span class="n">Control</span><span class="o">.</span><span class="n">joint_f</span><span class="p">[</span><span class="n">qd_start</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+</section>
+<section id="axis-related-quantities">
+<h3>Axis-related quantities<a class="headerlink" href="#axis-related-quantities" title="Link to this heading">#</a></h3>
+<p>Axis-related quantities include the definition of the joint axis in <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_axis" title="newton.Model.joint_axis"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_axis</span></code></a> and other properties
+defined via <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.JointDofConfig" title="newton.ModelBuilder.JointDofConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ModelBuilder.JointDofConfig</span></code></a>. The joint targets in <code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Control.joint_target</span></code> are also
+stored in the same per-axis order.</p>
+<p>The <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_dof_dim" title="newton.Model.joint_dof_dim"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_dof_dim</span></code></a> array can be used to query the number of linear and angular dofs.
+All axis-related quantities are stored in consecutive order for every joint. First, the linear dofs are stored, followed by the angular dofs.
+The indexing of the linear and angular degrees of freedom for a joint at a given <code class="docutils literal notranslate"><span class="pre">joint_index</span></code> is as follows:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">num_linear_dofs</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_dof_dim</span><span class="p">[</span><span class="n">joint_index</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span>
+<span class="n">num_angular_dofs</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_dof_dim</span><span class="p">[</span><span class="n">joint_index</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span>
+<span class="c1"># the joint axes for each joint start at this index:</span>
+<span class="n">axis_start</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_qd_start</span><span class="p">[</span><span class="n">joint_id</span><span class="p">]</span>
+<span class="c1"># the first linear 3D axis</span>
+<span class="n">first_lin_axis</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_axis</span><span class="p">[</span><span class="n">axis_start</span><span class="p">]</span>
+<span class="c1"># the joint target for this linear dof</span>
+<span class="n">first_lin_target</span> <span class="o">=</span> <span class="n">Control</span><span class="o">.</span><span class="n">joint_target</span><span class="p">[</span><span class="n">axis_start</span><span class="p">]</span>
+<span class="c1"># the joint limit of this linear dof</span>
+<span class="n">first_lin_limit</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_limit_lower</span><span class="p">[</span><span class="n">axis_start</span><span class="p">]</span>
+<span class="c1"># the first angular 3D axis is therefore</span>
+<span class="n">first_ang_axis</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_axis</span><span class="p">[</span><span class="n">axis_start</span> <span class="o">+</span> <span class="n">num_linear_dofs</span><span class="p">]</span>
+<span class="c1"># the joint target for this angular dof</span>
+<span class="n">first_ang_target</span> <span class="o">=</span> <span class="n">Control</span><span class="o">.</span><span class="n">joint_target</span><span class="p">[</span><span class="n">axis_start</span> <span class="o">+</span> <span class="n">num_linear_dofs</span><span class="p">]</span>
+<span class="c1"># the joint limit of this angular dof</span>
+<span class="n">first_ang_limit</span> <span class="o">=</span> <span class="n">Model</span><span class="o">.</span><span class="n">joint_limit_lower</span><span class="p">[</span><span class="n">axis_start</span> <span class="o">+</span> <span class="n">num_linear_dofs</span><span class="p">]</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="forward-inverse-kinematics">
+<span id="fk-ik"></span><h2>Forward / Inverse Kinematics<a class="headerlink" href="#forward-inverse-kinematics" title="Link to this heading">#</a></h2>
+<p>Articulated rigid-body mechanisms are kinematically described by the joints that connect the bodies as well as the
+relative transform from the parent and child body to the respective anchor frames of the joint in the parent and child body:</p>
+<a class="reference internal image-reference" href="../_images/joint_transforms.png"><img alt="../_images/joint_transforms.png" class="align-center" src="../_images/joint_transforms.png" style="width: 400px;" />
+</a>
+<div class="pst-scrollable-table-container"><table class="table" id="id3">
+<caption><span class="caption-text">Variable names in the kernels from <code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.core.articulation</span></code></span><a class="headerlink" href="#id3" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 10.0%" />
+<col style="width: 90.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Symbol</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>x_wp</p></td>
+<td><p>World transform of the parent body (stored at <code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p>x_wc</p></td>
+<td><p>World transform of the child body (stored at <code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>x_pj</p></td>
+<td><p>Transform from the parent body to the joint parent anchor frame (defined by <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p>x_cj</p></td>
+<td><p>Transform from the child body to the joint child anchor frame (defined by <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p>x_j</p></td>
+<td><p>Joint transform from the joint parent anchor frame to the joint child anchor frame</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>In the forward kinematics, the joint transform is determined by the joint coordinates (generalized joint positions <code class="xref py py-attr docutils literal notranslate"><span class="pre">State.joint_q</span></code> and velocities <code class="xref py py-attr docutils literal notranslate"><span class="pre">State.joint_qd</span></code>).
+Given the parent body’s world transform <span class="math notranslate nohighlight">\(x_{wp}\)</span> and the joint transform <span class="math notranslate nohighlight">\(x_{j}\)</span>, the child body’s world transform <span class="math notranslate nohighlight">\(x_{wc}\)</span> is computed as:</p>
+<div class="math notranslate nohighlight">
+\[x_{wc} = x_{wp} \cdot x_{pj} \cdot x_{j} \cdot x_{cj}^{-1}.\]</div>
+<dl class="py function">
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">eval_fk</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_qd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/articulation.py#L414"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dd><p>Evaluates the model’s forward kinematics given the joint coordinates and updates the state’s body information (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qd</span></code></a>).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>model</strong> (<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><em>Model</em></a>) – The model to evaluate.</p></li>
+<li><p><strong>joint_q</strong> (<em>array</em>) – Generalized joint position coordinates, shape [joint_coord_count], float</p></li>
+<li><p><strong>joint_qd</strong> (<em>array</em>) – Generalized joint velocity coordinates, shape [joint_dof_count], float</p></li>
+<li><p><strong>state</strong> (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><em>State</em></a>) – The state to update.</p></li>
+<li><p><strong>mask</strong> (<em>array</em>) – The mask to use to enable / disable FK for an articulation. If None then treat all as enabled, shape [articulation_count], bool</p></li>
+<li><p><strong>indices</strong> (<em>array</em>) – Integer indices of articulations to update. If None, updates all articulations.
+Cannot be used together with mask parameter.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py">
+<span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">eval_ik</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_q</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_qd</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/articulation.py#L754"><span class="viewcode-link"><span class="pre">[source]</span></span></a></dt>
+<dd><p>Evaluates the model’s inverse kinematics given the state’s body information (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qd</span></code></a>) and updates the generalized joint coordinates <cite>joint_q</cite> and <cite>joint_qd</cite>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>model</strong> (<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><em>Model</em></a>) – The model to evaluate.</p></li>
+<li><p><strong>state</strong> (<a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><em>State</em></a>) – The state with the body’s maximal coordinates (positions <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code></a> and velocities <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qd</span></code></a>) to use.</p></li>
+<li><p><strong>joint_q</strong> (<em>array</em>) – Generalized joint position coordinates, shape [joint_coord_count], float</p></li>
+<li><p><strong>joint_qd</strong> (<em>array</em>) – Generalized joint velocity coordinates, shape [joint_dof_count], float</p></li>
+<li><p><strong>mask</strong> (<em>array</em>) – Boolean mask indicating which articulations to update. If None, updates all (or those specified by indices).</p></li>
+<li><p><strong>indices</strong> (<em>array</em>) – Integer indices of articulations to update. If None, updates all articulations.</p></li>
+</ul>
+</dd>
+</dl>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The mask and indices parameters are mutually exclusive. If both are provided, a ValueError is raised.</p>
+</div>
+</dd></dl>
+
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generalized-and-maximal-coordinates">Generalized and maximal coordinates</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#joint-types">Joint types</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#definition-of-joint-q">Definition of <code class="docutils literal notranslate"><span class="pre">joint_q</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#definition-of-joint-qd">Definition of <code class="docutils literal notranslate"><span class="pre">joint_qd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#axis-related-quantities">Axis-related quantities</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#forward-inverse-kinematics">Forward / Inverse Kinematics</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

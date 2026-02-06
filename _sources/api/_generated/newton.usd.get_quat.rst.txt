@@ -1,0 +1,6 @@
+﻿newton.usd.get\_quat
+====================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_quat

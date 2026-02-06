@@ -1,0 +1,6 @@
+﻿newton.usd.get\_mesh
+====================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_mesh

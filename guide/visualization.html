@@ -1,0 +1,1237 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Visualization &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'guide/visualization';</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Key Concepts" href="key-concepts.html" />
+    <link rel="prev" title="Installation" href="installation.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../concepts/extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Visualization</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="visualization">
+<h1>Visualization<a class="headerlink" href="#visualization" title="Link to this heading">#</a></h1>
+<p>Newton provides multiple viewer backends for different visualization needs, from real-time rendering to offline recording and external integrations.</p>
+<p>All viewer backends share a common interface with <code class="docutils literal notranslate"><span class="pre">set_model()</span></code>, <code class="docutils literal notranslate"><span class="pre">begin_frame()</span></code>, <code class="docutils literal notranslate"><span class="pre">log_state()</span></code>, and <code class="docutils literal notranslate"><span class="pre">end_frame()</span></code> methods.</p>
+<p><strong>Limiting rendered worlds</strong>: When training with many parallel environments, rendering all worlds can impact performance.
+All viewers support the <code class="docutils literal notranslate"><span class="pre">max_worlds</span></code> parameter to limit visualization to a subset of environments:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Only render the first 4 environments</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">max_worlds</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="real-time-viewers">
+<h2>Real-time Viewers<a class="headerlink" href="#real-time-viewers" title="Link to this heading">#</a></h2>
+<section id="opengl-viewer">
+<h3>OpenGL Viewer<a class="headerlink" href="#opengl-viewer" title="Link to this heading">#</a></h3>
+<p>Newton provides <a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerGL</span></code></a>, a simple OpenGL viewer for interactive real-time visualization of simulations.
+The viewer requires pyglet (version &gt;= 2.1.6) and imgui_bundle (version &gt;= 1.92.0) to be installed.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerGL</span><span class="p">()</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># at every frame:</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+
+<span class="c1"># pause the simulation (blocks the control flow):</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">pause</span> <span class="o">=</span> <span class="kc">True</span>
+</pre></div>
+</div>
+<p>Keyboard shortcuts when working with the OpenGL Viewer (aka newton.viewer.ViewerGL):</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id1">
+<caption><span class="caption-text">Keyboard Shortcuts</span><a class="headerlink" href="#id1" title="Link to this table">#</a></caption>
+<thead>
+<tr class="row-odd"><th class="head"><p>Key(s)</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">W</span></code>, <code class="docutils literal notranslate"><span class="pre">A</span></code>, <code class="docutils literal notranslate"><span class="pre">S</span></code>, <code class="docutils literal notranslate"><span class="pre">D</span></code> (or arrow keys) + mouse drag</p></td>
+<td><p>Move the camera like in a FPS game</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">H</span></code></p></td>
+<td><p>Toggle Sidebar</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SPACE</span></code></p></td>
+<td><p>Pause/continue the simulation</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Right</span> <span class="pre">Click</span></code></p></td>
+<td><p>Pick objects</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Troubleshooting:</strong></p>
+<p>If you encounter an OpenGL context error on Linux with Wayland:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>OpenGL.error.Error: Attempt to retrieve context when no valid context
+</pre></div>
+</div>
+<p>Set the PyOpenGL platform before running:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">PYOPENGL_PLATFORM</span><span class="o">=</span>glx
+</pre></div>
+</div>
+<p>This is a known issue when running OpenGL applications on Wayland display servers.</p>
+</section>
+</section>
+<section id="recording-and-offline-viewers">
+<h2>Recording and Offline Viewers<a class="headerlink" href="#recording-and-offline-viewers" title="Link to this heading">#</a></h2>
+<section id="recording-to-file-viewerfile">
+<h3>Recording to File (ViewerFile)<a class="headerlink" href="#recording-to-file-viewerfile" title="Link to this heading">#</a></h3>
+<p>The <a class="reference internal" href="../api/_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile" title="newton.viewer.ViewerFile"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerFile</span></code></a> backend records simulation data to JSON or binary files for later replay or analysis.
+This is useful for capturing simulations for debugging, sharing results, or post-processing.</p>
+<p><strong>File formats:</strong></p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">.json</span></code>: Human-readable JSON format (no additional dependencies)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">.bin</span></code>: Binary CBOR2 format (more efficient, requires <code class="docutils literal notranslate"><span class="pre">cbor2</span></code> package)</p></li>
+</ul>
+<p>To use binary format, install the optional dependency:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>cbor2
+</pre></div>
+</div>
+<p><strong>Recording a simulation:</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Record to binary format (more efficient, requires cbor2)</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerFile</span><span class="p">(</span><span class="s2">&quot;simulation.bin&quot;</span><span class="p">,</span> <span class="n">auto_save</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">save_interval</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
+
+<span class="c1"># Or record to JSON format (human-readable, no extra dependencies)</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerFile</span><span class="p">(</span><span class="s2">&quot;simulation.json&quot;</span><span class="p">)</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># at every frame:</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+
+<span class="c1"># Close to save the recording</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+</pre></div>
+</div>
+<p><strong>Loading and playing back recordings:</strong></p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The RecorderModelAndState class is deprecated and will be removed in a future version.
+Use the <code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerFile</span></code> class instead.</p>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Load a recording for playback</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton._src.utils.recorder</span><span class="w"> </span><span class="kn">import</span> <span class="n">RecorderModelAndState</span>
+<span class="n">recorder</span> <span class="o">=</span> <span class="n">RecorderModelAndState</span><span class="p">()</span>
+<span class="n">recorder</span><span class="o">.</span><span class="n">load_from_file</span><span class="p">(</span><span class="s2">&quot;simulation.bin&quot;</span><span class="p">)</span>
+
+<span class="c1"># Create model and state for playback</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">State</span><span class="p">()</span>
+
+<span class="c1"># Restore the model from the recording</span>
+<span class="n">recorder</span><span class="o">.</span><span class="n">playback_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># Playback a specific frame (e.g., frame 10)</span>
+<span class="n">recorder</span><span class="o">.</span><span class="n">playback</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">frame_index</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+
+<span class="c1"># Use with any viewer to visualize</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerGL</span><span class="p">()</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>For a complete example with UI controls for playback, see <code class="docutils literal notranslate"><span class="pre">newton/examples/basic/example_replay_viewer.py</span></code>.</p>
+<p>Key parameters:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">output_path</span></code>: Path to the output file (format determined by extension: .json or .bin)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">auto_save</span></code>: If True, automatically save periodically during recording (default: <code class="docutils literal notranslate"><span class="pre">True</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">save_interval</span></code>: Number of frames between auto-saves when auto_save=True (default: <code class="docutils literal notranslate"><span class="pre">100</span></code>)</p></li>
+</ul>
+</section>
+<section id="rendering-to-usd">
+<h3>Rendering to USD<a class="headerlink" href="#rendering-to-usd" title="Link to this heading">#</a></h3>
+<p>Instead of rendering in real-time, you can also render the simulation as a time-sampled USD stage to be visualized in Omniverse or other USD-compatible tools using the <a class="reference internal" href="../api/_generated/newton.viewer.ViewerUSD.html#newton.viewer.ViewerUSD" title="newton.viewer.ViewerUSD"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerUSD</span></code></a> backend.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerUSD</span><span class="p">(</span><span class="n">output_path</span><span class="o">=</span><span class="s2">&quot;simulation.usd&quot;</span><span class="p">,</span> <span class="n">fps</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">up_axis</span><span class="o">=</span><span class="s2">&quot;Z&quot;</span><span class="p">)</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># at every frame:</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+
+<span class="c1"># Save and close the USD file</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="external-integrations">
+<h2>External Integrations<a class="headerlink" href="#external-integrations" title="Link to this heading">#</a></h2>
+<section id="rerun-viewer">
+<h3>Rerun Viewer<a class="headerlink" href="#rerun-viewer" title="Link to this heading">#</a></h3>
+<p>The <a class="reference internal" href="../api/_generated/newton.viewer.ViewerRerun.html#newton.viewer.ViewerRerun" title="newton.viewer.ViewerRerun"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerRerun</span></code></a> backend integrates with the <a class="reference external" href="https://rerun.io">rerun</a> visualization library,
+enabling real-time or offline visualization with advanced features like time scrubbing and data inspection.</p>
+<p><strong>Installation</strong>: Requires the rerun-sdk package:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>rerun-sdk
+</pre></div>
+</div>
+<p><strong>Usage</strong>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Default usage: spawns a local viewer</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerRerun</span><span class="p">(</span>
+    <span class="n">app_id</span><span class="o">=</span><span class="s2">&quot;newton-simulation&quot;</span> <span class="c1"># Optional application identifier to differentiate multiple parallel instances.</span>
+<span class="p">)</span>
+
+<span class="c1"># Or specify a custom server address for remote viewing</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerRerun</span><span class="p">(</span>
+    <span class="n">address</span><span class="o">=</span><span class="s2">&quot;rerun+http://127.0.0.1:9876/proxy&quot;</span><span class="p">,</span> <span class="c1"># Optional server address to connect to a remote rerun server.</span>
+    <span class="n">app_id</span><span class="o">=</span><span class="s2">&quot;newton-simulation&quot;</span>
+<span class="p">)</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># at every frame:</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>By default, the viewer will run without keeping historical state data in the viewer to keep the memory usage constant when sending transform updates via <code class="xref py py-meth docutils literal notranslate"><span class="pre">ViewerRerun.log_state()</span></code>.
+This is useful for visualizing long and complex simulations that would quickly fill up the web viewer’s memory if the historical data was kept.
+If you want to keep the historical state data in the viewer, you can set the <code class="docutils literal notranslate"><span class="pre">keep_historical_data</span></code> flag to <code class="docutils literal notranslate"><span class="pre">True</span></code>.</p>
+<p>The rerun viewer provides a web-based interface with features like:</p>
+<ul class="simple">
+<li><p>Time scrubbing and playback controls</p></li>
+<li><p>3D scene navigation</p></li>
+<li><p>Data inspection and filtering</p></li>
+<li><p>Recording and export capabilities</p></li>
+</ul>
+<p><strong>Jupyter notebook support</strong></p>
+<p>The ViewerRerun backend automatically detects if it is running inside a Jupyter notebook environment and automatically generates an output widget for the viewer
+during the construction of <a class="reference internal" href="../api/_generated/newton.viewer.ViewerRerun.html#newton.viewer.ViewerRerun" title="newton.viewer.ViewerRerun"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerRerun</span></code></a>.</p>
+<p>The rerun SDK provides a Jupyter notebook extension that allows you to visualize rerun data in a Jupyter notebook.</p>
+<p>You can use <code class="docutils literal notranslate"><span class="pre">uv</span></code> to start Jupyter lab with the required dependencies (or install the extension manually with <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">rerun-sdk[notebook]</span></code>):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>--extra<span class="w"> </span>notebook<span class="w"> </span>jupyter<span class="w"> </span>lab
+</pre></div>
+</div>
+<p>Then, you can use the rerun SDK in a Jupyter notebook by importing the <code class="xref py py-mod docutils literal notranslate"><span class="pre">rerun</span></code> module and creating a viewer instance.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerRerun</span><span class="p">(</span><span class="n">keep_historical_data</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="n">frame_dt</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">/</span> <span class="mf">60.0</span>
+<span class="n">sim_time</span> <span class="o">=</span> <span class="mf">0.0</span>
+
+<span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">500</span><span class="p">):</span>
+    <span class="c1"># simulate, step the solver, etc.</span>
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+
+    <span class="c1"># visualize</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+
+    <span class="n">sim_time</span> <span class="o">+=</span> <span class="n">frame_dt</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">show_notebook</span><span class="p">()</span>  <span class="c1"># or simply `viewer` to display the viewer in the notebook</span>
+</pre></div>
+</div>
+<a class="reference internal image-reference" href="../_images/rerun_notebook_example.png"><img alt="../_images/rerun_notebook_example.png" class="align-left" src="../_images/rerun_notebook_example.png" style="width: 1000px;" />
+</a>
+<p>The history of states will be available in the viewer to scrub through the simulation timeline.</p>
+</section>
+<section id="viser-viewer">
+<h3>Viser Viewer<a class="headerlink" href="#viser-viewer" title="Link to this heading">#</a></h3>
+<p>The <a class="reference internal" href="../api/_generated/newton.viewer.ViewerViser.html#newton.viewer.ViewerViser" title="newton.viewer.ViewerViser"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerViser</span></code></a> backend integrates with the <a class="reference external" href="https://viser.studio">viser</a> visualization library,
+providing web-based 3D visualization that works in any browser and has native Jupyter notebook support.</p>
+<p><strong>Installation</strong>: Requires the viser package:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>viser
+</pre></div>
+</div>
+<p><strong>Usage</strong>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Default usage: starts a web server on port 8080</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerViser</span><span class="p">(</span><span class="n">port</span><span class="o">=</span><span class="mi">8080</span><span class="p">)</span>
+
+<span class="c1"># Open http://localhost:8080 in your browser to view the simulation</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># at every frame:</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+
+<span class="c1"># Close the viewer when done</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Key parameters:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">port</span></code>: Port number for the web server (default: <code class="docutils literal notranslate"><span class="pre">8080</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">label</span></code>: Optional label for the browser window title</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">verbose</span></code>: If True, print the server URL when starting (default: <code class="docutils literal notranslate"><span class="pre">True</span></code>)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">share</span></code>: If True, create a publicly accessible URL via viser’s share feature</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">record_to_viser</span></code>: Path to record the visualization to a <code class="docutils literal notranslate"><span class="pre">.viser</span></code> file for later playback</p></li>
+</ul>
+<p><strong>Recording and playback</strong></p>
+<p>ViewerViser can record simulations to <code class="docutils literal notranslate"><span class="pre">.viser</span></code> files for later playback:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Record to a .viser file</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerViser</span><span class="p">(</span><span class="n">record_to_viser</span><span class="o">=</span><span class="s2">&quot;my_simulation.viser&quot;</span><span class="p">)</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># Run simulation...</span>
+<span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">500</span><span class="p">):</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+    <span class="n">sim_time</span> <span class="o">+=</span> <span class="n">frame_dt</span>
+
+<span class="c1"># Save the recording</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">save_recording</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The recorded <code class="docutils literal notranslate"><span class="pre">.viser</span></code> file can be played back using the viser HTML player.</p>
+<p><strong>Jupyter notebook support</strong></p>
+<p>ViewerViser has native Jupyter notebook integration. When recording is enabled, calling <code class="docutils literal notranslate"><span class="pre">show_notebook()</span></code>
+will display an embedded player with timeline controls:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerViser</span><span class="p">(</span><span class="n">record_to_viser</span><span class="o">=</span><span class="s2">&quot;simulation.viser&quot;</span><span class="p">)</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># Run simulation...</span>
+<span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">500</span><span class="p">):</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+    <span class="n">sim_time</span> <span class="o">+=</span> <span class="n">frame_dt</span>
+
+<span class="c1"># Display in notebook with timeline controls</span>
+<span class="n">viewer</span><span class="o">.</span><span class="n">show_notebook</span><span class="p">()</span>  <span class="c1"># or simply `viewer` at the end of a cell</span>
+</pre></div>
+</div>
+<p>When no recording is active, <code class="docutils literal notranslate"><span class="pre">show_notebook()</span></code> displays the live server in an IFrame.</p>
+<p>The viser viewer provides features like:</p>
+<ul class="simple">
+<li><p>Real-time 3D visualization in any web browser</p></li>
+<li><p>Interactive camera controls (pan, zoom, orbit)</p></li>
+<li><p>GPU-accelerated batched mesh rendering</p></li>
+<li><p>Recording and playback capabilities</p></li>
+<li><p>Public URL sharing via viser’s share feature</p></li>
+</ul>
+</section>
+</section>
+<section id="utility-viewers">
+<h2>Utility Viewers<a class="headerlink" href="#utility-viewers" title="Link to this heading">#</a></h2>
+<section id="null-viewer">
+<h3>Null Viewer<a class="headerlink" href="#null-viewer" title="Link to this heading">#</a></h3>
+<p>The <a class="reference internal" href="../api/_generated/newton.viewer.ViewerNull.html#newton.viewer.ViewerNull" title="newton.viewer.ViewerNull"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerNull</span></code></a> provides a no-operation viewer for headless environments or automated testing where visualization is not required.
+It simply counts frames and provides stub implementations for all viewer methods.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run for 1000 frames without visualization</span>
+<span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerNull</span><span class="p">(</span><span class="n">num_frames</span><span class="o">=</span><span class="mi">1000</span><span class="p">)</span>
+
+<span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="k">while</span> <span class="n">viewer</span><span class="o">.</span><span class="n">is_running</span><span class="p">():</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">begin_frame</span><span class="p">(</span><span class="n">sim_time</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+    <span class="n">viewer</span><span class="o">.</span><span class="n">end_frame</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>This is particularly useful for:</p>
+<ul class="simple">
+<li><p>Performance benchmarking without rendering overhead</p></li>
+<li><p>Automated testing in CI/CD pipelines</p></li>
+<li><p>Running simulations on headless servers</p></li>
+<li><p>Batch processing of simulations</p></li>
+</ul>
+</section>
+</section>
+<section id="choosing-the-right-viewer">
+<h2>Choosing the Right Viewer<a class="headerlink" href="#choosing-the-right-viewer" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table" id="id2">
+<caption><span class="caption-text">Viewer Comparison</span><a class="headerlink" href="#id2" title="Link to this table">#</a></caption>
+<thead>
+<tr class="row-odd"><th class="head"><p>Viewer</p></th>
+<th class="head"><p>Use Case</p></th>
+<th class="head"><p>Output</p></th>
+<th class="head"><p>Dependencies</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerGL</span></code></a></p></td>
+<td><p>Interactive development and debugging</p></td>
+<td><p>Real-time display</p></td>
+<td><p>pyglet, imgui_bundle</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile" title="newton.viewer.ViewerFile"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerFile</span></code></a></p></td>
+<td><p>Recording for replay/sharing</p></td>
+<td><p>.json or .bin files</p></td>
+<td><p>None</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerUSD.html#newton.viewer.ViewerUSD" title="newton.viewer.ViewerUSD"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerUSD</span></code></a></p></td>
+<td><p>Integration with 3D pipelines</p></td>
+<td><p>.usd files</p></td>
+<td><p>usd-core</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerRerun.html#newton.viewer.ViewerRerun" title="newton.viewer.ViewerRerun"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerRerun</span></code></a></p></td>
+<td><p>Advanced visualization and analysis</p></td>
+<td><p>Web interface</p></td>
+<td><p>rerun-sdk</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerViser.html#newton.viewer.ViewerViser" title="newton.viewer.ViewerViser"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerViser</span></code></a></p></td>
+<td><p>Browser-based visualization and Jupyter notebooks</p></td>
+<td><p>Web interface, .viser files</p></td>
+<td><p>viser</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.viewer.ViewerNull.html#newton.viewer.ViewerNull" title="newton.viewer.ViewerNull"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerNull</span></code></a></p></td>
+<td><p>Headless/automated environments</p></td>
+<td><p>None</p></td>
+<td><p>None</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#real-time-viewers">Real-time Viewers</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#opengl-viewer">OpenGL Viewer</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-and-offline-viewers">Recording and Offline Viewers</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-to-file-viewerfile">Recording to File (ViewerFile)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rendering-to-usd">Rendering to USD</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#external-integrations">External Integrations</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rerun-viewer">Rerun Viewer</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#viser-viewer">Viser Viewer</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#utility-viewers">Utility Viewers</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#null-viewer">Null Viewer</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#choosing-the-right-viewer">Choosing the Right Viewer</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

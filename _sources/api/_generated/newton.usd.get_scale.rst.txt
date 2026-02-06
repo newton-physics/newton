@@ -1,0 +1,6 @@
+﻿newton.usd.get\_scale
+=====================
+
+.. currentmodule:: newton.usd
+
+.. autofunction:: get_scale

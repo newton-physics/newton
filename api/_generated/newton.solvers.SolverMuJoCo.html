@@ -1,0 +1,1331 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>newton.solvers.SolverMuJoCo &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'api/_generated/newton.solvers.SolverMuJoCo';</script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+    <link rel="next" title="newton.solvers.SolverNotifyFlags" href="newton.solvers.SolverNotifyFlags.html" />
+    <link rel="prev" title="newton.solvers.SolverImplicitMPM" href="newton.solvers.SolverImplicitMPM.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../concepts/collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="reference internal" href="../newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1 current active"><a class="reference internal" href="../newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../newton.html" class="nav-link">newton</a></li>
+    
+    
+    <li class="breadcrumb-item"><a href="../newton_solvers.html" class="nav-link">newton.solvers</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">newton.solvers.SolverMuJoCo</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="newton-solvers-solvermujoco">
+<h1>newton.solvers.SolverMuJoCo<a class="headerlink" href="#newton-solvers-solvermujoco" title="Link to this heading">#</a></h1>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverMuJoCo</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">mjw_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mjw_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">separate_worlds</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">njmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nconmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_initpoints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integrator</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cone</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">jacobian</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">impratio</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">density</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">viscosity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wind</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">magnetic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_cpu</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">disable_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_actuator_gear</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">actuator_gears</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">update_data_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_to_mjcf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_parallel</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/solver_mujoco.py#L91"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverMuJoCo" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference internal" href="newton.solvers.SolverBase.html#newton.solvers.SolverBase" title="newton._src.solvers.solver.SolverBase"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverBase</span></code></a></p>
+<p>This solver provides an interface to simulate physics using the <a class="reference external" href="https://github.com/google-deepmind/mujoco">MuJoCo</a> physics engine,
+optimized with GPU acceleration through <a class="reference external" href="https://github.com/google-deepmind/mujoco_warp">mujoco_warp</a>. It supports both MuJoCo and
+mujoco_warp backends, enabling efficient simulation of articulated systems with
+contacts and constraints.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<ul class="simple">
+<li><p>This solver requires <a class="reference external" href="https://github.com/google-deepmind/mujoco_warp">mujoco_warp</a> and its dependencies to be installed.</p></li>
+<li><p>For installation instructions, see the <a class="reference external" href="https://github.com/google-deepmind/mujoco_warp">mujoco_warp</a> repository.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">shape_collision_radius</span></code> from Newton models is not used by MuJoCo. Instead, MuJoCo computes
+bounding sphere radii (<code class="docutils literal notranslate"><span class="pre">geom_rbound</span></code>) internally based on the geometry definition.</p></li>
+</ul>
+</div>
+<p class="rubric">Example</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="c1"># simulation loop</span>
+<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">):</span>
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+    <span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span> <span class="o">=</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">state_in</span>
+</pre></div>
+</div>
+<section id="debugging">
+<h2>Debugging<a class="headerlink" href="#debugging" title="Link to this heading">#</a></h2>
+<p>To debug the SolverMuJoCo, you can save the MuJoCo model that is created from the <a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Model</span></code></a> in the constructor of the SolverMuJoCo:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">save_to_mjcf</span><span class="o">=</span><span class="s2">&quot;model.xml&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>This will save the MuJoCo model as an MJCF file, which can be opened in the MuJoCo simulator.</p>
+<p>It is also possible to visualize the simulation running in the SolverMuJoCo through MuJoCo’s own viewer.
+This may help to debug the simulation and see how the MuJoCo model looks like when it is created from the Newton model.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="n">solver</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">solvers</span><span class="o">.</span><span class="n">SolverMuJoCo</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+
+<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_frames</span><span class="p">):</span>
+    <span class="c1"># step the solver</span>
+    <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+    <span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span> <span class="o">=</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">state_in</span>
+
+    <span class="n">solver</span><span class="o">.</span><span class="n">render_mujoco_viewer</span><span class="p">()</span>
+</pre></div>
+</div>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.CtrlSource">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">CtrlSource</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.CtrlSource" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
+<p>Control source for MuJoCo actuators.</p>
+<p>Determines where an actuator gets its control input from:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET" title="newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET"><code class="xref py py-attr docutils literal notranslate"><span class="pre">JOINT_TARGET</span></code></a>: Maps from Newton’s <a class="reference internal" href="newton.Control.html#newton.Control.joint_target_pos" title="newton.Control.joint_target_pos"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_pos</span></code></a>/<a class="reference internal" href="newton.Control.html#newton.Control.joint_target_vel" title="newton.Control.joint_target_vel"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_vel</span></code></a> arrays</p></li>
+<li><p><a class="reference internal" href="#newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT" title="newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT"><code class="xref py py-attr docutils literal notranslate"><span class="pre">CTRL_DIRECT</span></code></a>: Uses <code class="docutils literal notranslate"><span class="pre">control.mujoco.ctrl</span></code> directly (for MuJoCo-native control)</p></li>
+</ul>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT">
+<span class="sig-name descname"><span class="pre">CTRL_DIRECT</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET">
+<span class="sig-name descname"><span class="pre">JOINT_TARGET</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.CtrlType">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">CtrlType</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">value</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.CtrlType" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
+<p>Control type for MuJoCo actuators.</p>
+<p>For <a class="reference internal" href="#newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET" title="newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET"><code class="xref py py-attr docutils literal notranslate"><span class="pre">JOINT_TARGET</span></code></a> mode, determines which target array to read from:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="#newton.solvers.SolverMuJoCo.CtrlType.POSITION" title="newton.solvers.SolverMuJoCo.CtrlType.POSITION"><code class="xref py py-attr docutils literal notranslate"><span class="pre">POSITION</span></code></a>: Maps from <a class="reference internal" href="newton.Control.html#newton.Control.joint_target_pos" title="newton.Control.joint_target_pos"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_pos</span></code></a>, syncs gains from
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_ke</span></code>. For <a class="reference internal" href="newton.ActuatorMode.html#newton.ActuatorMode.POSITION" title="newton.ActuatorMode.POSITION"><code class="xref py py-attr docutils literal notranslate"><span class="pre">POSITION</span></code></a>-only actuators,
+also syncs damping from <code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_kd</span></code>. For
+<a class="reference internal" href="newton.ActuatorMode.html#newton.ActuatorMode.POSITION_VELOCITY" title="newton.ActuatorMode.POSITION_VELOCITY"><code class="xref py py-attr docutils literal notranslate"><span class="pre">POSITION_VELOCITY</span></code></a> mode, kd is handled by the separate velocity actuator.</p></li>
+<li><p><a class="reference internal" href="#newton.solvers.SolverMuJoCo.CtrlType.VELOCITY" title="newton.solvers.SolverMuJoCo.CtrlType.VELOCITY"><code class="xref py py-attr docutils literal notranslate"><span class="pre">VELOCITY</span></code></a>: Maps from <a class="reference internal" href="newton.Control.html#newton.Control.joint_target_vel" title="newton.Control.joint_target_vel"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_vel</span></code></a>, syncs gains from <code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_target_kd</span></code></p></li>
+<li><p><a class="reference internal" href="#newton.solvers.SolverMuJoCo.CtrlType.GENERAL" title="newton.solvers.SolverMuJoCo.CtrlType.GENERAL"><code class="xref py py-attr docutils literal notranslate"><span class="pre">GENERAL</span></code></a>: Used with <a class="reference internal" href="#newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT" title="newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT"><code class="xref py py-attr docutils literal notranslate"><span class="pre">CTRL_DIRECT</span></code></a> mode for motor/general actuators</p></li>
+</ul>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.CtrlType.GENERAL">
+<span class="sig-name descname"><span class="pre">GENERAL</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">2</span></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.CtrlType.GENERAL" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.CtrlType.POSITION">
+<span class="sig-name descname"><span class="pre">POSITION</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.CtrlType.POSITION" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.CtrlType.VELOCITY">
+<span class="sig-name descname"><span class="pre">VELOCITY</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">1</span></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.CtrlType.VELOCITY" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.import_mujoco">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">import_mujoco</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.import_mujoco" title="Link to this definition">#</a></dt>
+<dd><p>Import the MuJoCo Warp dependencies and cache them as class variables.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.register_custom_attributes">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">register_custom_attributes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.register_custom_attributes" title="Link to this definition">#</a></dt>
+<dd><p>Declare custom attributes to be allocated on the Model object within the <code class="docutils literal notranslate"><span class="pre">mujoco</span></code> namespace.
+Note that we declare all custom attributes with the <code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.ModelBuilder.CustomAttribute.usd_attribute_name</span></code> set to <code class="docutils literal notranslate"><span class="pre">&quot;mjc&quot;</span></code> here to leverage the MuJoCo USD schema
+where attributes are named <code class="docutils literal notranslate"><span class="pre">&quot;mjc:attr&quot;</span></code> rather than <code class="docutils literal notranslate"><span class="pre">&quot;newton:mujoco:attr&quot;</span></code>.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.color_collision_shapes">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">color_collision_shapes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">selected_shapes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visualize_graph</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_keys</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.color_collision_shapes" title="Link to this definition">#</a></dt>
+<dd><p>Find a graph coloring of the collision filter pairs in the model.
+Shapes within the same color cannot collide with each other.
+Shapes can only collide with shapes of different colors.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>Model</em></a>) – The model to color the collision shapes of.</p></li>
+<li><p><strong>selected_shapes</strong> (<em>nparray</em>) – The indices of the collision shapes to color.</p></li>
+<li><p><strong>visualize_graph</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to visualize the graph coloring.</p></li>
+<li><p><strong>shape_keys</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em>) – The keys of the shapes, only used for visualization.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>An integer array of shape (num_shapes,), where each element is the color of the corresponding shape.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>nparray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.find_body_collision_filter_pairs">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">find_body_collision_filter_pairs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">selected_bodies</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colliding_shapes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.find_body_collision_filter_pairs" title="Link to this definition">#</a></dt>
+<dd><p>For shape collision filter pairs, find body collision filter pairs that are contained within.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">mjw_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mjw_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">separate_worlds</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">njmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nconmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_initpoints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integrator</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cone</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">jacobian</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">impratio</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">density</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">viscosity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wind</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">magnetic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_cpu</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">disable_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_actuator_gear</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">actuator_gears</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">update_data_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_to_mjcf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_parallel</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.__init__" title="Link to this definition">#</a></dt>
+<dd><p>Solver options (e.g., <code class="docutils literal notranslate"><span class="pre">impratio</span></code>) follow this resolution priority:</p>
+<ol class="arabic simple">
+<li><p><strong>Constructor argument</strong> - If provided, same value is used for all worlds.</p></li>
+<li><p><strong>Newton model custom attribute</strong> (<code class="docutils literal notranslate"><span class="pre">model.mujoco.&lt;option&gt;</span></code>) - Supports per-world values.</p></li>
+<li><p><strong>MuJoCo default</strong> - Used if neither of the above is set.</p></li>
+</ol>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>Model</em></a>) – the model to be simulated.</p></li>
+<li><p><strong>mjw_model</strong> (<em>MjWarpModel</em><em> | </em><em>None</em>) – Optional pre-existing MuJoCo Warp model. If provided with <cite>mjw_data</cite>, conversion from Newton model is skipped.</p></li>
+<li><p><strong>mjw_data</strong> (<em>MjWarpData</em><em> | </em><em>None</em>) – Optional pre-existing MuJoCo Warp data. If provided with <cite>mjw_model</cite>, conversion from Newton model is skipped.</p></li>
+<li><p><strong>separate_worlds</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><em>None</em>) – If True, each Newton world is mapped to a separate MuJoCo world. Defaults to <cite>not use_mujoco_cpu</cite>.</p></li>
+<li><p><strong>njmax</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.</p></li>
+<li><p><strong>nconmax</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.</p></li>
+<li><p><strong>iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Number of solver iterations. If None, uses model custom attribute or MuJoCo’s default (100).</p></li>
+<li><p><strong>ls_iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo’s default (50).</p></li>
+<li><p><strong>ccd_iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum CCD iterations. If None, uses model custom attribute or MuJoCo’s default (50).</p></li>
+<li><p><strong>sdf_iterations</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum SDF iterations. If None, uses model custom attribute or MuJoCo’s default (10).</p></li>
+<li><p><strong>sdf_initpoints</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Number of SDF initialization points. If None, uses model custom attribute or MuJoCo’s default (40).</p></li>
+<li><p><strong>solver</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Solver type. Can be “cg” or “newton”, or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton’s default (“newton”).</p></li>
+<li><p><strong>integrator</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Integrator type. Can be “euler”, “rk4”, or “implicitfast”, or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton’s default (“implicitfast”).</p></li>
+<li><p><strong>cone</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – The type of contact friction cone. Can be “pyramidal”, “elliptic”, or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton’s default (“pyramidal”).</p></li>
+<li><p><strong>jacobian</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Jacobian computation method. Can be “dense”, “sparse”, or “auto”, or their corresponding MuJoCo integer constants. If None, uses model custom attribute or MuJoCo’s default (“auto”).</p></li>
+<li><p><strong>impratio</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Frictional-to-normal constraint impedance ratio. If None, uses model custom attribute or MuJoCo’s default (1.0).</p></li>
+<li><p><strong>tolerance</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Solver tolerance for early termination. If None, uses model custom attribute or MuJoCo’s default (1e-8).</p></li>
+<li><p><strong>ls_tolerance</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Line search tolerance for early termination. If None, uses model custom attribute or MuJoCo’s default (0.01).</p></li>
+<li><p><strong>ccd_tolerance</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Continuous collision detection tolerance. If None, uses model custom attribute or MuJoCo’s default (1e-6).</p></li>
+<li><p><strong>density</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Medium density for lift and drag forces. If None, uses model custom attribute or MuJoCo’s default (0.0).</p></li>
+<li><p><strong>viscosity</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Medium viscosity for lift and drag forces. If None, uses model custom attribute or MuJoCo’s default (0.0).</p></li>
+<li><p><strong>wind</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em> | </em><em>None</em>) – Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo’s default (0, 0, 0).</p></li>
+<li><p><strong>magnetic</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em> | </em><em>None</em>) – Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo’s default (0, -0.5, 0).</p></li>
+<li><p><strong>use_mujoco_cpu</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, use the MuJoCo-C CPU backend instead of <cite>mujoco_warp</cite>.</p></li>
+<li><p><strong>disable_contacts</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, disable contact computation in MuJoCo.</p></li>
+<li><p><strong>register_collision_groups</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, register collision groups from the Newton model in MuJoCo.</p></li>
+<li><p><strong>default_actuator_gear</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Default gear ratio for all actuators. Can be overridden by <cite>actuator_gears</cite>.</p></li>
+<li><p><strong>actuator_gears</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Dictionary mapping joint names to specific gear ratios, overriding the <cite>default_actuator_gear</cite>.</p></li>
+<li><p><strong>update_data_interval</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.</p></li>
+<li><p><strong>save_to_mjcf</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Optional path to save the generated MJCF model file.</p></li>
+<li><p><strong>ls_parallel</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, enable parallel line search in MuJoCo. Defaults to False.</p></li>
+<li><p><strong>use_mujoco_contacts</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).</p></li>
+<li><p><strong>include_sites</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If <code class="docutils literal notranslate"><span class="pre">True</span></code> (default), Newton shapes marked with <code class="docutils literal notranslate"><span class="pre">ShapeFlags.SITE</span></code> are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If <code class="docutils literal notranslate"><span class="pre">False</span></code>, sites are skipped during export. Defaults to <code class="docutils literal notranslate"><span class="pre">True</span></code>.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.close_mujoco_viewer">
+<span class="sig-name descname"><span class="pre">close_mujoco_viewer</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.close_mujoco_viewer" title="Link to this definition">#</a></dt>
+<dd><p>Close the MuJoCo viewer if it exists.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.enable_rne_postconstraint">
+<span class="sig-name descname"><span class="pre">enable_rne_postconstraint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.enable_rne_postconstraint" title="Link to this definition">#</a></dt>
+<dd><p>Request computation of RNE forces if required for state fields.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.get_max_contact_count">
+<span class="sig-name descname"><span class="pre">get_max_contact_count</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.get_max_contact_count" title="Link to this definition">#</a></dt>
+<dd><p>Return the maximum number of rigid contacts that can be generated by MuJoCo.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.notify_model_changed">
+<span class="sig-name descname"><span class="pre">notify_model_changed</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">flags</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.notify_model_changed" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.render_mujoco_viewer">
+<span class="sig-name descname"><span class="pre">render_mujoco_viewer</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">show_left_ui</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show_right_ui</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show_contact_points</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show_contact_forces</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">show_transparent_geoms</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.render_mujoco_viewer" title="Link to this definition">#</a></dt>
+<dd><p>Create and synchronize the MuJoCo viewer.
+The viewer will be created if it is not already open.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The MuJoCo viewer only supports rendering Newton models with a single world,
+unless <code class="xref py py-attr docutils literal notranslate"><span class="pre">use_mujoco_cpu</span></code> is <a class="reference external" href="https://docs.python.org/3/library/constants.html#True" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">True</span></code></a> or the solver was initialized with
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">separate_worlds</span></code> set to <a class="reference external" href="https://docs.python.org/3/library/constants.html#False" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">False</span></code></a>.</p>
+<p>The MuJoCo viewer is only meant as a debugging tool.</p>
+</div>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>show_left_ui</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to show the left UI.</p></li>
+<li><p><strong>show_right_ui</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to show the right UI.</p></li>
+<li><p><strong>show_contact_points</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to show contact points.</p></li>
+<li><p><strong>show_contact_forces</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to show contact forces.</p></li>
+<li><p><strong>show_transparent_geoms</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to show transparent geoms.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.step">
+<span class="sig-name descname"><span class="pre">step</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_in</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">control</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.step" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_actuator_properties">
+<span class="sig-name descname"><span class="pre">update_actuator_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_actuator_properties" title="Link to this definition">#</a></dt>
+<dd><p>Update CTRL_DIRECT actuator properties (gainprm, biasprm) in the MuJoCo model.</p>
+<p>Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
+updated via update_joint_dof_properties() using joint_target_ke/kd.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_contacts">
+<span class="sig-name descname"><span class="pre">update_contacts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">state</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_contacts" title="Link to this definition">#</a></dt>
+<dd><p>Update <cite>contacts</cite> from MuJoCo contacts when running with <code class="docutils literal notranslate"><span class="pre">use_mujoco_contacts</span></code>.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_eq_properties">
+<span class="sig-name descname"><span class="pre">update_eq_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_eq_properties" title="Link to this definition">#</a></dt>
+<dd><p>Update equality constraint properties in the MuJoCo model.</p>
+<p>Updates:</p>
+<ul class="simple">
+<li><p>eq_solref/eq_solimp from MuJoCo custom attributes (if set)</p></li>
+<li><p>eq_data from Newton’s equality_constraint_anchor, equality_constraint_relpose,
+equality_constraint_polycoef, equality_constraint_torquescale</p></li>
+<li><p>eq_active from Newton’s equality_constraint_enabled</p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Note this update only affects the equality constraints explicitly defined in Newton,
+not the equality constraints defined for joints that are excluded from articulations
+(i.e. joints that have joint_articulation == -1, for example loop-closing joints).
+Equality constraints for these joints are defined after the regular equality constraints
+in the MuJoCo model.</p>
+</div>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_geom_properties">
+<span class="sig-name descname"><span class="pre">update_geom_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_geom_properties" title="Link to this definition">#</a></dt>
+<dd><p>Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_joint_dof_properties">
+<span class="sig-name descname"><span class="pre">update_joint_dof_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_joint_dof_properties" title="Link to this definition">#</a></dt>
+<dd><p>Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, passive stiffness and damping, and joint limit ranges in the MuJoCo model.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_joint_properties">
+<span class="sig-name descname"><span class="pre">update_joint_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_joint_properties" title="Link to this definition">#</a></dt>
+<dd><p>Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_model_properties">
+<span class="sig-name descname"><span class="pre">update_model_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_model_properties" title="Link to this definition">#</a></dt>
+<dd><p>Update model properties including gravity in the MuJoCo model.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_pair_properties">
+<span class="sig-name descname"><span class="pre">update_pair_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_pair_properties" title="Link to this definition">#</a></dt>
+<dd><p>Update MuJoCo contact pair properties from Newton custom attributes.</p>
+<p>Updates the randomizable pair properties (solref, solreffriction, solimp,
+margin, gap, friction) for explicit contact pairs defined in the model.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_tendon_properties">
+<span class="sig-name descname"><span class="pre">update_tendon_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_tendon_properties" title="Link to this definition">#</a></dt>
+<dd><p>Update fixed tendon properties in the MuJoCo model.</p>
+<p>Updates tendon stiffness, damping, frictionloss, range, margin, solref, solimp,
+armature, and actfrcrange from Newton custom attributes.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.body_free_qd_start">
+<span class="sig-name descname"><span class="pre">body_free_qd_start</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.body_free_qd_start" title="Link to this definition">#</a></dt>
+<dd><p>Per-body mapping to the free-joint qd_start index (or -1 if not free).</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_actuator_ctrl_source">
+<span class="sig-name descname"><span class="pre">mjc_actuator_ctrl_source</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_actuator_ctrl_source" title="Link to this definition">#</a></dt>
+<dd><p>Control source for each MuJoCo actuator.</p>
+<p>Values: 0=JOINT_TARGET (uses joint_target_pos/vel), 1=CTRL_DIRECT (uses mujoco.ctrl)
+Shape [nu], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_actuator_to_newton_idx">
+<span class="sig-name descname"><span class="pre">mjc_actuator_to_newton_idx</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_actuator_to_newton_idx" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo actuator to Newton index.</p>
+<p>For JOINT_TARGET: sign-encoded DOF index (&gt;=0: position, -1: unmapped, &lt;=-2: velocity with -(idx+2))
+For CTRL_DIRECT: MJCF-order index into control.mujoco.ctrl array</p>
+<p>Shape [nu], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_body_to_newton">
+<span class="sig-name descname"><span class="pre">mjc_body_to_newton</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_body_to_newton" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, body] to Newton body index. Shape [nworld, nbody], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_dof_to_newton_dof">
+<span class="sig-name descname"><span class="pre">mjc_dof_to_newton_dof</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_dof_to_newton_dof" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, dof] to Newton DOF index. Shape [nworld, nv], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_eq_to_newton_eq">
+<span class="sig-name descname"><span class="pre">mjc_eq_to_newton_eq</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_eq" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, eq] to Newton equality constraint index.</p>
+<p>Corresponds to the equality constraints that are created in MuJoCo from Newton’s equality constraints.
+A value of -1 indicates that the MuJoCo equality constraint has been created from a Newton joint, see <a class="reference internal" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_jnt" title="newton.solvers.SolverMuJoCo.mjc_eq_to_newton_jnt"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mjc_eq_to_newton_jnt</span></code></a>
+for the corresponding joint index.</p>
+<p>Shape [nworld, neq], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_eq_to_newton_jnt">
+<span class="sig-name descname"><span class="pre">mjc_eq_to_newton_jnt</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_jnt" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, eq] to Newton joint index.</p>
+<p>Corresponds to the equality constraints that are created in MuJoCo from Newton joints that have no associated articulation,
+i.e. where <a class="reference internal" href="newton.Model.html#newton.Model.joint_articulation" title="newton.Model.joint_articulation"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_articulation</span></code></a> is -1 for the joint which results in 2 equality constraints being created in MuJoCo.
+A value of -1 indicates that the MuJoCo equality constraint is not associated with a Newton joint but an explicitly created Newton equality constraint,
+see <a class="reference internal" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_eq" title="newton.solvers.SolverMuJoCo.mjc_eq_to_newton_eq"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mjc_eq_to_newton_eq</span></code></a> for the corresponding equality constraint index.</p>
+<p>Shape [nworld, neq], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_geom_to_newton_shape">
+<span class="sig-name descname"><span class="pre">mjc_geom_to_newton_shape</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_geom_to_newton_shape" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, geom] to Newton shape index. Shape [nworld, ngeom], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_dof">
+<span class="sig-name descname"><span class="pre">mjc_jnt_to_newton_dof</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_dof" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, joint] to Newton DOF index. Shape [nworld, njnt], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_jnt">
+<span class="sig-name descname"><span class="pre">mjc_jnt_to_newton_jnt</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_jnt" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, joint] to Newton joint index. Shape [nworld, njnt], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_mocap_to_newton_jnt">
+<span class="sig-name descname"><span class="pre">mjc_mocap_to_newton_jnt</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_mocap_to_newton_jnt" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.mjc_tendon_to_newton_tendon">
+<span class="sig-name descname"><span class="pre">mjc_tendon_to_newton_tendon</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">,</span></span><span class="w"> </span><span class="n"><span class="pre">ndim</span></span><span class="o"><span class="pre">=</span></span><span class="m"><span class="pre">2</span></span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.mjc_tendon_to_newton_tendon" title="Link to this definition">#</a></dt>
+<dd><p>Mapping from MuJoCo [world, tendon] to Newton tendon index.</p>
+<p>Shape [nworld, ntendon], dtype int32.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.newton_shape_to_mjc_geom">
+<span class="sig-name descname"><span class="pre">newton_shape_to_mjc_geom</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="p"><span class="pre">(</span></span><span class="n"><span class="pre">dtype</span></span><span class="o"><span class="pre">=</span></span><span class="pre">wp.int32</span><span class="p"><span class="pre">)</span></span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.solvers.SolverMuJoCo.newton_shape_to_mjc_geom" title="Link to this definition">#</a></dt>
+<dd><p>Inverse mapping from Newton shape index to MuJoCo geom index. Only created when use_mujoco_contacts=False. Shape [nshape], dtype int32.</p>
+</dd></dl>
+
+</section>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlSource</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlSource.CTRL_DIRECT</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlSource.JOINT_TARGET</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlType</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.GENERAL"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlType.GENERAL</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.POSITION"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlType.POSITION</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.CtrlType.VELOCITY"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.CtrlType.VELOCITY</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.import_mujoco"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.import_mujoco()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.register_custom_attributes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.color_collision_shapes"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.color_collision_shapes()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.find_body_collision_filter_pairs"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.find_body_collision_filter_pairs()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.__init__"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.close_mujoco_viewer"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.close_mujoco_viewer()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.enable_rne_postconstraint"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.enable_rne_postconstraint()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.get_max_contact_count"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.get_max_contact_count()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.notify_model_changed"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.notify_model_changed()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.render_mujoco_viewer"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.render_mujoco_viewer()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.step"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.step()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_actuator_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_actuator_properties()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_contacts"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_contacts()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_eq_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_eq_properties()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_geom_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_geom_properties()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_joint_dof_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_joint_dof_properties()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_joint_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_joint_properties()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_model_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_model_properties()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_pair_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_pair_properties()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_tendon_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_tendon_properties()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.body_free_qd_start"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.body_free_qd_start</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_actuator_ctrl_source"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_actuator_ctrl_source</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_actuator_to_newton_idx"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_actuator_to_newton_idx</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_body_to_newton"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_body_to_newton</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_dof_to_newton_dof"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_dof_to_newton_dof</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_eq"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_eq_to_newton_eq</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_eq_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_eq_to_newton_jnt</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_geom_to_newton_shape"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_geom_to_newton_shape</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_dof"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_jnt_to_newton_dof</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_jnt_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_jnt_to_newton_jnt</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_mocap_to_newton_jnt"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_mocap_to_newton_jnt</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.mjc_tendon_to_newton_tendon"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.mjc_tendon_to_newton_tendon</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.newton_shape_to_mjc_geom"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.newton_shape_to_mjc_geom</span></code></a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

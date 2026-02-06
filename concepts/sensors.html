@@ -1,0 +1,1061 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Sensors &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/sensors';</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Conventions" href="conventions.html" />
+    <link rel="prev" title="Sites (Abstract Markers)" href="sites.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Sensors</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="sensors">
+<h1>Sensors<a class="headerlink" href="#sensors" title="Link to this heading">#</a></h1>
+<p>Sensors in Newton provide a way to extract measurements and observations from the simulation state. They compute derived quantities that are commonly needed for control, reinforcement learning, robotics applications, and analysis.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>Newton sensors follow a consistent pattern:</p>
+<ol class="arabic simple">
+<li><p><strong>Initialization</strong>: Configure the sensor with the model and specify what to measure</p></li>
+<li><p><strong>Update</strong>: Call <code class="docutils literal notranslate"><span class="pre">sensor.update(...)</span></code> during the simulation loop to compute measurements</p></li>
+<li><p><strong>Access</strong>: Read results from sensor attributes (typically as Warp arrays)</p></li>
+</ol>
+<p>Sensors are designed to be efficient and GPU-friendly, computing results in parallel where possible.</p>
+</section>
+<section id="available-sensors">
+<h2>Available Sensors<a class="headerlink" href="#available-sensors" title="Link to this heading">#</a></h2>
+<p>Newton currently provides five sensor types:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact" title="newton.sensors.SensorContact"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorContact</span></code></a> – Detects and reports contact information between bodies (TODO: document)</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorFrameTransform.html#newton.sensors.SensorFrameTransform" title="newton.sensors.SensorFrameTransform"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorFrameTransform</span></code></a> – Computes relative transforms between reference frames</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorIMU.html#newton.sensors.SensorIMU" title="newton.sensors.SensorIMU"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorIMU</span></code></a> – Measures linear acceleration and angular velocity at site frames</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorRaycast.html#newton.sensors.SensorRaycast" title="newton.sensors.SensorRaycast"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorRaycast</span></code></a> – Performs ray casting for distance measurements and collision detection (TODO: document)</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera" title="newton.sensors.SensorTiledCamera"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorTiledCamera</span></code></a> – Raytraced rendering across multiple worlds</p></li>
+</ul>
+</section>
+<section id="sensorframetransform">
+<h2>SensorFrameTransform<a class="headerlink" href="#sensorframetransform" title="Link to this heading">#</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">SensorFrameTransform</span></code> computes the relative pose (position and orientation) of objects with respect to reference frames. This is essential for:</p>
+<ul class="simple">
+<li><p>End-effector pose tracking in robotics</p></li>
+<li><p>Sensor pose computation (cameras, IMUs relative to world or body frames)</p></li>
+<li><p>Object tracking and localization tasks</p></li>
+<li><p>Reinforcement learning observations</p></li>
+</ul>
+<section id="basic-usage">
+<h3>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">#</a></h3>
+<p>The sensor takes shape indices (which can include sites or regular shapes) and computes their transforms relative to reference site frames:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.sensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">SensorFrameTransform</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="c1"># Create model with sites</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="n">base</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">I_m</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+<span class="n">ref_site</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">base</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;reference&quot;</span><span class="p">)</span>
+<span class="n">j_free</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_free</span><span class="p">(</span><span class="n">base</span><span class="p">)</span>
+
+<span class="n">end_effector</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">I_m</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+<span class="n">ee_site</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">end_effector</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;end_effector&quot;</span><span class="p">)</span>
+
+<span class="c1"># Add a revolute joint to connect bodies</span>
+<span class="n">j_revolute</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span>
+    <span class="n">parent</span><span class="o">=</span><span class="n">base</span><span class="p">,</span>
+    <span class="n">child</span><span class="o">=</span><span class="n">end_effector</span><span class="p">,</span>
+    <span class="n">axis</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Axis</span><span class="o">.</span><span class="n">X</span><span class="p">,</span>
+    <span class="n">parent_xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_identity</span><span class="p">()),</span>
+    <span class="n">child_xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_identity</span><span class="p">()),</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">j_free</span><span class="p">,</span> <span class="n">j_revolute</span><span class="p">])</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="c1"># Create sensor</span>
+<span class="n">sensor</span> <span class="o">=</span> <span class="n">SensorFrameTransform</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">shapes</span><span class="o">=</span><span class="p">[</span><span class="n">ee_site</span><span class="p">],</span>              <span class="c1"># What to measure</span>
+    <span class="n">reference_sites</span><span class="o">=</span><span class="p">[</span><span class="n">ref_site</span><span class="p">]</span>     <span class="c1"># Reference frame(s)</span>
+<span class="p">)</span>
+
+<span class="c1"># In simulation loop (after eval_fk)</span>
+<span class="n">newton</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+<span class="n">sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+<span class="n">transforms</span> <span class="o">=</span> <span class="n">sensor</span><span class="o">.</span><span class="n">transforms</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># Array of relative transforms</span>
+</pre></div>
+</div>
+</section>
+<section id="transform-computation">
+<h3>Transform Computation<a class="headerlink" href="#transform-computation" title="Link to this heading">#</a></h3>
+<p>The sensor computes: <code class="docutils literal notranslate"><span class="pre">X_ro</span> <span class="pre">=</span> <span class="pre">inverse(X_wr)</span> <span class="pre">*</span> <span class="pre">X_wo</span></code></p>
+<p>Where:
+- <code class="docutils literal notranslate"><span class="pre">X_wo</span></code> is the world transform of the object (shape/site)
+- <code class="docutils literal notranslate"><span class="pre">X_wr</span></code> is the world transform of the reference site
+- <code class="docutils literal notranslate"><span class="pre">X_ro</span></code> is the resulting transform expressing the object’s pose in the reference frame’s coordinate system</p>
+<p>This gives you the position and orientation of the object as observed from the reference frame.</p>
+</section>
+<section id="multiple-objects-and-references">
+<h3>Multiple Objects and References<a class="headerlink" href="#multiple-objects-and-references" title="Link to this heading">#</a></h3>
+<p>The sensor supports measuring multiple objects, optionally with different reference frames:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.sensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">SensorFrameTransform</span>
+
+<span class="c1"># Setup model with multiple sites</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">I_m</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+<span class="n">site1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body1</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;site1&quot;</span><span class="p">)</span>
+<span class="n">body2</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">I_m</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+<span class="n">site2</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body2</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;site2&quot;</span><span class="p">)</span>
+<span class="n">body3</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">I_m</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+<span class="n">site3</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body3</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;site3&quot;</span><span class="p">)</span>
+<span class="n">ref_body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">I_m</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+<span class="n">ref_site</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">ref_body</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;ref_site&quot;</span><span class="p">)</span>
+
+<span class="c1"># Multiple objects, multiple references (must match in count) for sensor 2</span>
+<span class="n">ref1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body1</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;ref1&quot;</span><span class="p">)</span>
+<span class="n">ref2</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body2</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;ref2&quot;</span><span class="p">)</span>
+<span class="n">ref3</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body3</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;ref3&quot;</span><span class="p">)</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="c1"># Multiple objects, single reference</span>
+<span class="n">sensor1</span> <span class="o">=</span> <span class="n">SensorFrameTransform</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">shapes</span><span class="o">=</span><span class="p">[</span><span class="n">site1</span><span class="p">,</span> <span class="n">site2</span><span class="p">,</span> <span class="n">site3</span><span class="p">],</span>
+    <span class="n">reference_sites</span><span class="o">=</span><span class="p">[</span><span class="n">ref_site</span><span class="p">]</span>  <span class="c1"># Broadcasts to all objects</span>
+<span class="p">)</span>
+
+<span class="n">sensor2</span> <span class="o">=</span> <span class="n">SensorFrameTransform</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">shapes</span><span class="o">=</span><span class="p">[</span><span class="n">site1</span><span class="p">,</span> <span class="n">site2</span><span class="p">,</span> <span class="n">site3</span><span class="p">],</span>
+    <span class="n">reference_sites</span><span class="o">=</span><span class="p">[</span><span class="n">ref1</span><span class="p">,</span> <span class="n">ref2</span><span class="p">,</span> <span class="n">ref3</span><span class="p">]</span>  <span class="c1"># One per object</span>
+<span class="p">)</span>
+
+<span class="n">newton</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+<span class="n">sensor2</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+<span class="n">transforms</span> <span class="o">=</span> <span class="n">sensor2</span><span class="o">.</span><span class="n">transforms</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># Shape: (num_objects, 7)</span>
+
+<span class="c1"># Extract position and rotation for first object</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="n">xform</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="o">*</span><span class="n">transforms</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+<span class="n">pos</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">transform_get_translation</span><span class="p">(</span><span class="n">xform</span><span class="p">)</span>
+<span class="n">quat</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">transform_get_rotation</span><span class="p">(</span><span class="n">xform</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="objects-vs-reference-frames">
+<h3>Objects vs Reference Frames<a class="headerlink" href="#objects-vs-reference-frames" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Objects</strong> (<code class="docutils literal notranslate"><span class="pre">shapes</span></code>): Can be any shape index, including both regular shapes and sites</p></li>
+<li><p><strong>Reference frames</strong> (<code class="docutils literal notranslate"><span class="pre">reference_sites</span></code>): Must be site indices (validated at initialization)</p></li>
+</ul>
+<p>This design reflects the common use case where reference frames are explicitly defined coordinate systems (sites), while measurements can be taken of any geometric entity.</p>
+</section>
+<section id="performance-considerations">
+<h3>Performance Considerations<a class="headerlink" href="#performance-considerations" title="Link to this heading">#</a></h3>
+<p>The sensor is optimized for GPU execution:</p>
+<ul class="simple">
+<li><p>Computes world transforms only once for all unique shapes/sites involved</p></li>
+<li><p>Uses pre-allocated Warp arrays to minimize memory overhead</p></li>
+<li><p>Parallel computation of all relative transforms</p></li>
+</ul>
+<p>For best performance, create the sensor once during initialization and reuse it throughout the simulation, rather than recreating it each frame.</p>
+</section>
+</section>
+<section id="sensorimu">
+<span id="id1"></span><h2>SensorIMU<a class="headerlink" href="#sensorimu" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../api/_generated/newton.sensors.SensorIMU.html#newton.sensors.SensorIMU" title="newton.sensors.SensorIMU"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorIMU</span></code></a> measures inertial quantities at one or more sites; each site defines the IMU frame. Outputs are stored in two arrays:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorIMU.html#newton.sensors.SensorIMU.accelerometer" title="newton.sensors.SensorIMU.accelerometer"><code class="xref py py-attr docutils literal notranslate"><span class="pre">accelerometer</span></code></a>: linear acceleration (specific force)</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorIMU.html#newton.sensors.SensorIMU.gyroscope" title="newton.sensors.SensorIMU.gyroscope"><code class="xref py py-attr docutils literal notranslate"><span class="pre">gyroscope</span></code></a>: angular velocity</p></li>
+</ul>
+<section id="id2">
+<h3>Basic Usage<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">SensorIMU</span></code> takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the <a class="reference internal" href="extended_attributes.html"><span class="doc">extended attribute</span></a> <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qdd" title="newton.State.body_qdd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qdd</span></code></a>.</p>
+<p>By default, the sensor requests <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> from the model during construction, so that subsequent calls to <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.state" title="newton.Model.state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.state()</span></code></a> allocate it.
+If you need to allocate the State before constructing the sensor, you must request <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> on the model yourself before calling <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.state" title="newton.Model.state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.state()</span></code></a>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.sensors</span><span class="w"> </span><span class="kn">import</span> <span class="n">SensorIMU</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">I_m</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
+<span class="n">s1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;imu1&quot;</span><span class="p">)</span>
+<span class="n">s2</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;imu2&quot;</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="n">imu</span> <span class="o">=</span> <span class="n">SensorIMU</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sites</span><span class="o">=</span><span class="p">[</span><span class="n">s1</span><span class="p">,</span> <span class="n">s2</span><span class="p">])</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="n">imu</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">acc</span> <span class="o">=</span> <span class="n">imu</span><span class="o">.</span><span class="n">accelerometer</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># shape: (2, 3)</span>
+<span class="n">gyro</span> <span class="o">=</span> <span class="n">imu</span><span class="o">.</span><span class="n">gyroscope</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>      <span class="c1"># shape: (2, 3)</span>
+</pre></div>
+</div>
+</section>
+<section id="state-solver-requirements">
+<h3>State / Solver Requirements<a class="headerlink" href="#state-solver-requirements" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">SensorIMU</span></code> depends on body accelerations computed by the solver and stored in <code class="docutils literal notranslate"><span class="pre">state.body_qdd</span></code>:</p>
+<ul class="simple">
+<li><p>Allocate: ensure <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> is allocated on the State (typically by constructing <code class="docutils literal notranslate"><span class="pre">SensorIMU</span></code> before calling <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.state" title="newton.Model.state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.state()</span></code></a>).</p></li>
+<li><p>Populate: use a solver that actually fills <code class="docutils literal notranslate"><span class="pre">state.body_qdd</span></code> (for example, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> computes body accelerations).</p></li>
+</ul>
+</section>
+</section>
+<section id="see-also">
+<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="sites.html"><span class="doc">Sites (Abstract Markers)</span></a> — Using sites as reference frames</p></li>
+<li><p><a class="reference internal" href="../api/newton_sensors.html"><span class="doc">newton.sensors</span></a> — Full sensor API reference</p></li>
+<li><p><a class="reference internal" href="extended_attributes.html"><span class="doc">Extended Attributes</span></a> — Optional State/Contacts arrays (e.g., <code class="docutils literal notranslate"><span class="pre">State.body_qdd</span></code>, <code class="docutils literal notranslate"><span class="pre">Contacts.force</span></code>) required by some sensors.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">newton.examples.sensors.example_sensor_contact</span></code> — SensorContact example</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">newton.examples.sensors.example_sensor_imu</span></code> — SensorIMU example</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">newton.examples.sensors.example_sensor_tiled_camera</span></code> — SensorTiledCamera example</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#available-sensors">Available Sensors</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sensorframetransform">SensorFrameTransform</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-usage">Basic Usage</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#transform-computation">Transform Computation</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multiple-objects-and-references">Multiple Objects and References</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#objects-vs-reference-frames">Objects vs Reference Frames</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#performance-considerations">Performance Considerations</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sensorimu">SensorIMU</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Basic Usage</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#state-solver-requirements">State / Solver Requirements</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See Also</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

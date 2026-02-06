@@ -1,0 +1,1254 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Development &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'guide/development';</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Worlds" href="../concepts/worlds.html" />
+    <link rel="prev" title="Introduction to Newton Physics" href="../tutorials/00_introduction.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tutorials.html">Tutorials</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../concepts/extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Development</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="development">
+<h1>Development<a class="headerlink" href="#development" title="Link to this heading">#</a></h1>
+<p>This document is a guide for developers who want to contribute to the project or understand its internal workings in more detail.</p>
+<p>Please refer to <a class="reference external" href="https://github.com/newton-physics/governance/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> for how to best contribute to Newton and relevant legal information (CLA).</p>
+<section id="installation">
+<h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">#</a></h2>
+<p>To install Newton, see the <a class="reference internal" href="installation.html"><span class="doc">Installation</span></a> guide.</p>
+</section>
+<section id="python-dependency-management">
+<h2>Python Dependency Management<a class="headerlink" href="#python-dependency-management" title="Link to this heading">#</a></h2>
+<section id="uv-lockfile-management">
+<h3>uv lockfile management<a class="headerlink" href="#uv-lockfile-management" title="Link to this heading">#</a></h3>
+<p>When using uv, the <a class="reference external" href="https://docs.astral.sh/uv/concepts/projects/layout/#the-lockfile">lockfile</a>
+(<code class="docutils literal notranslate"><span class="pre">uv.lock</span></code>) is used to resolve project dependencies into exact versions for reproducibility among different machines.</p>
+<p>We maintain a lockfile in the root of the repository that pins exact versions of all dependencies and their transitive dependencies.</p>
+<p>Sometimes, a dependency in the lockfile needs to be updated to a newer version.
+This can be done by running <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">lock</span> <span class="pre">-P</span> <span class="pre">&lt;package-name&gt;</span></code>:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv lock -P warp-lang --prerelease allow</span>
+
+<span class="go">uv lock -P mujoco-warp --prerelease allow</span>
+</pre></div>
+</div>
+<p>The <code class="docutils literal notranslate"><span class="pre">--prerelease</span> <span class="pre">allow</span></code> flag is used to allow updating to pre-release versions of dependencies.</p>
+<p>uv also provides a command to update all dependencies in the lockfile:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv lock -U</span>
+</pre></div>
+</div>
+<p>Remember to commit <code class="docutils literal notranslate"><span class="pre">uv.lock</span></code> after running a command that updates the lockfile.</p>
+</section>
+</section>
+<section id="running-the-tests">
+<h2>Running the tests<a class="headerlink" href="#running-the-tests" title="Link to this heading">#</a></h2>
+<p>The Newton test suite supports both <code class="docutils literal notranslate"><span class="pre">uv</span></code> and standard <code class="docutils literal notranslate"><span class="pre">venv</span></code> workflows,
+and by default runs in up to eight parallel processes. On some systems, the
+tests must be run in a serial manner with <code class="docutils literal notranslate"><span class="pre">--serial-fallback</span></code> due to an
+outstanding bug.</p>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">--help</span></code> to either run method below to see all available flags.</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-0" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-0">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>install<span class="w"> </span>development<span class="w"> </span>extras<span class="w"> </span>and<span class="w"> </span>run<span class="w"> </span>tests
+<span class="go">uv run --extra dev -m newton.tests</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-1" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-1">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>install<span class="w"> </span>dev<span class="w"> </span>extras<span class="w"> </span><span class="o">(</span>including<span class="w"> </span>testing<span class="w"> </span><span class="p">&amp;</span><span class="w"> </span>coverage<span class="w"> </span>deps<span class="o">)</span>
+<span class="go">python -m pip install -e .[dev]</span>
+<span class="gp"># </span>run<span class="w"> </span>tests
+<span class="go">python -m newton.tests</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>Most tests run when the <code class="docutils literal notranslate"><span class="pre">dev</span></code> extras are installed. The tests that run examples that use PyTorch to inference an RL policy are skipped if the <code class="docutils literal notranslate"><span class="pre">torch</span></code> dependency is not installed. In order to run these tests, include the <code class="docutils literal notranslate"><span class="pre">torch-cu12</span></code> extras:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-2" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-2">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>install<span class="w"> </span>development<span class="w"> </span>extras<span class="w"> </span>and<span class="w"> </span>run<span class="w"> </span>tests
+<span class="go">uv run --extra dev --extra torch-cu12 -m newton.tests</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-3" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-3">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>install<span class="w"> </span>both<span class="w"> </span>dev<span class="w"> </span>and<span class="w"> </span>torch-cu12<span class="w"> </span>extras<span class="w"> </span><span class="o">(</span>need<span class="w"> </span>to<span class="w"> </span>pull<span class="w"> </span>from<span class="w"> </span>PyTorch<span class="w"> </span>CUDA<span class="w"> </span><span class="m">12</span>.8<span class="w"> </span>wheel<span class="w"> </span>index<span class="o">)</span>
+<span class="go">python -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e .[dev,torch-cu12]</span>
+<span class="gp"># </span>run<span class="w"> </span>tests
+<span class="go">python -m newton.tests</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>Specific Newton examples can be tested in isolation via the <code class="docutils literal notranslate"><span class="pre">-k</span></code> argument:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-4" name="sd-tab-set-2" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-4">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span><span class="nb">test</span><span class="w"> </span>the<span class="w"> </span>basic_shapes<span class="w"> </span>example
+<span class="go">uv run --extra dev -m newton.tests.test_examples -k test_basic.example_basic_shapes</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-5" name="sd-tab-set-2" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-5">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span><span class="nb">test</span><span class="w"> </span>the<span class="w"> </span>basic_shapes<span class="w"> </span>example
+<span class="go">python -m newton.tests.test_examples -k test_basic.example_basic_shapes</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>To generate a coverage report:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-6" name="sd-tab-set-3" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-6">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>append<span class="w"> </span>the<span class="w"> </span>coverage<span class="w"> </span>flags:
+<span class="go">uv run --extra dev -m newton.tests --coverage --coverage-html htmlcov</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-7" name="sd-tab-set-3" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-7">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="gp"># </span>append<span class="w"> </span>the<span class="w"> </span>coverage<span class="w"> </span>flags<span class="w"> </span>and<span class="w"> </span>make<span class="w"> </span>sure<span class="w"> </span><span class="sb">`</span>coverage<span class="o">[</span>toml<span class="o">]</span><span class="sb">`</span><span class="w"> </span>is<span class="w"> </span>installed<span class="w"> </span><span class="o">(</span>it<span class="w"> </span>comes<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="sb">`</span><span class="o">[</span>dev<span class="o">]</span><span class="sb">`</span><span class="o">)</span>
+<span class="go">python -m newton.tests --coverage --coverage-html htmlcov</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>The file <code class="docutils literal notranslate"><span class="pre">htmlcov/index.html</span></code> can be opened with a web browser to view the coverage report.</p>
+</section>
+<section id="code-formatting-and-linting">
+<h2>Code formatting and linting<a class="headerlink" href="#code-formatting-and-linting" title="Link to this heading">#</a></h2>
+<p><a class="reference external" href="https://docs.astral.sh/ruff/">Ruff</a> is used for Python linting and code formatting.
+<a class="reference external" href="https://pre-commit.com/">pre-commit</a> can be used to ensure that local code complies with Newton’s checks.
+From the top of the repository, run:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-8" name="sd-tab-set-4" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-8">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uvx pre-commit run -a</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-9" name="sd-tab-set-4" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-9">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install pre-commit</span>
+<span class="go">pre-commit run -a</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>To automatically run pre-commit hooks with <code class="docutils literal notranslate"><span class="pre">git</span> <span class="pre">commit</span></code>:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-10" name="sd-tab-set-5" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-10">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uvx pre-commit install</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-11" name="sd-tab-set-5" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-11">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">pre-commit install</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>The hooks can be uninstalled with <code class="docutils literal notranslate"><span class="pre">pre-commit</span> <span class="pre">uninstall</span></code>.</p>
+</section>
+<section id="typos">
+<h2>Typos<a class="headerlink" href="#typos" title="Link to this heading">#</a></h2>
+<p>To proactively catch spelling mistakes, Newton uses the <a class="reference external" href="https://github.com/crate-ci/typos">typos</a> tool. Typos scans source files for common misspellings and is integrated into our pre-commit hooks, so spelling errors in both code and documentation are flagged when you run or install pre-commit (see above). You can also run <code class="docutils literal notranslate"><span class="pre">typos</span></code> manually if needed. Refer to the <a class="reference external" href="https://github.com/crate-ci/typos">typos documentation</a> for more details on usage and configuration options.</p>
+<section id="dealing-with-false-positives">
+<h3>Dealing with false positives<a class="headerlink" href="#dealing-with-false-positives" title="Link to this heading">#</a></h3>
+<p>Typos may occasionally flag legitimate project-specific terminology, domain terms, or variable names as misspellings (false positives). To handle these, the Newton codebase configures typos in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> at the repository root.</p>
+<p>False positives are managed as follows:</p>
+<ul class="simple">
+<li><p><strong>File exclusions:</strong> The <code class="docutils literal notranslate"><span class="pre">[tool.typos]</span></code> section includes <code class="docutils literal notranslate"><span class="pre">files.extend-exclude</span></code> to ignore matching files and directories, such as <code class="docutils literal notranslate"><span class="pre">examples/assets</span></code> and specific model or asset file types (e.g., <code class="docutils literal notranslate"><span class="pre">*.urdf</span></code>, <code class="docutils literal notranslate"><span class="pre">*.usd</span></code>).</p></li>
+<li><p><strong>Word allowlist:</strong> Words or acronyms that would otherwise be flagged can be listed in <code class="docutils literal notranslate"><span class="pre">[tool.typos.default.extend-words]</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">ba</span></code>, <code class="docutils literal notranslate"><span class="pre">HAA</span></code>).</p></li>
+<li><p><strong>Identifier allowlist:</strong> Specific identifiers, such as variable or constant names, can be declared in <code class="docutils literal notranslate"><span class="pre">[tool.typos.default.extend-identifiers]</span></code> (e.g., <code class="docutils literal notranslate"><span class="pre">PNGs</span></code>).</p></li>
+</ul>
+<p>When typos reports a word that is valid within the Newton codebase, you can add it to the appropriate section in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> to suppress future warnings. After updating, re-run typos (or pre-commit) to confirm that the word is ignored. Use these options to keep the codebase clean while ensuring needed flexibility for accepted project-specific words and identifiers.</p>
+</section>
+</section>
+<section id="using-a-local-warp-installation-with-uv">
+<h2>Using a local Warp installation with uv<a class="headerlink" href="#using-a-local-warp-installation-with-uv" title="Link to this heading">#</a></h2>
+<p>Use the following steps to run Newton with a local build of Warp:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv venv</span>
+<span class="go">source .venv/bin/activate</span>
+<span class="go">uv sync --extra dev</span>
+<span class="go">uv pip install -e &quot;warp-lang @ ../warp&quot;</span>
+</pre></div>
+</div>
+<p>The Warp initialization message should then properly reflect the local Warp installation instead of the locked version,
+e.g. when running <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">newton.examples</span> <span class="pre">basic_pendulum</span></code>.</p>
+</section>
+<section id="building-the-documentation">
+<h2>Building the documentation<a class="headerlink" href="#building-the-documentation" title="Link to this heading">#</a></h2>
+<p>To build the documentation locally, ensure you have the documentation dependencies installed.</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-12" name="sd-tab-set-6" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-12">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">rm -rf docs/_build</span>
+<span class="go">uv run --extra docs --extra sim sphinx-build -W -b html docs docs/_build/html</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-13" name="sd-tab-set-6" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-13">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install -e .[docs]</span>
+<span class="go">cd path/to/newton/docs &amp;&amp; make html</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>The built documentation will be available in <code class="docutils literal notranslate"><span class="pre">docs/_build/html</span></code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The documentation build requires <a class="reference external" href="https://pandoc.org/">pandoc</a> for converting Jupyter notebooks.
+While <code class="docutils literal notranslate"><span class="pre">pypandoc_binary</span></code> is included in the <code class="docutils literal notranslate"><span class="pre">[docs]</span></code> dependencies, some systems may require
+pandoc to be installed separately:</p>
+<ul class="simple">
+<li><p><strong>Ubuntu/Debian:</strong> <code class="docutils literal notranslate"><span class="pre">sudo</span> <span class="pre">apt-get</span> <span class="pre">install</span> <span class="pre">pandoc</span></code></p></li>
+<li><p><strong>macOS:</strong> <code class="docutils literal notranslate"><span class="pre">brew</span> <span class="pre">install</span> <span class="pre">pandoc</span></code></p></li>
+<li><p><strong>Windows:</strong> Download from <a class="reference external" href="https://pandoc.org/installing.html">https://pandoc.org/installing.html</a> or <code class="docutils literal notranslate"><span class="pre">choco</span> <span class="pre">install</span> <span class="pre">pandoc</span></code></p></li>
+</ul>
+</div>
+<section id="serving-the-documentation-locally">
+<h3>Serving the documentation locally<a class="headerlink" href="#serving-the-documentation-locally" title="Link to this heading">#</a></h3>
+<p>After building the documentation, you can serve it locally using the <code class="docutils literal notranslate"><span class="pre">docs/serve.py</span></code> script.
+This is particularly useful for testing interactive features like the Viser 3D visualizations
+in the tutorial notebooks, which require proper MIME types for WebAssembly and JavaScript modules.</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-14" name="sd-tab-set-7" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-14">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run docs/serve.py</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-15" name="sd-tab-set-7" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-15">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python docs/serve.py</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>Then open <a class="reference external" href="http://localhost:8000">http://localhost:8000</a> in your browser. You can specify a custom port with <code class="docutils literal notranslate"><span class="pre">--port</span></code>:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python docs/serve.py --port 8080</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Using Python’s built-in <code class="docutils literal notranslate"><span class="pre">http.server</span></code> or simply opening the HTML files directly
+will not work correctly for the interactive Viser visualizations, as they require
+specific CORS headers and MIME types that <code class="docutils literal notranslate"><span class="pre">serve.py</span></code> provides.</p>
+</div>
+</section>
+</section>
+<section id="testing-documentation-code-snippets">
+<h2>Testing documentation code snippets<a class="headerlink" href="#testing-documentation-code-snippets" title="Link to this heading">#</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">doctest</span></code> Sphinx builder is used to ensure that code snippets in the documentation remain up-to-date.</p>
+<p>The doctests can be run with:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-16" name="sd-tab-set-8" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="uv" for="sd-tab-item-16">
+uv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv run --extra docs --extra sim sphinx-build -W -b doctest docs docs/_build/doctest</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-17" name="sd-tab-set-8" type="radio">
+<label class="sd-tab-label" data-sync-group="env" data-sync-id="venv" for="sd-tab-item-17">
+venv</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m sphinx -W -b doctest docs docs/_build/doctest</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>For more information, see the <a class="reference external" href="https://www.sphinx-doc.org/en/master/usage/extensions/doctest.html">sphinx.ext.doctest</a>
+documentation.</p>
+</section>
+<section id="style-guide">
+<h2>Style Guide<a class="headerlink" href="#style-guide" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Follow PEP 8 for Python code.</p></li>
+<li><p>Use Google-style docstrings (compatible with Napoleon extension).</p></li>
+<li><p>Write clear, concise commit messages.</p></li>
+<li><p>Keep pull requests focused on a single feature or bug fix.</p></li>
+<li><p>Use kebab-case instead of snake_case for command line arguments, e.g. <code class="docutils literal notranslate"><span class="pre">--use-cuda-graph</span></code> instead of <code class="docutils literal notranslate"><span class="pre">--use_cuda_graph</span></code>.</p></li>
+</ul>
+</section>
+<section id="roadmap-and-future-work">
+<h2>Roadmap and Future Work<a class="headerlink" href="#roadmap-and-future-work" title="Link to this heading">#</a></h2>
+<p>(Placeholder for future roadmap and planned features)</p>
+<ul class="simple">
+<li><p>Advanced solver coupling</p></li>
+<li><p>More comprehensive sensor models</p></li>
+<li><p>Expanded robotics examples</p></li>
+</ul>
+<p>See the <a class="reference external" href="https://github.com/newton-physics/newton/discussions">GitHub Discussions</a> for ongoing feature planning.</p>
+</section>
+<section id="benchmarking-with-airspeed-velocity">
+<h2>Benchmarking with airspeed velocity<a class="headerlink" href="#benchmarking-with-airspeed-velocity" title="Link to this heading">#</a></h2>
+<p>The Newton repository contains a benchmarking suite implemented using the <a class="reference external" href="https://asv.readthedocs.io/en/latest/">airspeed velocity</a> framework.
+The full set of benchmarks are intended to be run on a machine with a CUDA-capable GPU.</p>
+<p>To get started, install airspeed velocity from PyPI:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install asv</span>
+</pre></div>
+</div>
+<p>If airspeed velocity has not been previously run on the machine, it will need to be initialized with:</p>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv machine --yes</span>
+</pre></div>
+</div>
+<p>To run the benchmarks, run the following command from the root of the repository:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-18" name="sd-tab-set-9" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-18">
+Unix</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^!</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-19" name="sd-tab-set-9" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-19">
+Windows</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^!</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>On Windows CMD, the <code class="docutils literal notranslate"><span class="pre">^</span></code> character is an escape character, so it must be doubled (<code class="docutils literal notranslate"><span class="pre">^^</span></code>) to be interpreted literally.</p>
+</div>
+<p>The benchmarks discovered by airspeed velocity are in the <code class="docutils literal notranslate"><span class="pre">asv/benchmarks</span></code> directory. This command runs the
+benchmark code from the <code class="docutils literal notranslate"><span class="pre">asv/benchmarks</span></code> directory against the code state of the <code class="docutils literal notranslate"><span class="pre">main</span></code> branch. Note that
+the benchmark definitions themselves are not checked out from different branches—only the code being
+benchmarked is.</p>
+<section id="tips-for-writing-benchmarks">
+<h3>Tips for writing benchmarks<a class="headerlink" href="#tips-for-writing-benchmarks" title="Link to this heading">#</a></h3>
+<p>Rather than running the entire benchmark suite, use the <code class="docutils literal notranslate"><span class="pre">--bench</span> <span class="pre">BENCH,</span> <span class="pre">-b</span> <span class="pre">BENCH</span></code> flag to filter the benchmarks
+to just the ones under development:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-20" name="sd-tab-set-10" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-20">
+Unix</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^! --bench example_anymal.PretrainedSimulate</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-21" name="sd-tab-set-10" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-21">
+Windows</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^! --bench example_anymal.PretrainedSimulate</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>The most time-consuming benchmarks are those that measure the time it takes to load and run one frame of the example
+starting from an empty kernel cache.
+These benchmarks have names ending with <code class="docutils literal notranslate"><span class="pre">time_load</span></code>. It is sometimes convenient to exclude these benchmarks
+from running by using the following command:</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-22" name="sd-tab-set-11" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="unix" for="sd-tab-item-22">
+Unix</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^! -b &#39;^(?!.*time_load$).*&#39;</span>
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-23" name="sd-tab-set-11" type="radio">
+<label class="sd-tab-label" data-sync-group="shell" data-sync-id="windows" for="sd-tab-item-23">
+Windows</label><div class="sd-tab-content docutils">
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">asv run --launch-method spawn main^^! -b &quot;^^(?!.*time_load$).*&quot;</span>
+</pre></div>
+</div>
+</div>
+</div>
+<p>While airspeed velocity has built-in mechanisms to determine automatically how to collect measurements,
+it is often useful to manually specify benchmark attributes like <code class="docutils literal notranslate"><span class="pre">repeat</span></code> and <code class="docutils literal notranslate"><span class="pre">number</span></code> to control the
+number of times a benchmark is run and the number of times a benchmark is repeated.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">PretrainedSimulate</span><span class="p">:</span>
+    <span class="n">repeat</span> <span class="o">=</span> <span class="mi">3</span>
+    <span class="n">number</span> <span class="o">=</span> <span class="mi">1</span>
+</pre></div>
+</div>
+<p>As the airspeed documentation on <a class="reference external" href="https://asv.readthedocs.io/en/stable/writing_benchmarks.html#benchmark-attributes">benchmark attributes</a> notes,
+the <code class="docutils literal notranslate"><span class="pre">setup</span></code> and <code class="docutils literal notranslate"><span class="pre">teardown</span></code> methods are not run between the <code class="docutils literal notranslate"><span class="pre">number</span></code> iterations that make up a sample.</p>
+<p>These benchmark attributes should be tuned to ensure that the benchmark runs in a reasonable amount of time while
+also ensuring that the benchmark is run a sufficient number of times to get a statistically meaningful result.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">--durations</span> <span class="pre">all</span></code> flag can be passed to the <code class="docutils literal notranslate"><span class="pre">asv</span> <span class="pre">run</span></code> command to show the durations of all benchmarks,
+which is helpful for ensuring that a single benchmark is not requiring an abnormally long amount of time compared
+to the other benchmarks.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#installation">Installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#python-dependency-management">Python Dependency Management</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#uv-lockfile-management">uv lockfile management</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-tests">Running the tests</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-formatting-and-linting">Code formatting and linting</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#typos">Typos</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#dealing-with-false-positives">Dealing with false positives</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#using-a-local-warp-installation-with-uv">Using a local Warp installation with uv</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#building-the-documentation">Building the documentation</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#serving-the-documentation-locally">Serving the documentation locally</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#testing-documentation-code-snippets">Testing documentation code snippets</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#style-guide">Style Guide</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#roadmap-and-future-work">Roadmap and Future Work</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking-with-airspeed-velocity">Benchmarking with airspeed velocity</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tips-for-writing-benchmarks">Tips for writing benchmarks</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
