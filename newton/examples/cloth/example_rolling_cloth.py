@@ -272,7 +272,7 @@ class Example:
             tri_ka=1.0e5,
             tri_kd=1.0e-5,
             edge_ke=1e2,
-            edge_kd=0.0,
+            edge_kd=0.1,
             particle_radius=0.5,
         )
 
@@ -377,7 +377,7 @@ class Example:
             model=self.model,
             iterations=self.iterations,
             particle_enable_self_contact=True,
-            particle_self_contact_radius=0.40,
+            particle_self_contact_radius=0.3,
             particle_self_contact_margin=0.6,
             particle_vertex_contact_buffer_size=48,
             particle_edge_contact_buffer_size=64,
