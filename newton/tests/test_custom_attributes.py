@@ -644,16 +644,26 @@ class TestCustomAttributes(unittest.TestCase):
                 custom_attributes={"custom_float_dof": [0.1, 0.2]},  # 2 values for 3-DOF joint
             )
 
-        # Test wrong coordinate list length (value error) - scalar for multi-coord joint
+        # Test wrong coordinate list length (value error) - wrong number of values
         body3 = builder.add_body(mass=1.0)
-        with self.assertRaises(TypeError):
+        with self.assertRaises(ValueError):
             builder.add_joint_d6(
                 parent=robot_entities["link2"],
                 child=body3,
                 linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
                 angular_axes=[cfg(axis=[0, 0, 1])],
-                custom_attributes={"custom_float_coord": 0.5},  # Scalar for multi-coord joint
+                custom_attributes={"custom_float_coord": [0.1, 0.2]},  # 2 values for 3-coord joint
             )
+
+        # Test scalar broadcast for multi-coord joint (should succeed, not raise)
+        body3b = builder.add_body(mass=1.0)
+        builder.add_joint_d6(
+            parent=robot_entities["link2"],
+            child=body3b,
+            linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
+            angular_axes=[cfg(axis=[0, 0, 1])],
+            custom_attributes={"custom_float_coord": 0.5},  # Scalar broadcast to all coords
+        )
 
         # Test wrong constraint list length (value error)
         body4 = builder.add_body(mass=1.0)
@@ -666,16 +676,15 @@ class TestCustomAttributes(unittest.TestCase):
                 custom_attributes={"custom_float_cts": [0.1, 0.2]},  # 2 values for 3-constraint joint
             )
 
-        # Test wrong constraint list length (type error) - scalar for multi-constraint joint
+        # Test scalar broadcast for multi-constraint joint (should succeed, not raise)
         body5 = builder.add_body(mass=1.0)
-        with self.assertRaises(TypeError):
-            builder.add_joint_d6(
-                parent=robot_entities["link2"],
-                child=body5,
-                linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
-                angular_axes=[cfg(axis=[0, 0, 1])],
-                custom_attributes={"custom_float_cts": 0.5},  # Scalar for 3-constraint joint
-            )
+        builder.add_joint_d6(
+            parent=robot_entities["link2"],
+            child=body5,
+            linear_axes=[cfg(axis=newton.Axis.X), cfg(axis=newton.Axis.Y)],
+            angular_axes=[cfg(axis=[0, 0, 1])],
+            custom_attributes={"custom_float_cts": 0.5},  # Scalar broadcast to all constraints
+        )
 
     def test_vector_type_inference(self):
         """Test automatic dtype inference for vector types."""
