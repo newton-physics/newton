@@ -390,6 +390,89 @@ def test_empty_model(test, device):
     test.assertIsNone(H)
 
 
+def test_articulation_view_api(test, device):
+    """Test Jacobian and mass matrix via ArticulationView API."""
+    builder = newton.ModelBuilder()
+
+    # Create 2 pendulums with different keys
+    for i, key in enumerate(["robot_a", "robot_b"]):
+        b1 = builder.add_link(
+            xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
+            mass=1.0,
+        )
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+
+        j1 = builder.add_joint_revolute(
+            parent=-1,
+            child=b1,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([j1], key=key)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    # Create ArticulationView for just robot_a
+    view_a = newton.selection.ArticulationView(model, pattern="robot_a")
+
+    # Test eval_jacobian via ArticulationView (convenience pattern)
+    J = view_a.eval_jacobian(state)
+    test.assertIsNotNone(J)
+    test.assertEqual(J.shape[0], model.articulation_count)
+
+    J_np = J.numpy()
+    # robot_a (index 0) should have non-zero Jacobian
+    test.assertNotEqual(np.abs(J_np[0]).max(), 0.0)
+    # robot_b (index 1) should be zero (not in view)
+    test.assertEqual(np.abs(J_np[1]).max(), 0.0)
+
+    # Test eval_mass_matrix via ArticulationView (convenience pattern)
+    H = view_a.eval_mass_matrix(state)
+    test.assertIsNotNone(H)
+    test.assertEqual(H.shape[0], model.articulation_count)
+
+    H_np = H.numpy()
+    # robot_a should have non-zero mass matrix
+    test.assertNotEqual(H_np[0, 0, 0], 0.0)
+    # robot_b should be zero
+    test.assertEqual(H_np[1, 0, 0], 0.0)
+
+    # Test with pre-allocated buffers (performance pattern)
+    J2 = wp.zeros(
+        (model.articulation_count, model.max_joints_per_articulation * 6, model.max_dofs_per_articulation),
+        dtype=float,
+        device=device,
+    )
+    H2 = wp.zeros(
+        (model.articulation_count, model.max_dofs_per_articulation, model.max_dofs_per_articulation),
+        dtype=float,
+        device=device,
+    )
+
+    # Create view for robot_b
+    view_b = newton.selection.ArticulationView(model, pattern="robot_b")
+
+    J2_returned = view_b.eval_jacobian(state, J2)
+    H2_returned = view_b.eval_mass_matrix(state, H2)
+
+    test.assertIs(J2_returned, J2)
+    test.assertIs(H2_returned, H2)
+
+    J2_np = J2.numpy()
+    H2_np = H2.numpy()
+
+    # robot_a should be zero (not in view_b)
+    test.assertEqual(np.abs(J2_np[0]).max(), 0.0)
+    test.assertEqual(H2_np[0, 0, 0], 0.0)
+    # robot_b should have values
+    test.assertNotEqual(np.abs(J2_np[1]).max(), 0.0)
+    test.assertNotEqual(H2_np[1, 0, 0], 0.0)
+
+
 class TestJacobianMassMatrix(unittest.TestCase):
     pass
 
@@ -421,6 +504,7 @@ add_function_test(
     TestJacobianMassMatrix, "test_prismatic_joint_jacobian", test_prismatic_joint_jacobian, devices=devices
 )
 add_function_test(TestJacobianMassMatrix, "test_empty_model", test_empty_model, devices=devices)
+add_function_test(TestJacobianMassMatrix, "test_articulation_view_api", test_articulation_view_api, devices=devices)
 
 
 if __name__ == "__main__":
