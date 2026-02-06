@@ -69,10 +69,27 @@ uv run --extra dev -m newton.tests.test_examples -k test_basic.example_basic_sha
 
 ### Pre-commit (lint/format hooks)
 
+**CRITICAL: Always run pre-commit hooks BEFORE committing, not after.**
+
+Proper workflow:
+1. Make your code changes
+2. Run `uvx pre-commit run -a` to check ALL files
+3. If pre-commit modifies any files (e.g., formatting), review the changes
+4. Stage the modified files with `git add`
+5. Run `uvx pre-commit run -a` again to ensure all checks pass
+6. Only then create your commit with `git commit`
+
 ```bash
+# Run pre-commit checks on all files
 uvx pre-commit run -a
+
+# Install hooks to run automatically on every commit (recommended)
 uvx pre-commit install
 ```
+
+**Common mistake to avoid:**
+- ❌ Don't commit first and then run pre-commit (requires amending commits)
+- ✅ Do run pre-commit before committing (clean workflow)
 
 ### Benchmarks (ASV)
 
@@ -89,7 +106,14 @@ uvx --with virtualenv asv run --launch-method spawn main^^!
 Follow conventional commit message practices.
 
 - **Use feature branches**: All development work should be on branches named `<username>/feature-desc` (e.g., `jdoe/docs-versioning`). Do not commit directly to `main`.
-- **Always run pre-commit hooks before committing**: Execute `uvx pre-commit run -a` to check all files for linting, formatting, and other issues. Fix any errors before creating commits. Consider installing the hooks with `uvx pre-commit install` to run them automatically on every commit.
+- **CRITICAL: Run pre-commit hooks BEFORE committing**:
+  1. Make your changes
+  2. Run `uvx pre-commit run -a`
+  3. If files are modified by pre-commit (formatting, etc.), stage them with `git add`
+  4. Run `uvx pre-commit run -a` again to verify all checks pass
+  5. Then commit with `git commit`
+  - Consider installing hooks with `uvx pre-commit install` to automate this
+  - **Never commit first and run pre-commit after** - this requires amending commits and creates messy history
 - Keep commits focused and atomic—one logical change per commit.
 - Reference related issues in commit messages when applicable.
 - **Do not include AI attribution or co-authorship lines** (e.g., "Co-Authored-By: Claude...") in commit messages. Commits should represent human contributions without explicit AI attribution.
