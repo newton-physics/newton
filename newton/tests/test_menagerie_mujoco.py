@@ -459,8 +459,9 @@ class RandomControlStrategy(ControlStrategy):
 # =============================================================================
 
 # Default tolerances for MjData field comparison
+# Two main tolerance classes plus exceptions for dynamics fields.
 DEFAULT_TOLERANCES: dict[str, float] = {
-    # Kinematics - very tight (1e-6)
+    # Tight (1e-6): kinematics, positions, orientations
     "qpos": 1e-6,
     "xpos": 1e-6,
     "xquat": 1e-6,
@@ -473,18 +474,18 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     "actuator_length": 1e-6,
     "qfrc_passive": 1e-6,
     "energy": 1e-6,
-    # Velocities and bias forces - tight (1e-4)
+    # Looser (1e-4): velocities, bias forces
     "qvel": 1e-4,
     "cvel": 1e-4,
     "actuator_velocity": 1e-4,
     "qfrc_bias": 1e-4,
-    "qM": 1e-5,
-    # Dynamics - looser due to solver sensitivity with actuator constraints
-    "qacc": 0.1,
-    "cacc": 2e-4,
-    "cfrc_int": 0.01,
-    "qfrc_actuator": 0.02,
-    "actuator_force": 0.02,
+    # Exceptions: fields affected by solver convergence with actuator force limits
+    "qM": 5e-6,  # mass matrix, observed max ~3.3e-6
+    "cacc": 2e-4,  # observed max ~1.5e-4
+    "qacc": 0.1,  # observed max ~9e-2 with active constraints
+    "cfrc_int": 1e-2,  # observed max ~4e-3
+    "qfrc_actuator": 2e-2,  # observed max ~1.5e-2
+    "actuator_force": 2e-2,  # observed max ~1.5e-2
 }
 
 # Default fields to compare in MjData (core physics + dynamics)
