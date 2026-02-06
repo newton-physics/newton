@@ -25,6 +25,7 @@ import warp as wp
 from .types import (
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
     Vec3,
 )
@@ -458,7 +459,7 @@ def transform_inertia(m: float, I: wp.mat33, p: wp.vec3, q: wp.quat) -> wp.mat33
 def compute_shape_inertia(
     type: int,
     scale: Vec3,
-    src: SDF | Mesh | None,
+    src: SDF | Mesh | Heightfield | None,
     density: float,
     is_solid: bool = True,
     thickness: list[float] | float = 0.001,
@@ -532,6 +533,29 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow ellipsoid geom"
             hollow = compute_ellipsoid_inertia(density, a - thickness, b - thickness, c - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
+    elif type == GeoType.HFIELD:
+        # Heightfields are typically static terrain, similar to planes
+        # If density is non-zero and the heightfield should have inertia, approximate as a box
+        if src is not None and src.has_inertia and src.mass > 0.0:
+            # Use precomputed inertia from the Heightfield object
+            m, c, I = src.mass, src.com, src.I
+            scale = wp.vec3(scale)
+            sx, sy, sz = scale
+            mass_ratio = sx * sy * sz * density
+            m_new = m * mass_ratio
+            c_new = wp.cw_mul(c, scale)
+            # Scale inertia tensor
+            Ixx = I[0, 0] * (sy**2 + sz**2) / 2 * mass_ratio
+            Iyy = I[1, 1] * (sx**2 + sz**2) / 2 * mass_ratio
+            Izz = I[2, 2] * (sx**2 + sy**2) / 2 * mass_ratio
+            Ixy = I[0, 1] * sx * sy * mass_ratio
+            Ixz = I[0, 2] * sx * sz * mass_ratio
+            Iyz = I[1, 2] * sy * sz * mass_ratio
+            I_new = wp.mat33([[Ixx, Ixy, Ixz], [Ixy, Iyy, Iyz], [Ixz, Iyz, Izz]])
+            return m_new, c_new, I_new
+        else:
+            # Static heightfield: return zero mass and inertia
+            return 0.0, wp.vec3(), wp.mat33()
     elif type == GeoType.MESH or type == GeoType.SDF or type == GeoType.CONVEX_MESH:
         assert src is not None, "src must be provided for mesh, SDF, or convex hull shapes"
         if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:

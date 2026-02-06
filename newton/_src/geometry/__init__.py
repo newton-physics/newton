@@ -37,6 +37,7 @@ from .types import (
     MESH_MAXHULLVERT,
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
 )
 from .utils import compute_shape_radius
@@ -48,6 +49,7 @@ __all__ = [
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
     "GeoType",
+    "Heightfield",
     "Mesh",
     "ParticleFlags",
     "SAPSortType",
