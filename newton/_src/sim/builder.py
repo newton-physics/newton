@@ -2408,6 +2408,13 @@ class ModelBuilder:
                 new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
                 merged.values.update(new_indices)
 
+        # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
+        # This must happen before updating counts so that the destination builder has the full
+        # frequency metadata for USD parsing and future attribute additions.
+        for freq_key, freq_obj in builder.custom_frequencies.items():
+            if freq_key not in self.custom_frequencies:
+                self.custom_frequencies[freq_key] = freq_obj
+
         # Update custom frequency counts once per unique frequency (not per attribute)
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
