@@ -127,7 +127,9 @@ def build_stacked_cubes_scene(
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_hydroelastic_config = SDFHydroelasticConfig(output_contact_surface=True, reduce_contacts=reduce_contacts)
+    sdf_hydroelastic_config = SDFHydroelasticConfig(
+        output_contact_surface=True, reduce_contacts=reduce_contacts, anchor_contact=True
+    )
 
     # Hydroelastic without contact reduction can generate many contacts
     rigid_contact_max = 6000 if not reduce_contacts else 100
@@ -160,9 +162,12 @@ def run_stacked_cubes_hydroelastic_test(
 
     num_frames = int(SIM_TIME / SIM_DT)
 
+    # Scale substeps for small objects - they need smaller time steps for stability
+    substeps = SIM_SUBSTEPS if cube_half >= CUBE_HALF_LARGE else 20
+
     for _ in range(num_frames):
         state_0, state_1 = simulate(
-            solver, model, state_0, state_1, control, contacts, collision_pipeline, SIM_DT, SIM_SUBSTEPS
+            solver, model, state_0, state_1, control, contacts, collision_pipeline, SIM_DT, substeps
         )
 
     body_q = state_0.body_q.numpy()
@@ -333,6 +338,8 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
         sdf_hydroelastic_config=sdf_config,
     )
+    # Enable contact surface output for this test (validates penetration depth)
+    collision_pipeline.set_output_contact_surface(True)
 
     # Simulate for 3 seconds to reach equilibrium
     sim_dt = 1.0 / 60.0
@@ -394,14 +401,16 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             (shape_pairs[:, 0] == upper_shape) & (shape_pairs[:, 1] == lower_shape)
         )
         instance_depths = depths[mask]
-        instance_depths = instance_depths[instance_depths > 0]  # only consider positive depths = penetrating
+        # Standard convention: negative depth = penetrating
+        instance_depths = instance_depths[instance_depths < 0]
 
-        test.assertGreater(len(instance_depths), 0, f"Case {i} should have positive depth contacts")
+        test.assertGreater(len(instance_depths), 0, f"Case {i} should have penetrating contacts (negative depth)")
 
-        measured = 2.0 * np.mean(instance_depths)  # x2 because this is the distance to the isosurface
+        # x2 because depth is distance to isosurface; use |depth| for magnitude
+        measured = 2.0 * np.mean(-instance_depths)
 
         # Expected: depth = F / (k_eff * A_eff) / mujoco_scaling
-        effective_area = area * 0.9  # scale factor to account for non-uniform pressure distribution
+        effective_area = area
         expected = total_force / (k_hydro * effective_area)
         expected /= effective_mass
         ratio = measured / expected

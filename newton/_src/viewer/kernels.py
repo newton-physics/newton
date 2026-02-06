@@ -493,11 +493,11 @@ def compute_hydro_contact_surface_lines(
     v1 = triangle_vertices[tid * 3 + 1]
     v2 = triangle_vertices[tid * 3 + 2]
 
-    # Compute color from depth
+    # Compute color from depth (standard convention: negative = penetrating)
     depth = face_depths[tid]
 
-    # Skip non-penetrating contacts if requested (only render depth > 0)
-    if penetrating_only and depth <= 0.0:
+    # Skip non-penetrating contacts if requested (only render depth < 0)
+    if penetrating_only and depth >= 0.0:
         zero = wp.vec3(0.0, 0.0, 0.0)
         line_starts[tid * 3 + 0] = zero
         line_ends[tid * 3 + 0] = zero
@@ -523,8 +523,9 @@ def compute_hydro_contact_surface_lines(
     v1 = v1 + offset
     v2 = v2 + offset
 
-    if depth > 0.0:
-        color = depth_to_color(depth, min_depth, max_depth)
+    # Use penetration magnitude (negated depth) for color - deeper = more red
+    if depth < 0.0:
+        color = depth_to_color(-depth, min_depth, max_depth)
     else:
         color = wp.vec3(0.0, 0.0, 0.0)
 

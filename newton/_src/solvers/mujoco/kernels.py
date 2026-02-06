@@ -1090,22 +1090,78 @@ def repeat_array_kernel(
 
 @wp.kernel
 def update_solver_options_kernel(
+    # WORLD frequency inputs (None if overridden/unavailable)
     newton_impratio: wp.array(dtype=float),
-    # outputs
+    newton_tolerance: wp.array(dtype=float),
+    newton_ls_tolerance: wp.array(dtype=float),
+    newton_ccd_tolerance: wp.array(dtype=float),
+    newton_density: wp.array(dtype=float),
+    newton_viscosity: wp.array(dtype=float),
+    newton_wind: wp.array(dtype=wp.vec3),
+    newton_magnetic: wp.array(dtype=wp.vec3),
+    # outputs - MuJoCo per-world arrays
     opt_impratio_invsqrt: wp.array(dtype=float),
+    opt_tolerance: wp.array(dtype=float),
+    opt_ls_tolerance: wp.array(dtype=float),
+    opt_ccd_tolerance: wp.array(dtype=float),
+    opt_density: wp.array(dtype=float),
+    opt_viscosity: wp.array(dtype=float),
+    opt_wind: wp.array(dtype=wp.vec3),
+    opt_magnetic: wp.array(dtype=wp.vec3),
 ):
     """Update per-world solver options from Newton model.
 
     Args:
         newton_impratio: Per-world impratio values from Newton model (None if overridden)
-        opt_impratio_invsqrt: MuJoCo Warp opt.impratio_invsqrt array to update (shape: nworld)
+        newton_tolerance: Per-world tolerance values (None if overridden)
+        newton_ls_tolerance: Per-world line search tolerance values (None if overridden)
+        newton_ccd_tolerance: Per-world CCD tolerance values (None if overridden)
+        newton_density: Per-world medium density values (None if overridden)
+        newton_viscosity: Per-world medium viscosity values (None if overridden)
+        newton_wind: Per-world wind velocity vectors (None if overridden)
+        newton_magnetic: Per-world magnetic flux vectors (None if overridden)
+        opt_impratio_invsqrt: MuJoCo Warp opt.impratio_invsqrt array (shape: nworld)
+        opt_tolerance: MuJoCo Warp opt.tolerance array (shape: nworld)
+        opt_ls_tolerance: MuJoCo Warp opt.ls_tolerance array (shape: nworld)
+        opt_ccd_tolerance: MuJoCo Warp opt.ccd_tolerance array (shape: nworld)
+        opt_density: MuJoCo Warp opt.density array (shape: nworld)
+        opt_viscosity: MuJoCo Warp opt.viscosity array (shape: nworld)
+        opt_wind: MuJoCo Warp opt.wind array (shape: nworld)
+        opt_magnetic: MuJoCo Warp opt.magnetic array (shape: nworld)
     """
     worldid = wp.tid()
 
     # Only update if Newton array exists (None means overridden or not available)
     if newton_impratio:
         # MuJoCo stores impratio as inverse square root
-        opt_impratio_invsqrt[worldid] = 1.0 / wp.sqrt(newton_impratio[worldid])
+        # Guard against zero/negative values to avoid NaN/Inf
+        impratio_val = newton_impratio[worldid]
+        if impratio_val > 0.0:
+            opt_impratio_invsqrt[worldid] = 1.0 / wp.sqrt(impratio_val)
+        # else: skip update, keep existing MuJoCo default value
+
+    if newton_tolerance:
+        # MuJoCo Warp clamps tolerance to 1e-6 for float32 precision
+        # See mujoco_warp/_src/io.py: opt.tolerance = max(opt.tolerance, 1e-6)
+        opt_tolerance[worldid] = wp.max(newton_tolerance[worldid], 1.0e-6)
+
+    if newton_ls_tolerance:
+        opt_ls_tolerance[worldid] = newton_ls_tolerance[worldid]
+
+    if newton_ccd_tolerance:
+        opt_ccd_tolerance[worldid] = newton_ccd_tolerance[worldid]
+
+    if newton_density:
+        opt_density[worldid] = newton_density[worldid]
+
+    if newton_viscosity:
+        opt_viscosity[worldid] = newton_viscosity[worldid]
+
+    if newton_wind:
+        opt_wind[worldid] = newton_wind[worldid]
+
+    if newton_magnetic:
+        opt_magnetic[worldid] = newton_magnetic[worldid]
 
 
 @wp.kernel

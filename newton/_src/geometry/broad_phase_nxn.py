@@ -13,6 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""NxN (all-pairs) broad phase collision detection.
+
+Provides O(N^2) broad phase using AABB overlap tests. Simple and effective
+for small scenes (<100 shapes). For larger scenes, use SAP broad phase.
+
+See Also:
+    :class:`BroadPhaseSAP` in ``broad_phase_sap.py`` for O(N log N) performance.
+"""
+
 from __future__ import annotations
 
 import numpy as np
