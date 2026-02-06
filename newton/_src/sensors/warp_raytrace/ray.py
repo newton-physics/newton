@@ -16,14 +16,17 @@
 
 import warp as wp
 
-from newton._src.math import safe_div
-
 EPSILON = 1e-6
 MAXVAL = 1e10
 
 
 class vec6f(wp.types.vector(length=6, dtype=wp.float32)):
     pass
+
+
+@wp.func
+def safe_div(x: wp.float32, y: wp.float32) -> wp.float32:
+    return x / wp.where(y != 0.0, y, EPSILON)
 
 
 @wp.func
@@ -65,7 +68,7 @@ def ray_compute_quadratic(a: wp.float32, b: wp.float32, c: wp.float32) -> tuple[
     det = wp.sqrt(det)
 
     # compute the two solutions
-    den = safe_div(1.0, a, EPSILON)
+    den = safe_div(1.0, a)
     x0 = (-b - det) * den
     x1 = (-b + det) * den
     x = wp.vec2f(x0, x1)
