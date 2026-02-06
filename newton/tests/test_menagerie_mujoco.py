@@ -40,33 +40,28 @@ These are changes/workarounds made to get tests passing that should be revisited
    - Newton's MJCF parser sets friction to match MuJoCo defaults when not specified
    - DONE: mu=1.0, torsional_friction=0.005, rolling_friction=0.0001
 
-2. INERTIA FRAME (body_iquat, body_inertia)
-   - Newton re-diagonalizes inertia, giving same physics but different principal axes
-   - Skipped in direct comparison; verified via compare_inertia_tensors()
-   - TODO: Consider storing inertia in MuJoCo-compatible format
-
-3. SELF-COLLISIONS
+2. SELF-COLLISIONS
    - Using enable_self_collisions=True to match MuJoCo behavior
    - TODO: Verify this is the correct default for all robots
 
-4. VISUAL GEOMS
+3. VISUAL GEOMS
    - Using <compiler discardvisual="true"/> for native MuJoCo
    - Using parse_visuals=False for Newton's MJCF parser
    - TODO: Test with visuals enabled when needed
 
-5. COLLISION EXCLUSIONS (nexclude)
+4. COLLISION EXCLUSIONS (nexclude)
    - Skipped in model comparison
    - TODO: Fix parent/child filtering in Newton for collision exclusion equivalence
 
-6. MOCAP BODIES (mocap_*, nmocap, body_mocapid)
+5. MOCAP BODIES (mocap_*, nmocap, body_mocapid)
    - Skipped in model comparison
    - TODO: Newton handles fixed base differently; align mocap body handling
 
-7. CONTROL STRATEGY
+6. CONTROL STRATEGY
    - Using ZeroControlStrategy for initial debugging
    - TODO: Enable randomized/structured control for comprehensive testing
 
-8. MODEL COMPARISON SKIPS (DEFAULT_MODEL_SKIP_FIELDS)
+7. MODEL COMPARISON SKIPS (DEFAULT_MODEL_SKIP_FIELDS)
    - qM_tiles, qLD_tiles, qLDiagInv_tiles: Matrix tile types not comparable
    - light_*, nlight: Newton doesn't parse lights from MJCF
    - geom_group: Newton defaults to 0, native may use other groups
@@ -74,19 +69,20 @@ These are changes/workarounds made to get tests passing that should be revisited
    - geom_rgba: Newton uses different default color
    - geom_size: Compared via compare_geom_sizes() for type-specific semantics
    - *_solref: Newton uses direct mode (-ke,-kd), compared via physics equivalence
+   - body_inertia, body_iquat: Compared via compare_inertia_tensors()
    - DONE: All opt.* fields now match (fixed ccd_iterations default 50->35)
    - DONE: site_size uses MuJoCo defaults for unspecified components
 
-9. PER-ROBOT SKIPS (model_skip_fields in test classes)
+8. PER-ROBOT SKIPS (model_skip_fields in test classes)
    - UR5e: jnt_actfrclimited, jnt_actfrcrange (Newton enables by default)
    - TODO: Match MuJoCo's default behavior for jnt_actfrclimited
 
-10. SOLVER DEFAULTS
-    - Tests override Newton defaults to use MuJoCo's: solver=Newton, iterations=100
-    - Newton's own defaults: solver=CG, iterations=20, ls_iterations=10
-    - This is intentional for equivalence testing
+9. SOLVER DEFAULTS
+   - Tests override Newton defaults to use MuJoCo's: solver=Newton, iterations=100
+   - Newton's own defaults: solver=CG, iterations=20, ls_iterations=10
+   - This is intentional for equivalence testing
 
-11. TIMESTEP FROM MODEL
+10. TIMESTEP FROM MODEL
     - Newton's MJCF parser doesn't extract timestep from <option> tag yet
     - Tests extract timestep from native MuJoCo model after loading
     - TODO: Parse timestep from MJCF <option timestep="..."/> into Newton model
