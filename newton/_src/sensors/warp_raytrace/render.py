@@ -13,17 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 import warp as wp
 
 from . import lighting, ray_cast, textures
 from .types import RenderOrder
-
-if TYPE_CHECKING:
-    from .render_context import RenderContext
 
 
 @wp.func
@@ -101,7 +94,7 @@ def pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
 
 
 @wp.kernel(enable_backward=False)
-def _render_megakernel(
+def render_megakernel(
     # Model and Options
     num_worlds: wp.int32,
     num_cameras: wp.int32,
@@ -344,107 +337,3 @@ def _render_megakernel(
 
     out_color = wp.min(wp.max(out_color, wp.vec3f(0.0)), wp.vec3f(1.0))
     out_pixels[out_index] = pack_rgba_to_uint32(out_color, 1.0)
-
-
-def render_megakernel(
-    rc: RenderContext,
-    width: int,
-    height: int,
-    num_cameras: int,
-    camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
-    camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
-    color_image: wp.array(dtype=wp.uint32, ndim=4) | None,
-    depth_image: wp.array(dtype=wp.float32, ndim=4) | None,
-    shape_index_image: wp.array(dtype=wp.uint32, ndim=4) | None,
-    normal_image: wp.array(dtype=wp.vec3f, ndim=4) | None,
-    albedo_image: wp.array(dtype=wp.uint32, ndim=4) | None,
-):
-    # Reshaping output images to one dimension, slightly improves performance in the Kernel.
-    if color_image is not None:
-        color_image = color_image.reshape(rc.num_worlds * num_cameras * width * height)
-    if depth_image is not None:
-        depth_image = depth_image.reshape(rc.num_worlds * num_cameras * width * height)
-    if shape_index_image is not None:
-        shape_index_image = shape_index_image.reshape(rc.num_worlds * num_cameras * width * height)
-    if normal_image is not None:
-        normal_image = normal_image.reshape(rc.num_worlds * num_cameras * width * height)
-    if albedo_image is not None:
-        albedo_image = albedo_image.reshape(rc.num_worlds * num_cameras * width * height)
-
-    wp.launch(
-        kernel=_render_megakernel,
-        dim=(rc.num_worlds * num_cameras * width * height),
-        inputs=[
-            # Model and Options
-            rc.num_worlds,
-            num_cameras,
-            rc.num_lights,
-            width,
-            height,
-            rc.options.render_order,
-            rc.options.tile_width,
-            rc.options.tile_height,
-            rc.options.enable_shadows,
-            rc.options.enable_textures,
-            rc.options.enable_ambient_lighting,
-            rc.options.enable_particles and rc.has_particles,
-            rc.options.enable_backface_culling,
-            rc.options.enable_global_world,
-            rc.options.max_distance,
-            # Camera
-            camera_rays,
-            camera_transforms,
-            # Shape BVH
-            rc.num_shapes_enabled,
-            rc.bvh_shapes.id if rc.bvh_shapes else 0,
-            rc.bvh_shapes_group_roots,
-            # Shapes
-            rc.shape_enabled,
-            rc.shape_types,
-            rc.shape_mesh_indices,
-            rc.shape_materials,
-            rc.shape_sizes,
-            rc.shape_colors,
-            rc.shape_transforms,
-            # Meshes
-            rc.mesh_ids,
-            rc.mesh_face_offsets,
-            rc.mesh_face_vertices,
-            rc.mesh_texcoord,
-            rc.mesh_texcoord_offsets,
-            # Particle BVH
-            rc.num_particles_total,
-            rc.bvh_particles.id if rc.bvh_particles else 0,
-            rc.bvh_particles_group_roots,
-            # Particles
-            rc.particles_position,
-            rc.particles_radius,
-            # Triangle Mesh
-            rc.triangle_mesh.id if rc.triangle_mesh is not None else 0,
-            # Textures
-            rc.material_texture_ids,
-            rc.material_texture_repeat,
-            rc.material_rgba,
-            rc.texture_offsets,
-            rc.texture_data,
-            rc.texture_height,
-            rc.texture_width,
-            # Lights
-            rc.lights_active,
-            rc.lights_type,
-            rc.lights_cast_shadow,
-            rc.lights_position,
-            rc.lights_orientation,
-            # Outputs
-            color_image is not None,
-            depth_image is not None,
-            shape_index_image is not None,
-            normal_image is not None,
-            albedo_image is not None,
-            color_image,
-            depth_image,
-            shape_index_image,
-            normal_image,
-            albedo_image,
-        ],
-    )

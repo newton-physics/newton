@@ -164,6 +164,7 @@ class Utils:
             kernel=compute_mesh_bounds,
             dim=self.__render_context.mesh_ids.size,
             inputs=[self.__render_context.mesh_ids, self.__render_context.mesh_bounds],
+            device=self.__render_context.device,
         )
 
     def compute_pinhole_camera_rays(self, width: int, height: int, camera_fovs: wp.array(dtype=wp.float32)) -> wp.array(
@@ -171,7 +172,7 @@ class Utils:
     ):
         num_cameras = camera_fovs.size
 
-        camera_rays = wp.empty((num_cameras, height, width, 2), dtype=wp.vec3f)
+        camera_rays = wp.empty((num_cameras, height, width, 2), dtype=wp.vec3f, device=self.__render_context.device)
 
         wp.launch(
             kernel=compute_pinhole_camera_rays,
@@ -182,6 +183,7 @@ class Utils:
                 camera_fovs,
                 camera_rays,
             ],
+            device=self.__render_context.device,
         )
 
         return camera_rays
@@ -216,6 +218,7 @@ class Utils:
                 num_cameras,
                 num_worlds_per_row,
             ],
+            device=self.__render_context.device,
         )
         return out_buffer
 
@@ -249,6 +252,7 @@ class Utils:
                 num_cameras,
                 num_worlds_per_row,
             ],
+            device=self.__render_context.device,
         )
         return out_buffer
 
@@ -268,8 +272,8 @@ class Utils:
         )
 
         if depth_range is None:
-            depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32)
-            wp.launch(find_depth_range, image.shape, [image, depth_range])
+            depth_range = wp.array([MAXVAL, 0.0], dtype=wp.float32, device=self.__render_context.device)
+            wp.launch(find_depth_range, image.shape, [image, depth_range], device=self.__render_context.device)
 
         wp.launch(
             flatten_depth_image,
@@ -288,6 +292,7 @@ class Utils:
                 num_cameras,
                 num_worlds_per_row,
             ],
+            device=self.__render_context.device,
         )
         return out_buffer
 
@@ -297,22 +302,30 @@ class Utils:
         colors = np.random.default_rng(seed).random((self.__render_context.num_shapes_total, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
         self.__render_context.shape_colors = wp.array(
-            colors[self.__render_context.shape_world_index.numpy() % len(colors)], dtype=wp.vec4f
+            colors[self.__render_context.shape_world_index.numpy() % len(colors)],
+            dtype=wp.vec4f,
+            device=self.__render_context.device,
         )
 
     def assign_random_colors_per_shape(self, seed: int = 100):
         colors = np.random.default_rng(seed).random((self.__render_context.num_shapes_total, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
-        self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec4f)
+        self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.__render_context.device)
 
     def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None):
         self.__render_context.options.enable_shadows = enable_shadows
-        self.__render_context.lights_active = wp.array([True], dtype=wp.bool)
-        self.__render_context.lights_type = wp.array([RenderLightType.DIRECTIONAL], dtype=wp.int32)
-        self.__render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool)
-        self.__render_context.lights_position = wp.array([wp.vec3f(0.0)], dtype=wp.vec3f)
+        self.__render_context.lights_active = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
+        self.__render_context.lights_type = wp.array(
+            [RenderLightType.DIRECTIONAL], dtype=wp.int32, device=self.__render_context.device
+        )
+        self.__render_context.lights_cast_shadow = wp.array([True], dtype=wp.bool, device=self.__render_context.device)
+        self.__render_context.lights_position = wp.array(
+            [wp.vec3f(0.0)], dtype=wp.vec3f, device=self.__render_context.device
+        )
         self.__render_context.lights_orientation = wp.array(
-            [direction if direction is not None else wp.vec3f(-0.57735026, 0.57735026, -0.57735026)], dtype=wp.vec3f
+            [direction if direction is not None else wp.vec3f(-0.57735026, 0.57735026, -0.57735026)],
+            dtype=wp.vec3f,
+            device=self.__render_context.device,
         )
 
     def assign_checkerboard_material_to_all_shapes(self, resolution: int = 64, checker_size: int = 32):
@@ -322,17 +335,27 @@ class Utils:
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32).flatten()
 
         self.__render_context.options.enable_textures = True
-        self.__render_context.texture_data = wp.array(pixels, dtype=wp.uint32)
-        self.__render_context.texture_offsets = wp.array([0], dtype=wp.int32)
-        self.__render_context.texture_width = wp.array([resolution], dtype=wp.int32)
-        self.__render_context.texture_height = wp.array([resolution], dtype=wp.int32)
+        self.__render_context.texture_data = wp.array(pixels, dtype=wp.uint32, device=self.__render_context.device)
+        self.__render_context.texture_offsets = wp.array([0], dtype=wp.int32, device=self.__render_context.device)
+        self.__render_context.texture_width = wp.array(
+            [resolution], dtype=wp.int32, device=self.__render_context.device
+        )
+        self.__render_context.texture_height = wp.array(
+            [resolution], dtype=wp.int32, device=self.__render_context.device
+        )
 
-        self.__render_context.material_texture_ids = wp.array([0], dtype=wp.int32)
-        self.__render_context.material_texture_repeat = wp.array([wp.vec2f(1.0)], dtype=wp.vec2f)
-        self.__render_context.material_rgba = wp.array([wp.vec4f(1.0)], dtype=wp.vec4f)
+        self.__render_context.material_texture_ids = wp.array([0], dtype=wp.int32, device=self.__render_context.device)
+        self.__render_context.material_texture_repeat = wp.array(
+            [wp.vec2f(1.0)], dtype=wp.vec2f, device=self.__render_context.device
+        )
+        self.__render_context.material_rgba = wp.array(
+            [wp.vec4f(1.0)], dtype=wp.vec4f, device=self.__render_context.device
+        )
 
         self.__render_context.shape_materials = wp.array(
-            np.full(self.__render_context.num_shapes_total, fill_value=0, dtype=np.int32), dtype=wp.int32
+            np.full(self.__render_context.num_shapes_total, fill_value=0, dtype=np.int32),
+            dtype=wp.int32,
+            device=self.__render_context.device,
         )
 
     def __reshape_buffer_for_flatten(
@@ -356,6 +379,7 @@ class Utils:
                     4,
                 ),
                 dtype=wp.uint8,
+                device=self.__render_context.device,
             ), num_worlds_per_row
 
         return out_buffer.reshape((num_worlds_per_col * height, num_worlds_per_row * width, 4)), num_worlds_per_row

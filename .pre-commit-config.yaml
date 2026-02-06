@@ -30,5 +30,5 @@ repos:
     rev: v1.42.0
     hooks:
       - id: typos
-        args: []
+        args: [--config, pyproject.toml]
         exclude: \.(js|css)$
