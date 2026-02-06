@@ -331,9 +331,9 @@ class TestModel(unittest.TestCase):
         builder = ModelBuilder()
 
         # Create a chain of 3 bodies (like an articulation)
-        body0 = builder.add_body()
-        body1 = builder.add_body()
-        body2 = builder.add_body()
+        body0 = builder.add_link()
+        body1 = builder.add_link()
+        body2 = builder.add_link()
 
         # Add initial shapes to each body (like mesh shapes before decomposition)
         shape0_initial = builder.add_shape_sphere(body=body0, radius=0.1)

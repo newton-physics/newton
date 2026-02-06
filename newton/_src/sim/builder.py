@@ -2001,8 +2001,24 @@ class ModelBuilder:
 
             # offset the indices
             self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
-            self.joint_parent.extend([p + self.body_count if p != -1 else -1 for p in builder.joint_parent])
-            self.joint_child.extend([c + self.body_count for c in builder.joint_child])
+
+            new_parents = [p + start_body_idx if p != -1 else -1 for p in builder.joint_parent]
+            new_children = [c + start_body_idx for c in builder.joint_child]
+
+            self.joint_parent.extend(new_parents)
+            self.joint_child.extend(new_children)
+
+            # Update parent/child lookups
+            for p, c in zip(new_parents, new_children):
+                if c not in self.joint_parents:
+                    self.joint_parents[c] = [p]
+                else:
+                    self.joint_parents[c].append(p)
+
+                if p not in self.joint_children:
+                    self.joint_children[p] = [c]
+                elif c not in self.joint_children[p]:
+                    self.joint_children[p].append(c)
 
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
@@ -3891,6 +3907,20 @@ class ModelBuilder:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
                 self.equality_constraint_enabled[i] = False
+
+        # Rebuild parent/child lookups
+        self.joint_parents.clear()
+        self.joint_children.clear()
+        for p, c in zip(self.joint_parent, self.joint_child):
+            if c not in self.joint_parents:
+                self.joint_parents[c] = [p]
+            else:
+                self.joint_parents[c].append(p)
+
+            if p not in self.joint_children:
+                self.joint_children[p] = [c]
+            elif c not in self.joint_children[p]:
+                self.joint_children[p].append(c)
 
         return {
             "body_remap": body_remap,
