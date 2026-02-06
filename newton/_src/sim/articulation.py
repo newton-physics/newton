@@ -908,13 +908,6 @@ def eval_articulation_jacobian(
     joint_count = joint_end - joint_start
 
     articulation_dof_start = joint_qd_start[joint_start]
-    articulation_dof_end = joint_qd_start[joint_end]
-    articulation_dof_count = articulation_dof_end - articulation_dof_start
-
-    # Zero the Jacobian block for this articulation (handles reused buffers)
-    for row in range(joint_count * 6):
-        for col in range(articulation_dof_count):
-            J[art_idx, row, col] = 0.0
 
     # First pass: compute body transforms and motion subspaces
     for i in range(joint_count):
@@ -1000,11 +993,14 @@ def eval_jacobian(
     if J is None:
         max_links = model.max_joints_per_articulation
         max_dofs = model.max_dofs_per_articulation
-        J = wp.zeros(
+        J = wp.empty(
             (model.articulation_count, max_links * 6, max_dofs),
             dtype=float,
             device=model.device,
         )
+
+    # Zero the output buffer
+    J.zero_()
 
     # Allocate temp if not provided
     if joint_S_s is None:
@@ -1140,11 +1136,6 @@ def eval_articulation_mass_matrix(
     articulation_dof_end = joint_qd_start[joint_end]
     articulation_dof_count = articulation_dof_end - articulation_dof_start
 
-    # Zero the mass matrix block for this articulation (handles reused buffers)
-    for dof_i in range(articulation_dof_count):
-        for dof_j in range(articulation_dof_count):
-            H[art_idx, dof_i, dof_j] = 0.0
-
     # H = J^T * M * J
     # M is block diagonal with 6x6 spatial inertia blocks
     # We compute this as: for each link i, H += J_i^T * I_i * J_i
@@ -1209,11 +1200,14 @@ def eval_mass_matrix(
     # Allocate output if not provided
     if H is None:
         max_dofs = model.max_dofs_per_articulation
-        H = wp.zeros(
+        H = wp.empty(
             (model.articulation_count, max_dofs, max_dofs),
             dtype=float,
             device=model.device,
         )
+
+    # Zero the output buffer
+    H.zero_()
 
     # Allocate or use provided body_I_s
     if body_I_s is None:
