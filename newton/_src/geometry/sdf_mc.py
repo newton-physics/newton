@@ -108,16 +108,20 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
     if num_inside == 0:
         return 0.0
 
+    # Find the vertex with different inside/outside status
+    # With standard convention: negative depth = inside (penetrating)
     idx = wp.int32(0)
     if num_inside == 1:
-        if vert_depths[1] > 0.0:
+        # Find the one vertex that IS inside (negative depth)
+        if vert_depths[1] < 0.0:
             idx = 1
-        elif vert_depths[2] > 0.0:
+        elif vert_depths[2] < 0.0:
             idx = 2
     else:  # num_inside == 2
-        if vert_depths[1] <= 0.0:
+        # Find the one vertex that is NOT inside (non-negative depth)
+        if vert_depths[1] >= 0.0:
             idx = 1
-        elif vert_depths[2] <= 0.0:
+        elif vert_depths[2] >= 0.0:
             idx = 2
 
     d0 = vert_depths[idx]
@@ -160,7 +164,7 @@ def mc_calc_face(
         - area: Triangle area scaled by fraction inside the object
         - normal: Outward-facing unit normal
         - center: Triangle centroid in world space
-        - penetration_depth: Average depth of vertices below surface
+        - penetration_depth: Average SDF depth (negative = penetrating, standard convention)
         - vertices: 3x3 matrix with vertex positions as rows
     """
     face_verts = wp.mat33f()
@@ -187,7 +191,7 @@ def mc_calc_face(
         depth = wp.volume_sample_f(sdf_a, vol_idx, wp.Volume.LINEAR)
         if depth >= wp.static(MAXVAL * 0.99) or wp.isnan(depth):
             depth = 0.0
-        vert_depths[vi] = -depth
+        vert_depths[vi] = depth  # Keep SDF convention: negative = inside/penetrating
         if depth < 0.0:
             num_inside += 1
 

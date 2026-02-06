@@ -101,6 +101,7 @@ class ViewerFile(ViewerBase):
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture=None,
         hidden=False,
         backface_culling=True,
     ):
