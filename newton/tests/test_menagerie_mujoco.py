@@ -36,81 +36,59 @@ FOLLOW-UP ITEMS / KNOWN WORKAROUNDS
 
 These are changes/workarounds made to get tests passing that should be revisited:
 
-1. FRICTION DEFAULTS (create_newton_model_from_mjcf)
-   - Newton's MJCF parser now sets friction to match MuJoCo defaults:
-     mu=1.0, torsional_friction=0.005, rolling_friction=0.0001
-   - TODO: Should these be Newton's actual defaults? Or parsed from MJCF?
+1. FRICTION DEFAULTS
+   - Newton's MJCF parser sets friction to match MuJoCo defaults when not specified
+   - DONE: mu=1.0, torsional_friction=0.005, rolling_friction=0.0001
 
-1b. INERTIA FRAME (body_iquat, body_inertia)
-    - Newton stores full inertia tensor in body frame, then re-diagonalizes
-    - MuJoCo expects principal moments + orientation quaternion
-    - Result: same inertia values but different principal axes orientation
-    - This causes small simulation divergence even with matching masses
-    - TODO: Store inertia in MuJoCo-compatible format when targeting MuJoCo solver
+2. INERTIA FRAME (body_iquat, body_inertia)
+   - Newton re-diagonalizes inertia, giving same physics but different principal axes
+   - Skipped in direct comparison; verified via compare_inertia_tensors()
+   - TODO: Consider storing inertia in MuJoCo-compatible format
 
-1c. INERTIAL DEFINITIONS (ignore_inertial_definitions)
-    - Now using ignore_inertial_definitions=False to use MJCF-defined inertials
-    - This matches body masses correctly
-    - TODO: Verify this is the right default for all robots
-
-2. SELF-COLLISIONS (create_newton_model_from_mjcf)
-   - Enabled enable_self_collisions=True to match MuJoCo behavior
+3. SELF-COLLISIONS
+   - Using enable_self_collisions=True to match MuJoCo behavior
    - TODO: Verify this is the correct default for all robots
 
-3. VISUAL GEOMS (discard_visual flag)
-   - Added <compiler discardvisual="true"/> injection for MuJoCo
-   - Set parse_visuals=False for Newton's MJCF parser
-   - TODO: Ensure visual geom handling is consistent when we need visuals
+4. VISUAL GEOMS
+   - Using <compiler discardvisual="true"/> for native MuJoCo
+   - Using parse_visuals=False for Newton's MJCF parser
+   - TODO: Test with visuals enabled when needed
 
-4. GEOM_RBOUND (solver_mujoco.py, kernels.py)
-   - Removed Newton's overwrite of geom_rbound in update_geom_properties_kernel
-   - MuJoCo computes bounding sphere radii internally; Newton's shape_collision_radius
-     is not compatible with MuJoCo's calculation
-   - TODO: Verify Newton's shape_collision_radius is still useful for Newton-native
-
-5. COLLISION EXCLUSIONS (nexclude, exclude_*)
+5. COLLISION EXCLUSIONS (nexclude)
    - Skipped in model comparison
    - TODO: Fix parent/child filtering in Newton for collision exclusion equivalence
 
-6. MOCAP BODIES (mocap_*, nmocap)
+6. MOCAP BODIES (mocap_*, nmocap, body_mocapid)
    - Skipped in model comparison
    - TODO: Newton handles fixed base differently; align mocap body handling
 
-7. GROUND PLANE
-   - Now using scene.xml which includes ground plane in the MJCF
-
-8. CONTROL STRATEGY
+7. CONTROL STRATEGY
    - Using ZeroControlStrategy for initial debugging
    - TODO: Enable randomized/structured control for comprehensive testing
 
-9. MODEL COMPARISON SKIPS (DEFAULT_MODEL_SKIP_FIELDS)
-   - Many fields skipped due to Newton/MuJoCo differences:
-     * qM_tiles, qLD_tiles, qLDiagInv_tiles: Matrix tile decomposition
-     * opt_*: Solver options (Newton uses different defaults)
-     * stat_*: Model statistics (derived from potentially different values)
-     * light_*, nlight: Newton doesn't parse lights
-     * geom_group: Geometry grouping differences
-   - FIXED: site_size now correctly uses MuJoCo defaults for unspecified components
-   - TODO: Review each skip and determine if Newton should be fixed
+8. MODEL COMPARISON SKIPS (DEFAULT_MODEL_SKIP_FIELDS)
+   - qM_tiles, qLD_tiles, qLDiagInv_tiles: Matrix tile types not comparable
+   - light_*, nlight: Newton doesn't parse lights from MJCF
+   - geom_group: Newton defaults to 0, native may use other groups
+   - geom_conaffinity, geom_contype: Different representation, equivalent behavior
+   - geom_rgba: Newton uses different default color
+   - geom_size: Compared via compare_geom_sizes() for type-specific semantics
+   - *_solref: Newton uses direct mode (-ke,-kd), compared via physics equivalence
+   - DONE: All opt.* fields now match (fixed ccd_iterations default 50->35)
+   - DONE: site_size uses MuJoCo defaults for unspecified components
 
-10. PER-ROBOT SKIPS (model_skip_fields in test classes)
-    - UR5e has extensive skips for geom_conaffinity, geom_contype, etc.
-    - TODO: Many of these indicate Newton parsing/default differences to fix
+9. PER-ROBOT SKIPS (model_skip_fields in test classes)
+   - UR5e: jnt_actfrclimited, jnt_actfrcrange (Newton enables by default)
+   - TODO: Match MuJoCo's default behavior for jnt_actfrclimited
 
-11. ACTUATOR COUNT MISMATCH
-    - Newton adds 2 actuators per DOF while MJCF may define only 1
-    - This affects control array shapes
-    - TODO: Resolve actuator handling in Newton's MJCF parser
+10. SOLVER DEFAULTS
+    - Tests override Newton defaults to use MuJoCo's: solver=Newton, iterations=100
+    - Newton's own defaults: solver=CG, iterations=20, ls_iterations=10
+    - This is intentional for equivalence testing
 
-12. SOLVER DEFAULTS (opt.solver, opt.iterations, opt.ls_iterations)
-    - Newton's SolverMuJoCo defaults: solver=CG, iterations=20, ls_iterations=10
-    - MuJoCo defaults: solver=Newton, iterations=100, ls_iterations=50
-    - Tests override to use MuJoCo defaults for equivalence testing
-    - TODO: Consider whether Newton should match MuJoCo defaults or keep its own
-
-13. TIMESTEP FROM MODEL (opt.timestep)
+11. TIMESTEP FROM MODEL
     - Newton's MJCF parser doesn't extract timestep from <option> tag yet
-    - Tests currently extract timestep from native MuJoCo model after loading
+    - Tests extract timestep from native MuJoCo model after loading
     - TODO: Parse timestep from MJCF <option timestep="..."/> into Newton model
 
 --------------------------------------------------------------------------------
