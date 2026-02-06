@@ -63,7 +63,7 @@ class Example:
         self.num_cards = 52
 
         # Cube (table/platform) parameters in meters
-        self.cube_size = 0.1  # m (5 cm) - half-size of the cube
+        self.cube_size = 0.1  # m (10 cm) - half-size of the cube
         self.cube_height = 0.10  # m (10 cm) - height of cube center above ground
 
         # Card drop parameters in meters
