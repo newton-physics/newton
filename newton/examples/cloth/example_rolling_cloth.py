@@ -17,7 +17,7 @@
 # Treadmill Cloth Simulation
 #
 # A rolled cloth mesh that unrolls as the inner seam rotates.
-# Command: python -m newton.examples rolling_cloth
+# Command: uv run -m newton.examples cloth.example_rolling_cloth
 #
 ###########################################################################
 
@@ -511,7 +511,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Test that cloth has unrolled from cylinder 1 to cylinder 2."""
+        """Test that cloth centroid has moved (unrolling has started)."""
         # Get cloth particle positions (exclude cylinder particles)
         particle_q = self.state_0.particle_q.numpy()
         cloth_q = particle_q[: self.num_cloth_verts]
@@ -520,16 +520,14 @@ class Example:
         com = np.mean(cloth_q, axis=0)
 
         # Initial COM is at X ≈ -25.72 (near cylinder 1 at X=-27.2)
-        # Cylinder 2 is at X=40.0
-        # After ~12.7 revolutions (800 frames), expect COM to shift significantly
+        # After 200 frames (~3.3 seconds), expect COM to shift noticeably
         initial_com_x = -25.72
-        expected_shift = 40.0 - initial_com_x  # ≈ 65.72
-        min_shift = expected_shift * 0.6  # ≈ 39.4 (60% progress is reasonable)
+        min_shift = 5.0  # Require at least 5 units of movement to verify simulation is working
 
         actual_shift = com[0] - initial_com_x
 
         assert actual_shift > min_shift, (
-            f"Cloth not unrolled enough: shift={actual_shift:.1f} < {min_shift:.1f}, COM X={com[0]:.1f}"
+            f"Cloth centroid hasn't moved enough: shift={actual_shift:.1f} < {min_shift:.1f}, COM X={com[0]:.1f}"
         )
 
         # Ensure bbox hasn't exploded

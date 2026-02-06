@@ -20,7 +20,7 @@
 # from fixed particles on the left side. Four grids with different damping values
 # (1e-1 to 1e-4) showcase the effect of damping on Neo-Hookean elastic behavior.
 #
-# Command: python -m newton.examples softbody_hanging
+# Command: uv run -m newton.examples softbody.example_softbody_hanging
 #
 ###########################################################################
 
@@ -58,9 +58,9 @@ class Example:
         spacing = 0.6  # Space between grids along Z-axis
 
         for i, k_damp in enumerate(damping_values):
-            z_offset = i * spacing
+            y_offset = i * spacing
             builder.add_soft_grid(
-                pos=wp.vec3(0.0, 1.0 + z_offset, 1.0),
+                pos=wp.vec3(0.0, 1.0 + y_offset, 1.0),
                 rot=wp.quat_identity(),
                 vel=wp.vec3(0.0, 0.0, 0.0),
                 dim_x=dim_x,
@@ -141,7 +141,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+            lambda q, _qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
         )
 
     def render(self):
