@@ -233,6 +233,77 @@ def test_particle_particle_friction_with_relative_motion(test, device):
     )
 
 
+def test_particle_shape_restitution_correct_particle(test, device):
+    """
+    Regression test for the bug where apply_particle_shape_restitution wrote
+    restitution velocity to particle_v_out[tid] (contact index) instead of
+    particle_v_out[particle_index].
+
+    Setup:
+    - Particle 0 ("decoy"): high above the ground (y=10), zero velocity, no contact.
+    - Particle 1 ("bouncer"): at the ground surface with downward velocity, will contact.
+    - The first contact has tid=0 but contact_particle[0] = 1.
+    - With the old bug, restitution dv was written to particle 0 (the decoy).
+    - After fix, restitution dv is written to particle 1 (the bouncer).
+
+    Assert: particle 1's y-velocity should be positive (bouncing up) and
+    particle 0's y-velocity should remain near zero.
+    """
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    particle_radius = 0.1
+
+    # Particle 0: decoy, far above the ground — should never contact
+    builder.add_particle(pos=(0.0, 10.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=particle_radius)
+
+    # Particle 1: at ground level with downward velocity — will contact
+    builder.add_particle(pos=(0.0, particle_radius, 0.0), vel=(0.0, -5.0, 0.0), mass=1.0, radius=particle_radius)
+
+    # Add a ground plane so particle 1 can bounce
+    builder.add_ground_plane()
+
+    model = builder.finalize(device=device)
+
+    # Disable gravity so decoy particle stays at rest
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    # Enable restitution
+    model.soft_contact_restitution = 1.0
+
+    solver = newton.solvers.SolverXPBD(
+        model=model,
+        iterations=10,
+        enable_restitution=True,
+    )
+
+    state0 = model.state()
+    state1 = model.state()
+
+    dt = 1.0 / 60.0
+
+    # Run a single step — enough for the contact + restitution pass
+    contacts = model.collide(state0)
+    control = model.control()
+    solver.step(state0, state1, control, contacts, dt)
+
+    vel = state1.particle_qd.numpy()
+
+    # Particle 0 (decoy, no contact): y-velocity should be ~0
+    test.assertAlmostEqual(
+        float(vel[0, 1]),
+        0.0,
+        places=2,
+        msg="Decoy particle (no contact) should have zero y-velocity; restitution was incorrectly applied to it",
+    )
+
+    # Particle 1 (bouncer): y-velocity should be positive (bouncing up)
+    test.assertGreater(
+        float(vel[1, 1]),
+        0.0,
+        msg="Bouncing particle should have positive y-velocity after restitution",
+    )
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -252,6 +323,14 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_particle_friction_with_relative_motion",
     test_particle_particle_friction_with_relative_motion,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_particle_shape_restitution_correct_particle",
+    test_particle_shape_restitution_correct_particle,
     devices=devices,
     check_output=False,
 )

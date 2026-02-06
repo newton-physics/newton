@@ -602,7 +602,7 @@ class SolverXPBD(SolverBase):
                 if model.particle_count:
                     wp.launch(
                         kernel=apply_particle_shape_restitution,
-                        dim=model.particle_count,
+                        dim=contacts.soft_contact_max,
                         inputs=[
                             particle_q,
                             particle_qd,
