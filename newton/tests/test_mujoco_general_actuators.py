@@ -596,16 +596,16 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
-        assert hasattr(model, "mujoco")
-        assert hasattr(model.mujoco, "actuator_gear")
-        assert np.allclose(model.mujoco.actuator_ctrllimited.numpy(), [True])
-        assert np.allclose(model.mujoco.actuator_ctrlrange.numpy(), [[-3.0, 3.0]])
-        assert np.allclose(model.mujoco.actuator_gear.numpy(), [[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
-        assert np.allclose(solver.mjw_model.actuator_ctrllimited.numpy(), [True])
-        assert np.allclose(solver.mjw_model.actuator_ctrlrange.numpy(), [[[-3.0, 3.0]]])
-        assert np.allclose(solver.mjw_model.actuator_gear.numpy(), [[[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
-        assert np.allclose(solver.mjw_model.actuator_trnid.numpy(), [[0, -1]])
-        assert np.allclose(solver.mjw_model.actuator_trntype.numpy(), [0])
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "actuator_gear"))
+        np.testing.assert_array_equal(model.mujoco.actuator_ctrllimited.numpy(), [True])
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), [[-3.0, 3.0]])
+        np.testing.assert_allclose(model.mujoco.actuator_gear.numpy(), [[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+        np.testing.assert_array_equal(solver.mjw_model.actuator_ctrllimited.numpy(), [True])
+        np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy(), [[[-3.0, 3.0]]])
+        np.testing.assert_allclose(solver.mjw_model.actuator_gear.numpy(), [[[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
+        np.testing.assert_array_equal(solver.mjw_model.actuator_trnid.numpy(), [[0, -1]])
+        np.testing.assert_array_equal(solver.mjw_model.actuator_trntype.numpy(), [0])
 
 
 if __name__ == "__main__":
