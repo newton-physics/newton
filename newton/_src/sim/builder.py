@@ -421,7 +421,17 @@ class ModelBuilder:
         the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method."""
 
         usd_attribute_name: str | None = None
-        """Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used."""
+        """Name of the USD attribute to read values from during USD parsing.
+
+        - If ``None`` (default), the name is derived automatically as ``"newton:<key>"``
+          where ``<key>`` is ``"<namespace>:<name>"`` or just ``"<name>"`` if no namespace is set.
+        - If set to ``"*"``, the :attr:`usd_value_transformer` is called for every prim matching
+          the attribute's frequency, regardless of which USD attributes exist on the prim. The transformer
+          receives ``None`` as the value argument. This is useful for computing attribute values from
+          arbitrary prim data rather than reading a specific USD attribute.
+          A :attr:`usd_value_transformer` **must** be provided when using ``"*"``; otherwise,
+          :meth:`~newton.ModelBuilder.add_custom_attribute` raises a :class:`ValueError`.
+        """
 
         mjcf_attribute_name: str | None = None
         """Name of the attribute in the MJCF definition. If None, the attribute name is used."""
@@ -867,7 +877,8 @@ class ModelBuilder:
 
         Raises:
             ValueError: If the attribute key already exists with incompatible specification,
-                or if the attribute uses a custom string frequency that hasn't been registered.
+                if the attribute uses a custom string frequency that hasn't been registered,
+                or if ``usd_attribute_name`` is ``"*"`` without a ``usd_value_transformer``.
 
         Example:
 
@@ -915,6 +926,13 @@ class ModelBuilder:
                     f"Custom frequency '{freq_key}' is not registered. "
                     f"Please register it first using add_custom_frequency() before adding attributes with this frequency."
                 )
+
+        # Validate that wildcard USD attributes have a transformer
+        if attribute.usd_attribute_name == "*" and attribute.usd_value_transformer is None:
+            raise ValueError(
+                f"Custom attribute '{key}' uses usd_attribute_name='*' but no usd_value_transformer is provided. "
+                f"A wildcard USD attribute requires a usd_value_transformer to compute values from prim data."
+            )
 
         self.custom_attributes[key] = attribute
 
