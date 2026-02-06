@@ -889,7 +889,7 @@ class SolverMuJoCo(SolverBase):
             - PhysicsRevoluteJoint / PhysicsPrismaticJoint: 1 DOF → [prim_path]
             - PhysicsFixedJoint: 0 DOFs → [] (empty list, no DOFs to name)
             - PhysicsSphericalJoint: 3 DOFs → [prim_path:rotX, prim_path:rotY, prim_path:rotZ]
-            - PhysicsD6Joint: N DOFs → one entry per free axis, determined from limit attributes
+            - PhysicsJoint (D6): N DOFs → one entry per free axis, determined from limit attributes
             """
             prim = context["prim"]
             prim_type = prim.GetTypeName()
@@ -905,7 +905,7 @@ class SolverMuJoCo(SolverBase):
                 # Spherical (ball) joints always have 3 rotational DOFs
                 return [f"{prim_path}:rotX", f"{prim_path}:rotY", f"{prim_path}:rotZ"]
 
-            if prim_type == "PhysicsD6Joint":
+            if prim_type == "PhysicsJoint":
                 # Determine free axes from limit attributes on the prim.
                 # An axis is a DOF when its limit low < high.
                 # Linear axes are enumerated first, then angular, to match the DOF
