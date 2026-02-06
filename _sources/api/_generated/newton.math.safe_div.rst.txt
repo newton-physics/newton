@@ -1,6 +1,0 @@
-﻿newton.math.safe\_div
-=====================
-
-.. currentmodule:: newton.math
-
-.. autowarpfunc:: safe_div

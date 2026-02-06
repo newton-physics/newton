@@ -1,6 +1,0 @@
-﻿newton.math.vec\_abs
-====================
-
-.. currentmodule:: newton.math
-
-.. autowarpfunc:: vec_abs

@@ -1,6 +1,0 @@
-﻿newton.utils.load\_texture
-==========================
-
-.. currentmodule:: newton.utils
-
-.. autofunction:: load_texture

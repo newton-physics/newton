@@ -1,6 +1,0 @@
-﻿newton.usd.get\_transform
-=========================
-
-.. currentmodule:: newton.usd
-
-.. autofunction:: get_transform

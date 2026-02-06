@@ -1,6 +1,0 @@
-﻿newton.usd.get\_attributes\_in\_namespace
-=========================================
-
-.. currentmodule:: newton.usd
-
-.. autofunction:: get_attributes_in_namespace

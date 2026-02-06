@@ -1,6 +1,0 @@
-﻿newton.math.leaky\_min
-======================
-
-.. currentmodule:: newton.math
-
-.. autowarpfunc:: leaky_min

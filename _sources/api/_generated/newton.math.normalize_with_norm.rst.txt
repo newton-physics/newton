@@ -1,6 +1,0 @@
-﻿newton.math.normalize\_with\_norm
-=================================
-
-.. currentmodule:: newton.math
-
-.. autowarpfunc:: normalize_with_norm

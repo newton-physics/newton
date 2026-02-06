@@ -1,6 +1,0 @@
-﻿newton.math.vec\_max
-====================
-
-.. currentmodule:: newton.math
-
-.. autowarpfunc:: vec_max

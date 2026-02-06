@@ -1,6 +1,0 @@
-﻿newton.geometry.create\_mesh\_heightfield
-=========================================
-
-.. currentmodule:: newton.geometry
-
-.. autofunction:: create_mesh_heightfield

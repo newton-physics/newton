@@ -1,6 +1,0 @@
-﻿newton.math.vec\_inside\_limits
-===============================
-
-.. currentmodule:: newton.math
-
-.. autowarpfunc:: vec_inside_limits

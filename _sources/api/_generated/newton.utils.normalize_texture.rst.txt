@@ -1,6 +1,0 @@
-﻿newton.utils.normalize\_texture
-===============================
-
-.. currentmodule:: newton.utils
-
-.. autofunction:: normalize_texture

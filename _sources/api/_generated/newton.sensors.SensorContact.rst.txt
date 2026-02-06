@@ -1,8 +1,0 @@
-﻿newton.sensors.SensorContact
-============================
-
-.. autoclass:: newton.sensors.SensorContact
-   :members:
-   :undoc-members:
-   :show-inheritance:
-   :member-order: groupwise
