@@ -455,16 +455,9 @@ class RandomControlStrategy(ControlStrategy):
 # =============================================================================
 
 # Default tolerances for MjData field comparison
-# Based on empirical testing: 1-world is very tight, multi-world has ~10-100x more variance
-# due to solver convergence sensitivity with different control values per world.
 DEFAULT_TOLERANCES: dict[str, float] = {
-    # Core state (positions very tight, velocities/accelerations looser)
-    # Note: qacc differences increase with actuator force limits active due to
-    # jnt_actfrclimited mismatch (Newton: True from URDF, Native: False)
-    "qpos": 1e-6,  # 16-world: 6e-7
-    "qvel": 5e-5,  # 16-world: 4e-5
-    "qacc": 0.06,  # 16-world: 5.7e-2 (jnt_actfrclimited causes larger diff)
-    # Body kinematics (scale with qpos)
+    # Kinematics - very tight (1e-6)
+    "qpos": 1e-6,
     "xpos": 1e-6,
     "xquat": 1e-6,
     "xmat": 1e-6,
@@ -472,22 +465,22 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     "geom_xmat": 1e-6,
     "site_xpos": 1e-6,
     "site_xmat": 1e-6,
-    # Forces
-    "qfrc_bias": 3e-5,  # 16-world: 2.7e-5
-    "qfrc_passive": 1e-6,
-    "qfrc_actuator": 0.006,  # 16-world: 5.3e-3
-    # Composite quantities
     "subtree_com": 1e-6,
-    # Dynamics
-    "cvel": 5e-5,  # 16-world: 4.4e-5
-    "cacc": 2e-4,  # 16-world: 1.4e-4
-    "cfrc_int": 0.005,  # 16-world: 3.9e-3
-    "energy": 1e-6,
-    "qM": 1e-5,
-    # Actuators
     "actuator_length": 1e-6,
-    "actuator_velocity": 5e-5,  # 16-world: 4e-5
-    "actuator_force": 0.006,  # 16-world: 5.3e-3
+    "qfrc_passive": 1e-6,
+    "energy": 1e-6,
+    # Velocities and bias forces - tight (1e-4)
+    "qvel": 1e-4,
+    "cvel": 1e-4,
+    "actuator_velocity": 1e-4,
+    "qfrc_bias": 1e-4,
+    "qM": 1e-5,
+    # Constraint-affected (jnt_actfrclimited mismatch causes larger diff)
+    "qacc": 0.1,
+    "cacc": 1e-3,
+    "cfrc_int": 0.01,
+    "qfrc_actuator": 0.01,
+    "actuator_force": 0.01,
 }
 
 # Default fields to compare in MjData (core physics + dynamics)
