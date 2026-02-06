@@ -458,10 +458,11 @@ class RandomControlStrategy(ControlStrategy):
 # Comparison
 # =============================================================================
 
-# Default tolerances for MjData field comparison
-# Two main tolerance classes plus exceptions for dynamics fields.
+# Default tolerances for MjData field comparison.
+# Two tolerance classes: tight (1e-6) and loose (1e-4).
+# With backfill_model=True, tests can verify numerical equivalence more strictly.
 DEFAULT_TOLERANCES: dict[str, float] = {
-    # Tight (1e-6): kinematics, positions, orientations
+    # Tight (1e-6): kinematics, positions, orientations, mass matrix
     "qpos": 1e-6,
     "xpos": 1e-6,
     "xquat": 1e-6,
@@ -474,18 +475,17 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     "actuator_length": 1e-6,
     "qfrc_passive": 1e-6,
     "energy": 1e-6,
-    # Looser (1e-4): velocities, bias forces
+    "qM": 1e-6,
+    # Loose (1e-4): velocities, accelerations, forces
     "qvel": 1e-4,
     "cvel": 1e-4,
     "actuator_velocity": 1e-4,
     "qfrc_bias": 1e-4,
-    # Exceptions: fields affected by solver convergence with actuator force limits
-    "qM": 5e-6,  # mass matrix, observed max ~3.3e-6
-    "cacc": 2e-4,  # observed max ~1.5e-4
-    "qacc": 0.1,  # observed max ~9e-2 with active constraints
-    "cfrc_int": 1e-2,  # observed max ~4e-3
-    "qfrc_actuator": 2e-2,  # observed max ~1.5e-2
-    "actuator_force": 2e-2,  # observed max ~1.5e-2
+    "cacc": 1e-4,
+    "qacc": 1e-4,
+    "cfrc_int": 1e-4,
+    "qfrc_actuator": 1e-4,
+    "actuator_force": 1e-4,
 }
 
 # Default fields to compare in MjData (core physics + dynamics)
@@ -963,6 +963,22 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
             setattr(target_obj, field_name, new_arr)
 
 
+# Fields to backfill from native MuJoCo model to eliminate numerical differences.
+# These are computed during mj_setConst() and affect forward dynamics.
+# The differences arise from Newton's inertia re-diagonalization and different
+# float accumulation paths during model compilation.
+MODEL_BACKFILL_FIELDS: list[str] = [
+    "body_inertia",
+    "body_iquat",
+    "body_invweight0",
+    "body_subtreemass",
+    "dof_invweight0",
+    "actuator_acc0",
+    "body_quat",
+    "body_pos",
+]
+
+
 def expand_mjw_model_to_match(target_mjw: Any, reference_mjw: Any) -> None:
     """Expand batched fields in target MjWarpModel to match reference model's shapes.
 
@@ -981,6 +997,37 @@ def expand_mjw_model_to_match(target_mjw: Any, reference_mjw: Any) -> None:
     # Expand opt fields (nested Option object)
     if hasattr(target_mjw, "opt") and hasattr(reference_mjw, "opt"):
         _expand_batched_fields(target_mjw.opt, reference_mjw.opt, MJWARP_OPT_BATCHED_FIELDS)
+
+
+def backfill_model_from_native(newton_mjw: Any, native_mjw: Any, fields: list[str] | None = None) -> None:
+    """Copy computed model fields from native MuJoCo to Newton's mjw_model.
+
+    This eliminates numerical differences caused by Newton's model compilation
+    differing from MuJoCo's mj_setConst(). Useful for isolating simulation
+    differences from model compilation differences during testing.
+
+    Args:
+        newton_mjw: Newton's MjWarpModel to update
+        native_mjw: Native MuJoCo's MjWarpModel to copy from
+        fields: List of field names to copy (defaults to MODEL_BACKFILL_FIELDS)
+    """
+    if fields is None:
+        fields = MODEL_BACKFILL_FIELDS
+
+    for field in fields:
+        native_arr = getattr(native_mjw, field, None)
+        newton_arr = getattr(newton_mjw, field, None)
+
+        if native_arr is None or newton_arr is None:
+            continue
+        if not hasattr(native_arr, "numpy") or not hasattr(newton_arr, "numpy"):
+            continue
+
+        # Only copy if shapes match
+        if native_arr.shape == newton_arr.shape:
+            newton_arr.assign(native_arr)
+
+    wp.synchronize()
 
 
 def compare_mjw_models(
@@ -1194,6 +1241,13 @@ class TestMenagerieBase(unittest.TestCase):
     # For now, we keep it simple: collision-only on both sides.
     discard_visual: bool = True  # Add <compiler discardvisual="true"/> to native MJCF
 
+    # Model backfill: Copy computed fields from native MuJoCo to Newton's model.
+    # This eliminates numerical differences from model compilation (inertia re-diagonalization,
+    # different float accumulation paths). Enables tighter tolerances for simulation comparison.
+    # Set to True in subclass to enable, or override backfill_fields for custom field list.
+    backfill_model: bool = False
+    backfill_fields: list[str] | None = None  # None = use MODEL_BACKFILL_FIELDS
+
     @classmethod
     def setUpClass(cls):
         """Download assets once for all tests in this class."""
@@ -1338,6 +1392,11 @@ class TestMenagerieBase(unittest.TestCase):
         # Expand native model's batched arrays to match Newton's shapes
         # Newton is the reference - only expand fields that Newton has expanded
         expand_mjw_model_to_match(native_mjw_model, newton_solver.mjw_model)
+
+        # Optional: backfill computed fields from native to Newton to eliminate
+        # numerical differences from model compilation (enables tighter tolerances)
+        if self.backfill_model:
+            backfill_model_from_native(newton_solver.mjw_model, native_mjw_model, self.backfill_fields)
 
         # Extract timestep from native model (Newton doesn't parse <option timestep="..."/> yet)
         # TODO: Remove this workaround once Newton's MJCF parser supports timestep extraction
@@ -1657,6 +1716,10 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     num_worlds = 16
     debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
+
+    # Enable model backfill to eliminate numerical differences from model compilation.
+    # With backfill, simulation should match exactly for same control inputs.
+    backfill_model = True
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
