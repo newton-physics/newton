@@ -23,7 +23,6 @@ import newton
 from newton import JointType, Mesh
 from newton._src.core.types import vec5
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
-from newton.tests import get_asset
 from newton.tests.unittest_utils import USD_AVAILABLE
 
 

@@ -586,16 +586,13 @@ class TestMuJoCoActuators(unittest.TestCase):
         for i in range(6):
             self.assertEqual(builder.joint_act_mode[i], int(ActuatorMode.NONE))
 
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_actuator_cartpole(self):
         """Test basic actuator parsing from the MjcActuator schema"""
         builder = ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
 
-        builder.add_usd(
-            get_asset("cartpole_mjc.usda")
-        )
+        builder.add_usd(get_asset("cartpole_mjc.usda"))
 
         model = builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=False)
@@ -609,6 +606,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         assert np.allclose(solver.mjw_model.actuator_gear.numpy(), [[[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
         assert np.allclose(solver.mjw_model.actuator_trnid.numpy(), [[0, -1]])
         assert np.allclose(solver.mjw_model.actuator_trntype.numpy(), [0])
+
 
 if __name__ == "__main__":
     unittest.main()
