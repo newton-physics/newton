@@ -63,8 +63,11 @@ uv run --extra dev -m newton.tests
 # include tests that require PyTorch
 uv run --extra dev --extra torch-cu12 -m newton.tests
 
+# run a specific test file by name (-k filters by unittest-parallel pattern)
+uv run --extra dev -m newton.tests -k test_viewer_log_shapes
+
 # run a specific example test
-uv run --extra dev -m newton.tests.test_examples -k test_basic.example_basic_shapes
+uv run --extra dev -m newton.tests -k test_basic.example_basic_shapes
 ```
 
 ### Pre-commit (lint/format hooks)
@@ -99,6 +102,15 @@ Follow conventional commit message practices.
     - Write as a command: "Fix bug" not "Fixed bug" or "Fixes bug"
     - Test: "If applied, this commit will _[your subject]_"
   - Body: wrap at 72 chars, explain _what_ and _why_ (not _how_—the diff shows that)
+
+## File headers and copyright
+
+- New files must use the current year (2026) in the SPDX copyright header:
+  ```
+  # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+  # SPDX-License-Identifier: Apache-2.0
+  ```
+- Do not change the year in existing file headers.
 
 ## GitHub Actions and CI/CD
 
