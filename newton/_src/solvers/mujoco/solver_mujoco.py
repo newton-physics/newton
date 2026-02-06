@@ -1055,6 +1055,8 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.bool,
                 default=False,
                 namespace="mujoco",
+                mjcf_attribute_name="forcelimited",
+                mjcf_value_transformer=parse_bool,
             )
         )
         builder.add_custom_attribute(
