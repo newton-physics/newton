@@ -195,7 +195,7 @@ class Example:
 
         # Create collision pipeline (default: unified)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
         self.shape_flags = self.model.shape_flags.numpy()
 
     # ----------------------------------------------------------------------
@@ -242,7 +242,7 @@ class Example:
                 device=self.model.device,
             )
             self.state.body_q.assign(self.state1.body_q)
-            self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state, self.contacts)
             self.cloth_solver.step(self.state, self.state1, self.control, self.contacts, self.sim_dt)
             (self.state, self.state1) = (self.state1, self.state)
 

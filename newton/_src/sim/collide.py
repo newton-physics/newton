@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..core.types import Devicelike
 from ..geometry.kernels import (
     broadphase_collision_pairs,
     create_soft_contacts,
@@ -40,46 +39,42 @@ class CollisionPipeline:
 
     def __init__(
         self,
-        shape_count: int,
-        particle_count: int,
-        shape_pairs_filtered: wp.array(dtype=wp.vec2i),
-        rigid_contact_max: int | None = None,
+        model: Model,
+        *,
         rigid_contact_max_per_pair: int | None = None,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         edge_sdf_iter: int = 10,
-        requires_grad: bool = False,
-        device: Devicelike = None,
+        requires_grad: bool | None = None,
     ):
         """
         Initialize the CollisionPipeline.
 
         Args:
-            shape_count (int): Number of shapes in the simulation.
-            particle_count (int): Number of particles in the simulation.
-            shape_pairs_filtered (wp.array): Array of filtered shape pairs to consider for collision.
-            rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
-                If None, computed as shape_pairs_max * rigid_contact_max_per_pair.
+            model (Model): The simulation model.
             rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
-                If None or <= 0, no limit is applied.
+                If None, uses :attr:`newton.Model.rigid_contact_max` and sets per-pair to 0 (which indicates no limit).
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
             edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
-            requires_grad (bool, optional): Whether to enable gradient computation. Defaults to False.
-            device (Devicelike, optional): The device on which to allocate arrays and perform computation.
+            requires_grad (bool | None, optional): Whether to enable gradient computation. If None, uses model.requires_grad.
+
 
         Note:
-            Contact margins for rigid contacts are now controlled per-shape via ``model.shape_contact_margin``.
+            Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`, which is populated
+            from ``ShapeConfig.contact_margin`` during model building. If a shape doesn't specify a contact margin,
+            it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
+            :meth:`ModelBuilder.finalize`.
         """
-        # will be allocated during collide
-        self.contacts = None
-
-        self.shape_count = shape_count
-        self.shape_pairs_filtered = shape_pairs_filtered
+        self.model = model
+        self.shape_count = model.shape_count
+        self.shape_pairs_filtered = model.shape_contact_pairs
         self.shape_pairs_max = len(self.shape_pairs_filtered)
 
-        if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
+        rigid_contact_max = None
+        if rigid_contact_max_per_pair is None:
+            rigid_contact_max = model.rigid_contact_max
             rigid_contact_max_per_pair = 0
         self.rigid_contact_max_per_pair = rigid_contact_max_per_pair
         if rigid_contact_max is not None or rigid_contact_max_per_pair == 0:
@@ -88,7 +83,7 @@ class CollisionPipeline:
             self.rigid_contact_max = self.shape_pairs_max * rigid_contact_max_per_pair
 
         # Allocate buffers for broadphase collision handling
-        with wp.ScopedDevice(device):
+        with wp.ScopedDevice(model.device):
             self.rigid_pair_shape0 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
             self.rigid_pair_shape1 = wp.empty(self.rigid_contact_max, dtype=wp.int32)
             self.rigid_pair_point_limit = None  # wp.empty(self.shape_count ** 2, dtype=wp.int32)
@@ -96,93 +91,60 @@ class CollisionPipeline:
             self.rigid_pair_point_id = wp.empty(self.rigid_contact_max, dtype=wp.int32)
 
         if soft_contact_max is None:
-            soft_contact_max = shape_count * particle_count
+            soft_contact_max = self.shape_count * model.particle_count
         self.soft_contact_margin = soft_contact_margin
         self.soft_contact_max = soft_contact_max
 
+        if requires_grad is None:
+            requires_grad = model.requires_grad
         self.requires_grad = requires_grad
         self.edge_sdf_iter = edge_sdf_iter
 
         self.handle_contact_pairs_kernel = generate_handle_contact_pairs_kernel(requires_grad)
 
-    @classmethod
-    def from_model(
-        cls,
-        model: Model,
-        rigid_contact_max_per_pair: int | None = None,
-        soft_contact_max: int | None = None,
-        soft_contact_margin: float = 0.01,
-        edge_sdf_iter: int = 10,
-        requires_grad: bool | None = None,
-    ) -> CollisionPipeline:
+    def contacts(self) -> Contacts:
         """
-        Create a CollisionPipeline instance from a Model.
-
-        Args:
-            model (Model): The simulation model.
-            rigid_contact_max_per_pair (int | None, optional): Maximum number of contact points per shape pair.
-                If None, uses :attr:`newton.Model.rigid_contact_max` and sets per-pair to 0 (which indicates no limit).
-            soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
-            soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
-            edge_sdf_iter (int, optional): Number of iterations for edge SDF collision. Defaults to 10.
-            requires_grad (bool | None, optional): Whether to enable gradient computation. If None, uses model.requires_grad.
+        Allocate and return a new :class:`Contacts` object for this pipeline.
 
         Returns:
-            CollisionPipeline: The constructed collision pipeline.
-
-        Note:
-            Contact margins for rigid contacts are read from ``model.shape_contact_margin`` array.
+            Contacts: A newly allocated contacts buffer sized for this pipeline.
         """
-        rigid_contact_max = None
-        if rigid_contact_max_per_pair is None:
-            rigid_contact_max = model.rigid_contact_max
-            rigid_contact_max_per_pair = 0
-        if requires_grad is None:
-            requires_grad = model.requires_grad
-        return CollisionPipeline(
-            model.shape_count,
-            model.particle_count,
-            model.shape_contact_pairs,
-            rigid_contact_max,
-            rigid_contact_max_per_pair,
-            soft_contact_max,
-            soft_contact_margin,
-            edge_sdf_iter,
-            requires_grad,
-            model.device,
+        return Contacts(
+            self.rigid_contact_max,
+            self.soft_contact_max,
+            requires_grad=self.requires_grad,
+            device=self.model.device,
         )
 
-    def collide(self, model: Model, state: State) -> Contacts:
+    def collide(
+        self,
+        state: State,
+        contacts: Contacts,
+        *,
+        soft_contact_margin: float | None = None,
+        edge_sdf_iter: int | None = None,
+    ):
         """
-        Run the collision pipeline for the given model and state, generating contacts.
-
-        This method allocates or clears the contact buffer as needed, then generates
-        soft and rigid contacts using the current simulation state.
+        Run collision detection and populate the contacts buffer.
 
         Args:
-            model (Model): The simulation model.
-            state (State): The current simulation state.
+            state: The current simulation state.
+            contacts: The contacts buffer to populate (will be cleared first).
+            soft_contact_margin: Margin for soft contact generation. If None, uses the value from construction.
+            edge_sdf_iter: Number of search iterations for finding closest contact points between edges and SDF. If None, uses the value from construction.
 
-        Returns:
-            Contacts: The generated contacts for the current state.
+        Note:
+            Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`.
         """
-        # Allocate new contact memory for contacts if needed (e.g., for gradients)
-        if self.contacts is None or self.requires_grad:
-            self.contacts = Contacts(
-                self.rigid_contact_max,
-                self.soft_contact_max,
-                requires_grad=self.requires_grad,
-                device=model.device,
-                requested_attributes=model.get_requested_contact_attributes(),
-            )
-        else:
-            self.contacts.clear()
+        contacts.clear()
 
-        # output contacts buffer
-        contacts = self.contacts
-
+        model = self.model
         shape_count = self.shape_count
         particle_count = len(state.particle_q) if state.particle_q else 0
+
+        # update any additional parameters
+        soft_contact_margin = soft_contact_margin if soft_contact_margin is not None else self.soft_contact_margin
+        edge_sdf_iter = edge_sdf_iter if edge_sdf_iter is not None else self.edge_sdf_iter
 
         # generate soft contacts for particles and shapes
         if state.particle_q and shape_count > 0:
@@ -201,7 +163,7 @@ class CollisionPipeline:
                     model.shape_scale,
                     model.shape_source_ptr,
                     model.shape_world,
-                    self.soft_contact_margin,
+                    soft_contact_margin,
                     self.soft_contact_max,
                     shape_count,
                     model.shape_flags,
@@ -273,7 +235,7 @@ class CollisionPipeline:
                     self.rigid_pair_shape1,
                     self.rigid_pair_point_id,
                     self.rigid_pair_point_limit,
-                    self.edge_sdf_iter,
+                    edge_sdf_iter,
                 ],
                 outputs=[
                     contacts.rigid_contact_count,

@@ -131,11 +131,11 @@ class SolverVBD(SolverBase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.collide(state_in)
+        contacts = model.contacts()
 
         # Simulation loop
         for i in range(100):
-            contacts = model.collide(state_in)  # Update contacts
+            model.collide(state_in, contacts)  # Update contacts
             solver.step(state_in, state_out, control, contacts, dt)
             state_in, state_out = state_out, state_in
     """

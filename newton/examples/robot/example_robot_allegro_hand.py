@@ -144,7 +144,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -158,8 +158,8 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0)
         for _ in range(self.sim_substeps):
+            self.model.collide(self.state_0, self.contacts)
             self.state_0.clear_forces()
 
             # apply forces to the model for picking, wind, etc

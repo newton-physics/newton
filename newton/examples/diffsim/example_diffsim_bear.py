@@ -171,7 +171,9 @@ class Example:
 
         # initialize control and one-shot contacts (valid for simple collisions against constant plane)
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.states[0], soft_contact_margin=10.0)
+        self.collision_pipeline = newton.CollisionPipeline(self.model, soft_contact_margin=10.0)
+        self.contacts = self.collision_pipeline.contacts()
+        self.collision_pipeline.collide(self.states[0], self.contacts)
 
         # initialize the solver.
         self.solver = newton.solvers.SolverSemiImplicit(self.model, enable_tri_contact=False)

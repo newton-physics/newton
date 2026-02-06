@@ -94,6 +94,7 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
 
     state0 = model.state()
     state1 = model.state()
+    contacts = model.contacts()
 
     # Apply equal and opposite forces to keep the particles in sustained contact.
     # Without this, the initial overlap may be resolved in ~1 iteration and friction becomes hard to observe,
@@ -120,7 +121,7 @@ def test_particle_particle_friction_uses_relative_velocity(test, device):
 
     # Run simulation
     for _ in range(num_steps):
-        contacts = model.collide(state0)
+        model.collide(state0, contacts)
         control = model.control()
         solver.step(state0, state1, control, contacts, dt)
         state0, state1 = state1, state0
@@ -208,9 +209,10 @@ def test_particle_particle_friction_with_relative_motion(test, device):
 
         state0 = model.state()
         state1 = model.state()
+        contacts = model.contacts()
 
         # One step: measure tangential slip (relative z displacement).
-        contacts = model.collide(state0)
+        model.collide(state0, contacts)
         control = model.control()
         solver.step(state0, state1, control, contacts, dt)
 

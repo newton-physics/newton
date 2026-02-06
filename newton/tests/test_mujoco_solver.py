@@ -273,7 +273,8 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         self.state_in = self.model.state()
         self.state_out = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_in)
+        self.contacts = self.model.contacts()
+        self.model.collide(self.state_in, self.contacts)
 
 
 class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
@@ -3618,7 +3619,8 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.state_in = self.model.state()
         self.state_out = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_in)
+        self.contacts = self.model.contacts()
+        self.model.collide(self.state_in, self.contacts)
         self.sphere_body_idx = sphere_body_idx
 
     def test_sphere_on_plane_with_newton_contacts(self):
@@ -3632,8 +3634,9 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         sim_dt = 1.0 / 240.0
         num_steps = 120  # Simulate for 0.5 seconds to ensure it settles
 
+        self.contacts = self.model.contacts()
         for _ in range(num_steps):
-            self.contacts = self.model.collide(self.state_in)
+            self.model.collide(self.state_in, self.contacts)
             solver.step(self.state_in, self.state_out, self.control, self.contacts, sim_dt)
             self.state_in, self.state_out = self.state_out, self.state_in
 
@@ -4251,8 +4254,10 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         control_soft = model_soft.control()
         control_stiff = model_stiff.control()
-        contacts_soft = model_soft.collide(state_soft_in)
-        contacts_stiff = model_stiff.collide(state_stiff_in)
+        contacts_soft = model_soft.contacts()
+        model_soft.collide(state_soft_in, contacts_soft)
+        contacts_stiff = model_stiff.contacts()
+        model_stiff.collide(state_stiff_in, contacts_stiff)
 
         # Track minimum positions during simulation
         min_q_soft = float("inf")

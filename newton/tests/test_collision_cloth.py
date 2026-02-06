@@ -780,7 +780,8 @@ def test_mesh_ground_collision_index(test, device):
     model = builder.finalize(device=device)
     test.assertEqual(model.shape_contact_pair_count, 3)
     state = model.state()
-    contacts = model.collide(state)
+    contacts = model.contacts()
+    model.collide(state, contacts)
     test.assertEqual(contacts.rigid_contact_max, 12)
     test.assertEqual(contacts.rigid_contact_count.numpy()[0], 3)
     tids = contacts.rigid_contact_tids.list()
@@ -831,7 +832,8 @@ def test_avbd_particle_ground_penalty_grows(test, device):
 
     state_in = model.state()
     state_out = model.state()
-    contacts = model.collide(state_in)
+    contacts = model.contacts()
+    model.collide(state_in, contacts)
 
     soft_count = int(contacts.soft_contact_count.numpy()[0])
     test.assertGreater(soft_count, 0)

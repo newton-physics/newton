@@ -5,7 +5,7 @@ Collisions
 
 Newton provides a flexible collision detection system for rigid-rigid and soft-rigid contacts. The pipeline handles broad phase culling, narrow phase contact generation, and filtering.
 
-Newton's collision system is also compatible with MuJoCo-imported models via MJWarp, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes. See ``examples/mjwarp/`` for usage.
+Newton's collision system can also be used with ``SolverMuJoCo``, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes.
 
 .. _Collision Pipelines Overview:
 
@@ -25,16 +25,18 @@ Basic usage:
 .. code-block:: python
 
     # Default: uses CollisionPipeline with precomputed pairs
-    contacts = model.collide(state)
+    contacts = model.contacts()
+    model.collide(state, contacts)
 
     # Or explicitly create a pipeline
     from newton import CollisionPipelineUnified, BroadPhaseMode
-    
-    pipeline = CollisionPipelineUnified.from_model(
+
+    pipeline = CollisionPipelineUnified(
         model,
         broad_phase_mode=BroadPhaseMode.SAP,
     )
-    contacts = model.collide(state, collision_pipeline=pipeline)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Supported Shape Types:
 
@@ -463,11 +465,11 @@ Standard Pipeline Shape Compatibility
 
 Empty cells indicate unsupported pairs. Use :class:`~newton.CollisionPipelineUnified` for cylinder, cone, SDF, and hydroelastic contact generation.
 
-The pipeline is created automatically when calling :meth:`~newton.Model.collide` without arguments:
+The pipeline is created automatically when calling :meth:`~newton.Model.contacts`:
 
 .. code-block:: python
 
-    contacts = model.collide(state)  # Uses CollisionPipeline internally
+    contacts = model.contacts()  # Uses CollisionPipeline internally
 
 .. _Unified Pipeline:
 
@@ -492,14 +494,15 @@ Unified Pipeline
 .. code-block:: python
 
     from newton import CollisionPipelineUnified, BroadPhaseMode
-    
+
     # NxN for small scenes
-    pipeline = CollisionPipelineUnified.from_model(model, broad_phase_mode=BroadPhaseMode.NXN)
-    
+    pipeline = CollisionPipelineUnified(model, broad_phase_mode=BroadPhaseMode.NXN)
+
     # SAP for larger scenes
-    pipeline = CollisionPipelineUnified.from_model(model, broad_phase_mode=BroadPhaseMode.SAP)
-    
-    contacts = model.collide(state, collision_pipeline=pipeline)
+    pipeline = CollisionPipelineUnified(model, broad_phase_mode=BroadPhaseMode.SAP)
+
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Shape Compatibility:
 
@@ -636,7 +639,7 @@ The primary algorithm for convex shape pairs. Uses support mapping functions to 
 
 **Multi-contact Generation**
 
-For shape pairs, multiple contact points are generated for stable stacking and resting contacts. For the standard collision pipeline, the maximum contacts per shape pair is controlled by ``rigid_contact_max_per_pair`` in :meth:`Model.collide`. The unified collision pipeline automatically estimates buffer sizes based on the model.
+For shape pairs, multiple contact points are generated for stable stacking and resting contacts. For the standard collision pipeline, the maximum contacts per shape pair is controlled by ``rigid_contact_max_per_pair`` in :class:`CollisionPipeline`. The unified collision pipeline automatically estimates buffer sizes based on the model.
 
 .. _Mesh Collisions:
 
@@ -706,7 +709,7 @@ For hydroelastic and SDF-based contacts, use :class:`~newton.SDFHydroelasticConf
         moment_matching=False,          # Match friction moments (experimental)
     )
 
-    pipeline = CollisionPipelineUnified.from_model(model, sdf_hydroelastic_config=config)
+    pipeline = CollisionPipelineUnified(model, sdf_hydroelastic_config=config)
 
 **Understanding betas:**
 
@@ -871,7 +874,7 @@ For performance, you can run collision detection less often than simulation subs
     for frame in range(num_frames):
         for substep in range(sim_substeps):
             if substep % collide_every_n_substeps == 0:
-                contacts = model.collide(state, collision_pipeline=pipeline)
+                pipeline.collide(state, contacts)
             solver.step(state_0, state_1, control, contacts, dt=sim_dt)
             state_0, state_1 = state_1, state_0
 
@@ -885,7 +888,7 @@ Soft contacts are generated automatically when particles are present. They use a
     builder.add_particle(pos=wp.vec3(0, 0, 1), vel=wp.vec3(0, 0, 0), mass=1.0)
     
     # Soft contact margin is set at collision time
-    contacts = model.collide(state, soft_contact_margin=0.01)
+    pipeline.collide(state, contacts, soft_contact_margin=0.01)
     
     # Access soft contact data
     n_soft = contacts.soft_contact_count.numpy()[0]
@@ -948,7 +951,8 @@ Example usage:
 
 .. code-block:: python
 
-    contacts = model.collide(state)
+    contacts = model.contacts()
+    model.collide(state, contacts)
     
     n = contacts.rigid_contact_count.numpy()[0]
     points0 = contacts.rigid_contact_point0.numpy()[:n]
@@ -973,19 +977,9 @@ The :meth:`Model.collide` method accepts the following parameters:
    * - Parameter
      - Description
    * - ``state``
-     - Current simulation state (required).
-   * - ``collision_pipeline``
-     - Optional custom collision pipeline. If None, creates/reuses default.
-   * - ``rigid_contact_max_per_pair``
-     - Maximum contacts per shape pair. None = no limit.
-   * - ``soft_contact_max``
-     - Maximum soft contacts to allocate.
-   * - ``soft_contact_margin``
-     - Margin for soft contact generation. Default: 0.01.
-   * - ``edge_sdf_iter``
-     - Iterations for edge-SDF contact search. Default: 10.
-   * - ``requires_grad``
-     - Enable gradient computation. Default: model.requires_grad.
+     - The current simulation state.
+   * - ``contacts``
+     - The contacts buffer to populate (will be cleared first).
 
 .. _Hydroelastic Contacts:
 
