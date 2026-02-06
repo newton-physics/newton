@@ -32,10 +32,16 @@ from newton import ParticleFlags
 
 
 @wp.kernel
+def increment_time(time: wp.array(dtype=float), dt: float):
+    """Increment time by dt."""
+    time[0] = time[0] + dt
+
+
+@wp.kernel
 def rotate_cylinder(
     angular_speed: float,
     dt: float,
-    t: float,
+    time: wp.array(dtype=float),
     center_x: float,
     center_z: float,
     q0: wp.array(dtype=wp.vec3),
@@ -45,6 +51,7 @@ def rotate_cylinder(
     """Rotate cylinder vertices around their center axis."""
     i = wp.tid()
     particle_index = indices[i]
+    t = time[0]
     c0 = wp.cos(-angular_speed * (t - dt))
     s0 = wp.sin(-angular_speed * (t - dt))
     c1 = wp.cos(angular_speed * t)
@@ -396,6 +403,9 @@ class Example:
         # Disable collision detection (matches original)
         self.contacts = None
 
+        # Per-substep time array for CUDA graph compatibility
+        self.sim_time_wp = wp.array([0.0], dtype=float)
+
         self.viewer.set_model(self.model)
 
         # Set up camera
@@ -419,7 +429,11 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            # Apply rotation during spin duration
+            # Increment per-substep time first
+            wp.launch(kernel=increment_time, dim=1, inputs=[self.sim_time_wp, self.sim_dt])
+
+            # Apply rotation (rotation kernels are always in the graph;
+            # spin_duration check is evaluated at capture time)
             if self.sim_time < self.spin_duration:
                 # Rotate cloth outer edge (attached to cylinder 2's left side)
                 wp.launch(
@@ -428,7 +442,7 @@ class Example:
                     inputs=[
                         self.angular_speed_cyl2,  # Same speed as cylinder 2
                         self.sim_dt,
-                        self.sim_time,
+                        self.sim_time_wp,
                         self.cyl2_center[0],  # Rotate around cylinder 2's center
                         self.cyl2_center[1],
                         self.state_0.particle_q,
@@ -444,7 +458,7 @@ class Example:
                     inputs=[
                         self.angular_speed_cyl1,
                         self.sim_dt,
-                        self.sim_time,
+                        self.sim_time_wp,
                         self.cyl1_center[0],
                         self.cyl1_center[1],
                         self.state_0.particle_q,
@@ -460,7 +474,7 @@ class Example:
                     inputs=[
                         self.angular_speed_cyl2,
                         self.sim_dt,
-                        self.sim_time,
+                        self.sim_time_wp,
                         self.cyl2_center[0],
                         self.cyl2_center[1],
                         self.state_0.particle_q,
