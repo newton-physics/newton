@@ -513,7 +513,6 @@ def solve_flow_rule_camclay(
 
     ys, dys, r_N_min, r_N_max = shear_yield_stress_camclay(yield_params, r_N0)
 
-
     if r_N_max <= 0.0:
         return b
 
@@ -1034,6 +1033,38 @@ def jacobi_preconditioner(
     z[tau_i] = alpha * Wx + beta * y[tau_i]
 
 
+@wp.kernel
+def compute_collider_inv_mass(
+    J_mat_offsets: wp.array(dtype=int),
+    J_mat_columns: wp.array(dtype=int),
+    J_mat_values: wp.array(dtype=wp.mat33),
+    IJtm_mat_offsets: wp.array(dtype=int),
+    IJtm_mat_columns: wp.array(dtype=int),
+    IJtm_mat_values: wp.array(dtype=wp.mat33),
+    collider_inv_mass: wp.array(dtype=float),
+):
+    i = wp.tid()
+
+    block_beg = J_mat_offsets[i]
+    block_end = J_mat_offsets[i + 1]
+
+    w_mat = wp.mat33(0.0)
+
+    for b in range(block_beg, block_end):
+        col = J_mat_columns[b]
+        transposed_block = sp.bsr_block_index(col, i, IJtm_mat_offsets, IJtm_mat_columns)
+        if transposed_block == -1:
+            continue
+
+        # Mass-splitting: divide by number of nodes overlapping with this body
+        multiplicity = float(IJtm_mat_offsets[col + 1] - IJtm_mat_offsets[col])
+
+        w_mat += (J_mat_values[b] @ IJtm_mat_values[transposed_block]) * multiplicity
+
+    _eigvecs, eigvals = wp.eig3(w_mat)
+    collider_inv_mass[i] = wp.max(0.0, wp.max(eigvals))
+
+
 @wp.func
 def project_on_friction_cone(
     mu: float,
@@ -1078,26 +1109,43 @@ def solve_coulomb_isotropic(
     return u
 
 
+@wp.func
+def filter_collider_impulse_warmstart(
+    friction: float,
+    nor: wp.vec3,
+    adhesion: float,
+    impulse: wp.vec3,
+):
+    """Filters the collider impulse to be within the friction cone"""
+
+    if friction < 0.0:
+        return wp.vec3(0.0)
+
+    return project_on_friction_cone(friction, nor, impulse + adhesion * nor) - adhesion * nor
+
+
 @wp.kernel
-def apply_nodal_impulse(
+def apply_nodal_impulse_warmstart(
     collider_impulse: wp.array(dtype=wp.vec3),
     collider_friction: wp.array(dtype=float),
+    collider_normals: wp.array(dtype=wp.vec3),
+    collider_adhesion: wp.array(dtype=float),
     inv_mass: wp.array(dtype=float),
-    collider_inv_mass: wp.array(dtype=float),
     velocities: wp.array(dtype=wp.vec3),
-    collider_velocities: wp.array(dtype=wp.vec3),
+    delta_impulse: wp.array(dtype=wp.vec3),
 ):
     """
     Applies pre-computed impulses to particles and colliders.
     """
     i = wp.tid()
 
-    friction_coeff = collider_friction[i]
-    if friction_coeff < 0.0:
-        collider_impulse[i] = wp.vec3(0.0)
-    else:
-        velocities[i] += inv_mass[i] * collider_impulse[i]
-        collider_velocities[i] -= collider_inv_mass[i] * collider_impulse[i]
+    impulse = filter_collider_impulse_warmstart(
+        collider_friction[i], collider_normals[i], collider_adhesion[i], collider_impulse[i]
+    )
+
+    collider_impulse[i] = impulse
+    delta_impulse[i] = impulse
+    velocities[i] += inv_mass[i] * impulse
 
 
 @wp.kernel
@@ -1110,6 +1158,7 @@ def solve_nodal_friction(
     velocities: wp.array(dtype=wp.vec3),
     collider_velocities: wp.array(dtype=wp.vec3),
     impulse: wp.array(dtype=wp.vec3),
+    delta_impulse: wp.array(dtype=wp.vec3),
 ):
     """
     Solves for frictional impulses at nodes interacting with colliders.
@@ -1139,11 +1188,11 @@ def solve_nodal_friction(
     u = solve_coulomb_isotropic(friction_coeff, n, u0 - (impulse[i] + collider_adhesion[i] * n) * w)
 
     delta_u = u - u0
-    delta_impulse = delta_u / w
+    delta_lambda = delta_u / w
 
-    impulse[i] += delta_impulse
-    velocities[i] += inv_mass[i] * delta_impulse
-    collider_velocities[i] -= collider_inv_mass[i] * delta_impulse
+    delta_impulse[i] = delta_lambda
+    impulse[i] += delta_lambda
+    velocities[i] += inv_mass[i] * delta_lambda
 
 
 @wp.kernel
@@ -1172,27 +1221,20 @@ def apply_subgrid_impulse(
 
 @wp.kernel
 def apply_subgrid_impulse_warmstart(
-    collider_inv_mass: wp.array(dtype=float),
     collider_friction: wp.array(dtype=float),
     collider_normals: wp.array(dtype=wp.vec3),
     collider_adhesion: wp.array(dtype=float),
-    impulse: wp.array(dtype=wp.vec3),
+    collider_impulse: wp.array(dtype=wp.vec3),
     delta_impulse: wp.array(dtype=wp.vec3),
-    collider_velocities: wp.array(dtype=wp.vec3),
 ):
     i = wp.tid()
 
-    friction_coeff = collider_friction[i]
-    if friction_coeff < 0.0:
-        impulse[i] = wp.vec3(0.0)
+    impulse = filter_collider_impulse_warmstart(
+        collider_friction[i], collider_normals[i], collider_adhesion[i], collider_impulse[i]
+    )
 
-    nor = collider_normals[i]
-    adhesion = collider_adhesion[i] * nor
-    delta_lambda = project_on_friction_cone(friction_coeff, nor, impulse[i] + adhesion) - adhesion
-
-    impulse[i] = delta_lambda
-    delta_impulse[i] = delta_lambda
-    collider_velocities[i] -= collider_inv_mass[i] * delta_lambda
+    collider_impulse[i] = impulse
+    delta_impulse[i] = impulse
 
 
 @wp.kernel
@@ -1233,7 +1275,6 @@ def solve_subgrid_friction(
     collider_friction: wp.array(dtype=float),
     collider_adhesion: wp.array(dtype=float),
     collider_normals: wp.array(dtype=wp.vec3),
-    collider_inv_mass: wp.array(dtype=float),
     collider_delassus_diagonal: wp.array(dtype=float),
     collider_velocities: wp.array(dtype=wp.vec3),
     impulse: wp.array(dtype=wp.vec3),
@@ -1263,7 +1304,6 @@ def solve_subgrid_friction(
 
     impulse[i] += delta_lambda
     delta_impulse[i] = delta_lambda
-    collider_velocities[i] -= collider_inv_mass[i] * delta_lambda
 
 
 @wp.kernel
@@ -1395,7 +1435,7 @@ def update_condition(
     condition[0] = wp.where(stop, 0, 1)
 
 
-def apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_velocity, delta_body_qd):
+def apply_rigidity_operator(rigidity_operator, delta_collider_impulse, collider_velocity, delta_body_qd):
     """Apply collider rigidity feedback to the current collider velocities.
 
     Computes and applies a velocity correction induced by the rigid coupling
@@ -1407,30 +1447,16 @@ def apply_rigidity_operator(rigidity_operator, prev_collider_velocity, collider_
     for the next iteration.
 
     Args:
-        rigidity_mat: Block-sparse rigidity operator (D + J @ IJtm) returned by
+        rigidity_mat: Block-sparse rigidity operator (J @ IJtm) returned by
             ``build_rigidity_operator``.
-        prev_collider_velocity: Velocity vector from the previous iteration
-            (updated in place at the end of the call).
+        delta_collider_impulse: Change in collider impulse to be applied.
         collider_velocity: Current collider velocity vector to be corrected in place.
+        delta_body_qd: Change in body velocity to be applied.
     """
 
-    D, J, IJtm = rigidity_operator
-
-    # compute velocity delta, store in prev_collider_velocity
-    array_axpy(
-        y=prev_collider_velocity,
-        x=collider_velocity,
-        alpha=1.0,
-        beta=-1.0,
-    )
-    delta_velocity = prev_collider_velocity
-
-    sp.bsr_mv(D, x=delta_velocity, y=collider_velocity, alpha=1.0, beta=1.0)
-    sp.bsr_mv(IJtm, x=delta_velocity, y=delta_body_qd, alpha=1.0, beta=0.0)
+    J, IJtm = rigidity_operator
+    sp.bsr_mv(IJtm, x=delta_collider_impulse, y=delta_body_qd, alpha=-1.0, beta=0.0)
     sp.bsr_mv(J, x=delta_body_qd, y=collider_velocity, alpha=1.0, beta=1.0)
-
-    # save for next iterations
-    wp.copy(dest=prev_collider_velocity, src=collider_velocity)
 
 
 class _ScopedDisableGC:
@@ -1478,8 +1504,7 @@ class CollisionData:
     collider_adhesion: wp.array(dtype=float)
     collider_normals: wp.array(dtype=wp.vec3)
     collider_velocities: wp.array(dtype=wp.vec3)
-    collider_inv_mass: wp.array(dtype=float)
-    rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix, sp.BsrMatrix] | None
+    rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix] | None
     collider_impulse: wp.array(dtype=wp.vec3)
 
 
@@ -1939,24 +1964,44 @@ class _ContactSolver:
         self.momentum = momentum
         self.collision = collision
 
+        self.delta_impulse = fem.borrow_temporary_like(self.collision.collider_impulse, temporary_store)
+        self.collider_inv_mass = fem.borrow_temporary_like(self.collision.collider_friction, temporary_store)
+
         # Setup rigidity correction
         if self.collision.rigidity_operator is not None:
-            self.prev_collider_velocity = fem.borrow_temporary_like(self.collision.collider_velocities, temporary_store)
-            self.prev_collider_velocity.assign(self.collision.collider_velocities)
-
-            _D, J, _IJtm = self.collision.rigidity_operator
+            J, IJtm = self.collision.rigidity_operator
             self.delta_body_qd = fem.borrow_temporary(temporary_store, shape=J.shape[1], dtype=float)
 
+            wp.launch(
+                compute_collider_inv_mass,
+                dim=self.collision.collider_impulse.shape[0],
+                inputs=[
+                    J.offsets,
+                    J.columns,
+                    J.values,
+                    IJtm.offsets,
+                    IJtm.columns,
+                    IJtm.values,
+                ],
+                outputs=[
+                    self.collider_inv_mass,
+                ],
+            )
+
+        else:
+            self.collider_inv_mass.zero_()
+
     def release(self):
+        self.delta_impulse.release()
+        self.collider_inv_mass.release()
         if self.collision.rigidity_operator is not None:
-            self.prev_collider_velocity.release()
             self.delta_body_qd.release()
 
     def apply_rigidity_operator(self):
         if self.collision.rigidity_operator is not None:
             apply_rigidity_operator(
                 self.collision.rigidity_operator,
-                self.prev_collider_velocity,
+                self.delta_impulse,
                 self.collision.collider_velocities,
                 self.delta_body_qd,
             )
@@ -1980,10 +2025,11 @@ class _NodalContactSolver(_ContactSolver):
                 self.collision.collider_friction,
                 self.collision.collider_adhesion,
                 self.collision.collider_normals,
-                self.collision.collider_inv_mass,
+                self.collider_inv_mass,
                 self.momentum.velocity,
                 self.collision.collider_velocities,
                 self.collision.collider_impulse,
+                self.delta_impulse,
             ],
             record_cmd=True,
         )
@@ -1991,15 +2037,16 @@ class _NodalContactSolver(_ContactSolver):
     def apply_initial_guess(self):
         # Apply initial impulse guess
         wp.launch(
-            kernel=apply_nodal_impulse,
+            kernel=apply_nodal_impulse_warmstart,
             dim=self.collision.collider_impulse.shape[0],
             inputs=[
                 self.collision.collider_impulse,
                 self.collision.collider_friction,
+                self.collision.collider_normals,
+                self.collision.collider_adhesion,
                 self.momentum.inv_volume,
-                self.collision.collider_inv_mass,
                 self.momentum.velocity,
-                self.collision.collider_velocities,
+                self.delta_impulse,
             ],
         )
         self.apply_rigidity_operator()
@@ -2018,8 +2065,7 @@ class _SubgridContactSolver(_ContactSolver):
     ) -> None:
         super().__init__(momentum, collision, temporary_store)
 
-        self.collider_delassus_diagonal = fem.borrow_temporary_like(self.collision.collider_inv_mass, temporary_store)
-        self.delta_impulse = fem.borrow_temporary_like(self.collision.collider_impulse, temporary_store)
+        self.collider_delassus_diagonal = fem.borrow_temporary_like(self.collider_inv_mass, temporary_store)
 
         sp.bsr_set_transpose(dest=self.collision.transposed_collider_mat, src=self.collision.collider_mat)
 
@@ -2030,7 +2076,7 @@ class _SubgridContactSolver(_ContactSolver):
                 self.collision.collider_mat.offsets,
                 self.collision.collider_mat.columns,
                 self.collision.collider_mat.values,
-                self.collision.collider_inv_mass,
+                self.collider_inv_mass,
                 self.collision.transposed_collider_mat.offsets,
                 self.momentum.inv_volume,
             ],
@@ -2065,7 +2111,6 @@ class _SubgridContactSolver(_ContactSolver):
                 self.collision.collider_friction,
                 self.collision.collider_adhesion,
                 self.collision.collider_normals,
-                self.collision.collider_inv_mass,
                 self.collider_delassus_diagonal,
                 self.collision.collider_velocities,
                 self.collision.collider_impulse,
@@ -2079,13 +2124,11 @@ class _SubgridContactSolver(_ContactSolver):
             apply_subgrid_impulse_warmstart,
             dim=self.delta_impulse.shape[0],
             inputs=[
-                self.collision.collider_inv_mass,
                 self.collision.collider_friction,
                 self.collision.collider_normals,
                 self.collision.collider_adhesion,
                 self.collision.collider_impulse,
                 self.delta_impulse,
-                self.collision.collider_velocities,
             ],
         )
         self.apply_collider_impulse_launch.launch()
@@ -2098,7 +2141,6 @@ class _SubgridContactSolver(_ContactSolver):
 
     def release(self):
         self.collider_delassus_diagonal.release()
-        self.delta_impulse.release()
         super().release()
 
 

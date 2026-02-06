@@ -23,7 +23,6 @@ from .solve_rheology import solve_coulomb_isotropic
 
 __all__ = [
     "Collider",
-    "allot_collider_mass",
     "build_rigidity_operator",
     "interpolate_collider_normals",
     "project_outside_collider",
@@ -236,16 +235,6 @@ def collider_volumes_kernel(
 
 
 @wp.func
-def collider_density(
-    collider_id: int, collider: Collider, collider_volumes: wp.array(dtype=float), body_mass: wp.array(dtype=float)
-):
-    body_id = collider.collider_body_index[collider_id]
-    if body_id < 0:
-        return _INFINITY
-    return body_mass[body_id] / collider_volumes[collider_id]
-
-
-@wp.func
 def collider_is_dynamic(collider_id: int, collider: Collider, body_mass: wp.array(dtype=float)):
     if collider_id < 0:
         return False
@@ -402,31 +391,8 @@ def rasterize_collider_kernel(
 
 
 @wp.kernel
-def collider_inverse_mass(
-    collider: Collider,
-    body_mass: wp.array(dtype=float),
-    collider_ids: wp.array(dtype=int),
-    node_volume: wp.array(dtype=float),
-    collider_volumes: wp.array(dtype=float),
-    collider_inv_mass_matrix: wp.array(dtype=float),
-):
-    i = wp.tid()
-    collider_id = collider_ids[i]
-
-    bc_vol = node_volume[i]
-    if collider_is_dynamic(collider_id, collider, body_mass) and bc_vol > 0.0:
-        bc_density = collider_density(collider_id, collider, collider_volumes, body_mass)
-        bc_mass = bc_vol * bc_density
-        collider_inv_mass_matrix[i] = 1.0 / bc_mass
-    else:
-        collider_inv_mass_matrix[i] = 0.0
-
-
-@wp.kernel
 def fill_collider_rigidity_matrices(
     node_positions: wp.array(dtype=wp.vec3),
-    collider_volumes: wp.array(dtype=float),
-    node_volumes: wp.array(dtype=float),
     collider: Collider,
     body_q: wp.array(dtype=wp.transform),
     body_mass: wp.array(dtype=float),
@@ -437,7 +403,6 @@ def fill_collider_rigidity_matrices(
     J_cols: wp.array(dtype=int),
     J_values: wp.array(dtype=wp.mat33),
     IJtm_values: wp.array(dtype=wp.mat33),
-    non_rigid_diagonal: wp.array(dtype=wp.mat33),
 ):
     i = wp.tid()
 
@@ -462,21 +427,17 @@ def fill_collider_rigidity_matrices(
         J_values[2 * i] = W
         J_values[2 * i + 1] = Id
 
-        bc_mass = node_volumes[i] * cell_volume * collider_density(collider_id, collider, collider_volumes, body_mass)
+        # Grid impulses need to be scaled by cell_volume
 
         world_inv_inertia = R @ body_inv_inertia[body_id] @ wp.transpose(R)
-        IJtm_values[2 * i] = -bc_mass * world_inv_inertia @ W
-        IJtm_values[2 * i + 1] = bc_mass / body_mass[body_id] * Id
-
-        non_rigid_diagonal[i] = -Id
+        IJtm_values[2 * i] = -cell_volume * world_inv_inertia @ W
+        IJtm_values[2 * i + 1] = (cell_volume / body_mass[body_id]) * Id
 
     else:
         J_cols[2 * i] = -1
         J_cols[2 * i + 1] = -1
         J_rows[2 * i] = -1
         J_rows[2 * i + 1] = -1
-
-        non_rigid_diagonal[i] = wp.mat33(0.0)
 
 
 @fem.integrand
@@ -613,64 +574,6 @@ def interpolate_collider_normals(
     )
 
 
-def allot_collider_mass(
-    cell_volume: float,
-    node_volumes: wp.array(dtype=float),
-    collider: Collider,
-    body_mass: wp.array(dtype=float),
-    collider_ids: wp.array(dtype=int),
-    collider_total_volumes: wp.array(dtype=float),
-    collider_inv_mass_matrix: wp.array(dtype=float),
-):
-    """Accumulate collider mass onto grid nodes and compute inverse masses.
-
-    This function first integrates the per-mesh volume contribution of all
-    active collider regions. It then computes per-node inverse masses for
-    nodes tagged by ``collider_ids`` as being within the collider influence.
-
-    - Dynamic colliders (finite mass) contribute a non-zero inverse mass that
-      is proportional to the local node volume and the collider density
-      (mass/total volume per collider mesh).
-    - Kinematic colliders (infinite mass) and nodes not influenced by a
-      collider receive an inverse mass of zero.
-
-    Args:
-        cell_volume: Grid cell volume as scaling factor to node_volumes.
-        node_volumes: Per-velocity-node volume fractions (in voxel units).
-        collider: Packed collider parameters and geometry handles.
-        collider_ids: Per-velocity-node collider id, or `_NULL_COLLIDER_ID` when not active.
-        collider_total_volumes: Output per-collider total volumes (accumulated).
-        collider_inv_mass_matrix: Output per-node inverse masses due to collider compliance.
-    """
-
-    vel_node_count = node_volumes.shape[0]
-
-    collider_total_volumes.zero_()
-    wp.launch(
-        collider_volumes_kernel,
-        dim=vel_node_count,
-        inputs=[
-            cell_volume,
-            collider_ids,
-            node_volumes,
-            collider_total_volumes,
-        ],
-    )
-
-    wp.launch(
-        collider_inverse_mass,
-        dim=vel_node_count,
-        inputs=[
-            collider,
-            body_mass,
-            collider_ids,
-            node_volumes,
-            collider_total_volumes,
-            collider_inv_mass_matrix,
-        ],
-    )
-
-
 def build_rigidity_operator(
     cell_volume: float,
     node_volumes: wp.array(dtype=float),
@@ -680,22 +583,19 @@ def build_rigidity_operator(
     body_mass: wp.array(dtype=float),
     body_inv_inertia: wp.array(dtype=wp.mat33),
     collider_ids: wp.array(dtype=int),
-    collider_total_volumes: wp.array(dtype=float),
-) -> tuple[wps.BsrMatrix, wps.BsrMatrix, wps.BsrMatrix]:
-    """Build the collider rigidity operator that couples node motion to rigid DOFs.
+) -> tuple[wps.BsrMatrix, wps.BsrMatrix]:
+    """Build the collider rigidity operator that couples collider impulses to rigid DOFs.
 
     Builds a block-sparse matrix of size (3 N_vel_nodes) x (3 N_vel_nodes) that
-    maps nodal velocity corrections to rigid-body displacements. Only nodes
+    maps nodal impulses to collider rigid-body displacements. Only nodes
     with a valid collider id and only dynamic colliders (finite mass) produce
     non-zero blocks.
 
     Internally constructs:
       - J: kinematic Jacobian blocks per node relating rigid velocity to nodal velocity.
       - IJtm: mass- and inertia-scaled transpose mapping.
-      - Iphi_diag: diagonal term that enforces non-rigid (complementary) DOFs.
 
-    The returned matrix is J @ IJtm + diag(Iphi_diag). It is later used to
-    propagate rigid coupling when solving collider friction.
+    The returned operator is (J @ IJtm) and corresponds the rigid-body Delassus operator.
 
     Args:
         cell_volume: Grid cell volume as scaling factor to node_volumes.
@@ -705,11 +605,10 @@ def build_rigidity_operator(
         body_q: Rigid body transforms.
         body_mass: Rigid body masses.
         body_inv_inertia: Rigid body inverse inertia tensors.
-        collider_ids: Per-velocity-node collider id, or -2 when not active.
-        collider_total_volumes: Per-collider integrated volumes used to derive densities.
+        collider_ids: Per-velocity-node collider id, or `_NULL_COLLIDER_ID` when not active.
 
     Returns:
-        A tuple of ``warp.sparse.BsrMatrix`` (D, J, IJtm) representing the rigidity coupling operator ``D + J @ IJtm``
+        A tuple of ``warp.sparse.BsrMatrix`` (J, IJtm) representing the rigidity coupling operator ``J @ IJtm``
     """
 
     vel_node_count = node_volumes.shape[0]
@@ -719,15 +618,12 @@ def build_rigidity_operator(
     J_cols = wp.empty(vel_node_count * 2, dtype=int)
     J_values = wp.empty(vel_node_count * 2, dtype=wp.mat33)
     IJtm_values = wp.empty(vel_node_count * 2, dtype=wp.mat33)
-    Iphi_diag = wp.empty(vel_node_count, dtype=wp.mat33)
 
     wp.launch(
         fill_collider_rigidity_matrices,
         dim=vel_node_count,
         inputs=[
             node_positions,
-            collider_total_volumes,
-            node_volumes,
             collider,
             body_q,
             body_mass,
@@ -738,7 +634,6 @@ def build_rigidity_operator(
             J_cols,
             J_values,
             IJtm_values,
-            Iphi_diag,
         ],
     )
 
@@ -758,5 +653,4 @@ def build_rigidity_operator(
         values=IJtm_values,
     )
 
-    D = wps.bsr_diag(Iphi_diag)
-    return D, J, IJtm
+    return J, IJtm
