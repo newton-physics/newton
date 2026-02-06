@@ -947,6 +947,12 @@ def apply_joint_forces(
     if type == JointType.FREE or type == JointType.DISTANCE:
         f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
+        # Interpret free-joint forces as spatial wrench at the COM (same as body_f).
+        # Avoid adding a moment arm that would introduce torque for pure forces.
+        wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total))
+        if id_p >= 0:
+            wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
+        return
     elif type == JointType.BALL:
         t_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
 

@@ -28,13 +28,13 @@
 #
 ###########################################################################
 
-import re
 
 import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton import ActuatorMode
 from newton.solvers import SolverNotifyFlags
 
 hand_rotation = wp.normalize(wp.quat(0.283, 0.683, -0.622, 0.258))
@@ -100,19 +100,16 @@ class Example:
             asset_file,
             xform=wp.transform(wp.vec3(0, 0, 0.5)),
             enable_self_collisions=True,
-            ignore_paths=[".*Dummy", ".*CollisionPlane", ".*goal", ".*DexCube/visuals"],
+            ignore_paths=[".*Dummy", ".*CollisionPlane"],
+            hide_collision_shapes=True,
         )
-
-        # hide collision shapes for the hand links
-        for i, key in enumerate(allegro_hand.shape_key):
-            if re.match(".*Robot/.*?/collision", key):
-                allegro_hand.shape_flags[i] &= ~newton.ShapeFlags.VISIBLE
 
         # set joint targets and joint drive gains
         for i in range(allegro_hand.joint_dof_count):
             allegro_hand.joint_target_ke[i] = 150
             allegro_hand.joint_target_kd[i] = 5
             allegro_hand.joint_target_pos[i] = 0.0
+            allegro_hand.joint_act_mode[i] = int(ActuatorMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(allegro_hand, self.num_worlds)
@@ -217,7 +214,7 @@ class Example:
                 self.model,
                 self.state_0,
                 f"hand bodies from world {i} are close to the initial position",
-                lambda q, qd: newton.utils.vec_inside_limits(q.p, hand_lower, hand_upper),  # noqa: B023
+                lambda q, qd: newton.math.vec_inside_limits(q.p, hand_lower, hand_upper),  # noqa: B023
                 indices=hand_body_indices,
             )
 
@@ -230,7 +227,7 @@ class Example:
                 self.model,
                 self.state_0,
                 f"cube from world {i} is within bounds and above ground",
-                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.utils.vec_inside_limits(q.p, lower, upper)
+                lambda q, _qd, lower=cube_lower, upper=cube_upper: newton.math.vec_inside_limits(q.p, lower, upper)
                 and q.p[2] > 0.0,
                 indices=np.array([cube_body_idx], dtype=np.int32),
             )

@@ -30,6 +30,7 @@ import warp as wp
 import newton
 import newton.examples
 import newton.utils
+from newton import ActuatorMode
 from newton.selection import ArticulationView
 
 
@@ -47,7 +48,7 @@ def update_joint_target_trajectory_kernel(
     step = int(t)
     time[world_idx] = t
 
-    num_dofs = joint_target.shape[1]
+    num_dofs = joint_target.shape[2]
     for dof in range(num_dofs):
         # add world_idx here to make the sequence of dofs different for each world
         di = (dof + world_idx) % num_dofs
@@ -92,6 +93,7 @@ class Example:
         for i in range(len(ur10.joint_target_ke)):
             ur10.joint_target_ke[i] = 500
             ur10.joint_target_kd[i] = 50
+            ur10.joint_act_mode[i] = int(ActuatorMode.POSITION)
 
         builder = newton.ModelBuilder()
         builder.replicate(ur10, self.num_worlds, spacing=(2, 2, 0))

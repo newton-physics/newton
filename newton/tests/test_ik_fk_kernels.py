@@ -225,7 +225,7 @@ def _fk_parity_for_joint(test, device, jt):
             model,
             1,
             objectives=[_NoopObjective()],
-            jacobian_mode=ik.IKJacobianMode.AUTODIFF,
+            jacobian_mode=ik.IKJacobianType.AUTODIFF,
         )
         ik_solver._fk_two_pass(model, joint_q, ik_solver.body_q, ik_solver.X_local, ik_solver.n_problems)
 

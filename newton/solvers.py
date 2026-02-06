@@ -96,7 +96,7 @@ Supported Features
      - ❌
    * - :class:`~newton.solvers.SolverVBD`
      - Implicit
-     - ❌
+     - ✅
      - ❌
      - ✅
      - ✅
@@ -120,22 +120,21 @@ from ._src.solvers import (
     SolverStyle3D,
     SolverVBD,
     SolverXPBD,
+    style3d,
 )
+
+# solver flags
+from ._src.solvers.flags import SolverNotifyFlags
 
 __all__ = [
     "SolverBase",
     "SolverFeatherstone",
     "SolverImplicitMPM",
     "SolverMuJoCo",
+    "SolverNotifyFlags",
     "SolverSemiImplicit",
     "SolverStyle3D",
     "SolverVBD",
     "SolverXPBD",
-]
-
-# solver flags
-from ._src.solvers.flags import SolverNotifyFlags
-
-__all__ += [
-    "SolverNotifyFlags",
+    "style3d",
 ]

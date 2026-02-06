@@ -17,14 +17,14 @@
     <geom pos="0 0 -1" type="plane" size="20 20 .01" condim="1"/>
 
     <site name="site0" pos="0 0 1"/>
-    <body pos="0 0 1">
+    <body name="body1" pos="0 0 1">
       <freejoint/>
       <geom class="box"/>
       <site name="site1"/>
     </body>
 
     <site name="site2" pos="0 -1 1"/>
-    <body pos="0 -1 1">
+    <body name="body2" pos="0 -1 1">
       <freejoint/>
       <geom class="box"/>
       <site name="site3"/>
@@ -77,6 +77,76 @@
       <geom class="box" condim="6"/>
     </body>
   </worldbody>
+
+  <contact>
+    <!-- Exclude self-collisions between all bodies to test equality constraints without collision interference -->
+    <exclude body1="body1" body2="body2"/>
+    <exclude body1="body1" body2="beam1"/>
+    <exclude body1="body1" body2="beam2"/>
+    <exclude body1="body1" body2="beam3"/>
+    <exclude body1="body1" body2="beam4"/>
+    <exclude body1="body1" body2="beam5"/>
+    <exclude body1="body1" body2="box_condim1"/>
+    <exclude body1="body1" body2="box_condim3"/>
+    <exclude body1="body1" body2="box_condim4"/>
+    <exclude body1="body1" body2="box_condim6"/>
+    <exclude body1="body2" body2="beam1"/>
+    <exclude body1="body2" body2="beam2"/>
+    <exclude body1="body2" body2="beam3"/>
+    <exclude body1="body2" body2="beam4"/>
+    <exclude body1="body2" body2="beam5"/>
+    <exclude body1="body2" body2="box_condim1"/>
+    <exclude body1="body2" body2="box_condim3"/>
+    <exclude body1="body2" body2="box_condim4"/>
+    <exclude body1="body2" body2="box_condim6"/>
+    <exclude body1="anchor1" body2="anchor2"/>
+    <exclude body1="anchor1" body2="beam1"/>
+    <exclude body1="anchor1" body2="beam2"/>
+    <exclude body1="anchor1" body2="beam3"/>
+    <exclude body1="anchor1" body2="beam4"/>
+    <exclude body1="anchor1" body2="beam5"/>
+    <exclude body1="anchor2" body2="beam1"/>
+    <exclude body1="anchor2" body2="beam2"/>
+    <exclude body1="anchor2" body2="beam3"/>
+    <exclude body1="anchor2" body2="beam4"/>
+    <exclude body1="anchor2" body2="beam5"/>
+    <exclude body1="beam1" body2="beam2"/>
+    <exclude body1="beam1" body2="beam3"/>
+    <exclude body1="beam1" body2="beam4"/>
+    <exclude body1="beam1" body2="beam5"/>
+    <exclude body1="beam1" body2="box_condim1"/>
+    <exclude body1="beam1" body2="box_condim3"/>
+    <exclude body1="beam1" body2="box_condim4"/>
+    <exclude body1="beam1" body2="box_condim6"/>
+    <exclude body1="beam2" body2="beam3"/>
+    <exclude body1="beam2" body2="beam4"/>
+    <exclude body1="beam2" body2="beam5"/>
+    <exclude body1="beam2" body2="box_condim1"/>
+    <exclude body1="beam2" body2="box_condim3"/>
+    <exclude body1="beam2" body2="box_condim4"/>
+    <exclude body1="beam2" body2="box_condim6"/>
+    <exclude body1="beam3" body2="beam4"/>
+    <exclude body1="beam3" body2="beam5"/>
+    <exclude body1="beam3" body2="box_condim1"/>
+    <exclude body1="beam3" body2="box_condim3"/>
+    <exclude body1="beam3" body2="box_condim4"/>
+    <exclude body1="beam3" body2="box_condim6"/>
+    <exclude body1="beam4" body2="beam5"/>
+    <exclude body1="beam4" body2="box_condim1"/>
+    <exclude body1="beam4" body2="box_condim3"/>
+    <exclude body1="beam4" body2="box_condim4"/>
+    <exclude body1="beam4" body2="box_condim6"/>
+    <exclude body1="beam5" body2="box_condim1"/>
+    <exclude body1="beam5" body2="box_condim3"/>
+    <exclude body1="beam5" body2="box_condim4"/>
+    <exclude body1="beam5" body2="box_condim6"/>
+    <exclude body1="box_condim1" body2="box_condim3"/>
+    <exclude body1="box_condim1" body2="box_condim4"/>
+    <exclude body1="box_condim1" body2="box_condim6"/>
+    <exclude body1="box_condim3" body2="box_condim4"/>
+    <exclude body1="box_condim3" body2="box_condim6"/>
+    <exclude body1="box_condim4" body2="box_condim6"/>
+  </contact>
 
   <equality>
     <connect name="c_site"   site1="site0"      site2="site1"/>

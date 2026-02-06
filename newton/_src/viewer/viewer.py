@@ -125,7 +125,7 @@ class ViewerBase:
         """
         return False
 
-    def set_model(self, model, max_worlds: int | None = None):
+    def set_model(self, model: newton.Model, max_worlds: int | None = None):
         """
         Set the model to be visualized.
 
@@ -317,15 +317,32 @@ class ViewerBase:
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
 
-            self.log_instances(
-                shapes.name,
-                shapes.mesh,
-                shapes.world_xforms,
-                shapes.scales,  # Always pass scales - needed for transform matrix calculation
-                shapes.colors if self.model_changed or shapes.colors_changed else None,
-                shapes.materials if self.model_changed else None,
-                hidden=not visible,
-            )
+            colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+            materials = shapes.materials if self.model_changed else None
+
+            # Capsules may be rendered via a specialized path by the concrete viewer/backend
+            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # The base implementation of log_capsules() falls back to log_instances().
+            if shapes.geo_type == newton.GeoType.CAPSULE:
+                self.log_capsules(
+                    shapes.name,
+                    shapes.mesh,
+                    shapes.world_xforms,
+                    shapes.scales,
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
+            else:
+                self.log_instances(
+                    shapes.name,
+                    shapes.mesh,
+                    shapes.world_xforms,
+                    shapes.scales,  # Always pass scales - needed for transform matrix calculation
+                    colors,
+                    materials,
+                    hidden=not visible,
+                )
 
             shapes.colors_changed = False
 
@@ -451,7 +468,7 @@ class ViewerBase:
         Args:
             contact_surface_data: A HydroelasticContactSurfaceData instance containing vertex arrays
                 for visualization, or None if hydroelastic collision is not enabled.
-            penetrating_only: If True, only render penetrating contacts (depth > 0).
+            penetrating_only: If True, only render penetrating contacts (depth < 0).
         """
         if contact_surface_data is None or not self.show_hydro_contact_surface:
             self.log_lines("/hydro_contact_surface", None, None, None)
@@ -581,12 +598,12 @@ class ViewerBase:
 
         # defaults
         default_color = wp.vec3(0.3, 0.8, 0.9)
-        default_material = wp.vec4(0.0, 0.7, 0.0, 0.0)
+        default_material = wp.vec4(0.5, 0.0, 0.0, 0.0)
 
         # planes default to checkerboard and mid-gray if not overridden
         if geo_type == newton.GeoType.PLANE:
             default_color = wp.vec3(0.125, 0.125, 0.25)
-            default_material = wp.vec4(0.5, 0.7, 1.0, 0.0)
+            # default_material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
         colors = _ensure_vec3_array(colors, default_color)
         materials = _ensure_vec4_array(materials, default_material)
@@ -627,6 +644,7 @@ class ViewerBase:
             indices = wp.array(indices, dtype=wp.int32, device=self.device)
             normals = None
             uvs = None
+            texture = None
 
             if geo_src._normals is not None:
                 normals = wp.array(geo_src._normals, dtype=wp.vec3, device=self.device)
@@ -634,7 +652,18 @@ class ViewerBase:
             if geo_src._uvs is not None:
                 uvs = wp.array(geo_src._uvs, dtype=wp.vec2, device=self.device)
 
-            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+            if hasattr(geo_src, "texture"):
+                texture = geo_src.texture
+
+            self.log_mesh(
+                name,
+                points,
+                indices,
+                normals,
+                uvs,
+                hidden=hidden,
+                texture=texture,
+            )
             return
 
         # Generate vertices/indices for supported primitive types
@@ -682,7 +711,7 @@ class ViewerBase:
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
         indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
-        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden, texture=None)
 
     def log_gizmo(
         self,
@@ -700,6 +729,7 @@ class ViewerBase:
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture: np.ndarray | str | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -708,6 +738,10 @@ class ViewerBase:
     @abstractmethod
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         pass
+
+    # Optional specialized capsule path. Backends can override.
+    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+        self.log_instances(name, mesh, xforms, scales, colors, materials, hidden=hidden)
 
     @abstractmethod
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
@@ -744,6 +778,9 @@ class ViewerBase:
             self.flags = flags
             self.mesh = mesh
             self.device = device
+            # Optional geometry type for specialized rendering paths (e.g., capsules).
+            # -1 means "unknown / not set".
+            self.geo_type = -1
 
             self.parents = []
             self.xforms = []
@@ -966,6 +1003,7 @@ class ViewerBase:
             if shape_hash not in self._shape_instances:
                 shape_name = f"/model/shapes/shape_{len(self._shape_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
                 self._shape_instances[shape_hash] = batch
             else:
                 batch = self._shape_instances[shape_hash]
@@ -979,18 +1017,26 @@ class ViewerBase:
                 # Use shape index for color to ensure each collision shape has a different color
                 color = wp.vec3(self._shape_color_map(s))
 
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
-                if geo_src._color is not None:
-                    color = wp.vec3(geo_src._color[0:3])
+                if geo_src.color is not None:
+                    color = wp.vec3(geo_src.color[0:3])
+                if getattr(geo_src, "roughness", None) is not None:
+                    material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
+                if getattr(geo_src, "metallic", None) is not None:
+                    material = wp.vec4(material.x, float(geo_src.metallic), material.z, material.w)
+                if geo_src is not None and geo_src._uvs is not None:
+                    has_texture = getattr(geo_src, "texture", None) is not None
+                    if has_texture:
+                        material = wp.vec4(material.x, material.y, material.z, 1.0)
 
             # plane appearance: checkerboard + gray
             if geo_type == newton.GeoType.PLANE:
                 color = wp.vec3(0.125, 0.125, 0.15)
-                material = wp.vec4(0.5, 0.5, 1.0, 0.0)
+                material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
             # add render instance
             batch.add(
@@ -1106,6 +1152,7 @@ class ViewerBase:
             if geo_hash not in self._sdf_isomesh_instances:
                 shape_name = f"/model/sdf_isomesh/isomesh_{len(self._sdf_isomesh_instances)}"
                 batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
                 self._sdf_isomesh_instances[geo_hash] = batch
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]

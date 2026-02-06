@@ -37,7 +37,7 @@ Declaring Custom Attributes
 Custom attributes must be declared before use via the :meth:`newton.ModelBuilder.add_custom_attribute` method. Each declaration specifies:
 
 * **name**: Attribute name
-* **frequency**: Determines array size and indexing—either a :class:`~newton.ModelAttributeFrequency` enum value (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``) or a string for custom frequencies
+* **frequency**: Determines array size and indexing—either a :class:`~newton.Model.AttributeFrequency` enum value (``BODY``, ``SHAPE``, ``JOINT``, ``JOINT_DOF``, ``JOINT_COORD``, ``ARTICULATION``) or a string for custom frequencies
 * **dtype**: Warp data type (``wp.float32``, ``wp.vec3``, ``wp.quat``, etc.)
 * **assignment**: Which simulation object owns the attribute (``MODEL``, ``STATE``, ``CONTROL``, ``CONTACT``)
 * **default** (optional): Default value for unspecified entities
@@ -48,7 +48,7 @@ When **no namespace** is specified, attributes are added directly to their assig
 
 .. testcode::
 
-   from newton import ModelBuilder, ModelAttributeFrequency, ModelAttributeAssignment
+   from newton import Model, ModelBuilder
    import warp as wp
    
    builder = ModelBuilder()
@@ -57,10 +57,10 @@ When **no namespace** is specified, attributes are added directly to their assig
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="temperature",
-           frequency=ModelAttributeFrequency.BODY,
+           frequency=Model.AttributeFrequency.BODY,
            dtype=wp.float32,
            default=20.0,  # Explicit default value
-           assignment=ModelAttributeAssignment.MODEL
+           assignment=Model.AttributeAssignment.MODEL
        )
    )
    # → Accessible as: model.temperature
@@ -68,10 +68,10 @@ When **no namespace** is specified, attributes are added directly to their assig
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="velocity_limit",
-           frequency=ModelAttributeFrequency.BODY,
+           frequency=Model.AttributeFrequency.BODY,
            dtype=wp.vec3,
            default=(1.0, 1.0, 1.0),  # Default vector value
-           assignment=ModelAttributeAssignment.STATE
+           assignment=Model.AttributeAssignment.STATE
        )
    )
    # → Accessible as: state.velocity_limit
@@ -80,10 +80,10 @@ When **no namespace** is specified, attributes are added directly to their assig
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="float_attr",
-           frequency=ModelAttributeFrequency.BODY,
+           frequency=Model.AttributeFrequency.BODY,
            dtype=wp.float32,
            default=0.5,
-           assignment=ModelAttributeAssignment.MODEL,
+           assignment=Model.AttributeAssignment.MODEL,
            namespace="namespace_a"
        )
    )
@@ -92,10 +92,10 @@ When **no namespace** is specified, attributes are added directly to their assig
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="bool_attr",
-           frequency=ModelAttributeFrequency.SHAPE,
+           frequency=Model.AttributeFrequency.SHAPE,
            dtype=wp.bool,
            default=False,
-           assignment=ModelAttributeAssignment.MODEL,
+           assignment=Model.AttributeAssignment.MODEL,
            namespace="namespace_a"
        )
    )
@@ -105,10 +105,10 @@ When **no namespace** is specified, attributes are added directly to their assig
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="articulation_stiffness",
-           frequency=ModelAttributeFrequency.ARTICULATION,
+           frequency=Model.AttributeFrequency.ARTICULATION,
            dtype=wp.float32,
            default=100.0,
-           assignment=ModelAttributeAssignment.MODEL
+           assignment=Model.AttributeAssignment.MODEL
        )
    )
    # → Accessible as: model.articulation_stiffness
@@ -234,21 +234,21 @@ For ``JOINT_DOF`` and ``JOINT_COORD`` frequencies, values can be provided in thr
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="int_attr",
-           frequency=ModelAttributeFrequency.JOINT,
+           frequency=Model.AttributeFrequency.JOINT,
            dtype=wp.int32
        )
    )
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="float_attr_dof",
-           frequency=ModelAttributeFrequency.JOINT_DOF,
+           frequency=Model.AttributeFrequency.JOINT_DOF,
            dtype=wp.float32
        )
    )
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="float_attr_coord",
-           frequency=ModelAttributeFrequency.JOINT_COORD,
+           frequency=Model.AttributeFrequency.JOINT_COORD,
            dtype=wp.float32
        )
    )

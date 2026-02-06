@@ -37,7 +37,7 @@ newton.geometry
    compute_shape_inertia
    create_box_mesh
    create_empty_sdf_data
-   generate_terrain_grid
-   heightfield_to_mesh
+   create_mesh_heightfield
+   create_mesh_terrain
    remesh_mesh
    transform_inertia

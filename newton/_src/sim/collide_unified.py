@@ -325,7 +325,6 @@ class CollisionPipelineUnified:
         - Multiple broad phase modes: NXN (all-pairs), SAP (sweep-and-prune), EXPLICIT (precomputed pairs)
         - Mesh-mesh collision via SDF with contact reduction
         - Optional hydroelastic contact model for compliant surfaces
-        - Contact matching support for warm-starting solvers
     """
 
     def __init__(
@@ -589,6 +588,7 @@ class CollisionPipelineUnified:
                 requires_grad=self.requires_grad,
                 device=self.device,
                 per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
+                requested_attributes=model.get_requested_contact_attributes(),
             )
         else:
             self.contacts.clear()
@@ -762,3 +762,17 @@ class CollisionPipelineUnified:
         if self.sdf_hydroelastic is not None:
             return self.sdf_hydroelastic.get_hydro_contact_surface()
         return None
+
+    def set_output_contact_surface(self, enabled: bool) -> None:
+        """Enable or disable contact surface visualization.
+
+        Note: When ``output_contact_surface=True`` in the config, the kernel always
+        writes debug surface data. This method is provided for API compatibility but
+        the actual display is controlled by the viewer's ``show_hydro_contact_surface`` flag.
+
+        Args:
+            enabled: If True, visualization is enabled (viewer will display the data).
+                     If False, visualization is disabled (viewer will hide the data).
+        """
+        if self.sdf_hydroelastic is not None:
+            self.sdf_hydroelastic.set_output_contact_surface(enabled)

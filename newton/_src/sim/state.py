@@ -29,7 +29,7 @@ class State:
     store and update the simulation's current configuration and derived data.
     """
 
-    EXTENDED_STATE_ATTRIBUTES: frozenset[str] = frozenset(
+    EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(
         (
             "body_qdd",
             "body_parent_f",
@@ -45,19 +45,25 @@ class State:
     """
 
     @classmethod
-    def validate_extended_state_attributes(cls, attributes: tuple[str, ...]) -> None:
+    def validate_extended_attributes(cls, attributes: tuple[str, ...]) -> None:
         """Validate names passed to request_state_attributes().
 
-        Only extended state attributes listed in :attr:`EXTENDED_STATE_ATTRIBUTES` are accepted.
+        Only extended state attributes listed in :attr:`EXTENDED_ATTRIBUTES` are accepted.
+
+        Args:
+            attributes: Tuple of attribute names to validate.
+
+        Raises:
+            ValueError: If any attribute name is not in :attr:`EXTENDED_ATTRIBUTES`.
         """
         if not attributes:
             return
 
-        invalid = sorted(set(attributes).difference(cls.EXTENDED_STATE_ATTRIBUTES))
+        invalid = sorted(set(attributes).difference(cls.EXTENDED_ATTRIBUTES))
         if invalid:
-            allowed = ", ".join(sorted(cls.EXTENDED_STATE_ATTRIBUTES))
+            allowed = ", ".join(sorted(cls.EXTENDED_ATTRIBUTES))
             bad = ", ".join(invalid)
-            raise ValueError(f"Unknown extended State attribute(s): {bad}. Allowed extended attributes: {allowed}.")
+            raise ValueError(f"Unknown extended state attribute(s): {bad}. Allowed: {allowed}.")
 
     def __init__(self) -> None:
         """
@@ -79,25 +85,26 @@ class State:
 
         self.body_qd: wp.array | None = None
         """Rigid body velocities (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear velocity; last three: angular velocity."""
+        First three entries: linear velocity relative to the body's center of mass in world frame; last three: angular velocity in world frame.
+        See :ref:`Twist conventions in Newton <Twist conventions>` for more information."""
 
         self.body_q_prev: wp.array | None = None
         """Previous rigid body transforms for finite-difference velocity computation."""
 
         self.body_qdd: wp.array | None = None
         """Rigid body accelerations (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear acceleration; last three: angular acceleration.
+        First three entries: linear acceleration relative to the body's center of mass in world frame; last three: angular acceleration in world frame.
 
         This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
         """
 
         self.body_f: wp.array | None = None
         """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear force; last three: torque.
+        First three entries: linear force in world frame applied at the body's center of mass (COM).
+        Last three: torque (moment) in world frame.
 
         .. note::
-            :attr:`body_f` represents external wrenches in world frame, measured at the body's center of mass (COM).
-            The linear force component is applied at the COM, and the torque is about the COM.
+            :attr:`body_f` represents an external wrench in world frame with the body's center of mass (COM) as reference point.
         """
 
         self.body_parent_f: wp.array | None = None
@@ -105,6 +112,9 @@ class State:
         First three entries: linear force; last three: torque.
 
         This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
+
+        .. note::
+            :attr:`body_parent_f` represents incoming joint wrenches in world frame, referenced to the body's center of mass (COM).
         """
 
         self.joint_q: wp.array | None = None

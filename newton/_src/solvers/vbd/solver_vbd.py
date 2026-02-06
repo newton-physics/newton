@@ -27,8 +27,6 @@ from ...sim import (
     Control,
     JointType,
     Model,
-    ModelAttributeAssignment,
-    ModelAttributeFrequency,
     ModelBuilder,
     State,
 )
@@ -37,8 +35,6 @@ from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
     ParticleForceElementAdjacencyInfo,
-    # Topological filtering helper functions
-    _set_to_csr,
     accumulate_contact_force_and_hessian,
     accumulate_contact_force_and_hessian_no_self_contact,
     accumulate_spring_force_and_hessian,
@@ -56,6 +52,8 @@ from .particle_vbd_kernels import (
     # Solver kernels (particle VBD)
     forward_step,
     forward_step_penetration_free,
+    # Topological filtering helper functions
+    set_to_csr,
     solve_trimesh_no_self_contact,
     solve_trimesh_no_self_contact_tile,
     solve_trimesh_with_self_contact_penetration_free,
@@ -313,6 +311,9 @@ class SolverVBD(SolverBase):
         # This flag is automatically reset to True after each step().
         # Rigid warmstart update flag (contacts/joints).
         self.update_rigid_history = True
+
+        # Cached empty arrays for kernels that require wp.array arguments even when counts are zero.
+        self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
 
     def _init_particle_system(
         self,
@@ -817,8 +818,8 @@ class SolverVBD(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
-                frequency=ModelAttributeFrequency.JOINT,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.5,
                 namespace="vbd",
@@ -827,8 +828,8 @@ class SolverVBD(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_tau",
-                frequency=ModelAttributeFrequency.JOINT,
-                assignment=ModelAttributeAssignment.MODEL,
+                frequency=Model.AttributeFrequency.JOINT,
+                assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=1.0,
                 namespace="vbd",
@@ -998,7 +999,7 @@ class SolverVBD(SolverBase):
                 (
                     self.particle_vertex_triangle_contact_filtering_list,
                     self.particle_vertex_triangle_contact_filtering_list_offsets,
-                ) = _set_to_csr(v_tri_filter_sets)
+                ) = set_to_csr(v_tri_filter_sets)
                 self.particle_vertex_triangle_contact_filtering_list = wp.array(
                     self.particle_vertex_triangle_contact_filtering_list, dtype=int, device=self.device
                 )
@@ -1013,7 +1014,7 @@ class SolverVBD(SolverBase):
                 (
                     self.particle_edge_edge_contact_filtering_list,
                     self.particle_edge_edge_contact_filtering_list_offsets,
-                ) = _set_to_csr(edge_edge_filter_sets)
+                ) = set_to_csr(edge_edge_filter_sets)
                 self.particle_edge_edge_contact_filtering_list = wp.array(
                     self.particle_edge_edge_contact_filtering_list, dtype=int, device=self.device
                 )
@@ -1653,19 +1654,28 @@ class SolverVBD(SolverBase):
         """
         model = self.model
 
-        # Early exit if no rigid bodies
-        if model.body_count == 0:
-            return
-
-        # If rigid bodies are integrated by an external solver, skip the AVBD rigid-body
-        # solve but still update body-particle soft-contact penalties so that adaptive
-        # AVBD stiffness is used for cloth-rigid interaction.
-        if self.integrate_with_external_rigid_solver:
+        # Early-return path:
+        # - If rigid bodies are integrated by an external solver, skip the AVBD rigid-body solve but still
+        #   update body-particle soft-contact penalties so adaptive stiffness is used for particle-shape
+        #   interaction.
+        # - If there are no rigid bodies at all (body_count == 0), we likewise skip the rigid-body solve,
+        #   but must still update particle-shape soft-contact penalties (e.g., particles colliding with the
+        #   ground plane where shape_body == -1).
+        skip_rigid_solve = self.integrate_with_external_rigid_solver or model.body_count == 0
+        if skip_rigid_solve:
             if model.particle_count > 0 and contacts is not None:
-                soft_contact_launch_dim = contacts.soft_contact_max
+                # Use external rigid poses when enabled; otherwise use the current VBD poses.
+                body_q = state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q
+
+                # Model.state() leaves State.body_q as None when body_count == 0. Warp kernels still
+                # require a wp.array argument; for static shapes (shape_body == -1) the kernel never
+                # indexes this array, so an empty placeholder is sufficient.
+                if body_q is None:
+                    body_q = self._empty_body_q
+
                 wp.launch(
                     kernel=update_duals_body_particle_contacts,
-                    dim=soft_contact_launch_dim,
+                    dim=contacts.soft_contact_max,
                     inputs=[
                         contacts.soft_contact_count,
                         contacts.soft_contact_particle,
@@ -1675,9 +1685,7 @@ class SolverVBD(SolverBase):
                         state_in.particle_q,
                         model.particle_radius,
                         model.shape_body,
-                        # Rigid poses come from the external solver when
-                        # integrate_with_external_rigid_solver=True
-                        state_out.body_q,
+                        body_q,
                         self.body_particle_contact_material_ke,
                         self.avbd_beta,
                         self.body_particle_contact_penalty_k,  # input/output
