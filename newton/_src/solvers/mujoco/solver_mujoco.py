@@ -684,6 +684,7 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:option:integrator",
                 mjcf_attribute_name="integrator",
                 mjcf_value_transformer=cls._parse_integrator,
+                usd_value_transformer=cls._parse_integrator,
             )
         )
         builder.add_custom_attribute(
@@ -697,6 +698,7 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:option:solver",
                 mjcf_attribute_name="solver",
                 mjcf_value_transformer=cls._parse_solver,
+                usd_value_transformer=cls._parse_solver,
             )
         )
         builder.add_custom_attribute(
@@ -710,6 +712,7 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:option:cone",
                 mjcf_attribute_name="cone",
                 mjcf_value_transformer=cls._parse_cone,
+                usd_value_transformer=cls._parse_cone,
             )
         )
         builder.add_custom_attribute(
@@ -723,6 +726,7 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:option:jacobian",
                 mjcf_attribute_name="jacobian",
                 mjcf_value_transformer=cls._parse_jacobian,
+                usd_value_transformer=cls._parse_jacobian,
             )
         )
 

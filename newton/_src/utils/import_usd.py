@@ -233,6 +233,8 @@ def parse_usd(
     path_shape_scale: dict[str, wp.vec3] = {}
     # mapping from prim path to joint index in ModelBuilder
     path_joint_map: dict[str, int] = {}
+    # cache for resolved material properties (keyed by prim path)
+    material_props_cache: dict[str, dict[str, Any]] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -254,6 +256,13 @@ def parse_usd(
 
     def _xform_to_mat44(xform: wp.transform) -> wp.mat44:
         return wp.transform_compose(xform.p, xform.q, wp.vec3(1.0))
+
+    def _get_material_props_cached(prim: Usd.Prim) -> dict[str, Any]:
+        """Get material properties with caching to avoid repeated traversal."""
+        prim_path = str(prim.GetPath())
+        if prim_path not in material_props_cache:
+            material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
+        return material_props_cache[prim_path]
 
     def _load_visual_shapes_impl(
         parent_body_id: int,
@@ -412,7 +421,25 @@ def parse_usd(
                     key=path_name,
                 )
             elif type_name == "mesh":
-                mesh = usd.get_mesh(prim)
+                # Resolve material properties first (cached) to determine if we need UVs
+                material_props = _get_material_props_cached(prim)
+                texture = material_props.get("texture")
+                # Only load UVs if we have a texture to avoid expensive faceVarying expansion
+                mesh = usd.get_mesh(prim, load_uvs=(texture is not None))
+                if texture:
+                    mesh.texture = texture
+                if mesh.texture is not None and mesh.uvs is None:
+                    warnings.warn(
+                        f"Warning: mesh {path_name} has a texture but no UVs; texture will be ignored.",
+                        stacklevel=2,
+                    )
+                    mesh.texture = None
+                if material_props.get("color") is not None and mesh.texture is None:
+                    mesh.color = material_props["color"]
+                if material_props.get("roughness") is not None:
+                    mesh.roughness = material_props["roughness"]
+                if material_props.get("metallic") is not None:
+                    mesh.metallic = material_props["metallic"]
                 shape_id = builder.add_shape_mesh(
                     parent_body_id,
                     xform,

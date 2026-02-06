@@ -63,16 +63,36 @@ uv run --extra dev -m newton.tests
 # include tests that require PyTorch
 uv run --extra dev --extra torch-cu12 -m newton.tests
 
+# run a specific test file by name (-k filters by unittest-parallel pattern)
+uv run --extra dev -m newton.tests -k test_viewer_log_shapes
+
 # run a specific example test
-uv run --extra dev -m newton.tests.test_examples -k test_basic.example_basic_shapes
+uv run --extra dev -m newton.tests -k test_basic.example_basic_shapes
 ```
 
 ### Pre-commit (lint/format hooks)
 
+**CRITICAL: Always run pre-commit hooks BEFORE committing, not after.**
+
+Proper workflow:
+1. Make your code changes
+2. Run `uvx pre-commit run -a` to check ALL files
+3. If pre-commit modifies any files (e.g., formatting), review the changes
+4. Stage the modified files with `git add`
+5. Run `uvx pre-commit run -a` again to ensure all checks pass
+6. Only then create your commit with `git commit`
+
 ```bash
+# Run pre-commit checks on all files
 uvx pre-commit run -a
+
+# Install hooks to run automatically on every commit (recommended)
 uvx pre-commit install
 ```
+
+**Common mistake to avoid:**
+- ❌ Don't commit first and then run pre-commit (requires amending commits)
+- ✅ Do run pre-commit before committing (clean workflow)
 
 ### Benchmarks (ASV)
 
@@ -89,7 +109,14 @@ uvx --with virtualenv asv run --launch-method spawn main^^!
 Follow conventional commit message practices.
 
 - **Use feature branches**: All development work should be on branches named `<username>/feature-desc` (e.g., `jdoe/docs-versioning`). Do not commit directly to `main`.
-- **Always run pre-commit hooks before committing**: Execute `uvx pre-commit run -a` to check all files for linting, formatting, and other issues. Fix any errors before creating commits. Consider installing the hooks with `uvx pre-commit install` to run them automatically on every commit.
+- **CRITICAL: Run pre-commit hooks BEFORE committing**:
+  1. Make your changes
+  2. Run `uvx pre-commit run -a`
+  3. If files are modified by pre-commit (formatting, etc.), stage them with `git add`
+  4. Run `uvx pre-commit run -a` again to verify all checks pass
+  5. Then commit with `git commit`
+  - Consider installing hooks with `uvx pre-commit install` to automate this
+  - **Never commit first and run pre-commit after** - this requires amending commits and creates messy history
 - Keep commits focused and atomic—one logical change per commit.
 - Reference related issues in commit messages when applicable.
 - **Do not include AI attribution or co-authorship lines** (e.g., "Co-Authored-By: Claude...") in commit messages. Commits should represent human contributions without explicit AI attribution.
@@ -99,6 +126,15 @@ Follow conventional commit message practices.
     - Write as a command: "Fix bug" not "Fixed bug" or "Fixes bug"
     - Test: "If applied, this commit will _[your subject]_"
   - Body: wrap at 72 chars, explain _what_ and _why_ (not _how_—the diff shows that)
+
+## File headers and copyright
+
+- New files must use the current year (2026) in the SPDX copyright header:
+  ```
+  # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+  # SPDX-License-Identifier: Apache-2.0
+  ```
+- Do not change the year in existing file headers.
 
 ## GitHub Actions and CI/CD
 
