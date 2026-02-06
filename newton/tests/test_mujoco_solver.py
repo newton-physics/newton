@@ -4965,6 +4965,51 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_damping_from_usd_via_schema_resolver(self):
+        """Test mjc:damping attributes are parsed via SchemaResolverMjc."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        # Create root body
+        root_path = "/robot"
+        root_shape = UsdGeom.Cube.Define(stage, root_path)
+        root_prim = root_shape.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(root_prim)
+        UsdPhysics.ArticulationRootAPI.Apply(root_prim)
+        UsdPhysics.CollisionAPI.Apply(root_prim)
+
+        # Create child body
+        child_path = "/robot/child"
+        child_shape = UsdGeom.Cube.Define(stage, child_path)
+        child_prim = child_shape.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(child_prim)
+        UsdPhysics.CollisionAPI.Apply(child_prim)
+
+        # Create joint with mjc:damping
+        joint_path = "/robot/child/joint"
+        joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateBody0Rel().SetTargets([root_path])
+        joint.CreateBody1Rel().SetTargets([child_path])
+        joint_prim = joint.GetPrim()
+        joint_prim.CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Double, True).Set(5.0)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        model = builder.finalize()
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "dof_passive_damping")
+        damping_values = model.mujoco.dof_passive_damping.numpy()
+        # 6 DOFs from floating base (all 0.0) + 1 DOF from revolute joint (5.0)
+        assert damping_values[-1] == 5.0, f"Expected last DOF damping to be 5.0, got {damping_values}"
+
     def test_ref_fk_matches_mujoco(self):
         """Test that Newton's state matches MuJoCo's FK for joints with ref attribute.
 
