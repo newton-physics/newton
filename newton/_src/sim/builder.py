@@ -6437,8 +6437,7 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
-        num_nodes = self.particle_count
-        if num_nodes != 0:
+        if self.particle_count != 0:
             tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
             tri_materials = np.array(self.tri_materials)
             tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
