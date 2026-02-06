@@ -3,10 +3,23 @@ newton
 
 .. currentmodule:: newton
 
+.. toctree::
+   :hidden:
+
+   newton_geometry
+   newton_ik
+   newton_math
+   newton_selection
+   newton_sensors
+   newton_solvers
+   newton_utils
+   newton_viewer
+
 .. rubric:: Submodules
 
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
+- :doc:`newton.math <newton_math>`
 - :doc:`newton.selection <newton_selection>`
 - :doc:`newton.sensors <newton_sensors>`
 - :doc:`newton.solvers <newton_solvers>`
@@ -19,6 +32,7 @@ newton
    :toctree: _generated
    :nosignatures:
 
+   ActuatorMode
    Axis
    BroadPhaseMode
    CollisionPipeline
@@ -30,16 +44,12 @@ newton
    JointType
    Mesh
    Model
-   ModelAttributeAssignment
-   ModelAttributeFrequency
    ModelBuilder
    ParticleFlags
    SAPSortType
    SDF
    ShapeFlags
    State
-   Style3DModel
-   Style3DModelBuilder
 
 .. rubric:: Functions
 
@@ -48,11 +58,8 @@ newton
    :signatures: long
 
    AxisType
-   count_rigid_contact_points
    eval_fk
    eval_ik
-   get_joint_dof_count
-   get_joint_constraint_count
 
 .. rubric:: Constants
 

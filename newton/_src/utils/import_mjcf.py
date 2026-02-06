@@ -26,12 +26,14 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
-from ..core.types import Axis, AxisType, Sequence, Transform
-from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
-from ..sim import JointType, ModelBuilder
-from ..sim.model import ModelAttributeFrequency
+from ..core.types import Axis, AxisType, Sequence, Transform, vec10
+from ..geometry import MESH_MAXHULLVERT, ShapeFlags
+from ..sim import ActuatorMode, JointType, ModelBuilder
+from ..sim.model import Model
+from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
-from .import_utils import is_xml_content, parse_custom_attributes, sanitize_xml_content
+from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
+from .mesh import load_meshes_from_file
 
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
@@ -123,6 +125,9 @@ def _load_and_expand_mjcf(
     return root, base_dir
 
 
+AttributeFrequency = Model.AttributeFrequency
+
+
 def parse_mjcf(
     builder: ModelBuilder,
     source: str,
@@ -154,6 +159,7 @@ def parse_mjcf(
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
 ):
     """
@@ -190,6 +196,11 @@ def parse_mjcf(
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
         convert_3d_hinge_to_ball_joints (bool): If True, series of three hinge joints are converted to a single ball joint. Default is False.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
+        ctrl_direct (bool): If True, all actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode
+            where control comes directly from ``control.mujoco.ctrl`` (MuJoCo-native behavior).
+            See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
+            actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
+            from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
     if xform is None:
@@ -222,34 +233,40 @@ def parse_mjcf(
 
     # Process custom attributes defined for different kinds of shapes, bodies, joints, etc.
     builder_custom_attr_shape: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.SHAPE]
+        [AttributeFrequency.SHAPE]
     )
     builder_custom_attr_body: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.BODY]
+        [AttributeFrequency.BODY]
     )
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT]
+        [AttributeFrequency.JOINT]
     )
     builder_custom_attr_dof: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.JOINT_DOF]
+        [AttributeFrequency.JOINT_DOF]
     )
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-        [ModelAttributeFrequency.EQUALITY_CONSTRAINT]
+        [AttributeFrequency.EQUALITY_CONSTRAINT]
     )
+    # MuJoCo actuator custom attributes (from "mujoco:actuator" frequency)
+    builder_custom_attr_actuator: list[ModelBuilder.CustomAttribute] = [
+        attr for attr in builder.custom_attributes.values() if attr.frequency_key == "mujoco:actuator"
+    ]
 
     compiler = root.find("compiler")
     if compiler is not None:
         use_degrees = compiler.attrib.get("angle", "degree").lower() == "degree"
         euler_seq = ["xyz".index(c) for c in compiler.attrib.get("eulerseq", "xyz").lower()]
         mesh_dir = compiler.attrib.get("meshdir", ".")
+        texture_dir = compiler.attrib.get("texturedir", mesh_dir)
     else:
         mesh_dir = "."
+        texture_dir = "."
 
     # Parse MJCF option tag for ONCE and WORLD frequency custom attributes (solver options)
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
-            [ModelAttributeFrequency.ONCE, ModelAttributeFrequency.WORLD]
+            [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
         option_elem = root.find("option")
         if option_elem is not None and builder_custom_attr_option:
@@ -259,6 +276,8 @@ def parse_mjcf(
                     builder.custom_attributes[key].values[0] = value
 
     mesh_assets = {}
+    texture_assets = {}
+    material_assets = {}
     for asset in root.findall("asset"):
         for mesh in asset.findall("mesh"):
             if "file" in mesh.attrib:
@@ -272,6 +291,23 @@ def parse_mjcf(
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
                 maxhullvert = int(mesh.attrib.get("maxhullvert", str(mesh_maxhullvert)))
                 mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
+        for texture in asset.findall("texture"):
+            tex_name = texture.attrib.get("name")
+            tex_file = texture.attrib.get("file")
+            if not tex_name or not tex_file:
+                continue
+            tex_path = os.path.join(texture_dir, tex_file)
+            if not os.path.isabs(tex_path):
+                tex_path = os.path.abspath(os.path.join(mjcf_dirname, tex_path))
+            texture_assets[tex_name] = {"file": tex_path}
+        for material in asset.findall("material"):
+            mat_name = material.attrib.get("name")
+            if not mat_name:
+                continue
+            material_assets[mat_name] = {
+                "rgba": material.attrib.get("rgba"),
+                "texture": material.attrib.get("texture"),
+            }
 
     class_parent = {}
     class_children = {}
@@ -440,6 +476,16 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.rolling_friction = float(friction_values[2])
 
+            # Parse MJCF solref for contact stiffness/damping (only if explicitly specified)
+            # Like friction, only override Newton defaults if solref is authored in MJCF
+            if "solref" in geom_attrib:
+                solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
+                geom_ke, geom_kd = solref_to_stiffness_damping(solref)
+                if geom_ke is not None:
+                    shape_cfg.ke = geom_ke
+                if geom_kd is not None:
+                    shape_cfg.kd = geom_kd
+
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
                 "key": geom_name,
@@ -447,6 +493,27 @@ def parse_mjcf(
                 "cfg": shape_cfg,
                 "custom_attributes": custom_attributes,
             }
+
+            material_name = geom_attrib.get("material")
+            material_info = material_assets.get(material_name, {})
+            rgba = geom_attrib.get("rgba", material_info.get("rgba"))
+            material_color = None
+            if rgba is not None:
+                rgba_values = np.fromstring(rgba, sep=" ", dtype=np.float32)
+                if len(rgba_values) >= 3:
+                    material_color = (
+                        float(rgba_values[0]),
+                        float(rgba_values[1]),
+                        float(rgba_values[2]),
+                    )
+
+            texture = None
+            texture_name = material_info.get("texture")
+            if texture_name:
+                texture_asset = texture_assets.get(texture_name)
+                if texture_asset and "file" in texture_asset:
+                    # Pass texture path directly for lazy loading by the viewer
+                    texture = texture_asset["file"]
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
@@ -467,12 +534,16 @@ def parse_mjcf(
                 shapes.append(s)
 
             elif geom_type == "mesh" and parse_meshes:
-                import trimesh  # noqa: PLC0415
-
-                # use force='mesh' to load the mesh as a trimesh object
-                # with baked in transforms, e.g. from COLLADA files
+                mesh_attrib = geom_attrib.get("mesh")
+                if mesh_attrib is None:
+                    if verbose:
+                        print(f"Warning: mesh attribute not defined for {geom_name}, skipping")
+                    continue
+                elif mesh_attrib not in mesh_assets:
+                    if verbose:
+                        print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
+                    continue
                 stl_file = mesh_assets[geom_attrib["mesh"]]["file"]
-                m = trimesh.load(stl_file, force="mesh")
                 if "mesh" in geom_defaults:
                     mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[geom_attrib["mesh"]]["scale"])
                 else:
@@ -484,36 +555,18 @@ def parse_mjcf(
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
 
-                if hasattr(m, "geometry"):
-                    # multiple meshes are contained in a scene
-                    for m_geom in m.geometry.values():
-                        m_vertices = np.array(m_geom.vertices, dtype=np.float32) * scaling
-                        m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
-                        m_mesh = Mesh(
-                            m_vertices,
-                            m_faces,
-                            m.vertex_normals,
-                            color=np.array(m.visual.main_color) / 255.0,
-                            maxhullvert=maxhullvert,
-                        )
-                        s = builder.add_shape_mesh(
-                            xform=tf,
-                            mesh=m_mesh,
-                            **shape_kwargs,
-                        )
-                        shapes.append(s)
-                else:
-                    # a single mesh
-                    m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
-                    m_faces = np.array(m.faces.flatten(), dtype=np.int32)
-                    m_color = np.array(m.visual.main_color) / 255.0 if hasattr(m.visual, "main_color") else None
-                    m_mesh = Mesh(
-                        m_vertices,
-                        m_faces,
-                        m.vertex_normals,
-                        color=m_color,
-                        maxhullvert=maxhullvert,
-                    )
+                m_meshes = load_meshes_from_file(
+                    stl_file,
+                    scale=scaling,
+                    maxhullvert=maxhullvert,
+                    override_color=material_color,
+                    override_texture=texture,
+                )
+                for m_mesh in m_meshes:
+                    if m_mesh.texture is not None and m_mesh.uvs is None:
+                        if verbose:
+                            print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
+                        m_mesh.texture = None
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
@@ -572,11 +625,10 @@ def parse_mjcf(
                     shapes.append(s)
 
             elif geom_type == "plane":
-                # Use tf (which has incoming_xform applied) for plane normal/distance
-                normal = wp.quat_rotate(tf.q, wp.vec3(0.0, 0.0, 1.0))
-                p = wp.dot(tf.p, normal)
+                # Use xform directly - plane has local normal (0,0,1) and passes through origin
+                # The transform tf positions and orients the plane in world space
                 s = builder.add_shape_plane(
-                    plane=(*normal, p),
+                    xform=tf,
                     width=geom_size[0],
                     length=geom_size[1],
                     **shape_kwargs,
@@ -903,7 +955,7 @@ def parse_mjcf(
         else:
             body_attrib = body.attrib
         body_name = body_attrib.get("name", f"body_{builder.body_count}")
-        body_name = body_name.replace("-", "_")  # ensure valid USD path
+        body_name = sanitize_name(body_name)
         body_pos = parse_vec(body_attrib, "pos", (0.0, 0.0, 0.0))
         body_ori = parse_orientation(body_attrib)
 
@@ -946,6 +998,8 @@ def parse_mjcf(
         else:
             # DOF index relative to the joint being created (multiple MJCF joints in a body are combined into one Newton joint)
             current_dof_index = 0
+            # Track MJCF joint names and their DOF offsets within the combined Newton joint
+            mjcf_joint_dof_offsets: list[tuple[str, int]] = []
             joints = body.findall("joint")
             for i, joint in enumerate(joints):
                 joint_defaults = defaults
@@ -961,7 +1015,7 @@ def parse_mjcf(
                 # default to hinge if not specified
                 joint_type_str = joint_attrib.get("type", "hinge")
 
-                joint_name.append(joint_attrib.get("name") or f"{body_name}_joint_{i}")
+                joint_name.append(sanitize_name(joint_attrib.get("name") or f"{body_name}_joint_{i}"))
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
                 joint_range = parse_vec(joint_attrib, "range", (default_joint_limit_lower, default_joint_limit_upper))
                 joint_armature.append(parse_float(joint_attrib, "armature", default_joint_armature) * armature_scale)
@@ -973,7 +1027,7 @@ def parse_mjcf(
                     joint_type = JointType.FIXED
                     break
                 is_angular = joint_type_str == "hinge"
-                axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 0.0))
+                axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 1.0))
                 limit_lower = np.deg2rad(joint_range[0]) if is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if is_angular and use_degrees else joint_range[1]
 
@@ -1009,13 +1063,19 @@ def parse_mjcf(
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
                     effort_limit=effort_limit,
+                    actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
                 )
                 if is_angular:
                     angular_axes.append(ax)
                 else:
                     linear_axes.append(ax)
 
-                dof_attr = parse_custom_attributes(joint_attrib, builder_custom_attr_dof, parsing_mode="mjcf")
+                dof_attr = parse_custom_attributes(
+                    joint_attrib,
+                    builder_custom_attr_dof,
+                    parsing_mode="mjcf",
+                    context={"use_degrees": use_degrees, "joint_type": joint_type_str},
+                )
                 # assemble custom attributes for each DOF (dict mapping DOF index to value)
                 # Only store values that were explicitly specified in the source
                 for key, value in dof_attr.items():
@@ -1023,6 +1083,8 @@ def parse_mjcf(
                         dof_custom_attributes[key] = {}
                     dof_custom_attributes[key][current_dof_index] = value
 
+                # Track this MJCF joint's name and DOF offset within the combined Newton joint
+                mjcf_joint_dof_offsets.append((joint_name[-1], current_dof_index))
                 current_dof_index += 1
 
         body_custom_attributes = parse_custom_attributes(body_attrib, builder_custom_attr_body, parsing_mode="mjcf")
@@ -1114,19 +1176,25 @@ def parse_mjcf(
                     rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
                     parent_xform_for_joint = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
-                joint_indices.append(
-                    builder.add_joint(
-                        joint_type,
-                        parent=parent,
-                        child=link,
-                        linear_axes=linear_axes,
-                        angular_axes=angular_axes,
-                        key="_".join(joint_name),
-                        parent_xform=parent_xform_for_joint,
-                        child_xform=wp.transform(joint_pos, wp.quat_identity()),
-                        custom_attributes=joint_custom_attributes | dof_custom_attributes,
-                    )
+                joint_idx = builder.add_joint(
+                    joint_type,
+                    parent=parent,
+                    child=link,
+                    linear_axes=linear_axes,
+                    angular_axes=angular_axes,
+                    key="_".join(joint_name),
+                    parent_xform=parent_xform_for_joint,
+                    child_xform=wp.transform(joint_pos, wp.quat_identity()),
+                    custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
+                joint_indices.append(joint_idx)
+
+                # Populate per-MJCF-joint DOF mapping for actuator resolution
+                # This allows actuators to target specific DOFs when multiple MJCF joints are combined
+                if mjcf_joint_dof_offsets:
+                    qd_start = builder.joint_qd_start[joint_idx]
+                    for mjcf_name, dof_offset in mjcf_joint_dof_offsets:
+                        mjcf_joint_name_to_dof[mjcf_name] = qd_start + dof_offset
 
         # -----------------
         # add shapes (using shared helper for visual/collider partitioning)
@@ -1261,9 +1329,9 @@ def parse_mjcf(
         for connect in equality.findall("connect"):
             common = parse_common_attributes(connect)
             custom_attrs = parse_custom_attributes(connect.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
-            body1_name = connect.attrib.get("body1", "").replace("-", "_") if connect.attrib.get("body1") else None
+            body1_name = sanitize_name(connect.attrib.get("body1", "")) if connect.attrib.get("body1") else None
             body2_name = (
-                connect.attrib.get("body2", "worldbody").replace("-", "_") if connect.attrib.get("body2") else None
+                sanitize_name(connect.attrib.get("body2", "worldbody")) if connect.attrib.get("body2") else None
             )
             anchor = connect.attrib.get("anchor")
             site1 = connect.attrib.get("site1")
@@ -1319,8 +1387,8 @@ def parse_mjcf(
         for weld in equality.findall("weld"):
             common = parse_common_attributes(weld)
             custom_attrs = parse_custom_attributes(weld.attrib, builder_custom_attr_eq, parsing_mode="mjcf")
-            body1_name = weld.attrib.get("body1", "").replace("-", "_") if weld.attrib.get("body1") else None
-            body2_name = weld.attrib.get("body2", "worldbody").replace("-", "_") if weld.attrib.get("body2") else None
+            body1_name = sanitize_name(weld.attrib.get("body1", "")) if weld.attrib.get("body1") else None
+            body2_name = sanitize_name(weld.attrib.get("body2", "worldbody")) if weld.attrib.get("body2") else None
             anchor = weld.attrib.get("anchor", "0 0 0")
             relpose = weld.attrib.get("relpose", "0 1 0 0 0 0 0")
             torquescale = weld.attrib.get("torquescale")
@@ -1422,6 +1490,14 @@ def parse_mjcf(
     visual_shapes = []
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
+    # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
+    # This allows actuators to target specific DOFs when multiple MJCF joints are combined into one Newton joint
+    # Maps individual MJCF joint names to their specific DOF index.
+    # Used to resolve actuators targeting specific joints within combined Newton joints.
+    mjcf_joint_name_to_dof: dict[str, int] = {}
+    # Maps tendon names to their index in the tendon custom attributes.
+    # Used to resolve actuators targeting tendons.
+    tendon_name_to_idx: dict[str, int] = {}
 
     # Process all worldbody elements (MuJoCo allows multiple, e.g. from includes)
     for world in root.findall("worldbody"):
@@ -1593,6 +1669,11 @@ def parse_mjcf(
     ]
 
     def parse_tendons(tendon_section):
+        """Parse tendons from a tendon section.
+
+        Args:
+            tendon_section: XML element containing tendon definitions.
+        """
         for fixed in tendon_section.findall("fixed"):
             tendon_name = fixed.attrib.get("name", "")
 
@@ -1651,7 +1732,12 @@ def parse_mjcf(
             for attr in builder_custom_attr_tendon:
                 tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
 
-            builder.add_custom_values(**tendon_values)
+            indices = builder.add_custom_values(**tendon_values)
+
+            # Track tendon name for actuator resolution (get index from add_custom_values return)
+            if tendon_name:
+                tendon_idx = indices.get("mujoco:tendon_world", 0)
+                tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
 
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
@@ -1661,54 +1747,213 @@ def parse_mjcf(
     # parse actuators
 
     def parse_actuators(actuator_section):
-        """Parse actuators and set target_ke/target_kd for joints."""
-        for position_actuator in actuator_section.findall("position"):
-            joint_name = position_actuator.attrib.get("joint")
-            if not joint_name:
-                continue
+        """Parse actuators from MJCF preserving order.
 
-            if joint_name not in builder.joint_key:
+        All actuators are added as custom attributes with mujoco:actuator frequency,
+        preserving their order from the MJCF file. This ensures control.mujoco.ctrl
+        has the same ordering as native MuJoCo.
+
+        For position/velocity actuators: also set mode/target_ke/target_kd on per-DOF arrays
+        for compatibility with Newton's joint target interface.
+
+        Args:
+            actuator_section: The <actuator> XML element
+        """
+        # Process ALL actuators in MJCF order
+        for actuator_elem in actuator_section:
+            actuator_type = actuator_elem.tag  # position, velocity, motor, general
+
+            # Merge class defaults for this actuator element
+            # This handles MJCF class inheritance (e.g., <general class="size3" .../>)
+            elem_class = get_class(actuator_elem)
+            elem_defaults = class_defaults.get(elem_class, {}).get(actuator_type, {})
+            all_defaults = class_defaults.get("__all__", {}).get(actuator_type, {})
+            merged_attrib = merge_attrib(merge_attrib(all_defaults, elem_defaults), dict(actuator_elem.attrib))
+
+            joint_name = merged_attrib.get("joint")
+            body_name = merged_attrib.get("body")
+            tendon_name = merged_attrib.get("tendon")
+
+            # Sanitize names to match how they were stored in the builder
+            if joint_name:
+                joint_name = sanitize_name(joint_name)
+            if body_name:
+                body_name = sanitize_name(body_name)
+            if tendon_name:
+                tendon_name = sanitize_name(tendon_name)
+
+            # Determine transmission type and target
+            trntype = 0  # Default: joint
+            target_name_for_log = ""
+            qd_start = -1
+            total_dofs = 0
+
+            if joint_name:
+                # Joint transmission (trntype=0)
+                # First check per-MJCF-joint mapping (for targeting specific DOFs in combined joints)
+                if joint_name in mjcf_joint_name_to_dof:
+                    qd_start = mjcf_joint_name_to_dof[joint_name]
+                    total_dofs = 1  # Individual MJCF joints always map to exactly 1 DOF
+                    target_idx = qd_start  # DOF index for joint actuators
+                    target_name_for_log = joint_name
+                    trntype = 0  # TrnType.JOINT
+                elif joint_name in builder.joint_key:
+                    # Fallback: combined Newton joint (applies to all DOFs)
+                    joint_idx = builder.joint_key.index(joint_name)
+                    qd_start = builder.joint_qd_start[joint_idx]
+                    lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
+                    total_dofs = lin_dofs + ang_dofs
+                    target_idx = qd_start  # DOF index for joint actuators
+                    target_name_for_log = joint_name
+                    trntype = 0  # TrnType.JOINT
+                else:
+                    if verbose:
+                        print(f"Warning: {actuator_type} actuator references unknown joint '{joint_name}'")
+                    continue
+            elif body_name:
+                # Body transmission (trntype=4)
+                if body_name not in builder.body_key:
+                    if verbose:
+                        print(f"Warning: {actuator_type} actuator references unknown body '{body_name}'")
+                    continue
+                body_idx = builder.body_key.index(body_name)
+                target_idx = body_idx
+                target_name_for_log = body_name
+                trntype = 4  # TrnType.BODY
+            elif tendon_name:
+                # Tendon transmission (trntype=2 in MuJoCo)
+                if tendon_name not in tendon_name_to_idx:
+                    if verbose:
+                        print(f"Warning: {actuator_type} actuator references unknown tendon '{tendon_name}'")
+                    continue
+                tendon_idx = tendon_name_to_idx[tendon_name]
+                target_idx = tendon_idx
+                target_name_for_log = tendon_name
+                trntype = 2  # TrnType.TENDON
+            else:
                 if verbose:
-                    print(f"Warning: Actuator references unknown joint '{joint_name}'")
+                    print(f"Warning: {actuator_type} actuator has no joint, body, or tendon target, skipping")
                 continue
 
-            joint_idx = builder.joint_key.index(joint_name)
-            qd_start = builder.joint_qd_start[joint_idx]
-            lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
-            total_dofs = lin_dofs + ang_dofs
+            act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
-            kp = parse_float(position_actuator.attrib, "kp", 0.0)
-            kv = parse_float(position_actuator.attrib, "kv", 0.0)
+            # Extract gains based on actuator type
+            if actuator_type == "position":
+                kp = parse_float(merged_attrib, "kp", 0.0)
+                kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
+                gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
+                if trntype != 0 or total_dofs == 0 or ctrl_direct:
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                else:
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
+                    for i in range(total_dofs):
+                        dof_idx = qd_start + i
+                        builder.joint_target_ke[dof_idx] = kp
+                        current_mode = builder.joint_act_mode[dof_idx]
+                        if current_mode == int(ActuatorMode.VELOCITY):
+                            # A velocity actuator was already parsed for this DOF - upgrade to POSITION_VELOCITY.
+                            # We intentionally preserve the existing kd from the velocity actuator rather than
+                            # overwriting it with this position actuator's kv, since the velocity actuator's
+                            # kv takes precedence for velocity control.
+                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
+                        elif current_mode == int(ActuatorMode.NONE):
+                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION)
+                            builder.joint_target_kd[dof_idx] = kv
 
-            for i in range(total_dofs):
-                dof_idx = qd_start + i
-                builder.joint_target_ke[dof_idx] = kp
-                builder.joint_target_kd[dof_idx] = kv
+            elif actuator_type == "velocity":
+                kv = parse_float(merged_attrib, "kv", 0.0)
+                gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
+                if trntype != 0 or total_dofs == 0 or ctrl_direct:
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                else:
+                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
+                    for i in range(total_dofs):
+                        dof_idx = qd_start + i
+                        current_mode = builder.joint_act_mode[dof_idx]
+                        if current_mode == int(ActuatorMode.POSITION):
+                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
+                        elif current_mode == int(ActuatorMode.NONE):
+                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
+                        builder.joint_target_kd[dof_idx] = kv
+
+            elif actuator_type == "motor":
+                gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+
+            elif actuator_type == "general":
+                gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
+                biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
+                gainprm_vals = [float(x) for x in gainprm_str.split()[:10]]
+                biasprm_vals = [float(x) for x in biasprm_str.split()[:10]]
+                while len(gainprm_vals) < 10:
+                    gainprm_vals.append(0.0)
+                while len(biasprm_vals) < 10:
+                    biasprm_vals.append(0.0)
+                gainprm = vec10(*gainprm_vals)
+                biasprm = vec10(*biasprm_vals)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+            else:
+                if verbose:
+                    print(f"Warning: Unknown actuator type '{actuator_type}', skipping")
+                continue
+
+            # Add actuator via custom attributes
+            parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
+
+            # Resolve MuJoCo limited flags based on range values
+            # MuJoCo behavior: if *limited is not explicitly set and range[0]<range[1], then limited=True
+            # Use merged_attrib to respect defaults for both presence check and range values
+            for limited_attr, range_attr, limited_key in [
+                ("ctrllimited", "ctrlrange", "mujoco:actuator_ctrllimited"),
+                ("forcelimited", "forcerange", "mujoco:actuator_forcelimited"),
+                ("actlimited", "actrange", "mujoco:actuator_actlimited"),
+            ]:
+                # Only auto-resolve if *limited was not explicitly specified (including defaults)
+                if limited_attr not in merged_attrib:
+                    range_str = merged_attrib.get(range_attr, "")
+                    if range_str:
+                        range_vals = [float(x) for x in range_str.split()[:2]]
+                        if len(range_vals) == 2 and range_vals[0] < range_vals[1]:
+                            parsed_attrs[limited_key] = 1
+
+            # Build full values dict
+            actuator_values: dict[str, Any] = {}
+            for attr in builder_custom_attr_actuator:
+                if attr.key in (
+                    "mujoco:ctrl_source",
+                    "mujoco:actuator_trntype",
+                    "mujoco:actuator_gainprm",
+                    "mujoco:actuator_biasprm",
+                    "mujoco:ctrl",
+                ):
+                    continue
+                actuator_values[attr.key] = parsed_attrs.get(attr.key, attr.default)
+
+            actuator_values["mujoco:ctrl_source"] = ctrl_source_val
+            actuator_values["mujoco:actuator_gainprm"] = gainprm
+            actuator_values["mujoco:actuator_biasprm"] = biasprm
+            actuator_values["mujoco:actuator_trnid"] = wp.vec2i(target_idx, 0)
+            actuator_values["mujoco:actuator_trntype"] = trntype
+            actuator_values["mujoco:actuator_world"] = builder.current_world
+
+            builder.add_custom_values(**actuator_values)
 
             if verbose:
-                print(f"Position actuator on joint '{joint_name}': kp={kp}, kv={kv}")
-
-        for velocity_actuator in actuator_section.findall("velocity"):
-            joint_name = velocity_actuator.attrib.get("joint")
-            if not joint_name:
-                continue
-
-            if joint_name not in builder.joint_key:
-                if verbose:
-                    print(f"Warning: Actuator references unknown joint '{joint_name}'")
-                continue
-
-            joint_idx = builder.joint_key.index(joint_name)
-            qd_start = builder.joint_qd_start[joint_idx]
-            lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
-            total_dofs = lin_dofs + ang_dofs
-            kv = parse_float(velocity_actuator.attrib, "kv", 0.0)
-            for i in range(total_dofs):
-                dof_idx = qd_start + i
-                builder.joint_target_kd[dof_idx] = kv
-
-            if verbose:
-                print(f"Velocity actuator on joint '{joint_name}': kv={kv}")
+                source_name = (
+                    "CTRL_DIRECT" if ctrl_source_val == SolverMuJoCo.CtrlSource.CTRL_DIRECT else "JOINT_TARGET"
+                )
+                trn_name = {0: "joint", 2: "tendon", 4: "body"}.get(trntype, "unknown")
+                print(
+                    f"{actuator_type.capitalize()} actuator '{act_name}' on {trn_name} '{target_name_for_log}': "
+                    f"trntype={trntype}, source={source_name}"
+                )
 
     # Only parse tendons if custom tendon attributes are registered
     has_tendon_attrs = "mujoco:tendon_world" in builder.custom_attributes

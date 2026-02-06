@@ -13,6 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Common utilities for broad phase collision detection.
+
+Provides shared functions for AABB overlap tests, world/group filtering,
+and pair output used by both NxN and SAP broad phase implementations.
+"""
+
 from typing import Any
 
 import numpy as np

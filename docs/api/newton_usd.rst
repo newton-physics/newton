@@ -11,8 +11,7 @@ Utilities for working with the Universal Scene Description (USD) format.
    :toctree: _generated
    :signatures: long
 
-   convert_warp_type
-   convert_warp_value
+   from_gfquat
    get_attribute
    get_attributes_in_namespace
    get_custom_attribute_declarations
@@ -24,3 +23,5 @@ Utilities for working with the Universal Scene Description (USD) format.
    get_scale
    get_transform
    has_attribute
+   type_to_warp
+   value_to_warp

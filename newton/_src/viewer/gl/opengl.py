@@ -23,6 +23,8 @@ import warp as wp
 
 from newton.utils import create_sphere_mesh
 
+from ...utils.mesh import compute_vertex_normals
+from ...utils.texture import normalize_texture
 from .shaders import (
     FrameShader,
     ShaderLine,
@@ -61,6 +63,56 @@ def check_gl_error():
         print(f"Called from: {''.join(stack[-2:-1])}")
 
 
+def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
+    image = normalize_texture(
+        texture_image,
+        flip_vertical=True,
+        require_channels=True,
+        scale_unit_range=True,
+    )
+    if image is None:
+        return 0
+    channels = image.shape[2]
+    if image.size == 0:
+        return 0
+    max_size = gl.GLint()
+    gl.glGetIntegerv(gl.GL_MAX_TEXTURE_SIZE, max_size)
+    if image.shape[0] > max_size.value or image.shape[1] > max_size.value:
+        return 0
+    texture_id = gl.GLuint()
+    gl.glGenTextures(1, texture_id)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
+
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_REPEAT)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_REPEAT)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR_MIPMAP_LINEAR)
+    gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+
+    format_enum = gl.GL_RGBA if channels == 4 else gl.GL_RGB
+    row_stride = image.shape[1] * channels
+    prev_alignment = None
+    if row_stride % 4 != 0:
+        prev_alignment = gl.GLint()
+        gl.glGetIntegerv(gl.GL_UNPACK_ALIGNMENT, prev_alignment)
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
+    gl.glTexImage2D(
+        gl.GL_TEXTURE_2D,
+        0,
+        format_enum,
+        image.shape[1],
+        image.shape[0],
+        0,
+        format_enum,
+        gl.GL_UNSIGNED_BYTE,
+        image.ctypes.data_as(ctypes.POINTER(ctypes.c_ubyte)),
+    )
+    if prev_alignment is not None:
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, prev_alignment.value)
+    gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+    return texture_id
+
+
 @wp.struct
 class RenderVertex:
     pos: wp.vec3
@@ -90,43 +142,6 @@ def fill_vertex_data(
 
     if uvs:
         vertices[tid].uv = uvs[tid]
-
-
-@wp.kernel
-def compute_normals(
-    vertices: wp.array(dtype=RenderVertex),
-    indices: wp.array(dtype=wp.uint32),
-    normals: wp.array(dtype=wp.vec3),
-):
-    face = wp.tid()
-
-    i0 = indices[face * 3 + 0]
-    i1 = indices[face * 3 + 1]
-    i2 = indices[face * 3 + 2]
-
-    # Get scaled vertices
-    v0 = vertices[i0].pos
-    v1 = vertices[i1].pos
-    v2 = vertices[i2].pos
-
-    # Compute face normal
-    edge1 = v1 - v0
-    edge2 = v2 - v0
-    normal = wp.normalize(wp.cross(edge1, edge2))
-
-    # Accumulate normals for each vertex
-    wp.atomic_add(normals, i0, normal)
-    wp.atomic_add(normals, i1, normal)
-    wp.atomic_add(normals, i2, normal)
-
-
-@wp.kernel
-def normalize_normals(
-    normals: wp.array(dtype=wp.vec3),
-    vertices: wp.array(dtype=RenderVertex),
-):
-    tid = wp.tid()
-    vertices[tid].normal = wp.normalize(normals[tid])
 
 
 @wp.kernel
@@ -168,6 +183,7 @@ class MeshGL:
         self.vertices = wp.zeros(num_points, dtype=RenderVertex, device=self.device)
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
+        self.texture_id = None
 
         # Set up vertex attributes in the packed format the shaders expect
         self.vertex_byte_size = 12 + 12 + 8
@@ -223,7 +239,7 @@ class MeshGL:
 
         # albedo
         gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
-        # material, roughness, metallic, checker, unused
+        # material, roughness, metallic, checker, texture_enable
         gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
 
         gl.glBindVertexArray(0)
@@ -233,6 +249,7 @@ class MeshGL:
             self.vertex_cuda_buffer = wp.RegisteredGLBuffer(int(self.vbo.value), self.device)
         else:
             self.vertex_cuda_buffer = None
+        self._points = None
 
     def destroy(self):
         """Clean up OpenGL resources."""
@@ -244,11 +261,13 @@ class MeshGL:
                 gl.glDeleteBuffers(1, self.vbo)
             if hasattr(self, "ebo"):
                 gl.glDeleteBuffers(1, self.ebo)
+            if hasattr(self, "texture_id") and self.texture_id is not None:
+                gl.glDeleteTextures(1, self.texture_id)
         except Exception:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, points, indices, normals, uvs):
+    def update(self, points, indices, normals, uvs, texture=None):
         """Update vertex positions in the VBO.
 
         Args:
@@ -260,14 +279,7 @@ class MeshGL:
         if len(points) != len(self.vertices):
             raise RuntimeError("Number of points does not match")
 
-        # update gfx vertices
-        wp.launch(
-            fill_vertex_data,
-            dim=len(self.vertices),
-            inputs=[points, normals, uvs],
-            outputs=[self.vertices],
-            device=self.device,
-        )
+        self._points = points
 
         # only update indices the first time (no topology changes)
         if self.indices is None:
@@ -280,10 +292,19 @@ class MeshGL:
                 gl.GL_ELEMENT_ARRAY_BUFFER, host_indices.nbytes, host_indices.ctypes.data, gl.GL_STATIC_DRAW
             )
 
-        # if points are changing but not the normals
-        # then we recompute normals before uploading to GL
+        # If normals are missing, compute them before packing vertex data.
         if points is not None and normals is None:
             self.recompute_normals()
+            normals = self.normals
+
+        # update gfx vertices
+        wp.launch(
+            fill_vertex_data,
+            dim=len(self.vertices),
+            inputs=[points, normals, uvs],
+            outputs=[self.vertices],
+            device=self.device,
+        )
 
         # upload vertices to GL
         if ENABLE_CUDA_INTEROP and self.vertices.device.is_cuda:
@@ -297,23 +318,46 @@ class MeshGL:
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
+        self.update_texture(texture)
+
     def recompute_normals(self):
-        if self.normals is None:
-            self.normals = wp.zeros(len(self.vertices), dtype=wp.vec3, device=self.device)
-
-        self.normals.zero_()
-
-        # Compute average normals per vertex
-        wp.launch(
-            compute_normals,
-            dim=len(self.indices) // 3,
-            inputs=[self.vertices, self.indices],
-            outputs=[self.normals],
+        if self._points is None or self.indices is None:
+            return
+        self.normals = compute_vertex_normals(
+            self._points,
+            self.indices,
+            normals=self.normals,
             device=self.device,
         )
 
-        # Compute average normals per vertex
-        wp.launch(normalize_normals, dim=len(self.vertices), inputs=[self.normals, self.vertices], device=self.device)
+    def update_texture(self, texture=None):
+        gl = RendererGL.gl
+        texture_image = None
+        if texture is not None:
+            from ...utils.texture import load_texture  # noqa: PLC0415
+
+            texture_image = load_texture(texture)
+
+        if texture_image is None:
+            if self.texture_id is not None:
+                try:
+                    gl.glDeleteTextures(1, self.texture_id)
+                except Exception:
+                    pass
+                self.texture_id = None
+            return
+
+        if self.texture_id is not None:
+            try:
+                gl.glDeleteTextures(1, self.texture_id)
+            except Exception:
+                pass
+            self.texture_id = None
+
+        texture_id = _upload_texture_from_file(gl, texture_image)
+        if not texture_id:
+            return
+        self.texture_id = texture_id
 
     def render(self):
         if not self.hidden:
@@ -323,6 +367,12 @@ class MeshGL:
                 gl.glEnable(gl.GL_CULL_FACE)
             else:
                 gl.glDisable(gl.GL_CULL_FACE)
+
+            gl.glActiveTexture(gl.GL_TEXTURE1)
+            if self.texture_id is not None:
+                gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture_id)
+            else:
+                gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
             gl.glBindVertexArray(self.vao)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
@@ -788,6 +838,12 @@ class MeshInstancerGL:
         else:
             gl.glDisable(gl.GL_CULL_FACE)
 
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        if self.mesh.texture_id is not None:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.mesh.texture_id)
+        else:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
         gl.glBindVertexArray(self.vao)
         gl.glDrawElementsInstanced(
             gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
@@ -877,6 +933,15 @@ class RendererGL:
         self._last_x, self._last_y = self._screen_width // 2, self._screen_height // 2
         self._key_callbacks = []
         self._key_release_callbacks = []
+
+        self._env_texture = None
+        self._env_intensity = 1.0
+        self._env_path = None
+        self._env_texture_obj = None
+
+        default_env = os.path.join(os.path.dirname(__file__), "newton_envmap.jpg")
+        if os.path.exists(default_env):
+            self._env_path = default_env
         self._mouse_drag_callbacks = []
         self._mouse_press_callbacks = []
         self._mouse_release_callbacks = []
@@ -967,6 +1032,14 @@ class RendererGL:
         # Store matrices for other methods
         self._view_matrix = self.camera.get_view_matrix()
         self._projection_matrix = self.camera.get_projection_matrix()
+
+        # Lazy-load environment map after a valid GL context is active
+        if self._env_path is not None and self._env_texture is None:
+            try:
+                self.set_environment_map(self._env_path)
+            except Exception:
+                pass
+            self._env_path = None
 
         # 1. render depth of scene to texture (from light's perspective)
         gl.glViewport(0, 0, self._shadow_width, self._shadow_height)
@@ -1501,10 +1574,11 @@ class RendererGL:
 
         light_near = 1.0
         light_far = 1000.0
-        light_pos = self._sun_direction * extents
+        camera_pos = np.array(self.camera.pos, dtype=np.float32)
+        light_pos = camera_pos + self._sun_direction * extents
         light_proj = Mat4.orthogonal_projection(-extents, extents, -extents, extents, light_near, light_far)
 
-        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(0, 0, 0), Vec3(*self.camera.get_up()))
+        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(*camera_pos), Vec3(*self.camera.get_up()))
         self._light_space_matrix = np.array(light_proj @ light_view, dtype=np.float32)
 
         self._shadow_shader.update(self._light_space_matrix)
@@ -1539,6 +1613,8 @@ class RendererGL:
             light_color=self._light_color,
             sky_color=self.sky_upper,
             ground_color=self.sky_lower,
+            env_texture=self._env_texture,
+            env_intensity=self._env_intensity,
         )
 
         with self._shape_shader:
@@ -1587,6 +1663,23 @@ class RendererGL:
         gl.glBindVertexArray(0)
 
         check_gl_error()
+
+    def set_environment_map(self, path: str, intensity: float = 1.0) -> None:
+        gl = RendererGL.gl
+        from ...utils.texture import load_texture_from_file  # noqa: PLC0415
+
+        image = load_texture_from_file(path)
+        if image is None:
+            return
+        if self._env_texture is not None:
+            try:
+                gl.glDeleteTextures(1, self._env_texture)
+            except Exception:
+                pass
+            self._env_texture = None
+        self._env_texture = _upload_texture_from_file(gl, image)
+        self._env_texture_obj = None
+        self._env_intensity = float(intensity)
 
     def _make_current(self):
         try:

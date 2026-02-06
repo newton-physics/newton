@@ -23,7 +23,7 @@ import warp as wp
 
 import newton
 import newton.ik as ik
-from newton._src.sim.ik.ik_common import _eval_fk_batched
+from newton._src.sim.ik.ik_common import eval_fk_batched
 from newton.tests.unittest_utils import (
     add_function_test,
     assert_np_equal,
@@ -161,13 +161,13 @@ def _fk_end_effector_positions(
 # ----------------------------------------------------------------------------
 
 
-def _convergence_test_planar(test, device, mode: ik.IKJacobianMode):
+def _convergence_test_planar(test, device, mode: ik.IKJacobianType):
     with wp.ScopedDevice(device):
         n_problems = 3
         model = _build_two_link_planar(device)
 
         # Create 2D joint_q array [n_problems, joint_coord_count]
-        requires_grad = mode in [ik.IKJacobianMode.AUTODIFF, ik.IKJacobianMode.MIXED]
+        requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
         joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
 
         # Create 2D joint_qd array [n_problems, joint_dof_count]
@@ -182,7 +182,7 @@ def _convergence_test_planar(test, device, mode: ik.IKJacobianMode):
         ee_link = 1
         ee_off = wp.vec3(0.5, 0.0, 0.0)
 
-        pos_obj = ik.IKPositionObjective(
+        pos_obj = ik.IKObjectivePosition(
             link_index=ee_link,
             link_offset=ee_off,
             target_positions=targets,
@@ -191,13 +191,13 @@ def _convergence_test_planar(test, device, mode: ik.IKJacobianMode):
         solver = ik.IKSolver(model, n_problems, [pos_obj], lambda_initial=1e-3, jacobian_mode=mode)
 
         # Run initial FK
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
 
         solver.step(joint_q_2d, joint_q_2d, iterations=40, step_size=1.0)
 
         # Run final FK
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
 
         for prob in range(n_problems):
@@ -208,23 +208,23 @@ def _convergence_test_planar(test, device, mode: ik.IKJacobianMode):
 
 
 def test_convergence_autodiff(test, device):
-    _convergence_test_planar(test, device, ik.IKJacobianMode.AUTODIFF)
+    _convergence_test_planar(test, device, ik.IKJacobianType.AUTODIFF)
 
 
 def test_convergence_analytic(test, device):
-    _convergence_test_planar(test, device, ik.IKJacobianMode.ANALYTIC)
+    _convergence_test_planar(test, device, ik.IKJacobianType.ANALYTIC)
 
 
 def test_convergence_mixed(test, device):
-    _convergence_test_planar(test, device, ik.IKJacobianMode.MIXED)
+    _convergence_test_planar(test, device, ik.IKJacobianType.MIXED)
 
 
-def _convergence_test_free(test, device, mode: ik.IKJacobianMode):
+def _convergence_test_free(test, device, mode: ik.IKJacobianType):
     with wp.ScopedDevice(device):
         n_problems = 3
         model = _build_free_plus_revolute(device)
 
-        requires_grad = mode in [ik.IKJacobianMode.AUTODIFF, ik.IKJacobianMode.MIXED]
+        requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
         joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
         joint_qd_2d = wp.zeros((n_problems, model.joint_dof_count), dtype=wp.float32)
         body_q_2d = wp.zeros((n_problems, model.body_count), dtype=wp.transform)
@@ -234,7 +234,7 @@ def _convergence_test_free(test, device, mode: ik.IKJacobianMode):
         ee_link = 1  # second body
         ee_off = wp.vec3(0.5, 0.0, 0.0)
 
-        pos_obj = ik.IKPositionObjective(
+        pos_obj = ik.IKObjectivePosition(
             link_index=ee_link,
             link_offset=ee_off,
             target_positions=targets,
@@ -242,12 +242,12 @@ def _convergence_test_free(test, device, mode: ik.IKJacobianMode):
 
         solver = ik.IKSolver(model, n_problems, [pos_obj], lambda_initial=1e-3, jacobian_mode=mode)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
 
         solver.step(joint_q_2d, joint_q_2d, iterations=60, step_size=1.0)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(model, body_q_2d, n_problems, ee_link, ee_off)
 
         for prob in range(n_problems):
@@ -258,22 +258,22 @@ def _convergence_test_free(test, device, mode: ik.IKJacobianMode):
 
 
 def test_convergence_autodiff_free(test, device):
-    _convergence_test_free(test, device, ik.IKJacobianMode.AUTODIFF)
+    _convergence_test_free(test, device, ik.IKJacobianType.AUTODIFF)
 
 
 def test_convergence_analytic_free(test, device):
-    _convergence_test_free(test, device, ik.IKJacobianMode.ANALYTIC)
+    _convergence_test_free(test, device, ik.IKJacobianType.ANALYTIC)
 
 
 def test_convergence_mixed_free(test, device):
-    _convergence_test_free(test, device, ik.IKJacobianMode.MIXED)
+    _convergence_test_free(test, device, ik.IKJacobianType.MIXED)
 
 
-def _convergence_test_d6(test, device, mode: ik.IKJacobianMode):
+def _convergence_test_d6(test, device, mode: ik.IKJacobianType):
     with wp.ScopedDevice(device):
         n_problems = 3
         model = _build_single_d6(device)
-        requires_grad = mode in [ik.IKJacobianMode.AUTODIFF, ik.IKJacobianMode.MIXED]
+        requires_grad = mode in [ik.IKJacobianType.AUTODIFF, ik.IKJacobianType.MIXED]
         joint_q_2d = wp.zeros((n_problems, model.joint_coord_count), dtype=wp.float32, requires_grad=requires_grad)
         joint_qd_2d = wp.zeros((n_problems, model.joint_dof_count), dtype=wp.float32)
         body_q_2d = wp.zeros((n_problems, model.body_count), dtype=wp.transform)
@@ -283,12 +283,12 @@ def _convergence_test_d6(test, device, mode: ik.IKJacobianMode):
         angles = [math.pi / 6 + prob * math.pi / 8 for prob in range(n_problems)]
         rot_targets = wp.array([[0.0, 0.0, math.sin(a / 2), math.cos(a / 2)] for a in angles], dtype=wp.vec4)
 
-        pos_obj = ik.IKPositionObjective(
+        pos_obj = ik.IKObjectivePosition(
             link_index=0,
             link_offset=wp.vec3(0.0, 0.0, 0.0),
             target_positions=pos_targets,
         )
-        rot_obj = ik.IKRotationObjective(
+        rot_obj = ik.IKObjectiveRotation(
             link_index=0,
             link_offset_rotation=wp.quat_identity(),
             target_rotations=rot_targets,
@@ -296,12 +296,12 @@ def _convergence_test_d6(test, device, mode: ik.IKJacobianMode):
 
         solver = ik.IKSolver(model, n_problems, [pos_obj, rot_obj], lambda_initial=1e-3, jacobian_mode=mode)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         initial = _fk_end_effector_positions(model, body_q_2d, n_problems, 0, wp.vec3(0.0, 0.0, 0.0))
 
         solver.step(joint_q_2d, joint_q_2d, iterations=80, step_size=1.0)
 
-        _eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
+        eval_fk_batched(model, joint_q_2d, joint_qd_2d, body_q_2d, body_qd_2d)
         final = _fk_end_effector_positions(model, body_q_2d, n_problems, 0, wp.vec3(0.0, 0.0, 0.0))
 
         for prob in range(n_problems):
@@ -312,15 +312,15 @@ def _convergence_test_d6(test, device, mode: ik.IKJacobianMode):
 
 
 def test_convergence_autodiff_d6(test, device):
-    _convergence_test_d6(test, device, ik.IKJacobianMode.AUTODIFF)
+    _convergence_test_d6(test, device, ik.IKJacobianType.AUTODIFF)
 
 
 def test_convergence_analytic_d6(test, device):
-    _convergence_test_d6(test, device, ik.IKJacobianMode.ANALYTIC)
+    _convergence_test_d6(test, device, ik.IKJacobianType.ANALYTIC)
 
 
 def test_convergence_mixed_d6(test, device):
-    _convergence_test_d6(test, device, ik.IKJacobianMode.MIXED)
+    _convergence_test_d6(test, device, ik.IKJacobianType.MIXED)
 
 
 # ----------------------------------------------------------------------------
@@ -340,8 +340,8 @@ def _jacobian_compare(test, device, objective_builder):
         objectives_auto = objective_builder(model, n_problems)
         objectives_ana = objective_builder(model, n_problems)
 
-        solver_auto = ik.IKSolver(model, n_problems, objectives_auto, jacobian_mode=ik.IKJacobianMode.AUTODIFF)
-        solver_ana = ik.IKSolver(model, n_problems, objectives_ana, jacobian_mode=ik.IKJacobianMode.ANALYTIC)
+        solver_auto = ik.IKSolver(model, n_problems, objectives_auto, jacobian_mode=ik.IKJacobianType.AUTODIFF)
+        solver_ana = ik.IKSolver(model, n_problems, objectives_ana, jacobian_mode=ik.IKJacobianType.ANALYTIC)
 
         solver_auto._impl._compute_residuals(joint_q_2d)
         solver_ana._impl._compute_residuals(joint_q_2d)
@@ -361,7 +361,7 @@ def _jacobian_compare(test, device, objective_builder):
 
 def _pos_objective_builder(model, n_problems):
     targets = wp.array([[1.5, 0.8, 0.0] for _ in range(n_problems)], dtype=wp.vec3)
-    pos_obj = ik.IKPositionObjective(
+    pos_obj = ik.IKObjectivePosition(
         link_index=1,
         link_offset=wp.vec3(0.5, 0.0, 0.0),
         target_positions=targets,
@@ -381,7 +381,7 @@ def test_position_jacobian_compare(test, device):
 def _rot_objective_builder(model, n_problems):
     angles = [math.pi / 6 + prob * math.pi / 8 for prob in range(n_problems)]
     quats = [[0.0, 0.0, math.sin(a / 2), math.cos(a / 2)] for a in angles]
-    rot_obj = ik.IKRotationObjective(
+    rot_obj = ik.IKObjectiveRotation(
         link_index=1,
         link_offset_rotation=wp.quat_identity(),
         target_rotations=wp.array(quats, dtype=wp.vec4),
@@ -404,7 +404,7 @@ def _jl_objective_builder(model, n_problems):
     joint_limit_lower = wp.array([-1.0] * dof, dtype=wp.float32)
     joint_limit_upper = wp.array([1.0] * dof, dtype=wp.float32)
 
-    jl_obj = ik.IKJointLimitObjective(
+    jl_obj = ik.IKObjectiveJointLimit(
         joint_limit_lower=joint_limit_lower,
         joint_limit_upper=joint_limit_upper,
         weight=0.1,
@@ -426,8 +426,8 @@ def _d6_objective_builder(model, n_problems):
     angles = [math.pi / 6 + prob * math.pi / 8 for prob in range(n_problems)]
     rot_targets = wp.array([[0.0, 0.0, math.sin(a / 2), math.cos(a / 2)] for a in angles], dtype=wp.vec4)
 
-    pos_obj = ik.IKPositionObjective(0, wp.vec3(0.0, 0.0, 0.0), pos_targets)
-    rot_obj = ik.IKRotationObjective(0, wp.quat_identity(), rot_targets)
+    pos_obj = ik.IKObjectivePosition(0, wp.vec3(0.0, 0.0, 0.0), pos_targets)
+    rot_obj = ik.IKObjectiveRotation(0, wp.quat_identity(), rot_targets)
     return [pos_obj, rot_obj]
 
 

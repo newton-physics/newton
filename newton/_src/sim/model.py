@@ -28,77 +28,6 @@ from .control import Control
 from .state import State
 
 
-class ModelAttributeAssignment(IntEnum):
-    """Enumeration of attribute assignment categories.
-
-    Defines which component of the simulation system owns and manages specific attributes.
-    This categorization determines where custom attributes are attached during simulation
-    object creation (Model, State, Control, or Contacts).
-    """
-
-    MODEL = 0
-    """Model attributes are attached to the Model object."""
-    STATE = 1
-    """State attributes are attached to the State object."""
-    CONTROL = 2
-    """Control attributes are attached to the Control object."""
-    CONTACT = 3
-    """Contact attributes are attached to the Contacts object."""
-
-
-class ModelAttributeFrequency(IntEnum):
-    """Enumeration of attribute frequency categories.
-
-    Defines the dimensional structure and indexing pattern for custom attributes.
-    This determines how many elements an attribute array should have and how it
-    should be indexed in relation to the model's entities such as joints, bodies, shapes, etc.
-    """
-
-    ONCE = 0
-    """Attribute frequency is a single value."""
-    WORLD = 1
-    """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
-    ARTICULATION = 2
-    """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
-    BODY = 3
-    """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
-    SHAPE = 4
-    """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
-    JOINT = 5
-    """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
-    JOINT_DOF = 6
-    """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
-    JOINT_COORD = 7
-    """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
-    JOINT_CONSTRAINT = 8
-    """Attribute frequency follows the number of joint constraints (see :attr:`~newton.Model.joint_constraint_count`)."""
-    EQUALITY_CONSTRAINT = 9
-    """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
-
-
-class AttributeNamespace:
-    """
-    A container for namespaced custom attributes.
-
-    Custom attributes are stored as regular instance attributes on this object,
-    allowing hierarchical organization of related properties.
-    """
-
-    def __init__(self, name: str):
-        """Initialize the namespace container.
-
-        Args:
-            name: The name of the namespace
-        """
-        self._name = name
-
-    def __repr__(self):
-        """Return a string representation showing the namespace and its attributes."""
-        # List all public attributes (not starting with _)
-        attrs = [k for k in self.__dict__ if not k.startswith("_")]
-        return f"AttributeNamespace('{self._name}', attributes={attrs})"
-
-
 class Model:
     """
     Represents the static (non-time-varying) definition of a simulation model in Newton.
@@ -121,6 +50,84 @@ class Model:
         It is strongly recommended to use the :class:`ModelBuilder` to construct a Model.
         Direct instantiation and manual population of Model fields is possible but discouraged.
     """
+
+    class AttributeAssignment(IntEnum):
+        """Enumeration of attribute assignment categories.
+
+        Defines which component of the simulation system owns and manages specific attributes.
+        This categorization determines where custom attributes are attached during simulation
+        object creation (Model, State, Control, or Contacts).
+        """
+
+        MODEL = 0
+        """Model attributes are attached to the :class:`~newton.Model` object."""
+        STATE = 1
+        """State attributes are attached to the :class:`~newton.State` object."""
+        CONTROL = 2
+        """Control attributes are attached to the :class:`~newton.Control` object."""
+        CONTACT = 3
+        """Contact attributes are attached to the :class:`~newton.Contacts` object."""
+
+    class AttributeFrequency(IntEnum):
+        """Enumeration of attribute frequency categories.
+
+        Defines the dimensional structure and indexing pattern for custom attributes.
+        This determines how many elements an attribute array should have and how it
+        should be indexed in relation to the model's entities such as joints, bodies, shapes, etc.
+        """
+
+        ONCE = 0
+        """Attribute frequency is a single value."""
+        JOINT = 1
+        """Attribute frequency follows the number of joints (see :attr:`~newton.Model.joint_count`)."""
+        JOINT_DOF = 2
+        """Attribute frequency follows the number of joint degrees of freedom (see :attr:`~newton.Model.joint_dof_count`)."""
+        JOINT_COORD = 3
+        """Attribute frequency follows the number of joint positional coordinates (see :attr:`~newton.Model.joint_coord_count`)."""
+        JOINT_CONSTRAINT = 4
+        """Attribute frequency follows the number of joint constraints (see :attr:`~newton.Model.joint_constraint_count`)."""
+        BODY = 5
+        """Attribute frequency follows the number of bodies (see :attr:`~newton.Model.body_count`)."""
+        SHAPE = 6
+        """Attribute frequency follows the number of shapes (see :attr:`~newton.Model.shape_count`)."""
+        ARTICULATION = 7
+        """Attribute frequency follows the number of articulations (see :attr:`~newton.Model.articulation_count`)."""
+        EQUALITY_CONSTRAINT = 8
+        """Attribute frequency follows the number of equality constraints (see :attr:`~newton.Model.equality_constraint_count`)."""
+        PARTICLE = 9
+        """Attribute frequency follows the number of particles (see :attr:`~newton.Model.particle_count`)."""
+        EDGE = 10
+        """Attribute frequency follows the number of edges (see :attr:`~newton.Model.edge_count`)."""
+        TRIANGLE = 11
+        """Attribute frequency follows the number of triangles (see :attr:`~newton.Model.tri_count`)."""
+        TETRAHEDRON = 12
+        """Attribute frequency follows the number of tetrahedra (see :attr:`~newton.Model.tet_count`)."""
+        SPRING = 13
+        """Attribute frequency follows the number of springs (see :attr:`~newton.Model.spring_count`)."""
+        WORLD = 14
+        """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
+
+    class AttributeNamespace:
+        """
+        A container for namespaced custom attributes.
+
+        Custom attributes are stored as regular instance attributes on this object,
+        allowing hierarchical organization of related properties.
+        """
+
+        def __init__(self, name: str):
+            """Initialize the namespace container.
+
+            Args:
+                name: The name of the namespace
+            """
+            self._name = name
+
+        def __repr__(self):
+            """Return a string representation showing the namespace and its attributes."""
+            # List all public attributes (not starting with _)
+            attrs = [k for k in self.__dict__ if not k.startswith("_")]
+            return f"AttributeNamespace('{self._name}', attributes={attrs})"
 
     def __init__(self, device: Devicelike | None = None):
         """
@@ -166,6 +173,19 @@ class Model:
         """Maximum particle velocity (to prevent instability)."""
         self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
+        self.particle_world_start = None
+        """Start index of the first particle per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the particles belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global particles (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total particle count.
+
+        The number of particles in a given world `w` can be computed as:
+            `num_particles_in_world = particle_world_start[w + 1] - particle_world_start[w]`.
+
+        The total number of global particles can be computed as:
+            `num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]`.
+        """
 
         self.shape_key = []
         """List of keys for each shape."""
@@ -228,6 +248,19 @@ class Model:
         """Number of shape contact pairs."""
         self.shape_world = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
+        self.shape_world_start = None
+        """Start index of the first shape per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the shapes belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global shapes (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total shape count.
+
+        The number of shapes in a given world `w` can be computed as:
+            `num_shapes_in_world = shape_world_start[w + 1] - shape_world_start[w]`.
+
+        The total number of global shapes can be computed as:
+            `num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]`.
+        """
 
         # Mesh SDF storage
         self.shape_sdf_data = None
@@ -324,6 +357,19 @@ class Model:
         """Rigid body keys, shape [body_count], str."""
         self.body_world = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
+        self.body_world_start = None
+        """Start index of the first body per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the bodies belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global bodies (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total body count.
+
+        The number of bodies in a given world `w` can be computed as:
+            `num_bodies_in_world = body_world_start[w + 1] - body_world_start[w]`.
+
+        The total number of global bodies can be computed as:
+            `num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]`.
+        """
 
         self.joint_q = None
         """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
@@ -353,6 +399,8 @@ class Model:
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
         self.joint_armature = None
         """Armature for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        self.joint_act_mode = None
+        """Actuator mode per DOF, see :class:`newton.ActuatorMode`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke = None
         """Joint stiffness, shape [joint_dof_count], float."""
         self.joint_target_kd = None
@@ -387,12 +435,78 @@ class Model:
         """Joint keys, shape [joint_count], str."""
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
+        self.joint_world_start = None
+        """Start index of the first joint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint count.
+
+        The number of joints in a given world `w` can be computed as:
+            `num_joints_in_world = joint_world_start[w + 1] - joint_world_start[w]`.
+
+        The total number of global joints can be computed as:
+            `num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]`.
+        """
+        self.joint_dof_world_start = None
+        """Start index of the first joint degree of freedom per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint DOFs belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint DOFs (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint DOF count.
+
+        The number of joint DOFs in a given world `w` can be computed as:
+            `num_joint_dofs_in_world = joint_dof_world_start[w + 1] - joint_dof_world_start[w]`.
+
+        The total number of global joint DOFs can be computed as:
+            `num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]`.
+        """
+        self.joint_coord_world_start = None
+        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint coordinates belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint coordinates (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint coordinate count.
+
+        The number of joint coordinates in a given world `w` can be computed as:
+            `num_joint_coords_in_world = joint_coord_world_start[w + 1] - joint_coord_world_start[w]`.
+
+        The total number of global joint coordinates can be computed as:
+            `num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]`.
+        """
+        self.joint_constraint_world_start = None
+        """Start index of the first joint constraint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the joint constraints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint constraints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint constraint count.
+
+        The number of joint constraints in a given world `w` can be computed as:
+            `num_joint_constraints_in_world = joint_constraint_world_start[w + 1] - joint_constraint_world_start[w]`.
+
+        The total number of global joint constraints can be computed as:
+            `num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]`.
+        """
+
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
         self.articulation_world = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
+        self.articulation_world_start = None
+        """Start index of the first articulation per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the articulations belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global articulations (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total articulation count.
+
+        The number of articulations in a given world `w` can be computed as:
+            `num_articulations_in_world = articulation_world_start[w + 1] - articulation_world_start[w]`.
+
+        The total number of global articulations can be computed as:
+            `num_global_articulations = articulation_world_start[-1] - articulation_world_start[-2] + articulation_world_start[0]`.
+        """
         self.max_joints_per_articulation = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
 
@@ -410,8 +524,6 @@ class Model:
         self.rigid_contact_max = 0
         """Number of potential contact points between rigid bodies."""
 
-        self.up_vector = np.array((0.0, 0.0, 1.0))
-        """Up vector of the world, shape [3], float."""
         self.up_axis = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity = None
@@ -441,6 +553,19 @@ class Model:
         """Whether constraint is active, shape [equality_constraint_count], bool."""
         self.equality_constraint_world = None
         """World index for each constraint, shape [equality_constraint_count], int."""
+        self.equality_constraint_world_start = None
+        """Start index of the first equality constraint per world, shape [num_worlds + 2], int.
+
+        The entries at indices `0` to `num_worlds - 1` store the start index of the equality constraints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global equality constraints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total equality constraint count.
+
+        The number of equality constraints in a given world `w` can be computed as:
+            `num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]`.
+
+        The total number of global equality constraints can be computed as:
+            `num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]`.
+        """
 
         self.particle_count = 0
         """Total number of particles in the system."""
@@ -485,82 +610,84 @@ class Model:
         self.device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
-        self.attribute_frequency: dict[str, ModelAttributeFrequency | str] = {}
-        """Classifies each attribute using ModelAttributeFrequency enum values (per body, per joint, per DOF, etc.)
+        self.attribute_frequency: dict[str, Model.AttributeFrequency | str] = {}
+        """Classifies each attribute using Model.AttributeFrequency enum values (per body, per joint, per DOF, etc.)
         or custom frequencies for custom entity types (e.g., ``"mujoco:pair"``)."""
 
         self.custom_frequency_counts: dict[str, int] = {}
         """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
 
-        self.attribute_assignment: dict[str, ModelAttributeAssignment] = {}
-        """Assignment for custom attributes using ModelAttributeAssignment enum values.
-        If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=ModelAttributeAssignment.MODEL)."""
+        self.attribute_assignment: dict[str, Model.AttributeAssignment] = {}
+        """Assignment for custom attributes using Model.AttributeAssignment enum values.
+        If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=Model.AttributeAssignment.MODEL)."""
 
         self._requested_state_attributes: set[str] = set()
+        self._requested_contact_attributes: set[str] = set()
 
         # attributes per body
-        self.attribute_frequency["body_q"] = ModelAttributeFrequency.BODY
-        self.attribute_frequency["body_qd"] = ModelAttributeFrequency.BODY
-        self.attribute_frequency["body_com"] = ModelAttributeFrequency.BODY
-        self.attribute_frequency["body_inertia"] = ModelAttributeFrequency.BODY
-        self.attribute_frequency["body_inv_inertia"] = ModelAttributeFrequency.BODY
-        self.attribute_frequency["body_mass"] = ModelAttributeFrequency.BODY
-        self.attribute_frequency["body_inv_mass"] = ModelAttributeFrequency.BODY
-        self.attribute_frequency["body_f"] = ModelAttributeFrequency.BODY
+        self.attribute_frequency["body_q"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_qd"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_com"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_inertia"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_inv_inertia"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_mass"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_inv_mass"] = Model.AttributeFrequency.BODY
+        self.attribute_frequency["body_f"] = Model.AttributeFrequency.BODY
 
         # attributes per joint
-        self.attribute_frequency["joint_type"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_parent"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_child"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_ancestor"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_articulation"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_X_p"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_X_c"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_dof_dim"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_enabled"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_twist_lower"] = ModelAttributeFrequency.JOINT
-        self.attribute_frequency["joint_twist_upper"] = ModelAttributeFrequency.JOINT
+        self.attribute_frequency["joint_type"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_parent"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_child"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_ancestor"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_articulation"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_X_p"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_X_c"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_dof_dim"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_enabled"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_twist_lower"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_twist_upper"] = Model.AttributeFrequency.JOINT
 
         # attributes per joint coord
-        self.attribute_frequency["joint_q"] = ModelAttributeFrequency.JOINT_COORD
+        self.attribute_frequency["joint_q"] = Model.AttributeFrequency.JOINT_COORD
 
         # attributes per joint dof
-        self.attribute_frequency["joint_qd"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_f"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_armature"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_pos"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_vel"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_axis"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_ke"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_target_kd"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_limit_lower"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_limit_upper"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_limit_ke"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_limit_kd"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_effort_limit"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_friction"] = ModelAttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_velocity_limit"] = ModelAttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_qd"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_f"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_armature"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_pos"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_act_mode"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_target_kd"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_limit_lower"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_limit_upper"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_limit_ke"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_limit_kd"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_effort_limit"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_friction"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_velocity_limit"] = Model.AttributeFrequency.JOINT_DOF
 
         # attributes per shape
-        self.attribute_frequency["shape_transform"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_body"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_flags"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_ke"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_kd"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_kf"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_ka"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_mu"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_restitution"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_torsional_friction"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_rolling_friction"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_k_hydro"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_contact_margin"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_type"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_is_solid"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_thickness"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_source_ptr"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_scale"] = ModelAttributeFrequency.SHAPE
-        self.attribute_frequency["shape_filter"] = ModelAttributeFrequency.SHAPE
+        self.attribute_frequency["shape_transform"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_body"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_flags"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_ke"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_kd"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_kf"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_ka"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_mu"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_restitution"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_torsional_friction"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_rolling_friction"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_k_hydro"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_contact_margin"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_type"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_is_solid"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_thickness"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_source_ptr"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_scale"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
@@ -606,7 +733,7 @@ class Model:
             s.body_parent_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
         # attach custom attributes with assignment==STATE
-        self._add_custom_attributes(s, ModelAttributeAssignment.STATE, requires_grad=requires_grad)
+        self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 
         return s
 
@@ -647,7 +774,7 @@ class Model:
             c.muscle_activations = self.muscle_activations
         # attach custom attributes with assignment==CONTROL
         self._add_custom_attributes(
-            c, ModelAttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
+            c, Model.AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
         )
         return c
 
@@ -746,7 +873,7 @@ class Model:
 
         contacts = self._collision_pipeline.collide(self, state)
         # attach custom attributes with assignment==CONTACT
-        self._add_custom_attributes(contacts, ModelAttributeAssignment.CONTACT, requires_grad=requires_grad)
+        self._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=requires_grad)
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
@@ -758,13 +885,32 @@ class Model:
         Args:
             *attributes: Variable number of attribute names (strings).
         """
-        State.validate_extended_state_attributes(attributes)
+        State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
+
+    def request_contact_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific contact attributes be allocated when creating a Contacts object.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        Contacts.validate_extended_attributes(attributes)
+        self._requested_contact_attributes.update(attributes)
+
+    def get_requested_contact_attributes(self) -> set[str]:
+        """
+        Get the set of requested contact attribute names.
+
+        Returns:
+            set[str]: The set of requested contact attributes.
+        """
+        return self._requested_contact_attributes
 
     def _add_custom_attributes(
         self,
         destination: object,
-        assignment: ModelAttributeAssignment,
+        assignment: Model.AttributeAssignment,
         requires_grad: bool = False,
         clone_arrays: bool = True,
     ) -> None:
@@ -778,7 +924,7 @@ class Model:
             clone_arrays: Whether to clone wp.arrays (True) or use references (False)
         """
         for full_name, _freq in self.attribute_frequency.items():
-            if self.attribute_assignment.get(full_name, ModelAttributeAssignment.MODEL) != assignment:
+            if self.attribute_assignment.get(full_name, Model.AttributeAssignment.MODEL) != assignment:
                 continue
 
             # Parse namespace from full_name (format: "namespace:attr_name" or "attr_name")
@@ -795,7 +941,7 @@ class Model:
                     )
                 # Create namespace on destination if it doesn't exist
                 if not hasattr(destination, namespace):
-                    setattr(destination, namespace, AttributeNamespace(namespace))
+                    setattr(destination, namespace, Model.AttributeNamespace(namespace))
                 dest = getattr(destination, namespace)
             else:
                 # Non-namespaced attribute - add directly to destination
@@ -819,9 +965,9 @@ class Model:
     def add_attribute(
         self,
         name: str,
-        attrib: wp.array,
-        frequency: ModelAttributeFrequency | str,
-        assignment: ModelAttributeAssignment | None = None,
+        attrib: wp.array | list,
+        frequency: Model.AttributeFrequency | str,
+        assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
     ):
         """
@@ -829,29 +975,27 @@ class Model:
 
         Args:
             name (str): Name of the attribute.
-            attrib (wp.array): The array to add as an attribute.
-            frequency (ModelAttributeFrequency | str): The frequency of the attribute.
-                Can be a ModelAttributeFrequency enum value or a string for custom frequencies.
-            assignment (ModelAttributeAssignment, optional): The assignment category using ModelAttributeAssignment enum.
+            attrib (wp.array | list): The array to add as an attribute. Can be a wp.array for
+                numeric types or a list for string attributes.
+            frequency (Model.AttributeFrequency | str): The frequency of the attribute.
+                Can be a Model.AttributeFrequency enum value or a string for custom frequencies.
+            assignment (Model.AttributeAssignment, optional): The assignment category using Model.AttributeAssignment enum.
                 Determines which object will hold the attribute.
             namespace (str, optional): Namespace for the attribute.
                 If None, attribute is added directly to the assignment object (e.g., model.attr_name).
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
 
         Raises:
-            TypeError: If the attribute is not a wp.array.
             AttributeError: If the attribute already exists or is on the wrong device.
         """
-        if not isinstance(attrib, wp.array):
-            raise TypeError(f"Attribute '{name}' must be a wp.array")
-        if attrib.device != self.device:
+        if isinstance(attrib, wp.array) and attrib.device != self.device:
             raise AttributeError(f"Attribute '{name}' device mismatch (model={self.device}, got={attrib.device})")
 
         # Handle namespaced attributes
         if namespace:
             # Create namespace object if it doesn't exist
             if not hasattr(self, namespace):
-                setattr(self, namespace, AttributeNamespace(namespace))
+                setattr(self, namespace, Model.AttributeNamespace(namespace))
 
             ns_obj = getattr(self, namespace)
             if hasattr(ns_obj, name):
@@ -870,7 +1014,7 @@ class Model:
         if assignment is not None:
             self.attribute_assignment[full_name] = assignment
 
-    def get_attribute_frequency(self, name: str) -> ModelAttributeFrequency | str:
+    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
         """
         Get the frequency of an attribute.
 
@@ -878,8 +1022,8 @@ class Model:
             name (str): Name of the attribute.
 
         Returns:
-            ModelAttributeFrequency | str: The frequency of the attribute.
-                Either a ModelAttributeFrequency enum value or a string for custom frequencies.
+            Model.AttributeFrequency | str: The frequency of the attribute.
+                Either a Model.AttributeFrequency enum value or a string for custom frequencies.
 
         Raises:
             KeyError: If the attribute frequency is not known.
@@ -938,3 +1082,43 @@ class Model:
 
         attributes.extend(self._requested_state_attributes.difference(attributes))
         return attributes
+
+    def _count_rigid_contact_points(self, rigid_contact_max_per_pair: int | None = None) -> int:
+        """
+        Count the maximum number of rigid contact points that need to be allocated.
+
+        This method estimates the upper bound on the number of rigid contact points that may be generated
+        during collision detection, based on the current set of shape contact pairs and their geometry.
+
+        Args:
+            rigid_contact_max_per_pair: Maximum number of contact points per shape pair.
+                If None or <= 0, no limit is applied.
+
+        Returns:
+            The potential number of rigid contact points that may need to be allocated.
+        """
+        from ..geometry.kernels import count_contact_points  # noqa: PLC0415
+
+        if self.shape_contact_pair_count == 0:
+            return 0
+
+        if rigid_contact_max_per_pair is None or rigid_contact_max_per_pair <= 0:
+            rigid_contact_max_per_pair = 0
+        # calculate the potential number of shape pair contact points
+        contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=count_contact_points,
+            dim=self.shape_contact_pair_count,
+            inputs=[
+                self.shape_contact_pairs,
+                self.shape_type,
+                self.shape_scale,
+                self.shape_source_ptr,
+                rigid_contact_max_per_pair,
+            ],
+            outputs=[contact_count],
+            device=self.device,
+            record_tape=False,
+        )
+        counts = contact_count.numpy()
+        return int(counts[0])
