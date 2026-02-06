@@ -4022,7 +4022,6 @@ def Xform "Articulation" (
         self.assertAlmostEqual(child_values[0], 99.0, places=5)
         self.assertAlmostEqual(child_values[1], 99.0, places=5)
 
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_frequency_wildcard_usd_attribute(self):
         """Test that usd_attribute_name='*' calls the usd_value_transformer for every matching prim.
