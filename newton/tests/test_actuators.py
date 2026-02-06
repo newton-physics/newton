@@ -267,111 +267,222 @@ class TestActuatorUSDParsing(unittest.TestCase):
 
 @unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
 class TestActuatorSelectionAPI(unittest.TestCase):
-    """Tests for actuator parameter access via ArticulationView."""
+    """Tests for actuator parameter access via ArticulationView.
 
-    def _build_single_world_model(self):
+    Follows the same parameterised pattern as the joint/link selection tests:
+    a single ``run_test_actuator_selection`` helper is driven by four thin
+    entry-point tests that cover (use_mask × use_multiple_artics_per_view).
+    """
+
+    def run_test_actuator_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
+        """Test an ArticulationView that includes a subset of joints and that we
+        can read/write actuator parameters for the subset with and without a mask.
+        Verifies the full flat actuator parameter array."""
+
+        mjcf = """<?xml version="1.0" ?>
+<mujoco model="myart">
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      </body>
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      </body>
+      <!-- Third child link with prismatic joint along x -->
+      <body name="link3" pos="-0.0 -0.9 0">
+        <joint name="joint3" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+
+        num_joints_per_articulation = 3
+        num_articulations_per_world = 2
+        num_worlds = 3
+        num_actuators = num_joints_per_articulation * num_articulations_per_world * num_worlds
+
+        # Create a single articulation with 3 joints.
+        single_articulation_builder = newton.ModelBuilder()
+        single_articulation_builder.add_mjcf(mjcf)
+
+        # Add an ActuatorPD for each slide joint: kp = 100, 200, 300
+        joint_names = ["joint1", "joint2", "joint3"]
+        for i, jname in enumerate(joint_names):
+            j_idx = single_articulation_builder.joint_key.index(jname)
+            dof = single_articulation_builder.joint_qd_start[j_idx]
+            single_articulation_builder.add_actuator(ActuatorPD, input_indices=[dof], kp=100.0 * (i + 1))
+
+        # Create a world with 2 articulations
+        single_world_builder = newton.ModelBuilder()
+        for _i in range(num_articulations_per_world):
+            single_world_builder.add_builder(single_articulation_builder)
+
+        # Customise the articulation keys in single_world_builder
+        single_world_builder.articulation_key[1] = "art1"
+        if use_multiple_artics_per_view:
+            single_world_builder.articulation_key[0] = "art1"
+        else:
+            single_world_builder.articulation_key[0] = "art0"
+
+        # Create 3 worlds with two articulations per world and 3 actuators per articulation.
         builder = newton.ModelBuilder()
-        bodies = [builder.add_body() for _ in range(3)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(builder.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        builder.add_articulation(joints, key="robot")
-        dofs = [builder.joint_qd_start[j] for j in joints]
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=200.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[2]], kp=300.0)
-        return builder.finalize(), dofs
+        for _i in range(num_worlds):
+            builder.add_world(single_world_builder)
 
-    def _build_multi_world_model(self, num_worlds=3):
-        template = newton.ModelBuilder()
-        bodies = [template.add_body() for _ in range(3)]
-        joints = []
-        for i, body in enumerate(bodies):
-            parent = -1 if i == 0 else bodies[i - 1]
-            joints.append(template.add_joint_revolute(parent=parent, child=body, axis=newton.Axis.Z))
-        template.add_articulation(joints, key="robot")
-        dofs = [template.joint_qd_start[j] for j in joints]
-        template.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        template.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=200.0)
-        template.add_actuator(ActuatorPD, input_indices=[dofs[2]], kp=300.0)
-        builder = newton.ModelBuilder()
-        for _ in range(num_worlds):
-            builder.add_world(template)
-        return builder.finalize(), num_worlds
+        # Create the model
+        model = builder.finalize()
 
-    def test_get_actuator_parameter_single_world(self):
-        """Test getting actuator parameters in single world."""
-        model, _dofs = self._build_single_world_model()
-        view = ArticulationView(model, pattern="robot")
+        # Create a view of "art1/joint3"
+        joints_to_include = ["joint3"]
+        joint_view = ArticulationView(model, "art1", include_joints=joints_to_include)
+
         actuator = model.actuators[0]
-        kp_values = view.get_actuator_parameter(actuator, "kp")
-        self.assertEqual(kp_values.shape, (1, 3))
-        np.testing.assert_array_almost_equal(kp_values.numpy().flatten(), [100.0, 200.0, 300.0])
 
-    def test_get_actuator_parameter_multi_world(self):
-        """Test getting actuator parameters in multi-world setup."""
-        num_worlds = 3
-        model, _ = self._build_multi_world_model(num_worlds)
-        view = ArticulationView(model, pattern="robot*")
-        actuator = model.actuators[0]
-        kp_values = view.get_actuator_parameter(actuator, "kp")
-        self.assertEqual(kp_values.shape, (num_worlds, 3))
-        for w in range(num_worlds):
-            np.testing.assert_array_almost_equal(kp_values.numpy()[w], [100.0, 200.0, 300.0])
+        # Get the kp values for the view's DOFs (only joint3 of selected artics)
+        kp_values = joint_view.get_actuator_parameter(actuator, "kp").numpy().copy()
 
-    def test_set_actuator_parameter_single_world(self):
-        """Test setting actuator parameters in single world."""
-        model, _dofs = self._build_single_world_model()
-        view = ArticulationView(model, pattern="robot")
-        actuator = model.actuators[0]
-        new_kp = wp.array([[500.0, 600.0, 700.0]], dtype=float, device=model.device)
-        view.set_actuator_parameter(actuator, "kp", new_kp)
-        np.testing.assert_array_almost_equal(actuator.kp.numpy(), [500.0, 600.0, 700.0])
+        # Verify shape and initial values
+        if use_multiple_artics_per_view:
+            self.assertEqual(kp_values.shape, (num_worlds, 2))
+            np.testing.assert_array_almost_equal(kp_values, [[300.0, 300.0]] * num_worlds)
+        else:
+            self.assertEqual(kp_values.shape, (num_worlds, 1))
+            np.testing.assert_array_almost_equal(kp_values, [[300.0]] * num_worlds)
 
-    def test_set_actuator_parameter_multi_world(self):
-        """Test setting actuator parameters in multi-world setup."""
-        num_worlds = 3
-        model, _ = self._build_multi_world_model(num_worlds)
-        view = ArticulationView(model, pattern="robot*")
-        actuator = model.actuators[0]
-        new_kp = wp.array(
-            [
-                [500.0, 600.0, 700.0],
-                [800.0, 900.0, 1000.0],
-                [1100.0, 1200.0, 1300.0],
-            ],
-            dtype=float,
-            device=model.device,
-        )
-        view.set_actuator_parameter(actuator, "kp", new_kp)
-        expected = [500.0, 600.0, 700.0, 800.0, 900.0, 1000.0, 1100.0, 1200.0, 1300.0]
-        np.testing.assert_array_almost_equal(actuator.kp.numpy(), expected)
+        # Modify the kp values with distinguishable per-slot values
+        val = 1000.0
+        for world_idx in range(kp_values.shape[0]):
+            for dof_idx in range(kp_values.shape[1]):
+                kp_values[world_idx, dof_idx] = val
+                val += 100.0
 
-    def test_set_actuator_parameter_with_mask(self):
-        """Test setting actuator parameters with per-world mask."""
-        num_worlds = 3
-        model, _ = self._build_multi_world_model(num_worlds)
-        view = ArticulationView(model, pattern="robot*")
-        actuator = model.actuators[0]
-        mask = wp.array([False, True, False], dtype=bool, device=model.device)
-        new_kp = wp.array(
-            [
-                [999.0, 999.0, 999.0],
-                [500.0, 600.0, 700.0],
-                [999.0, 999.0, 999.0],
-            ],
-            dtype=float,
-            device=model.device,
-        )
-        view.set_actuator_parameter(actuator, "kp", new_kp, mask=mask)
-        kp_np = actuator.kp.numpy()
-        # World 0 unchanged
-        np.testing.assert_array_almost_equal(kp_np[0:3], [100.0, 200.0, 300.0])
-        # World 1 updated
-        np.testing.assert_array_almost_equal(kp_np[3:6], [500.0, 600.0, 700.0])
-        # World 2 unchanged
-        np.testing.assert_array_almost_equal(kp_np[6:9], [100.0, 200.0, 300.0])
+        mask = None
+        if use_mask:
+            mask = wp.array([False, True, False], dtype=bool, device=model.device)
+
+        # Set the modified values
+        wp_kp = wp.array(kp_values, dtype=float, device=model.device)
+        joint_view.set_actuator_parameter(actuator, "kp", wp_kp, mask=mask)
+
+        # Build expected flat kp array and verify against the full actuator.kp array.
+        # Initial flat layout: [100, 200, 300] per articulation × 6 articulations.
+        expected_kp = []
+        if use_mask:
+            if use_multiple_artics_per_view:
+                expected_kp = [
+                    100.0,
+                    200.0,
+                    300.0,  # world0/artic0 — not masked
+                    100.0,
+                    200.0,
+                    300.0,  # world0/artic1 — not masked
+                    100.0,
+                    200.0,
+                    1200.0,  # world1/artic0 — masked, joint3 updated
+                    100.0,
+                    200.0,
+                    1300.0,  # world1/artic1 — masked, joint3 updated
+                    100.0,
+                    200.0,
+                    300.0,  # world2/artic0 — not masked
+                    100.0,
+                    200.0,
+                    300.0,  # world2/artic1 — not masked
+                ]
+            else:
+                expected_kp = [
+                    100.0,
+                    200.0,
+                    300.0,  # world0/artic0 (art0) — not in view
+                    100.0,
+                    200.0,
+                    300.0,  # world0/artic1 (art1) — not masked
+                    100.0,
+                    200.0,
+                    300.0,  # world1/artic0 (art0) — not in view
+                    100.0,
+                    200.0,
+                    1100.0,  # world1/artic1 (art1) — masked, joint3 updated
+                    100.0,
+                    200.0,
+                    300.0,  # world2/artic0 (art0) — not in view
+                    100.0,
+                    200.0,
+                    300.0,  # world2/artic1 (art1) — not masked
+                ]
+        else:
+            if use_multiple_artics_per_view:
+                expected_kp = [
+                    100.0,
+                    200.0,
+                    1000.0,  # world0/artic0 — joint3 updated
+                    100.0,
+                    200.0,
+                    1100.0,  # world0/artic1 — joint3 updated
+                    100.0,
+                    200.0,
+                    1200.0,  # world1/artic0 — joint3 updated
+                    100.0,
+                    200.0,
+                    1300.0,  # world1/artic1 — joint3 updated
+                    100.0,
+                    200.0,
+                    1400.0,  # world2/artic0 — joint3 updated
+                    100.0,
+                    200.0,
+                    1500.0,  # world2/artic1 — joint3 updated
+                ]
+            else:
+                expected_kp = [
+                    100.0,
+                    200.0,
+                    300.0,  # world0/artic0 (art0) — not in view
+                    100.0,
+                    200.0,
+                    1000.0,  # world0/artic1 (art1) — joint3 updated
+                    100.0,
+                    200.0,
+                    300.0,  # world1/artic0 (art0) — not in view
+                    100.0,
+                    200.0,
+                    1100.0,  # world1/artic1 (art1) — joint3 updated
+                    100.0,
+                    200.0,
+                    300.0,  # world2/artic0 (art0) — not in view
+                    100.0,
+                    200.0,
+                    1200.0,  # world2/artic1 (art1) — joint3 updated
+                ]
+
+        # Verify the full flat actuator kp array
+        measured_kp = actuator.kp.numpy()
+        for i in range(num_actuators):
+            self.assertAlmostEqual(
+                expected_kp[i],
+                measured_kp[i],
+                places=4,
+                msg=f"Expected kp value {i}: {expected_kp[i]}, Measured value: {measured_kp[i]}",
+            )
+
+    def test_actuator_selection_one_per_view_no_mask(self):
+        self.run_test_actuator_selection(use_mask=False, use_multiple_artics_per_view=False)
+
+    def test_actuator_selection_two_per_view_no_mask(self):
+        self.run_test_actuator_selection(use_mask=False, use_multiple_artics_per_view=True)
+
+    def test_actuator_selection_one_per_view_with_mask(self):
+        self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=False)
+
+    def test_actuator_selection_two_per_view_with_mask(self):
+        self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
 
 
 if __name__ == "__main__":

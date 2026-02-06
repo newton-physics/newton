@@ -182,8 +182,12 @@ for dtype in [float, int, wp.transform, wp.spatial_vector]:
 def build_actuator_dof_mapping_slice_kernel(
     actuator_input_indices: wp.array(dtype=wp.uint32),
     actuators_per_world: int,
-    global_slice_start: int,
-    global_slice_stop: int,
+    base_offset: int,
+    slice_start: int,
+    slice_stop: int,
+    stride_within_worlds: int,
+    count_per_world: int,
+    dofs_per_arti: int,
     dofs_per_world: int,
     num_worlds: int,
     mapping: wp.array(dtype=int),
@@ -191,30 +195,36 @@ def build_actuator_dof_mapping_slice_kernel(
     """Build DOF-to-actuator mapping for slice-based view selection.
 
     Iterates over first world's actuators only, replicates pattern to all worlds.
-    input_indices[0:actuators_per_world] contains global DOFs for world 0.
-    global_slice_start/stop are global DOF indices (offset + local slice).
+    For each actuator, checks all articulations in the view to find matching DOF ranges.
     """
     local_idx = wp.tid()  # 0 to actuators_per_world-1
 
     # Get global DOF from first world's actuator entry
     global_dof = int(actuator_input_indices[local_idx])
 
-    if global_dof >= global_slice_start and global_dof < global_slice_stop:
-        view_local_pos = global_dof - global_slice_start
+    for arti_idx in range(count_per_world):
+        arti_global_start = base_offset + arti_idx * stride_within_worlds + slice_start
+        arti_global_stop = base_offset + arti_idx * stride_within_worlds + slice_stop
+        if global_dof >= arti_global_start and global_dof < arti_global_stop:
+            view_local_pos = arti_idx * dofs_per_arti + (global_dof - arti_global_start)
 
-        # Replicate to all worlds
-        for world_idx in range(num_worlds):
-            view_pos = world_idx * dofs_per_world + view_local_pos
-            actuator_idx = world_idx * actuators_per_world + local_idx
-            mapping[view_pos] = actuator_idx
+            # Replicate to all worlds
+            for world_idx in range(num_worlds):
+                view_pos = world_idx * dofs_per_world + view_local_pos
+                actuator_idx = world_idx * actuators_per_world + local_idx
+                mapping[view_pos] = actuator_idx
+            break
 
 
 @wp.kernel
 def build_actuator_dof_mapping_indices_kernel(
     actuator_input_indices: wp.array(dtype=wp.uint32),
     view_dof_indices: wp.array(dtype=int),
-    dof_offset: int,
+    base_offset: int,
+    stride_within_worlds: int,
+    count_per_world: int,
     actuators_per_world: int,
+    dofs_per_arti: int,
     dofs_per_world: int,
     num_worlds: int,
     mapping: wp.array(dtype=int),
@@ -222,21 +232,25 @@ def build_actuator_dof_mapping_indices_kernel(
     """Build DOF-to-actuator mapping for index-array-based view selection.
 
     Iterates over first world's actuators only, replicates pattern to all worlds.
-    view_dof_indices contains local DOF indices; dof_offset converts to global.
+    For each actuator, checks all articulations in the view to find matching DOF indices.
     """
     local_idx = wp.tid()  # 0 to actuators_per_world-1
 
     global_dof = int(actuator_input_indices[local_idx])
 
-    for i in range(dofs_per_world):
-        # view_dof_indices[i] is local, add offset to get global
-        if dof_offset + view_dof_indices[i] == global_dof:
-            # Replicate to all worlds
-            for world_idx in range(num_worlds):
-                view_pos = world_idx * dofs_per_world + i
-                actuator_idx = world_idx * actuators_per_world + local_idx
-                mapping[view_pos] = actuator_idx
-            break
+    for arti_idx in range(count_per_world):
+        arti_base = base_offset + arti_idx * stride_within_worlds
+        for i in range(dofs_per_arti):
+            # view_dof_indices[i] is local within the articulation, add arti_base to get global
+            if arti_base + view_dof_indices[i] == global_dof:
+                view_local_pos = arti_idx * dofs_per_arti + i
+
+                # Replicate to all worlds
+                for world_idx in range(num_worlds):
+                    view_pos = world_idx * dofs_per_world + view_local_pos
+                    actuator_idx = world_idx * actuators_per_world + local_idx
+                    mapping[view_pos] = actuator_idx
+                break
 
 
 @wp.kernel
@@ -1329,7 +1343,8 @@ class ArticulationView:
         actuators_per_world = num_actuators // self.world_count
 
         dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
-        dofs_per_world = dof_layout.selected_value_count
+        dofs_per_arti = dof_layout.selected_value_count
+        dofs_per_world = dofs_per_arti * self.count_per_world
 
         if dofs_per_world == 0:
             return wp.empty(0, dtype=int, device=self.device)
@@ -1337,16 +1352,18 @@ class ArticulationView:
         mapping = wp.full(self.world_count * dofs_per_world, -1, dtype=int, device=self.device)
 
         if dof_layout.is_contiguous:
-            global_slice_start = dof_layout.offset + dof_layout.slice.start
-            global_slice_stop = dof_layout.offset + dof_layout.slice.stop
             wp.launch(
                 build_actuator_dof_mapping_slice_kernel,
                 dim=actuators_per_world,
                 inputs=[
                     actuator.input_indices,
                     actuators_per_world,
-                    global_slice_start,
-                    global_slice_stop,
+                    dof_layout.offset,
+                    dof_layout.slice.start,
+                    dof_layout.slice.stop,
+                    dof_layout.stride_within_worlds,
+                    self.count_per_world,
+                    dofs_per_arti,
                     dofs_per_world,
                     self.world_count,
                 ],
@@ -1361,7 +1378,10 @@ class ArticulationView:
                     actuator.input_indices,
                     dof_layout.indices,
                     dof_layout.offset,
+                    dof_layout.stride_within_worlds,
+                    self.count_per_world,
                     actuators_per_world,
+                    dofs_per_arti,
                     dofs_per_world,
                     self.world_count,
                 ],
