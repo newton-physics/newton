@@ -683,8 +683,8 @@ def parse_urdf(
                 continue
 
             builder.add_constraint_mimic(
-                joint1=follower_idx,
-                joint2=leader_idx,
+                joint0=follower_idx,
+                joint1=leader_idx,
                 coef0=joint.get("mimic_coef0", 0.0),
                 coef1=joint.get("mimic_coef1", 1.0),
                 key=f"mimic_{joint['name']}",

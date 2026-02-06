@@ -571,14 +571,14 @@ class Model:
             `num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]`.
         """
 
+        self.constraint_mimic_joint0 = None
+        """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
         self.constraint_mimic_joint1 = None
-        """First joint index (the follower joint), shape [constraint_mimic_count], int."""
-        self.constraint_mimic_joint2 = None
-        """Second joint index (the leader joint), shape [constraint_mimic_count], int."""
+        """Leader joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
         self.constraint_mimic_coef0 = None
-        """Offset coefficient (coef0) for the mimic constraint, shape [constraint_mimic_count], float."""
+        """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
         self.constraint_mimic_coef1 = None
-        """Scale coefficient (coef1) for the mimic constraint, shape [constraint_mimic_count], float."""
+        """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
         self.constraint_mimic_enabled = None
         """Whether constraint is active, shape [constraint_mimic_count], bool."""
         self.constraint_mimic_key = []

@@ -715,8 +715,8 @@ class TestMimicConstraints(unittest.TestCase):
         self.assertEqual(model.constraint_mimic_count, 1)
 
         # Check the constraint values
+        joint0 = model.constraint_mimic_joint0.numpy()[0]
         joint1 = model.constraint_mimic_joint1.numpy()[0]
-        joint2 = model.constraint_mimic_joint2.numpy()[0]
         coef0 = model.constraint_mimic_coef0.numpy()[0]
         coef1 = model.constraint_mimic_coef1.numpy()[0]
         enabled = model.constraint_mimic_enabled.numpy()[0]
@@ -725,8 +725,8 @@ class TestMimicConstraints(unittest.TestCase):
         leader_idx = model.joint_key.index("leader_joint")
         follower_idx = model.joint_key.index("follower_joint")
 
-        self.assertEqual(joint1, follower_idx)  # follower joint (joint1)
-        self.assertEqual(joint2, leader_idx)  # leader joint (joint2)
+        self.assertEqual(joint0, follower_idx)  # follower joint (joint0)
+        self.assertEqual(joint1, leader_idx)  # leader joint (joint1)
         self.assertAlmostEqual(coef0, 0.5, places=5)
         self.assertAlmostEqual(coef1, 2.0, places=5)
         self.assertTrue(enabled)
@@ -791,15 +791,15 @@ class TestMimicConstraints(unittest.TestCase):
 
         # Add mimic constraints
         _c1 = builder.add_constraint_mimic(
-            joint1=j2,
-            joint2=j1,
+            joint0=j2,
+            joint1=j1,
             coef0=-0.25,
             coef1=1.5,
             key="mimic1",
         )
         _c2 = builder.add_constraint_mimic(
-            joint1=j3,
-            joint2=j1,
+            joint0=j3,
+            joint1=j1,
             coef0=0.0,
             coef1=-1.0,
             enabled=False,
@@ -811,16 +811,16 @@ class TestMimicConstraints(unittest.TestCase):
         self.assertEqual(model.constraint_mimic_count, 2)
 
         # Check first constraint
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j2)
-        self.assertEqual(model.constraint_mimic_joint2.numpy()[0], j1)
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], j2)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
         self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
         self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
         self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
         self.assertEqual(model.constraint_mimic_key[0], "mimic1")
 
         # Check second constraint
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j3)
-        self.assertEqual(model.constraint_mimic_joint2.numpy()[1], j1)
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
         self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
         self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
         self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
