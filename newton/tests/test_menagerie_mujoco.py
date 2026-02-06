@@ -459,9 +459,11 @@ class RandomControlStrategy(ControlStrategy):
 # due to solver convergence sensitivity with different control values per world.
 DEFAULT_TOLERANCES: dict[str, float] = {
     # Core state (positions very tight, velocities/accelerations looser)
-    "qpos": 1e-6,  # 1-world: 3e-8, 16-world: 2e-7
-    "qvel": 1e-4,  # 1-world: 2e-7, 16-world: 6e-5
-    "qacc": 0.1,  # 1-world: 9e-4, 16-world: 9e-2 (solver-sensitive)
+    # Note: qacc differences increase with actuator force limits active due to
+    # jnt_actfrclimited mismatch (Newton: True from URDF, Native: False)
+    "qpos": 1e-6,  # 16-world: 6e-7
+    "qvel": 5e-5,  # 16-world: 4e-5
+    "qacc": 0.06,  # 16-world: 5.7e-2 (jnt_actfrclimited causes larger diff)
     # Body kinematics (scale with qpos)
     "xpos": 1e-6,
     "xquat": 1e-6,
@@ -470,22 +472,22 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     "geom_xmat": 1e-6,
     "site_xpos": 1e-6,
     "site_xmat": 1e-6,
-    # Forces (solver-sensitive)
-    "qfrc_bias": 1e-4,
+    # Forces
+    "qfrc_bias": 3e-5,  # 16-world: 2.7e-5
     "qfrc_passive": 1e-6,
-    "qfrc_actuator": 0.01,  # 1-world: 1e-4, 16-world: 6e-3
+    "qfrc_actuator": 0.006,  # 16-world: 5.3e-3
     # Composite quantities
     "subtree_com": 1e-6,
     # Dynamics
-    "cvel": 1e-4,  # 1-world: 8e-7, 16-world: 7e-5
-    "cacc": 1e-4,  # 1-world: 2e-6, 16-world: 7e-5
-    "cfrc_int": 0.01,  # 1-world: 1e-3, 16-world: 4e-3
+    "cvel": 5e-5,  # 16-world: 4.4e-5
+    "cacc": 2e-4,  # 16-world: 1.4e-4
+    "cfrc_int": 0.005,  # 16-world: 3.9e-3
     "energy": 1e-6,
     "qM": 1e-5,
     # Actuators
     "actuator_length": 1e-6,
-    "actuator_velocity": 1e-4,
-    "actuator_force": 0.01,  # 1-world: 1e-4, 16-world: 6e-3
+    "actuator_velocity": 5e-5,  # 16-world: 4e-5
+    "actuator_force": 0.006,  # 16-world: 5.3e-3
 }
 
 # Default fields to compare in MjData (core physics + dynamics)
