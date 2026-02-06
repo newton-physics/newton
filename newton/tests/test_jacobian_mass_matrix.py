@@ -473,6 +473,83 @@ def test_articulation_view_api(test, device):
     test.assertNotEqual(H2_np[1, 0, 0], 0.0)
 
 
+def test_floating_base_jacobian(test, device):
+    """Test Jacobian for a floating base articulation (FREE joint at root)."""
+    builder = newton.ModelBuilder()
+
+    # Base link with FREE joint (6 DOFs)
+    b_base = builder.add_link(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+        mass=2.0,
+    )
+    builder.add_shape_box(body=b_base, hx=0.2, hy=0.2, hz=0.2)
+
+    j_free = builder.add_joint_free(
+        child=b_base,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+
+    # Child link with revolute joint (1 DOF)
+    b_child = builder.add_link(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+        mass=1.0,
+    )
+    builder.add_shape_box(body=b_child, hx=0.1, hy=0.1, hz=0.1)
+
+    j_rev = builder.add_joint_revolute(
+        parent=b_base,
+        child=b_child,
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([j_free, j_rev], key="floating_robot")
+
+    model = builder.finalize(device=device)
+    state = model.state()
+
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    # FREE joint has 6 DOFs, revolute has 1 -> total 7 DOFs, 2 links
+    test.assertEqual(model.max_dofs_per_articulation, 7)
+    test.assertEqual(model.max_joints_per_articulation, 2)
+
+    J = newton.eval_jacobian(model, state)
+    test.assertEqual(J.shape, (1, 12, 7))  # 1 articulation, 2*6 rows, 7 DOFs
+
+    J_np = J.numpy()
+
+    # Base link (rows 0-5): should be affected by the 6 FREE DOFs (columns 0-5)
+    base_block = J_np[0, 0:6, 0:6]
+    test.assertNotEqual(np.abs(base_block).max(), 0.0)
+
+    # Base link should NOT be affected by the revolute DOF (column 6)
+    test.assertEqual(J_np[0, 0, 6], 0.0)
+    test.assertEqual(J_np[0, 1, 6], 0.0)
+    test.assertEqual(J_np[0, 2, 6], 0.0)
+    test.assertEqual(J_np[0, 3, 6], 0.0)
+    test.assertEqual(J_np[0, 4, 6], 0.0)
+    test.assertEqual(J_np[0, 5, 6], 0.0)
+
+    # Child link (rows 6-11): should be affected by all 7 DOFs
+    child_free_block = J_np[0, 6:12, 0:6]
+    test.assertNotEqual(np.abs(child_free_block).max(), 0.0)
+    # Revolute DOF should give angular z velocity on the child
+    test.assertNotEqual(J_np[0, 11, 6], 0.0)
+
+    # Mass matrix should be 7x7, symmetric, and positive definite
+    H = newton.eval_mass_matrix(model, state)
+    test.assertEqual(H.shape, (1, 7, 7))
+
+    H_np = H.numpy()
+    H_valid = H_np[0, :7, :7]
+    np.testing.assert_allclose(H_valid, H_valid.T, rtol=1e-5, atol=1e-6)
+
+    # Check positive definiteness via Cholesky
+    np.linalg.cholesky(H_valid)
+
+
 class TestJacobianMassMatrix(unittest.TestCase):
     pass
 
@@ -505,6 +582,7 @@ add_function_test(
 )
 add_function_test(TestJacobianMassMatrix, "test_empty_model", test_empty_model, devices=devices)
 add_function_test(TestJacobianMassMatrix, "test_articulation_view_api", test_articulation_view_api, devices=devices)
+add_function_test(TestJacobianMassMatrix, "test_floating_base_jacobian", test_floating_base_jacobian, devices=devices)
 
 
 if __name__ == "__main__":
