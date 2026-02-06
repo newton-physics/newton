@@ -144,15 +144,20 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_revolute_joint_with_disabled_rigid_body(self):
-        """
-        When a PhysicsRevoluteJoint references a body with rigidBodyEnabled = False,
-        the joint should still be parsed as REVOLUTE (not FREE).
+        """Test PhysicsRevoluteJoint parsing when a body has rigidBodyEnabled disabled.
 
-        This can happen when:
-        - An articulation exists in the USD
-        - A body has physics:rigidBodyEnabled = 0 (disabled for physics simulation)
-        - A joint is defined inside that body or references it
-        - The USD physics utilities may not include the body in articulatedBodies
+        Sets up a USD stage with an articulation containing two bodies and a
+        PhysicsRevoluteJoint.  Body0 has ``physics:rigidBodyEnabled = 0``
+        (disabled for physics simulation), while Body1 is a normal rigid body.
+        The joint, defined inside the disabled body, should still be parsed as
+        REVOLUTE (not FREE), verifying that the importer handles disabled rigid
+        bodies without demoting the joint type.
+
+        Args:
+            None.
+
+        Returns:
+            None.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
