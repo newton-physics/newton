@@ -2936,6 +2936,7 @@ class SolverMuJoCo(SolverBase):
         geom_type_mapping = {
             GeoType.SPHERE: mujoco.mjtGeom.mjGEOM_SPHERE,
             GeoType.PLANE: mujoco.mjtGeom.mjGEOM_PLANE,
+            GeoType.HFIELD: mujoco.mjtGeom.mjGEOM_HFIELD,
             GeoType.CAPSULE: mujoco.mjtGeom.mjGEOM_CAPSULE,
             GeoType.CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
             GeoType.BOX: mujoco.mjtGeom.mjGEOM_BOX,
@@ -3077,7 +3078,33 @@ class SolverMuJoCo(SolverBase):
                     "name": name,
                 }
                 tf = wp.transform(*shape_transform[shape])
-                if stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
+                if stype == GeoType.HFIELD:
+                    # Retrieve heightfield source
+                    hfield_src = model.shape_source[shape]
+                    if hfield_src is None:
+                        if verbose:
+                            print(f"Warning: Heightfield shape {shape} has no source data, skipping")
+                        continue
+
+                    # Extract heightfield properties
+                    nrow = hfield_src.nrow
+                    ncol = hfield_src.ncol
+                    size = hfield_src.size  # (size_x, size_y, size_z, size_base)
+                    elevation_data = hfield_src.data.flatten()  # MuJoCo expects 1D row-major array
+
+                    # Add hfield asset to MuJoCo spec
+                    hfield_name = f"{model.shape_key[shape]}_{shape}"
+                    spec.add_hfield(
+                        name=hfield_name,
+                        nrow=nrow,
+                        ncol=ncol,
+                        size=size,
+                        userdata=elevation_data,
+                    )
+
+                    # Set geom to reference the hfield
+                    geom_params["hfieldname"] = hfield_name
+                elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     maxhullvert = getattr(mesh_src, "maxhullvert", mesh_maxhullvert)

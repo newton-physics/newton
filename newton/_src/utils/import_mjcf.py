@@ -32,6 +32,7 @@ from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
+from .heightfield import load_heightfield_from_file
 from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
 from .mesh import load_meshes_from_file
 
@@ -278,6 +279,7 @@ def parse_mjcf(
     mesh_assets = {}
     texture_assets = {}
     material_assets = {}
+    hfield_assets = {}
     for asset in root.findall("asset"):
         for mesh in asset.findall("mesh"):
             if "file" in mesh.attrib:
@@ -307,6 +309,26 @@ def parse_mjcf(
             material_assets[mat_name] = {
                 "rgba": material.attrib.get("rgba"),
                 "texture": material.attrib.get("texture"),
+            }
+        for hfield in asset.findall("hfield"):
+            hfield_name = hfield.attrib.get("name")
+            if not hfield_name:
+                continue
+            # Parse attributes
+            nrow = int(hfield.attrib.get("nrow", "100"))
+            ncol = int(hfield.attrib.get("ncol", "100"))
+            size_str = hfield.attrib.get("size", "1 1 1 0")
+            size = tuple(np.fromstring(size_str, sep=" ", dtype=np.float32))
+            # Parse optional file path
+            file_attr = hfield.attrib.get("file")
+            file_path = None
+            if file_attr:
+                file_path = path_resolver(base_dir, file_attr)
+            hfield_assets[hfield_name] = {
+                "nrow": nrow,
+                "ncol": ncol,
+                "size": size,  # (size_x, size_y, size_z, size_base)
+                "file": file_path,
             }
 
     class_parent = {}
@@ -438,6 +460,8 @@ def parse_mjcf(
             geom_type = geom_attrib.get("type", "sphere")
             if "mesh" in geom_attrib:
                 geom_type = "mesh"
+            if "hfield" in geom_attrib:
+                geom_type = "hfield"
 
             ignore_geom = False
             for pattern in ignore_names:
@@ -613,6 +637,32 @@ def parse_mjcf(
                         **shape_kwargs,
                     )
                     shapes.append(s)
+
+            elif geom_type == "hfield" and parse_meshes:
+                hfield_name = geom_attrib.get("hfield")
+                if hfield_name is None:
+                    if verbose:
+                        print(f"Warning: hfield attribute not defined for {geom_name}, skipping")
+                    continue
+                elif hfield_name not in hfield_assets:
+                    if verbose:
+                        print(f"Warning: hfield asset '{hfield_name}' not found, skipping")
+                    continue
+
+                hfield_asset = hfield_assets[hfield_name]
+                heightfield = load_heightfield_from_file(
+                    hfield_asset["file"],
+                    hfield_asset["nrow"],
+                    hfield_asset["ncol"],
+                    size=hfield_asset["size"],
+                )
+
+                s = builder.add_shape_heightfield(
+                    xform=tf,
+                    heightfield=heightfield,
+                    **shape_kwargs,
+                )
+                shapes.append(s)
 
             elif geom_type == "plane":
                 # Use xform directly - plane has local normal (0,0,1) and passes through origin

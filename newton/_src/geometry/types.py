@@ -405,3 +405,135 @@ class Mesh:
                 )
             )
         return self._cached_hash
+
+
+class Heightfield:
+    """
+    Represents a heightfield (2D elevation grid) for terrain and large static surfaces.
+
+    Heightfields are efficient representations of terrain using a 2D grid of elevation values.
+    They are typically used for static ground surfaces in simulation and are more memory-efficient
+    than equivalent triangle meshes.
+
+    Example:
+        Create a heightfield from a 2D numpy array:
+
+        .. code-block:: python
+
+            import numpy as np
+            import newton
+
+            # Create 10x10 grid with random elevations
+            nrow, ncol = 10, 10
+            elevation_data = np.random.rand(nrow, ncol).astype(np.float32)
+
+            # Create heightfield with 5x5 meter extent, 1 meter max height
+            hfield = newton.Heightfield(
+                data=elevation_data,
+                nrow=nrow,
+                ncol=ncol,
+                size=(5.0, 5.0, 1.0, 0.0),  # (size_x, size_y, size_z, size_base)
+            )
+    """
+
+    def __init__(
+        self,
+        data: Sequence[Sequence[float]] | nparray,
+        nrow: int,
+        ncol: int,
+        size: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 0.0),
+        compute_inertia: bool = False,
+        is_solid: bool = True,
+    ):
+        """
+        Construct a Heightfield object from a 2D elevation grid.
+
+        Args:
+            data: 2D array of elevation values, shape (nrow, ncol).
+            nrow: Number of rows in the heightfield grid.
+            ncol: Number of columns in the heightfield grid.
+            size: Tuple of (size_x, size_y, size_z, size_base) defining:
+                - size_x: Horizontal extent in X direction (meters)
+                - size_y: Horizontal extent in Y direction (meters)
+                - size_z: Vertical extent / max height range (meters)
+                - size_base: Base height offset (ground level)
+                Defaults to (1.0, 1.0, 1.0, 0.0).
+            compute_inertia: If True, compute mass and inertia (default: False).
+                Heightfields are typically static, so this is usually False.
+            is_solid: If True, heightfield is assumed solid for inertia computation (default: True).
+        """
+        self._data = np.array(data, dtype=np.float32).reshape(nrow, ncol)
+        self.nrow = nrow
+        self.ncol = ncol
+        self.size = size  # (size_x, size_y, size_z, size_base)
+        self.is_solid = is_solid
+        self.has_inertia = compute_inertia
+        self.warp_array = None  # Will be set by finalize()
+        self._cached_hash = None
+
+        if compute_inertia:
+            # Approximate heightfield inertia as a box with average height
+            from .inertia import compute_box_inertia  # noqa: PLC0415
+
+            size_x, size_y, size_z, size_base = size
+            avg_height = float(np.mean(self._data)) * size_z + size_base
+            self.mass, self.com, self.I = compute_box_inertia(
+                1.0,
+                size_x,
+                size_y,
+                max(avg_height, 1e-6),
+            )
+        else:
+            self.I = wp.mat33(np.eye(3))
+            self.mass = 0.0  # Static by default
+            self.com = wp.vec3()
+
+    @property
+    def data(self):
+        """Get the elevation data as a 2D numpy array."""
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        """Set the elevation data from a 2D array."""
+        self._data = np.array(value, dtype=np.float32).reshape(self.nrow, self.ncol)
+        self._cached_hash = None
+
+    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
+        """
+        Construct a simulation-ready Warp array from the heightfield data and return its ID.
+
+        Args:
+            device: Device on which to allocate heightfield buffers.
+            requires_grad: If True, data is allocated with gradient tracking.
+
+        Returns:
+            The ID (pointer) of the simulation-ready Warp array.
+        """
+        with wp.ScopedDevice(device):
+            # Create 2D Warp array from elevation data
+            self.warp_array = wp.array(self._data, requires_grad=requires_grad, dtype=wp.float32)
+            return self.warp_array.ptr
+
+    @override
+    def __hash__(self) -> int:
+        """
+        Compute a hash of the heightfield data for use in caching.
+
+        The hash considers the elevation data, grid dimensions, size parameters,
+        and solid flag. Uses a cached hash if available.
+
+        Returns:
+            The hash value for the heightfield.
+        """
+        if self._cached_hash is None:
+            self._cached_hash = hash(
+                (
+                    tuple(self._data.flatten()),
+                    self.nrow,
+                    self.ncol,
+                    self.size,
+                    self.is_solid,
+                )
+            )
+        return self._cached_hash

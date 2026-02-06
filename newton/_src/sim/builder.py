@@ -4558,6 +4558,54 @@ class ModelBuilder:
             key=key,
         )
 
+    def add_shape_heightfield(
+        self,
+        body: int = -1,
+        xform: Transform | None = None,
+        heightfield: Any | None = None,  # Heightfield type, using Any to avoid circular import
+        scale: Vec3 | None = None,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a heightfield (2D elevation grid) collision shape to the model.
+
+        Heightfields are efficient representations of terrain using a 2D grid of elevation values.
+        They are typically used for static ground surfaces and are more memory-efficient than
+        equivalent triangle meshes. Heightfields are usually attached to the static world (body=-1).
+
+        Args:
+            body (int): The index of the parent body this shape belongs to. Use -1 for world-static heightfields (typical). Defaults to `-1`.
+            xform (Transform | None): The transform of the heightfield in the world or parent body's frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
+            scale (Vec3 | None): The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
+
+        Returns:
+            int: The index of the newly added shape.
+
+        Note:
+            Heightfields are typically static (body=-1). While they can be attached to moving bodies,
+            this is uncommon and may have limitations in some solvers.
+        """
+        if cfg is None:
+            cfg = self.default_shape_cfg
+
+        # Heightfields are typically static, similar to planes
+        return self.add_shape(
+            body=body,
+            type=GeoType.HFIELD,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            src=heightfield,
+            is_static=(body == -1),  # Static if attached to world
+            key=key,
+            custom_attributes=custom_attributes,
+        )
+
     def add_site(
         self,
         body: int,
