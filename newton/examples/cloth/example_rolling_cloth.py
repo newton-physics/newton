@@ -201,7 +201,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.iterations = 10
+        self.iterations = 12
 
         # Cloth parameters
         self.cloth_thickness = cloth_thickness
@@ -309,7 +309,7 @@ class Example:
 
         # Finalize model
         self.model = builder.finalize()
-        self.model.soft_contact_ke = 2.0e5
+        self.model.soft_contact_ke = 5.0e5
         self.model.soft_contact_kd = 1.0e-5
         self.model.soft_contact_mu = 0.1
 
