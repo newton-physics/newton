@@ -72,12 +72,7 @@ These are changes/workarounds made to get tests passing that should be revisited
    - UR5e: jnt_actfrclimited, jnt_actfrcrange (Newton enables by default)
    - TODO: Match MuJoCo's default behavior for jnt_actfrclimited
 
-8. SOLVER DEFAULTS
-   - Tests override Newton defaults to use MuJoCo's: solver=Newton, iterations=100
-   - Newton's own defaults: solver=CG, iterations=20, ls_iterations=10
-   - This is intentional for equivalence testing
-
-9. TIMESTEP FROM MODEL
+8. TIMESTEP FROM MODEL
    - Newton's MJCF parser doesn't extract timestep from <option> tag yet
    - Tests extract timestep from native MuJoCo model after loading
    - TODO: Parse timestep from MJCF <option timestep="..."/> into Newton model
@@ -1278,14 +1273,7 @@ class TestMenagerieBase(unittest.TestCase):
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-        # Use MuJoCo defaults for solver options to match native behavior
-        # TODO: Newton's SolverMuJoCo defaults differ from MuJoCo (solver=cg/20/10 vs newton/100/50)
-        newton_solver = SolverMuJoCo(
-            newton_model,
-            solver="newton",  # MuJoCo default (vs Newton's "cg")
-            iterations=100,  # MuJoCo default (vs Newton's 20)
-            ls_iterations=50,  # MuJoCo default (vs Newton's 10)
-        )
+        newton_solver = SolverMuJoCo(newton_model)
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
