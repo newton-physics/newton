@@ -37,12 +37,10 @@ FOLLOW-UP ITEMS / KNOWN WORKAROUNDS
 These are changes/workarounds made to get tests passing that should be revisited:
 
 1. FRICTION DEFAULTS
-   - Newton's MJCF parser sets friction to match MuJoCo defaults when not specified
-   - DONE: mu=1.0, torsional_friction=0.005, rolling_friction=0.0001
+   - DONE: Newton's MJCF parser sets friction to match MuJoCo defaults when not specified
 
 2. SELF-COLLISIONS
-   - Using enable_self_collisions=True to match MuJoCo behavior
-   - TODO: Verify this is the correct default for all robots
+   - DONE: enable_self_collisions=True is now the default in import_mjcf.py
 
 3. VISUAL GEOMS
    - Using <compiler discardvisual="true"/> for native MuJoCo
