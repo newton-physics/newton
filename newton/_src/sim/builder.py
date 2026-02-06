@@ -64,9 +64,6 @@ from .joints import (
     ActuatorMode,
     EqType,
     JointType,
-    get_joint_constraint_count,
-    get_joint_dof_count,
-    infer_actuator_mode,
 )
 from .model import Model
 
@@ -152,7 +149,7 @@ class ModelBuilder:
 
         density: float = 1000.0
         """The density of the shape material."""
-        ke: float = 1.0e3
+        ke: float = 2.5e3
         """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
         kd: float = 100.0
         """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
@@ -374,7 +371,8 @@ class ModelBuilder:
         """Variable name to expose on the Model. Must be a valid Python identifier."""
 
         dtype: type
-        """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
+        """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays,
+        or ``str`` for string attributes that remain as Python lists."""
 
         frequency: Model.AttributeFrequency | str
         """Frequency category that determines how the attribute is indexed in the Model.
@@ -439,13 +437,13 @@ class ModelBuilder:
 
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
-            # ensure dtype is a valid Warp dtype
-            try:
-                _size = wp.types.type_size_in_bytes(self.dtype)
-            except TypeError as e:
-                raise ValueError(
-                    f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype that is compatible with Warp arrays."
-                ) from e
+            # Allow str dtype for string attributes (stored as Python lists, not warp arrays)
+            if self.dtype is not str:
+                # ensure dtype is a valid Warp dtype
+                try:
+                    _size = wp.types.type_size_in_bytes(self.dtype)
+                except TypeError as e:
+                    raise ValueError(f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype or str.") from e
 
             # Set dtype-specific default value if none was provided
             if self.default is None:
@@ -464,6 +462,9 @@ class ModelBuilder:
         @staticmethod
         def _default_for_dtype(dtype: object) -> Any:
             """Get default value for dtype when not specified."""
+            # string type gets empty string
+            if dtype is str:
+                return ""
             # quaternions get identity quaternion
             if wp.types.type_is_quaternion(dtype):
                 return wp.quat_identity(dtype._wp_scalar_type_)
@@ -512,8 +513,13 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
-        def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
-            """Build wp.array from count, dtype, default and overrides."""
+        def build_array(
+            self, count: int, device: Devicelike | None = None, requires_grad: bool = False
+        ) -> wp.array | list:
+            """Build wp.array (or list for string dtype) from count, dtype, default and overrides.
+
+            For string dtype, returns a Python list[str] instead of a Warp array.
+            """
             if self.values is None or len(self.values) == 0:
                 # No values provided, use default for all
                 arr = [self.default] * count
@@ -525,6 +531,11 @@ class ModelBuilder:
             else:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
                 arr = [self.values.get(i, self.default) for i in range(count)]
+
+            # String dtype: return as Python list instead of warp array
+            if self.dtype is str:
+                return arr
+
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -638,6 +649,7 @@ class ModelBuilder:
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
 
+        self._requested_contact_attributes: set[str] = set()
         self._requested_state_attributes: set[str] = set()
 
         # springs
@@ -696,6 +708,7 @@ class ModelBuilder:
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
         self.joint_qd = []
+        self.joint_cts = []
         self.joint_f = []
 
         self.joint_type = []
@@ -766,6 +779,17 @@ class ModelBuilder:
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
         self.equality_constraint_world = []
+
+        # per-world entity start indices
+        self.particle_world_start = []
+        self.body_world_start = []
+        self.shape_world_start = []
+        self.joint_world_start = []
+        self.articulation_world_start = []
+        self.equality_constraint_world_start = []
+        self.joint_dof_world_start = []
+        self.joint_coord_world_start = []
+        self.joint_constraint_world_start = []
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
@@ -1129,44 +1153,18 @@ class ModelBuilder:
                     cts_end = self.joint_constraint_count
 
                 cts_count = cts_end - cts_start
-
-                # Check if value is a dict (mapping cts index to value)
-                if isinstance(value, dict):
-                    # Dict format: only specified cts indices have values, rest use defaults
-                    for cts_offset, cts_value in value.items():
-                        if not isinstance(cts_offset, int):
-                            raise TypeError(
-                                f"JOINT_CONSTRAINT attribute '{attr_key}' dict keys must be integers (constraint indices), got {type(cts_offset)}"
-                            )
-                        if cts_offset < 0 or cts_offset >= cts_count:
-                            raise ValueError(
-                                f"JOINT_CONSTRAINT attribute '{attr_key}' has invalid constraint index {cts_offset} (joint has {cts_count} constraints)"
-                            )
-                        single_attr = {attr_key: cts_value}
-                        self._process_custom_attributes(
-                            entity_index=cts_start + cts_offset,
-                            custom_attrs=single_attr,
-                            expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
-                        )
-                else:
-                    # List format or single value for single-constraint joints
-                    value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)) and cts_count == 1:
-                        value_sanitized = [value_sanitized]
-
-                    if len(value_sanitized) != cts_count:
-                        raise ValueError(
-                            f"JOINT_CONSTRAINT attribute '{attr_key}' has {len(value_sanitized)} values but joint has {cts_count} constraints"
-                        )
-
-                    # Apply each value to its corresponding constraint
-                    for i, cts_value in enumerate(value_sanitized):
-                        single_attr = {attr_key: cts_value}
-                        self._process_custom_attributes(
-                            entity_index=cts_start + i,
-                            custom_attrs=single_attr,
-                            expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
-                        )
+                apply_indexed_values(
+                    value=value,
+                    attr_key=attr_key,
+                    expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
+                    index_start=cts_start,
+                    index_count=cts_count,
+                    index_label="constraint",
+                    count_label="constraints",
+                    length_error_template=(
+                        "JOINT_CONSTRAINT attribute '{attr_key}' has {actual} values but joint has {expected} constraints"
+                    ),
+                )
 
             else:
                 raise ValueError(
@@ -1464,7 +1462,7 @@ class ModelBuilder:
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
                 :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -1556,7 +1554,7 @@ class ModelBuilder:
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
             force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
                 :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -1909,6 +1907,7 @@ class ModelBuilder:
             # No world context (add_builder called directly), copy scalar gravity
             self.gravity = builder.gravity
 
+        self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
         # explicitly resolve the transform multiplication function to avoid
@@ -1927,6 +1926,7 @@ class ModelBuilder:
         start_joint_idx = self.joint_count
         start_joint_dof_idx = self.joint_dof_count
         start_joint_coord_idx = self.joint_coord_count
+        start_joint_constraint_idx = self.joint_constraint_count
         start_articulation_idx = self.articulation_count
         start_equality_constraint_idx = len(self.equality_constraint_type)
         start_edge_idx = self.edge_count
@@ -2096,6 +2096,7 @@ class ModelBuilder:
             "joint_dof_dim",
             "joint_key",
             "joint_qd",
+            "joint_cts",
             "joint_f",
             "joint_target_pos",
             "joint_target_vel",
@@ -2155,6 +2156,7 @@ class ModelBuilder:
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
+        self.joint_constraint_count += builder.joint_constraint_count
 
         # Merge custom attributes from the sub-builder
         # Shared offset map for both frequency and references
@@ -2165,6 +2167,7 @@ class ModelBuilder:
             "joint": start_joint_idx,
             "joint_dof": start_joint_dof_idx,
             "joint_coord": start_joint_coord_idx,
+            "joint_constraint": start_joint_constraint_idx,
             "articulation": start_articulation_idx,
             "equality_constraint": start_equality_constraint_idx,
             "particle": start_particle_idx,
@@ -2564,7 +2567,7 @@ class ModelBuilder:
                 # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
                 # This ensures freejoints (gains=0) get NONE, while joints with gains get appropriate mode.
                 has_drive = dim.target_ke != 0.0 or dim.target_kd != 0.0
-                mode = int(infer_actuator_mode(dim.target_ke, dim.target_kd, has_drive=has_drive))
+                mode = int(ActuatorMode.from_gains(dim.target_ke, dim.target_kd, has_drive=has_drive))
 
             # Store per-DOF actuator properties
             self.joint_act_mode.append(mode)
@@ -2590,14 +2593,16 @@ class ModelBuilder:
         for dim in angular_axes:
             add_axis_dim(dim)
 
-        dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
-        cts_count = get_joint_constraint_count(joint_type, len(linear_axes) + len(angular_axes))
+        dof_count, coord_count = joint_type.dof_count(len(linear_axes) + len(angular_axes))
+        cts_count = joint_type.constraint_count(len(linear_axes) + len(angular_axes))
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
+        for _ in range(cts_count):
+            self.joint_cts.append(0.0)
 
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
@@ -3529,14 +3534,17 @@ class ModelBuilder:
             if i < self.joint_count - 1:
                 q_dim = self.joint_q_start[i + 1] - q_start
                 qd_dim = self.joint_qd_start[i + 1] - qd_start
+                cts_dim = self.joint_cts_start[i + 1] - cts_start
             else:
                 q_dim = len(self.joint_q) - q_start
                 qd_dim = len(self.joint_qd) - qd_start
+                cts_dim = len(self.joint_cts) - cts_start
 
             data = {
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
+                "cts": self.joint_cts[cts_start : cts_start + cts_dim],
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
@@ -3759,8 +3767,10 @@ class ModelBuilder:
         self.joint_child.clear()
         self.joint_q.clear()
         self.joint_qd.clear()
+        self.joint_cts.clear()
         self.joint_q_start.clear()
         self.joint_qd_start.clear()
+        self.joint_cts_start.clear()
         self.joint_enabled.clear()
         self.joint_armature.clear()
         self.joint_X_p.clear()
@@ -3786,8 +3796,10 @@ class ModelBuilder:
             self.joint_child.append(body_remap[joint["child"]])
             self.joint_q_start.append(len(self.joint_q))
             self.joint_qd_start.append(len(self.joint_qd))
+            self.joint_cts_start.append(len(self.joint_cts))
             self.joint_q.extend(joint["q"])
             self.joint_qd.extend(joint["qd"])
+            self.joint_cts.extend(joint["cts"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
             self.joint_X_p.append(joint["parent_xform"])
@@ -3816,6 +3828,9 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+
+        # Reset the constraint count based on the retained joints
+        self.joint_constraint_count = len(self.joint_cts)
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies
         for i in range(len(self.equality_constraint_body1)):
@@ -4084,9 +4099,13 @@ class ModelBuilder:
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
             # compute position and rotation from plane equation
+            # For plane equation ax + by + cz + d = 0, the closest point to origin is -(d/||n||) * (n/||n||)
+            # where n = (a, b, c). Both the normal and d need to be normalized.
             normal = np.array(plane[:3])
-            normal /= np.linalg.norm(normal)
-            pos = plane[3] * normal
+            norm = np.linalg.norm(normal)
+            normal /= norm
+            d_normalized = plane[3] / norm
+            pos = -d_normalized * normal
             # compute rotation from local +Z axis to plane normal
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
             xform = wp.transform(pos, rot)
@@ -4106,12 +4125,14 @@ class ModelBuilder:
 
     def add_ground_plane(
         self,
+        height: float = 0.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
 
         Args:
+            height (float): The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
@@ -4119,7 +4140,7 @@ class ModelBuilder:
             int: The index of the newly added shape.
         """
         return self.add_shape_plane(
-            plane=(*self.up_vector, 0.0),
+            plane=(*self.up_vector, -height),
             width=0.0,
             length=0.0,
             cfg=cfg,
@@ -5856,7 +5877,7 @@ class ModelBuilder:
 
         end_tri = len(self.tri_indices)
 
-        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
 
         edge_indices = np.fromiter(
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
@@ -6268,6 +6289,19 @@ class ModelBuilder:
                 joint = self.add_joint_free(child=body_id)
                 self.add_articulation([joint])
 
+    def request_contact_attributes(self, *attributes: str) -> None:
+        """
+        Request that specific contact attributes be allocated when creating a Contacts object from the finalized Model.
+
+        Args:
+            *attributes: Variable number of attribute names (strings).
+        """
+        # Local import to avoid adding more module-level dependencies in this large file.
+        from .contacts import Contacts  # noqa: PLC0415
+
+        Contacts.validate_extended_attributes(attributes)
+        self._requested_contact_attributes.update(attributes)
+
     def request_state_attributes(self, *attributes: str) -> None:
         """
         Request that specific state attributes be allocated when creating a State object from the finalized Model.
@@ -6280,7 +6314,7 @@ class ModelBuilder:
         # Local import to avoid adding more module-level dependencies in this large file.
         from .state import State  # noqa: PLC0415
 
-        State.validate_extended_state_attributes(attributes)
+        State.validate_extended_attributes(attributes)
         self._requested_state_attributes.update(attributes)
 
     def set_coloring(self, particle_color_groups):
@@ -6543,13 +6577,483 @@ class ModelBuilder:
             )
         return len(shapes_with_bad_margin) == 0
 
+    def _validate_structure(self) -> None:
+        """Validate structural invariants of the model.
+
+        This method performs consolidated validation of all structural constraints,
+        using vectorized numpy operations for efficiency:
+
+        - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
+        - Joint references: equality_constraint_joint1/2
+        - Self-referential joints: joint_parent[i] != joint_child[i]
+        - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start
+        - Array length consistency: per-DOF and per-coord arrays
+
+        Raises:
+            ValueError: If any structural validation check fails.
+        """
+        body_count = self.body_count
+        joint_count = self.joint_count
+
+        # Validate shape_body references: must be in [-1, body_count-1]
+        if self.shape_count > 0:
+            shape_body = np.array(self.shape_body, dtype=np.int32)
+            invalid_mask = (shape_body < -1) | (shape_body >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                shape_key = self.shape_key[idx] or f"shape_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in shape_body: shape {idx} ('{shape_key}') references body {shape_body[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+        # Validate joint_parent references: must be in [-1, body_count-1]
+        if joint_count > 0:
+            joint_parent = np.array(self.joint_parent, dtype=np.int32)
+            invalid_mask = (joint_parent < -1) | (joint_parent >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in joint_parent: joint {idx} ('{joint_key}') references parent body {joint_parent[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            # Validate joint_child references: must be in [0, body_count-1] (child cannot be world)
+            joint_child = np.array(self.joint_child, dtype=np.int32)
+            invalid_mask = (joint_child < 0) | (joint_child >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in joint_child: joint {idx} ('{joint_key}') references child body {joint_child[idx]}, "
+                    f"but valid range is [0, {body_count - 1}] (body_count={body_count}). Child cannot be the world (-1)."
+                )
+
+            # Validate self-referential joints: parent != child
+            self_ref_mask = joint_parent == joint_child
+            if np.any(self_ref_mask):
+                invalid_indices = np.where(self_ref_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Self-referential joint: joint {idx} ('{joint_key}') has parent and child both set to body {joint_parent[idx]}."
+                )
+
+        # Validate equality constraint body references
+        equality_count = len(self.equality_constraint_type)
+        if equality_count > 0:
+            eq_body1 = np.array(self.equality_constraint_body1, dtype=np.int32)
+            invalid_mask = (eq_body1 < -1) | (eq_body1 >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{eq_key}') references body {eq_body1[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            eq_body2 = np.array(self.equality_constraint_body2, dtype=np.int32)
+            invalid_mask = (eq_body2 < -1) | (eq_body2 >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{eq_key}') references body {eq_body2[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            # Validate equality constraint joint references
+            eq_joint1 = np.array(self.equality_constraint_joint1, dtype=np.int32)
+            invalid_mask = (eq_joint1 < -1) | (eq_joint1 >= joint_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{eq_key}') references joint {eq_joint1[idx]}, "
+                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
+                )
+
+            eq_joint2 = np.array(self.equality_constraint_joint2, dtype=np.int32)
+            invalid_mask = (eq_joint2 < -1) | (eq_joint2 >= joint_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{eq_key}') references joint {eq_joint2[idx]}, "
+                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
+                )
+
+        # Validate start array monotonicity
+        if joint_count > 0:
+            joint_q_start = np.array(self.joint_q_start, dtype=np.int32)
+            if len(joint_q_start) > 1:
+                diffs = np.diff(joint_q_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"joint_q_start is not monotonically increasing: "
+                        f"joint_q_start[{idx}]={joint_q_start[idx]} > joint_q_start[{idx + 1}]={joint_q_start[idx + 1]}."
+                    )
+
+            joint_qd_start = np.array(self.joint_qd_start, dtype=np.int32)
+            if len(joint_qd_start) > 1:
+                diffs = np.diff(joint_qd_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"joint_qd_start is not monotonically increasing: "
+                        f"joint_qd_start[{idx}]={joint_qd_start[idx]} > joint_qd_start[{idx + 1}]={joint_qd_start[idx + 1]}."
+                    )
+
+        articulation_count = self.articulation_count
+        if articulation_count > 0:
+            articulation_start = np.array(self.articulation_start, dtype=np.int32)
+            if len(articulation_start) > 1:
+                diffs = np.diff(articulation_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"articulation_start is not monotonically increasing: "
+                        f"articulation_start[{idx}]={articulation_start[idx]} > articulation_start[{idx + 1}]={articulation_start[idx + 1]}."
+                    )
+
+        # Validate array length consistency
+        if joint_count > 0:
+            # Per-DOF arrays should have length == joint_dof_count
+            dof_arrays = [
+                ("joint_axis", self.joint_axis),
+                ("joint_armature", self.joint_armature),
+                ("joint_target_ke", self.joint_target_ke),
+                ("joint_target_kd", self.joint_target_kd),
+                ("joint_limit_lower", self.joint_limit_lower),
+                ("joint_limit_upper", self.joint_limit_upper),
+                ("joint_limit_ke", self.joint_limit_ke),
+                ("joint_limit_kd", self.joint_limit_kd),
+                ("joint_target_pos", self.joint_target_pos),
+                ("joint_target_vel", self.joint_target_vel),
+                ("joint_effort_limit", self.joint_effort_limit),
+                ("joint_velocity_limit", self.joint_velocity_limit),
+                ("joint_friction", self.joint_friction),
+                ("joint_act_mode", self.joint_act_mode),
+            ]
+            for name, arr in dof_arrays:
+                if len(arr) != self.joint_dof_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {self.joint_dof_count} (joint_dof_count)."
+                    )
+
+            # Per-coord arrays should have length == joint_coord_count
+            coord_arrays = [
+                ("joint_q", self.joint_q),
+            ]
+            for name, arr in coord_arrays:
+                if len(arr) != self.joint_coord_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {self.joint_coord_count} (joint_coord_count)."
+                    )
+
+            # Start arrays should have length == joint_count
+            start_arrays = [
+                ("joint_q_start", self.joint_q_start),
+                ("joint_qd_start", self.joint_qd_start),
+            ]
+            for name, arr in start_arrays:
+                if len(arr) != joint_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {joint_count} (joint_count)."
+                    )
+
+    def validate_joint_ordering(self) -> bool:
+        """Validate that joints within articulations follow DFS topological ordering.
+
+        This check ensures that joints are ordered such that parent bodies are processed
+        before child bodies within each articulation. This ordering is required by some
+        solvers (e.g., MuJoCo) for correct kinematic computations.
+
+        This method is public and opt-in because the check has O(n log n) complexity
+        due to topological sorting. It is skipped by default in finalize().
+
+        Warns:
+            UserWarning: If joints are not in DFS topological order.
+
+        Returns:
+            bool: True if joints are correctly ordered, False otherwise.
+        """
+        from ..utils import topological_sort  # noqa: PLC0415
+
+        if self.joint_count == 0:
+            return True
+
+        joint_parent = np.array(self.joint_parent, dtype=np.int32)
+        joint_child = np.array(self.joint_child, dtype=np.int32)
+        joint_articulation = np.array(self.joint_articulation, dtype=np.int32)
+
+        # Get unique articulations (excluding -1 which means not in any articulation)
+        articulation_ids = np.unique(joint_articulation)
+        articulation_ids = articulation_ids[articulation_ids >= 0]
+
+        all_ordered = True
+
+        for art_id in articulation_ids:
+            # Get joints in this articulation
+            art_joints = np.where(joint_articulation == art_id)[0]
+            if len(art_joints) <= 1:
+                continue
+
+            # Build joint list for topological sort
+            joints_simple = [(int(joint_parent[i]), int(joint_child[i])) for i in art_joints]
+
+            try:
+                joint_order = topological_sort(joints_simple, use_dfs=True, custom_indices=list(art_joints))
+
+                # Check if current order matches expected DFS order
+                if any(joint_order[i] != art_joints[i] for i in range(len(joints_simple))):
+                    art_key = (
+                        self.articulation_key[art_id]
+                        if art_id < len(self.articulation_key)
+                        else f"articulation_{art_id}"
+                    )
+                    warnings.warn(
+                        f"Joints in articulation '{art_key}' (id={art_id}) are not in DFS topological order. "
+                        f"This may cause issues with some solvers (e.g., MuJoCo). "
+                        f"Current order: {list(art_joints)}, expected: {joint_order}.",
+                        stacklevel=2,
+                    )
+                    all_ordered = False
+            except ValueError as e:
+                # Topological sort failed (e.g., cycle detected)
+                art_key = (
+                    self.articulation_key[art_id] if art_id < len(self.articulation_key) else f"articulation_{art_id}"
+                )
+                warnings.warn(
+                    f"Failed to validate joint ordering for articulation '{art_key}' (id={art_id}): {e}",
+                    stacklevel=2,
+                )
+                all_ordered = False
+
+        return all_ordered
+
+    def _build_world_starts(self):
+        """
+        Constructs the per-world entity start indices.
+
+        This method validates that the per-world start index lists for various entities
+        (particles, bodies, shapes, joints, articulations, equality constraints and joint
+        coordinates/DOFs/constraints) are cumulative and match the total counts of those
+        entities. Moreover, it appends the start of tail-end global entities and the
+        overall total counts to the end of each start index lists.
+
+        The format of the start index lists is as follows (where `*` can be `body`, `shape`, `joint`, etc.):
+            .. code-block:: python
+
+                world_*_start = [ start_world_0, start_world_1, ..., start_world_N , start_global_tail, total_count]
+
+        This allows retrieval of per-world counts using:
+            .. code-block:: python
+
+                global_*_count = start_world_0 + (total_count - start_global_tail)
+                world_*_count[w] = world_*_start[w + 1] - world_*_start[w]
+
+        e.g.
+            .. code-block:: python
+
+                body_world = [-1, -1, 0, 0, ..., 1, 1, ..., N - 1, N - 1, ..., -1, -1, -1, ...]
+                body_world_start = [2, 15, 25, ..., 50, 60, 72]
+                #          world :  -1 |  0 |  1   ... |  N-1 | -1 |  total
+        """
+        # List of all world starts of entities
+        world_entity_start_arrays = [
+            (self.particle_world_start, self.particle_count, self.particle_world, "particle"),
+            (self.body_world_start, self.body_count, self.body_world, "body"),
+            (self.shape_world_start, self.shape_count, self.shape_world, "shape"),
+            (self.joint_world_start, self.joint_count, self.joint_world, "joint"),
+            (self.articulation_world_start, self.articulation_count, self.articulation_world, "articulation"),
+            (
+                self.equality_constraint_world_start,
+                len(self.equality_constraint_type),
+                self.equality_constraint_world,
+                "equality constraint",
+            ),
+        ]
+
+        def build_entity_start_array(
+            entity_count: int, entity_world: list[int], world_entity_start: list[int], name: str
+        ):
+            # Ensure that entity_world has length equal to entity_count
+            if len(entity_world) != entity_count:
+                raise ValueError(
+                    f"World array for {name}s has incorrect length: expected {entity_count}, found {len(entity_world)}."
+                )
+
+            # Initialize world_entity_start with zeros
+            world_entity_start.clear()
+            world_entity_start.extend([0] * (self.num_worlds + 2))
+
+            # Count global entities at the front of the entity_world array
+            front_global_entity_count = 0
+            for w in entity_world:
+                if w == -1:
+                    front_global_entity_count += 1
+                else:
+                    break
+            world_entity_start[0] = front_global_entity_count
+
+            # Compute per-world cumulative counts
+            entity_world_np = np.asarray(entity_world, dtype=np.int32)
+            world_counts = np.bincount(entity_world_np[entity_world_np >= 0], minlength=self.num_worlds)
+            for w in range(self.num_worlds):
+                world_entity_start[w + 1] = world_entity_start[w] + int(world_counts[w])
+
+            # Set the last element to the total entity counts over all worlds in the model
+            world_entity_start[-1] = entity_count
+
+        # Check that all world offset indices are cumulative and match counts
+        for world_start_array, total_count, entity_world_array, name in world_entity_start_arrays:
+            # First build the start lists by appending tail-end global and total entity counts
+            build_entity_start_array(total_count, entity_world_array, world_start_array, name)
+
+            # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
+            expected_length = self.num_worlds + 2
+            if len(world_start_array) != expected_length:
+                raise ValueError(
+                    f"World start indices for {name}s have incorrect length: "
+                    f"expected {expected_length}, found {len(world_start_array)}."
+                )
+
+            # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
+            sum_of_counts = world_start_array[0]
+            for w in range(self.num_worlds + 1):
+                start_idx = world_start_array[w]
+                end_idx = world_start_array[w + 1]
+                count = end_idx - start_idx
+                if count < 0:
+                    raise ValueError(
+                        f"Invalid world start indices for {name}s: world {w} has negative count ({count}). "
+                        f"Start index: {start_idx}, end index: {end_idx}."
+                    )
+                sum_of_counts += count
+
+            # Ensure the sum of per-world counts equals the total count
+            if sum_of_counts != total_count:
+                raise ValueError(
+                    f"Sum of per-world {name} counts does not equal total count: "
+                    f"expected {total_count}, found {sum_of_counts}."
+                )
+
+            # Ensure that the last entry equals the total count
+            if world_start_array[-1] != total_count:
+                raise ValueError(
+                    f"World start indices for {name}s do not match total count: "
+                    f"expected final index {total_count}, found {world_start_array[-1]}."
+                )
+
+        # List of world starts of joints spaces, i.e. coords/DOFs/constraints
+        world_joint_space_start_arrays = [
+            (self.joint_dof_world_start, self.joint_qd_start, self.joint_dof_count, "joint DOF"),
+            (self.joint_coord_world_start, self.joint_q_start, self.joint_coord_count, "joint coordinate"),
+            (self.joint_constraint_world_start, self.joint_cts_start, self.joint_constraint_count, "joint constraint"),
+        ]
+
+        def build_joint_space_start_array(
+            space_count: int, joint_space_start: list[int], world_space_start: list[int], name: str
+        ):
+            # Ensure that joint_space_start has length equal to self.joint_count
+            if len(joint_space_start) != self.joint_count:
+                raise ValueError(
+                    f"Joint start array for {name}s has incorrect length: "
+                    f"expected {self.joint_count}, found {len(joint_space_start)}."
+                )
+
+            # Initialize world_space_start with zeros
+            world_space_start.clear()
+            world_space_start.extend([0] * (self.num_worlds + 2))
+
+            # Extend joint_space_start with total count to enable computing per-world counts
+            joint_space_start_ext = copy.copy(joint_space_start)
+            joint_space_start_ext.append(space_count)
+
+            # Count global entities at the front of the entity_world array
+            front_global_space_count = 0
+            for j, w in enumerate(self.joint_world):
+                if w == -1:
+                    front_global_space_count += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
+                else:
+                    break
+
+            # Compute per-world cumulative joint space counts to initialize world_space_start
+            for j, w in enumerate(self.joint_world):
+                if w >= 0:
+                    world_space_start[w + 1] += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
+
+            # Convert per-world counts to cumulative start indices
+            world_space_start[0] += front_global_space_count
+            for w in range(self.num_worlds):
+                world_space_start[w + 1] += world_space_start[w]
+
+            # Add total (i.e. final) entity counts to the per-world start indices
+            world_space_start[-1] = space_count
+
+        # Check that all world offset indices are cumulative and match counts
+        for world_start_array, space_start_array, total_count, name in world_joint_space_start_arrays:
+            # First finalize the start array by appending tail-end global and total entity counts
+            build_joint_space_start_array(total_count, space_start_array, world_start_array, name)
+
+            # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
+            expected_length = self.num_worlds + 2
+            if len(world_start_array) != expected_length:
+                raise ValueError(
+                    f"World start indices for {name}s have incorrect length: "
+                    f"expected {expected_length}, found {len(world_start_array)}."
+                )
+
+            # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
+            sum_of_counts = world_start_array[0]
+            for w in range(self.num_worlds + 1):
+                start_idx = world_start_array[w]
+                end_idx = world_start_array[w + 1]
+                count = end_idx - start_idx
+                if count < 0:
+                    raise ValueError(
+                        f"Invalid world start indices for {name}s: world {w} has negative count ({count}). "
+                        f"Start index: {start_idx}, end index: {end_idx}."
+                    )
+                sum_of_counts += count
+
+            # Ensure the sum of per-world counts equals the total count
+            if sum_of_counts != total_count:
+                raise ValueError(
+                    f"Sum of per-world {name} counts does not equal total count: "
+                    f"expected {total_count}, found {sum_of_counts}."
+                )
+
+            # Ensure that the last entry equals the total count
+            if world_start_array[-1] != total_count:
+                raise ValueError(
+                    f"World start indices for {name}s do not match total count: "
+                    f"expected final index {total_count}, found {world_start_array[-1]}."
+                )
+
     def finalize(
         self,
         device: Devicelike | None = None,
         requires_grad: bool = False,
+        skip_all_validations: bool = False,
         skip_validation_worlds: bool = False,
         skip_validation_joints: bool = False,
         skip_validation_shapes: bool = False,
+        skip_validation_structure: bool = False,
+        skip_validation_joint_ordering: bool = True,
     ) -> Model:
         """
         Finalize the builder and create a concrete :class:`~newton.Model` for simulation.
@@ -6561,9 +7065,15 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            skip_all_validations: If True, skips all validation checks. Use for maximum performance when
+                you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips validation of joints belonging to an articulation. Default is False.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
+                array lengths, monotonicity). Default is False.
+            skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
+                articulations. Default is True (opt-in) because this check has O(n log n) complexity.
 
         Returns:
             Model: A fully constructed Model object containing all simulation data on the specified device.
@@ -6574,22 +7084,34 @@ class ModelBuilder:
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
         """
-        from .collide import count_rigid_contact_points  # noqa: PLC0415
 
         # ensure the world count is set correctly
         self.num_worlds = max(1, self.num_worlds)
 
         # validate world ordering and contiguity
-        if not skip_validation_worlds:
+        if not skip_all_validations and not skip_validation_worlds:
             self._validate_world_ordering()
 
         # validate joints belong to an articulation
-        if not skip_validation_joints:
+        if not skip_all_validations and not skip_validation_joints:
             self._validate_joints()
 
         # validate shapes have valid contact margins
-        if not skip_validation_shapes:
+        if not skip_all_validations and not skip_validation_shapes:
             self._validate_shapes()
+
+        # validate structural invariants (body/joint references, array lengths)
+        if not skip_all_validations and not skip_validation_structure:
+            self._validate_structure()
+
+        # validate DFS topological joint ordering (opt-in, skipped by default)
+        if not skip_all_validations and not skip_validation_joint_ordering:
+            self.validate_joint_ordering()
+
+        # construct world starts by ensuring they are cumulative and appending
+        # tail-end global counts and sum total counts over the entire model.
+        # This method also performs relevant validation checks on the start.
+        self._build_world_starts()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -6601,6 +7123,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m.request_contact_attributes(*self._requested_contact_attributes)
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
 
@@ -6697,21 +7220,56 @@ class ModelBuilder:
             voxel_resolution = []
             voxel_budget = 100  # Maximum voxels per shape for contact reduction
 
-            # Cache per unique (mesh_id, scale) to avoid redundant AABB computation
-            # for instanced meshes (e.g., 256 robots sharing the same mesh sources)
-            mesh_aabb_cache = {}
+            # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
+            # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
+            shape_aabb_cache = {}
 
-            for shape_type, shape_src, shape_scale in zip(
-                self.shape_type, self.shape_source, self.shape_scale, strict=True
-            ):
-                if shape_type == GeoType.MESH and shape_src is not None:
-                    # Use mesh id and scale as cache key
-                    cache_key = (id(shape_src), tuple(shape_scale))
+            def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget):
+                """Compute voxel resolution from AABB with given budget."""
+                size = aabb_upper - aabb_lower
+                size = np.maximum(size, 1e-6)  # Avoid division by zero
 
-                    if cache_key in mesh_aabb_cache:
-                        # Reuse cached result
-                        aabb_lower, aabb_upper, nx, ny, nz = mesh_aabb_cache[cache_key]
+                # Target voxel size for approximately cubic voxels
+                volume = size[0] * size[1] * size[2]
+                v = (volume / voxel_budget) ** (1.0 / 3.0)
+                v = max(v, 1e-6)
+
+                # Initial resolution
+                nx = max(1, round(size[0] / v))
+                ny = max(1, round(size[1] / v))
+                nz = max(1, round(size[2] / v))
+
+                # Reduce until under budget (reduce largest axis first for more cubic voxels)
+                while nx * ny * nz > voxel_budget:
+                    if nx >= ny and nx >= nz and nx > 1:
+                        nx -= 1
+                    elif ny >= nz and ny > 1:
+                        ny -= 1
+                    elif nz > 1:
+                        nz -= 1
                     else:
+                        break
+
+                return nx, ny, nz
+
+            for shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
+                zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
+            ):
+                # Get margin to expand AABB (SDF extends beyond shape bounds by margin + thickness)
+                margin = self.shape_contact_margin[shape_idx] + self.shape_thickness[shape_idx]
+
+                # Create cache key based on shape type and parameters
+                if shape_type == GeoType.MESH and shape_src is not None:
+                    cache_key = (shape_type, id(shape_src), tuple(shape_scale), margin)
+                else:
+                    cache_key = (shape_type, tuple(shape_scale), margin)
+
+                # Check cache first
+                if cache_key in shape_aabb_cache:
+                    aabb_lower, aabb_upper, nx, ny, nz = shape_aabb_cache[cache_key]
+                else:
+                    # Compute AABB based on shape type
+                    if shape_type == GeoType.MESH and shape_src is not None:
                         # Compute local AABB from mesh vertices
                         vertices = shape_src.vertices
                         aabb_lower = vertices.min(axis=0)
@@ -6721,38 +7279,59 @@ class ModelBuilder:
                         aabb_lower = aabb_lower * np.array(shape_scale)
                         aabb_upper = aabb_upper * np.array(shape_scale)
 
-                        # Compute voxel resolution
-                        size = aabb_upper - aabb_lower
-                        size = np.maximum(size, 1e-6)  # Avoid division by zero
+                        # Expand by margin (SDF extends beyond mesh bounds)
+                        aabb_lower = aabb_lower - margin
+                        aabb_upper = aabb_upper + margin
 
-                        # Target voxel size for approximately cubic voxels
-                        volume = size[0] * size[1] * size[2]
-                        v = (volume / voxel_budget) ** (1.0 / 3.0)
-                        v = max(v, 1e-6)
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
-                        # Initial resolution
-                        nx = max(1, round(size[0] / v))
-                        ny = max(1, round(size[1] / v))
-                        nz = max(1, round(size[2] / v))
+                    elif shape_type == GeoType.BOX:
+                        # Box: shape_scale = (hx, hy, hz) half-extents
+                        hx, hy, hz = shape_scale
+                        aabb_lower = np.array([-hx - margin, -hy - margin, -hz - margin])
+                        aabb_upper = np.array([hx + margin, hy + margin, hz + margin])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
-                        # Reduce until under budget (reduce largest axis first for more cubic voxels)
-                        while nx * ny * nz > voxel_budget:
-                            if nx >= ny and nx >= nz and nx > 1:
-                                nx -= 1
-                            elif ny >= nz and ny > 1:
-                                ny -= 1
-                            elif nz > 1:
-                                nz -= 1
-                            else:
-                                break
+                    elif shape_type == GeoType.SPHERE:
+                        # Sphere: shape_scale = (radius, radius, radius)
+                        r = shape_scale[0] + margin
+                        aabb_lower = np.array([-r, -r, -r])
+                        aabb_upper = np.array([r, r, r])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
-                        # Cache the result
-                        mesh_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
-                else:
-                    # Non-mesh shapes: use a default 1x1x1 voxel grid (effectively no voxel binning)
-                    aabb_lower = np.array([-1.0, -1.0, -1.0])
-                    aabb_upper = np.array([1.0, 1.0, 1.0])
-                    nx, ny, nz = 1, 1, 1
+                    elif shape_type == GeoType.CAPSULE:
+                        # Capsule: shape_scale = (radius, half_height, radius)
+                        # Capsule is along Z axis with hemispherical caps (matches SDF in kernels.py)
+                        r, half_height, _ = shape_scale
+                        r_expanded = r + margin
+                        aabb_lower = np.array([-r_expanded, -r_expanded, -half_height - r_expanded])
+                        aabb_upper = np.array([r_expanded, r_expanded, half_height + r_expanded])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.CYLINDER:
+                        # Cylinder: shape_scale = (radius, half_height, radius)
+                        # Cylinder is along Z axis (matches SDF in kernels.py)
+                        r, half_height, _ = shape_scale
+                        aabb_lower = np.array([-r - margin, -r - margin, -half_height - margin])
+                        aabb_upper = np.array([r + margin, r + margin, half_height + margin])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.CONE:
+                        # Cone: shape_scale = (radius, half_height, radius)
+                        # Cone is along Z axis (matches SDF in kernels.py)
+                        r, half_height, _ = shape_scale
+                        aabb_lower = np.array([-r - margin, -r - margin, -half_height - margin])
+                        aabb_upper = np.array([r + margin, r + margin, half_height + margin])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    else:
+                        # Other shapes (PLANE, HFIELD, etc.): use default unit cube with 1x1x1 voxel grid
+                        aabb_lower = np.array([-1.0, -1.0, -1.0])
+                        aabb_upper = np.array([1.0, 1.0, 1.0])
+                        nx, ny, nz = 1, 1, 1
+
+                    # Cache the result for reuse by identical shapes
+                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
 
                 local_aabb_lower.append(aabb_lower)
                 local_aabb_upper.append(aabb_upper)
@@ -7127,6 +7706,7 @@ class ModelBuilder:
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
 
+            # ---------------------
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
             m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
@@ -7143,6 +7723,19 @@ class ModelBuilder:
             m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
             m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
 
+            # ---------------------
+            # per-world start indices
+            m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
+            m.body_world_start = wp.array(self.body_world_start, dtype=wp.int32)
+            m.shape_world_start = wp.array(self.shape_world_start, dtype=wp.int32)
+            m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
+            m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
+            m.equality_constraint_world_start = wp.array(self.equality_constraint_world_start, dtype=wp.int32)
+            m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
+            m.joint_coord_world_start = wp.array(self.joint_coord_world_start, dtype=wp.int32)
+            m.joint_constraint_world_start = wp.array(self.joint_constraint_world_start, dtype=wp.int32)
+
+            # ---------------------
             # counts
             m.joint_count = self.joint_count
             m.joint_dof_count = self.joint_dof_count
@@ -7160,11 +7753,10 @@ class ModelBuilder:
             m.equality_constraint_count = len(self.equality_constraint_type)
 
             self.find_shape_contact_pairs(m)
-            m.rigid_contact_max = count_rigid_contact_points(m)
+            m.rigid_contact_max = m._count_rigid_contact_points()
 
             # enable ground plane
             m.up_axis = self.up_axis
-            m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity - create per-world gravity array for multi-world support
             if self.world_gravity:
@@ -7269,8 +7861,8 @@ class ModelBuilder:
                 if count == 0:
                     continue
 
-                wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
-                m.add_attribute(custom_attr.name, wp_arr, freq_key, custom_attr.assignment, custom_attr.namespace)
+                result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
+                m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
             return m
 

@@ -17,7 +17,7 @@
 # Example IK Franka (positions + rotations)
 #
 # Inverse kinematics on a Franka FR3 arm targeting the TCP (fr3_hand_tcp).
-# - Single IKPositionObjective + IKRotationObjective
+# - Single IKObjectivePosition + IKObjectiveRotation
 # - Gizmo controls the TCP target (with ViewerGL.log_gizmo)
 #
 # Command: python -m newton.examples ik_franka
@@ -74,21 +74,21 @@ class Example:
             return wp.vec4(q[0], q[1], q[2], q[3])
 
         # Position objective
-        self.pos_obj = ik.IKPositionObjective(
+        self.pos_obj = ik.IKObjectivePosition(
             link_index=self.ee_index,
             link_offset=wp.vec3(0.0, 0.0, 0.0),
             target_positions=wp.array([wp.transform_get_translation(self.ee_tf)], dtype=wp.vec3),
         )
 
         # Rotation objective
-        self.rot_obj = ik.IKRotationObjective(
+        self.rot_obj = ik.IKObjectiveRotation(
             link_index=self.ee_index,
             link_offset_rotation=wp.quat_identity(),
             target_rotations=wp.array([_q2v4(wp.transform_get_rotation(self.ee_tf))], dtype=wp.vec4),
         )
 
         # Joint limit objective
-        self.obj_joint_limits = ik.IKJointLimitObjective(
+        self.obj_joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.model.joint_limit_lower,
             joint_limit_upper=self.model.joint_limit_upper,
             weight=10.0,
@@ -103,7 +103,7 @@ class Example:
             n_problems=1,
             objectives=[self.pos_obj, self.rot_obj, self.obj_joint_limits],
             lambda_initial=0.1,
-            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
 
         self.capture()

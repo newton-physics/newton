@@ -27,12 +27,13 @@ import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
-from ..geometry import MESH_MAXHULLVERT, Mesh, ShapeFlags
+from ..geometry import MESH_MAXHULLVERT, ShapeFlags
 from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
+from .mesh import load_meshes_from_file
 
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
@@ -256,8 +257,10 @@ def parse_mjcf(
         use_degrees = compiler.attrib.get("angle", "degree").lower() == "degree"
         euler_seq = ["xyz".index(c) for c in compiler.attrib.get("eulerseq", "xyz").lower()]
         mesh_dir = compiler.attrib.get("meshdir", ".")
+        texture_dir = compiler.attrib.get("texturedir", mesh_dir)
     else:
         mesh_dir = "."
+        texture_dir = "."
 
     # Parse MJCF option tag for ONCE and WORLD frequency custom attributes (solver options)
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -273,6 +276,8 @@ def parse_mjcf(
                     builder.custom_attributes[key].values[0] = value
 
     mesh_assets = {}
+    texture_assets = {}
+    material_assets = {}
     for asset in root.findall("asset"):
         for mesh in asset.findall("mesh"):
             if "file" in mesh.attrib:
@@ -286,6 +291,23 @@ def parse_mjcf(
                 # parse maxhullvert attribute, default to mesh_maxhullvert if not specified
                 maxhullvert = int(mesh.attrib.get("maxhullvert", str(mesh_maxhullvert)))
                 mesh_assets[name] = {"file": fname, "scale": s, "maxhullvert": maxhullvert}
+        for texture in asset.findall("texture"):
+            tex_name = texture.attrib.get("name")
+            tex_file = texture.attrib.get("file")
+            if not tex_name or not tex_file:
+                continue
+            tex_path = os.path.join(texture_dir, tex_file)
+            if not os.path.isabs(tex_path):
+                tex_path = os.path.abspath(os.path.join(mjcf_dirname, tex_path))
+            texture_assets[tex_name] = {"file": tex_path}
+        for material in asset.findall("material"):
+            mat_name = material.attrib.get("name")
+            if not mat_name:
+                continue
+            material_assets[mat_name] = {
+                "rgba": material.attrib.get("rgba"),
+                "texture": material.attrib.get("texture"),
+            }
 
     class_parent = {}
     class_children = {}
@@ -454,6 +476,16 @@ def parse_mjcf(
                 if len(friction_values) >= 3:
                     shape_cfg.rolling_friction = float(friction_values[2])
 
+            # Parse MJCF solref for contact stiffness/damping (only if explicitly specified)
+            # Like friction, only override Newton defaults if solref is authored in MJCF
+            if "solref" in geom_attrib:
+                solref = parse_vec(geom_attrib, "solref", (0.02, 1.0))
+                geom_ke, geom_kd = solref_to_stiffness_damping(solref)
+                if geom_ke is not None:
+                    shape_cfg.ke = geom_ke
+                if geom_kd is not None:
+                    shape_cfg.kd = geom_kd
+
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
                 "key": geom_name,
@@ -461,6 +493,27 @@ def parse_mjcf(
                 "cfg": shape_cfg,
                 "custom_attributes": custom_attributes,
             }
+
+            material_name = geom_attrib.get("material")
+            material_info = material_assets.get(material_name, {})
+            rgba = geom_attrib.get("rgba", material_info.get("rgba"))
+            material_color = None
+            if rgba is not None:
+                rgba_values = np.fromstring(rgba, sep=" ", dtype=np.float32)
+                if len(rgba_values) >= 3:
+                    material_color = (
+                        float(rgba_values[0]),
+                        float(rgba_values[1]),
+                        float(rgba_values[2]),
+                    )
+
+            texture = None
+            texture_name = material_info.get("texture")
+            if texture_name:
+                texture_asset = texture_assets.get(texture_name)
+                if texture_asset and "file" in texture_asset:
+                    # Pass texture path directly for lazy loading by the viewer
+                    texture = texture_asset["file"]
 
             if geom_type == "sphere":
                 s = builder.add_shape_sphere(
@@ -481,12 +534,16 @@ def parse_mjcf(
                 shapes.append(s)
 
             elif geom_type == "mesh" and parse_meshes:
-                import trimesh  # noqa: PLC0415
-
-                # use force='mesh' to load the mesh as a trimesh object
-                # with baked in transforms, e.g. from COLLADA files
+                mesh_attrib = geom_attrib.get("mesh")
+                if mesh_attrib is None:
+                    if verbose:
+                        print(f"Warning: mesh attribute not defined for {geom_name}, skipping")
+                    continue
+                elif mesh_attrib not in mesh_assets:
+                    if verbose:
+                        print(f"Warning: mesh asset {geom_attrib['mesh']} not found, skipping")
+                    continue
                 stl_file = mesh_assets[geom_attrib["mesh"]]["file"]
-                m = trimesh.load(stl_file, force="mesh")
                 if "mesh" in geom_defaults:
                     mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[geom_attrib["mesh"]]["scale"])
                 else:
@@ -498,36 +555,18 @@ def parse_mjcf(
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
 
-                if hasattr(m, "geometry"):
-                    # multiple meshes are contained in a scene
-                    for m_geom in m.geometry.values():
-                        m_vertices = np.array(m_geom.vertices, dtype=np.float32) * scaling
-                        m_faces = np.array(m_geom.faces.flatten(), dtype=np.int32)
-                        m_mesh = Mesh(
-                            m_vertices,
-                            m_faces,
-                            m.vertex_normals,
-                            color=np.array(m.visual.main_color) / 255.0,
-                            maxhullvert=maxhullvert,
-                        )
-                        s = builder.add_shape_mesh(
-                            xform=tf,
-                            mesh=m_mesh,
-                            **shape_kwargs,
-                        )
-                        shapes.append(s)
-                else:
-                    # a single mesh
-                    m_vertices = np.array(m.vertices, dtype=np.float32) * scaling
-                    m_faces = np.array(m.faces.flatten(), dtype=np.int32)
-                    m_color = np.array(m.visual.main_color) / 255.0 if hasattr(m.visual, "main_color") else None
-                    m_mesh = Mesh(
-                        m_vertices,
-                        m_faces,
-                        m.vertex_normals,
-                        color=m_color,
-                        maxhullvert=maxhullvert,
-                    )
+                m_meshes = load_meshes_from_file(
+                    stl_file,
+                    scale=scaling,
+                    maxhullvert=maxhullvert,
+                    override_color=material_color,
+                    override_texture=texture,
+                )
+                for m_mesh in m_meshes:
+                    if m_mesh.texture is not None and m_mesh.uvs is None:
+                        if verbose:
+                            print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
+                        m_mesh.texture = None
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
@@ -586,11 +625,10 @@ def parse_mjcf(
                     shapes.append(s)
 
             elif geom_type == "plane":
-                # Use tf (which has incoming_xform applied) for plane normal/distance
-                normal = wp.quat_rotate(tf.q, wp.vec3(0.0, 0.0, 1.0))
-                p = wp.dot(tf.p, normal)
+                # Use xform directly - plane has local normal (0,0,1) and passes through origin
+                # The transform tf positions and orients the plane in world space
                 s = builder.add_shape_plane(
-                    plane=(*normal, p),
+                    xform=tf,
                     width=geom_size[0],
                     length=geom_size[1],
                     **shape_kwargs,
@@ -1630,19 +1668,14 @@ def parse_mjcf(
         and attr.name not in ("tendon_world", "tendon_joint_adr", "tendon_joint_num", "tendon_joint", "tendon_coef")
     ]
 
-    def parse_tendons(tendon_section, tendon_counter: int) -> int:
+    def parse_tendons(tendon_section):
         """Parse tendons from a tendon section.
 
         Args:
             tendon_section: XML element containing tendon definitions.
-            tendon_counter: Running counter for stable tendon indices.
-
-        Returns:
-            Updated tendon counter after processing all tendons in this section.
         """
         for fixed in tendon_section.findall("fixed"):
             tendon_name = fixed.attrib.get("name", "")
-            tendon_idx = tendon_counter
 
             # Parse joint elements within this fixed tendon
             joint_entries = []
@@ -1699,19 +1732,16 @@ def parse_mjcf(
             for attr in builder_custom_attr_tendon:
                 tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
 
-            builder.add_custom_values(**tendon_values)
+            indices = builder.add_custom_values(**tendon_values)
 
-            # Track tendon name for actuator resolution
+            # Track tendon name for actuator resolution (get index from add_custom_values return)
             if tendon_name:
+                tendon_idx = indices.get("mujoco:tendon_world", 0)
                 tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
 
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_key[j]}*{c}" for j, c in joint_entries)
                 print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
-
-            tendon_counter += 1
-
-        return tendon_counter
 
     # -----------------
     # parse actuators
@@ -1877,6 +1907,22 @@ def parse_mjcf(
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
 
+            # Resolve MuJoCo limited flags based on range values
+            # MuJoCo behavior: if *limited is not explicitly set and range[0]<range[1], then limited=True
+            # Use merged_attrib to respect defaults for both presence check and range values
+            for limited_attr, range_attr, limited_key in [
+                ("ctrllimited", "ctrlrange", "mujoco:actuator_ctrllimited"),
+                ("forcelimited", "forcerange", "mujoco:actuator_forcelimited"),
+                ("actlimited", "actrange", "mujoco:actuator_actlimited"),
+            ]:
+                # Only auto-resolve if *limited was not explicitly specified (including defaults)
+                if limited_attr not in merged_attrib:
+                    range_str = merged_attrib.get(range_attr, "")
+                    if range_str:
+                        range_vals = [float(x) for x in range_str.split()[:2]]
+                        if len(range_vals) == 2 and range_vals[0] < range_vals[1]:
+                            parsed_attrs[limited_key] = 1
+
             # Build full values dict
             actuator_values: dict[str, Any] = {}
             for attr in builder_custom_attr_actuator:
@@ -1914,9 +1960,8 @@ def parse_mjcf(
     if has_tendon_attrs:
         # Find all sections marked <tendon></tendon>
         tendon_sections = root.findall(".//tendon")
-        tendon_counter = 0
         for tendon_section in tendon_sections:
-            tendon_counter = parse_tendons(tendon_section, tendon_counter)
+            parse_tendons(tendon_section)
 
     actuator_section = root.find("actuator")
     if actuator_section is not None:
