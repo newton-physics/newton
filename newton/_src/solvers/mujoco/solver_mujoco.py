@@ -903,29 +903,39 @@ class SolverMuJoCo(SolverBase):
                 usd_value_transformer=resolve_dof_name,
             )
         )
-        return
-        # Then we get the target USD path for each actuator so that we can later resolve
+
+        # Then we get the target USD path for each actuator so that we can resolve
         # the DOF index from the path given the Model.mujoco.dof_name list
-        def resolve_actuator_target_path(_: str, context: dict[str, Any]):
+        def resolve_actuator_transmission_index(_: str, context: dict[str, Any]) -> wp.vec2i:
             """For each actuator, return the target USD path."""
             prim = context["prim"]
             rel = prim.GetRelationship("mjc:target")
 
+            dof_names_dict: dict[int, str] = builder.custom_attributes["mujoco:dof_name"].values
+            dof_names = list(dof_names_dict.values())
+
             # Get the first target as a string
             target_paths = rel.GetTargets()
-            target_str = str(target_paths[0]) if target_paths else None
-            return target_str
+            if len(target_paths) == 0:
+                raise ValueError(f"MjcActuator {prim.GetPath()} is missing a 'mjc:target' relationship")
+            target_path = str(target_paths[0])
+
+            try:
+                dof_index = dof_names.index(target_path)
+            except ValueError as e:
+                raise ValueError(f"Unable to resolve joint dof {target_path} for MjcActuator {prim.GetPath()}") from e
+            return wp.vec2i(wp.int32(dof_index), wp.int32(0))  # second entry is unused for joint transmission
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="actuator_target_path",
+                name="actuator_trnid",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
-                dtype=str,
-                default="",
+                dtype=wp.vec2i,
+                default=wp.vec2i(-1, -1),
                 namespace="mujoco",
                 usd_attribute_name="*",
-                usd_value_transformer=resolve_actuator_target_path,
+                usd_value_transformer=resolve_actuator_transmission_index,
             )
         )
 
@@ -975,17 +985,6 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="biastype",
                 mjcf_value_transformer=parse_biastype,
-            )
-        )
-
-        builder.add_custom_attribute(
-            ModelBuilder.CustomAttribute(
-                name="actuator_trnid",
-                frequency="mujoco:actuator",
-                assignment=AttributeAssignment.MODEL,
-                dtype=wp.vec2i,
-                default=wp.vec2i(-1, -1),
-                namespace="mujoco",
             )
         )
 
@@ -1378,7 +1377,7 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_key",
-                frequency="tendon",
+                frequency="mujoco:tendon",
                 dtype=str,
                 default="",
                 namespace="mujoco",

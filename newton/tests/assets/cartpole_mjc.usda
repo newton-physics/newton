@@ -197,90 +197,6 @@ def Xform "test_cartpole" (
                 float physics:upperLimit = 1
             }
         }
-
-        def Xform "mocap1" (
-            apiSchemas = ["PhysicsRigidBodyAPI"]
-        )
-        {
-            bool physics:kinematicEnabled = 1
-            quatf xformOp:orient = (1, 0, 0, 0)
-            float3 xformOp:scale = (1, 1, 1)
-            double3 xformOp:translate = (1, 0, 0.5)
-            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
-            def Cube "mocap_cube" (
-                apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
-            )
-            {
-                float3[] extent = [(-1, -1, -1), (1, 1, 1)]
-                rel material:binding:physics = </test_cartpole/Physics/PhysicsMaterial>
-                color3f[] primvars:displayColor = [(1, 0, 0)] (
-                    interpolation = "constant"
-                )
-                int[] primvars:displayColor:indices = None
-                float[] primvars:displayOpacity = [0.5] (
-                    interpolation = "constant"
-                )
-                int[] primvars:displayOpacity:indices = None
-                double size = 2
-                quatf xformOp:orient = (1, 0, 0, 0)
-                float3 xformOp:scale = (0.05, 0.05, 0.05)
-                double3 xformOp:translate = (0, 0, 0)
-                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-            }
-
-            def PhysicsFixedJoint "PhysicsFixedJoint"
-            {
-                rel physics:body0 = </test_cartpole>
-                rel physics:body1 = </test_cartpole/Geometry/mocap1>
-                point3f physics:localPos0 = (1, 0, 0.5)
-                point3f physics:localPos1 = (0, 0, 0)
-                quatf physics:localRot0 = (1, 0, 0, 0)
-                quatf physics:localRot1 = (1, 0, 0, 0)
-            }
-        }
-
-        def Xform "mocap2" (
-            apiSchemas = ["PhysicsRigidBodyAPI"]
-        )
-        {
-            bool physics:kinematicEnabled = 1
-            quatf xformOp:orient = (1, 0, 0, 0)
-            float3 xformOp:scale = (1, 1, 1)
-            double3 xformOp:translate = (-1, 0, 0.5)
-            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-
-            def Sphere "mocap_sphere" (
-                apiSchemas = ["PhysicsCollisionAPI", "MjcCollisionAPI", "MaterialBindingAPI"]
-            )
-            {
-                float3[] extent = [(-0.05, -0.05, -0.05), (0.05, 0.05, 0.05)]
-                rel material:binding:physics = </test_cartpole/Physics/PhysicsMaterial>
-                color3f[] primvars:displayColor = [(0, 1, 0)] (
-                    interpolation = "constant"
-                )
-                int[] primvars:displayColor:indices = None
-                float[] primvars:displayOpacity = [0.5] (
-                    interpolation = "constant"
-                )
-                int[] primvars:displayOpacity:indices = None
-                double radius = 0.05
-                quatf xformOp:orient = (1, 0, 0, 0)
-                float3 xformOp:scale = (1, 1, 1)
-                double3 xformOp:translate = (0, 0, 0)
-                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
-            }
-
-            def PhysicsFixedJoint "PhysicsFixedJoint"
-            {
-                rel physics:body0 = </test_cartpole>
-                rel physics:body1 = </test_cartpole/Geometry/mocap2>
-                point3f physics:localPos0 = (-1, 0, 0.5)
-                point3f physics:localPos1 = (0, 0, 0)
-                quatf physics:localRot0 = (1, 0, 0, 0)
-                quatf physics:localRot1 = (1, 0, 0, 0)
-            }
-        }
     }
 
     def Scope "Physics"
@@ -297,8 +213,8 @@ def Xform "test_cartpole" (
         def MjcActuator "slide"
         {
             uniform token mjc:ctrlLimited = "true"
-            uniform double mjc:ctrlRange:max = 1
-            uniform double mjc:ctrlRange:min = -1
+            uniform double mjc:ctrlRange:max = 3
+            uniform double mjc:ctrlRange:min = -3
             uniform double[] mjc:gear = [50, 0, 0, 0, 0, 0]
             rel mjc:target = </test_cartpole/Geometry/cart/slider>
         }
@@ -306,7 +222,7 @@ def Xform "test_cartpole" (
 }
 
 def PhysicsScene "PhysicsScene" (
-    apiSchemas = ["MjcSceneAPI", "PhysxSceneAPI"]
+    apiSchemas = ["MjcSceneAPI"]
 )
 {
     uniform token mjc:compiler:inertiaFromGeom = "true"
