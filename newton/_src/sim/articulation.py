@@ -818,6 +818,12 @@ def jcalc_motion_subspace(
 
     This populates joint_S_s with the motion subspace vectors for each DoF,
     which represent how each joint coordinate affects the spatial velocity.
+
+    Note:
+        CABLE joints are not currently supported. CABLE joints have complex,
+        configuration-dependent motion subspaces (dynamic stretch direction and
+        isotropic angular DOF) and are primarily designed for VBD solver.
+        If encountered, their Jacobian columns will remain zero.
     """
     if type == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
