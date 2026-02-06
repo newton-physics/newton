@@ -135,9 +135,11 @@ class Example:
     def test_final(self):
         # Test that particles are in a reasonable range (soft body may settle or deform)
         # We check that they haven't exploded or collapsed completely
-        # 4 grids, each roughly 1.2 x 0.4 x 0.4 in size, positioned along Z-axis starting at (0, 1, 2)
-        p_lower = wp.vec3(-0.5, 0.0, 1.0)
-        p_upper = wp.vec3(1.5, 2.5, 5.0)
+        # 4 grids, each roughly 1.2 x 0.4 x 0.4 in size, positioned along Y-axis
+        # Initial positions: Y from 1.0 to ~3.2, X from 0 to 1.2, Z around 1.0 to 1.4
+        # With fix_left=True, grids hang and sag significantly towards the ground
+        p_lower = wp.vec3(-1.0, -0.5, 0.0)
+        p_upper = wp.vec3(3.0, 4.0, 3.0)
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",

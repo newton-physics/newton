@@ -723,5 +723,18 @@ add_example_test(
 )
 
 
+class TestSoftbodyExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestSoftbodyExamples,
+    name="softbody.example_softbody_hanging",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
+    use_viewer=True,
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
