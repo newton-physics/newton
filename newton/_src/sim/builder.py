@@ -1147,7 +1147,10 @@ class ModelBuilder:
         For DOF and COORD attributes, values can be:
         - A list with length matching the joint's DOF/coordinate count (all DOFs get values)
         - A dict mapping DOF/coord indices to values (only specified indices get values, rest use defaults)
-        - For single-DOF joints with JOINT_DOF frequency: a single Warp vector/matrix value
+        - A single scalar value, which is broadcast (replicated) to all DOFs/coordinates of the joint
+
+        For joints with zero DOFs (e.g., fixed joints), JOINT_DOF attributes are silently skipped
+        regardless of the value passed.
 
         When using dict format, unspecified indices will be filled with the attribute's default value during finalization.
 
@@ -1167,6 +1170,10 @@ class ModelBuilder:
             count_label: str,
             length_error_template: str,
         ) -> None:
+            # For joints with zero DOFs/coords (e.g., fixed joints), there is nothing to assign.
+            if index_count == 0:
+                return
+
             if isinstance(value, dict):
                 for offset, offset_value in value.items():
                     if not isinstance(offset, int):
@@ -1187,8 +1194,9 @@ class ModelBuilder:
                 return
 
             value_sanitized = value
-            if not isinstance(value_sanitized, (list, tuple)) and index_count == 1:
-                value_sanitized = [value_sanitized]
+            if not isinstance(value_sanitized, (list, tuple)):
+                # Broadcast a single scalar value to all DOFs/coords of the joint.
+                value_sanitized = [value_sanitized] * index_count
 
             actual = len(value_sanitized)
             if actual != index_count:
@@ -2620,7 +2628,7 @@ class ModelBuilder:
                 If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT_DOF` or :attr:`Model.AttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT` require a single value to be defined.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT_DOF` or :attr:`Model.AttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) a single scalar value that is broadcast to all DOFs/coordinates of the joint. For joints with zero DOFs (e.g., fixed joints), JOINT_DOF attributes are silently skipped. Custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.

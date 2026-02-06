@@ -883,12 +883,46 @@ class SolverMuJoCo(SolverBase):
             return wp.vec2(rmin, rmax)
 
         def resolve_dof_name(_: str, context: dict[str, Any]):
-            """For each DOF, return the prim path of the DOF."""
+            """For each DOF, return the prim path(s) of the DOF(s).
+
+            Returns a list of DOF name strings whose length must match the joint's DOF count:
+            - PhysicsRevoluteJoint / PhysicsPrismaticJoint: 1 DOF → [prim_path]
+            - PhysicsFixedJoint: 0 DOFs → [] (empty list, no DOFs to name)
+            - PhysicsSphericalJoint: 3 DOFs → [prim_path:rotX, prim_path:rotY, prim_path:rotZ]
+            - PhysicsD6Joint: N DOFs → one entry per free axis, determined from limit attributes
+            """
             prim = context["prim"]
-            if prim.GetTypeName() in ["PhysicsRevoluteJoint", "PhysicsPrismaticJoint"]:
-                return [str(prim.GetPath())]
-            warnings.warn(f"Only single-dof joints are supported for now: {prim.GetTypeName()}", stacklevel=2)
-            return str(prim.GetPath())
+            prim_type = prim.GetTypeName()
+            prim_path = str(prim.GetPath())
+
+            if prim_type in ["PhysicsRevoluteJoint", "PhysicsPrismaticJoint"]:
+                return [prim_path]
+
+            if prim_type == "PhysicsFixedJoint":
+                return []
+
+            if prim_type == "PhysicsSphericalJoint":
+                # Spherical (ball) joints always have 3 rotational DOFs
+                return [f"{prim_path}:rotX", f"{prim_path}:rotY", f"{prim_path}:rotZ"]
+
+            if prim_type == "PhysicsD6Joint":
+                # Determine free axes from limit attributes on the prim.
+                # An axis is a DOF when its limit low < high.
+                # Linear axes are enumerated first, then angular, to match the DOF
+                # ordering used by add_joint_d6 (linear_axes before angular_axes).
+                dof_names = []
+                for axis_name in ["transX", "transY", "transZ", "rotX", "rotY", "rotZ"]:
+                    low_attr = prim.GetAttribute(f"limit:{axis_name}:physics:low")
+                    high_attr = prim.GetAttribute(f"limit:{axis_name}:physics:high")
+                    if low_attr and high_attr:
+                        low = low_attr.Get()
+                        high = high_attr.Get()
+                        if low is not None and high is not None and low < high:
+                            dof_names.append(f"{prim_path}:{axis_name}")
+                return dof_names
+
+            warnings.warn(f"Unsupported joint type for DOF name resolution: {prim_type}", stacklevel=2)
+            return []
 
         # First we get a list of all joint DOF names from USD
         builder.add_custom_attribute(

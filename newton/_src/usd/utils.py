@@ -531,7 +531,11 @@ def get_custom_attribute_values(
         if usd_attr_name == "*":
             # Just apply the transformer to all prims of this frequency
             if attr.usd_value_transformer is not None:
-                out[attr.key] = attr.usd_value_transformer(None, {"prim": prim, "attr": attr})
+                value = attr.usd_value_transformer(None, {"prim": prim, "attr": attr})
+                if value is None:
+                    # Treat None as "undefined" to allow defaults to be applied later.
+                    continue
+                out[attr.key] = value
             continue
         usd_attr = prim.GetAttribute(usd_attr_name)
         if usd_attr is not None and usd_attr.HasAuthoredValue():
