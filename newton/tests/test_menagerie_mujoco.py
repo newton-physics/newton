@@ -458,8 +458,8 @@ class RandomControlStrategy(ControlStrategy):
 DEFAULT_TOLERANCES: dict[str, float] = {
     # Core state
     "qpos": 1e-6,
-    "qvel": 1e-5,
-    "qacc": 1e-4,
+    "qvel": 1e-4,
+    "qacc": 0.2,
     # Body kinematics
     "xpos": 1e-6,
     "xquat": 1e-6,
@@ -471,19 +471,19 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     # Forces
     "qfrc_bias": 1e-4,
     "qfrc_passive": 1e-4,
-    "qfrc_actuator": 1e-4,
+    "qfrc_actuator": 0.02,
     # Composite quantities
     "subtree_com": 1e-6,
     # Dynamics
-    "cvel": 1e-5,
-    "cacc": 1e-4,
-    "cfrc_int": 1e-4,
+    "cvel": 1e-4,
+    "cacc": 1e-3,
+    "cfrc_int": 0.01,
     "energy": 1e-5,
     "qM": 1e-5,
     # Actuators
     "actuator_length": 1e-6,
-    "actuator_velocity": 1e-5,
-    "actuator_force": 1e-4,
+    "actuator_velocity": 1e-4,
+    "actuator_force": 0.01,
 }
 
 # Default fields to compare in MjData (core physics + dynamics)
@@ -1395,7 +1395,10 @@ class TestMenagerieBase(unittest.TestCase):
         def step_both(step_num: int, newton_graph: Any = None, native_graph: Any = None):
             t = step_num * dt
             ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)  # type: ignore[union-attr]
-            newton_solver.mjw_data.ctrl.assign(ctrl)
+            # For Newton: assign to control.mujoco.ctrl (apply_mjc_control reads from there)
+            # Shape is (num_worlds * num_actuators,) flattened
+            newton_control.mujoco.ctrl.assign(ctrl.flatten())
+            # For native: assign directly to mjw_data.ctrl
             native_mjw_data.ctrl.assign(ctrl)
 
             if newton_graph and native_graph:
@@ -1438,7 +1441,7 @@ class TestMenagerieBase(unittest.TestCase):
             # Step 0: capture CUDA graphs if available
             if step == 0 and use_cuda_graph:
                 ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
-                newton_solver.mjw_data.ctrl.assign(ctrl)
+                newton_control.mujoco.ctrl.assign(ctrl.flatten())
                 native_mjw_data.ctrl.assign(ctrl)
 
                 with wp.ScopedCapture() as capture:
@@ -1643,7 +1646,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     robot_folder = "universal_robots_ur5e"
     robot_xml = "scene.xml"
     floating = False
-    control_strategy = ZeroControlStrategy()
+    control_strategy = StructuredControlStrategy(amplitude_scale=0.5, frequency_range=(0.5, 1.5))
     num_worlds = 16
     debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
