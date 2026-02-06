@@ -7582,38 +7582,43 @@ class ModelBuilder:
             # ---------------------
             # springs
 
-            m.spring_indices = wp.array(self.spring_indices, dtype=wp.int32)
-            m.spring_rest_length = wp.array(self.spring_rest_length, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_stiffness = wp.array(self.spring_stiffness, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_damping = wp.array(self.spring_damping, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_control = wp.array(self.spring_control, dtype=wp.float32, requires_grad=requires_grad)
+            def _to_wp_array(data, dtype, requires_grad):
+                if len(data) == 0:
+                    return None
+                return wp.array(data, dtype=dtype, requires_grad=requires_grad)
+
+            m.spring_indices = _to_wp_array(self.spring_indices, wp.int32, requires_grad=False)
+            m.spring_rest_length = _to_wp_array(self.spring_rest_length, wp.float32, requires_grad=requires_grad)
+            m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
+            m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
+            m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # triangles
 
-            m.tri_indices = wp.array(self.tri_indices, dtype=wp.int32)
-            m.tri_poses = wp.array(self.tri_poses, dtype=wp.mat22, requires_grad=requires_grad)
-            m.tri_activations = wp.array(self.tri_activations, dtype=wp.float32, requires_grad=requires_grad)
-            m.tri_materials = wp.array(self.tri_materials, dtype=wp.float32, requires_grad=requires_grad)
-            m.tri_areas = wp.array(self.tri_areas, dtype=wp.float32, requires_grad=requires_grad)
+            m.tri_indices = _to_wp_array(self.tri_indices, wp.int32, requires_grad=False)
+            m.tri_poses = _to_wp_array(self.tri_poses, wp.mat22, requires_grad=requires_grad)
+            m.tri_activations = _to_wp_array(self.tri_activations, wp.float32, requires_grad=requires_grad)
+            m.tri_materials = _to_wp_array(self.tri_materials, wp.float32, requires_grad=requires_grad)
+            m.tri_areas = _to_wp_array(self.tri_areas, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # edges
 
-            m.edge_indices = wp.array(self.edge_indices, dtype=wp.int32)
-            m.edge_rest_angle = wp.array(self.edge_rest_angle, dtype=wp.float32, requires_grad=requires_grad)
-            m.edge_rest_length = wp.array(self.edge_rest_length, dtype=wp.float32, requires_grad=requires_grad)
-            m.edge_bending_properties = wp.array(
-                self.edge_bending_properties, dtype=wp.float32, requires_grad=requires_grad
+            m.edge_indices = _to_wp_array(self.edge_indices, wp.int32, requires_grad=False)
+            m.edge_rest_angle = _to_wp_array(self.edge_rest_angle, wp.float32, requires_grad=requires_grad)
+            m.edge_rest_length = _to_wp_array(self.edge_rest_length, wp.float32, requires_grad=requires_grad)
+            m.edge_bending_properties = _to_wp_array(
+                self.edge_bending_properties, wp.float32, requires_grad=requires_grad
             )
 
             # ---------------------
             # tetrahedra
 
-            m.tet_indices = wp.array(self.tet_indices, dtype=wp.int32)
-            m.tet_poses = wp.array(self.tet_poses, dtype=wp.mat33, requires_grad=requires_grad)
-            m.tet_activations = wp.array(self.tet_activations, dtype=wp.float32, requires_grad=requires_grad)
-            m.tet_materials = wp.array(self.tet_materials, dtype=wp.float32, requires_grad=requires_grad)
+            m.tet_indices = _to_wp_array(self.tet_indices, wp.int32, requires_grad=False)
+            m.tet_poses = _to_wp_array(self.tet_poses, wp.mat33, requires_grad=requires_grad)
+            m.tet_activations = _to_wp_array(self.tet_activations, wp.float32, requires_grad=requires_grad)
+            m.tet_materials = _to_wp_array(self.tet_materials, wp.float32, requires_grad=requires_grad)
 
             # -----------------------
             # muscles
