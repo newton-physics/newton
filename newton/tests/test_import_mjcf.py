@@ -4358,127 +4358,198 @@ class TestMjcfMultipleWorldbody(unittest.TestCase):
         self.assertIn("main_geom", builder.shape_key)
 
 
-class TestMjcfActuatorClassDefaults(unittest.TestCase):
-    """Test that actuator elements properly inherit from default classes."""
+class TestMjcfDefaultCustomAttributes(unittest.TestCase):
+    """Verify that MJCF <default> classes properly propagate MuJoCo custom attribute values."""
 
-    def test_general_actuator_inherits_biasprm_from_class(self):
-        """Test that general actuators inherit biasprm from default class."""
-        # This MJCF mirrors the pattern used in UR5e and other menagerie robots
-        mjcf_content = """
-        <mujoco>
-            <default>
-                <default class="robot">
-                    <general gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400"/>
-                    <default class="small">
-                        <general gainprm="500" biasprm="0 -500 -100"/>
-                    </default>
+    DEG2RAD = np.pi / 180.0
+    RAD2DEG = 180.0 / np.pi
+
+    MJCF = """
+    <mujoco>
+        <default>
+            <geom condim="4" priority="5" solmix="2.0" gap="0.01"
+                  solimp="0.8 0.9 0.01 0.4 1.0"/>
+            <body gravcomp="0.5"/>
+            <joint margin="1.0" solimplimit="0.8 0.9 0.01 0.4 1.0"
+                   solreffriction="0.05 2.0" solimpfriction="0.7 0.85 0.02 0.3 1.5"
+                   stiffness="2.0" damping="3.0" springref="45" ref="30"
+                   actuatorgravcomp="true"/>
+            <general gainprm="100" biasprm="0 -100 -10" dyntype="filter"
+                     ctrllimited="true" forcelimited="true" ctrlrange="-2 2"
+                     forcerange="-100 100" gear="2 0 0 0 0 0"
+                     dynprm="0.5 0 0 0 0 0 0 0 0 0"
+                     actlimited="true" actrange="-1 1" actdim="2" actearly="true"/>
+            <position kp="50"/>
+            <default class="special">
+                <geom condim="6" solmix="5.0"
+                      solimp="0.7 0.85 0.005 0.3 1.5"/>
+                <body gravcomp="1.0"/>
+                <joint margin="10.0" stiffness="20.0" damping="30.0"
+                       springref="90" ref="60"/>
+                <general gainprm="200" biasprm="0 -200 -20"
+                         ctrllimited="false" ctrlrange="-5 5"
+                         gear="3 0 0 0 0 0"/>
+                <position kp="500"/>
+                <default class="special_child">
+                    <geom priority="99" gap="0.05"/>
+                    <general gainprm="300" biasprm="0 -300 -30"/>
+                    <position kp="3000"/>
                 </default>
             </default>
-            <worldbody>
-                <body name="base">
-                    <joint name="joint1" type="hinge" axis="0 0 1"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                    <body name="link1" pos="0.2 0 0">
-                        <joint name="joint2" type="hinge" axis="0 0 1"/>
-                        <geom type="box" size="0.1 0.1 0.1"/>
-                        <body name="link2" pos="0.2 0 0">
-                            <joint name="joint3" type="hinge" axis="0 0 1"/>
-                            <geom type="box" size="0.1 0.1 0.1"/>
+        </default>
+        <worldbody>
+            <body name="b_default" pos="0 0 0">
+                <joint name="j_default" type="hinge" axis="0 0 1"/>
+                <geom name="g_default" type="sphere" size="0.1"/>
+                <body name="b_class" class="special" pos="0 0 1">
+                    <joint name="j_class" type="hinge" axis="0 0 1" class="special"/>
+                    <geom name="g_class" type="sphere" size="0.1" class="special"/>
+                    <body name="b_override" class="special" pos="0 0 1" gravcomp="0.75">
+                        <joint name="j_override" type="hinge" axis="0 0 1"
+                               class="special" margin="99.0"/>
+                        <geom name="g_override" type="sphere" size="0.1"
+                              class="special" condim="1"/>
+                        <body name="b_child" pos="0 0 1">
+                            <joint name="j_child" type="hinge" axis="0 0 1"/>
+                            <geom name="g_child" type="sphere" size="0.1"
+                                  class="special_child"/>
+                            <body name="b_child2" pos="0 0 1">
+                                <joint name="j_child2" type="hinge" axis="0 0 1"/>
+                                <geom type="sphere" size="0.1"/>
+                            </body>
                         </body>
                     </body>
                 </body>
-            </worldbody>
-            <actuator>
-                <general class="robot" name="act1" joint="joint1"/>
-                <general class="robot" name="act2" joint="joint2"/>
-                <general class="small" name="act3" joint="joint3"/>
-            </actuator>
-        </mujoco>
-        """
-        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+            </body>
+        </worldbody>
+        <actuator>
+            <general name="act_default" joint="j_default"
+                     gaintype="fixed" biastype="affine"/>
+            <general name="act_class" joint="j_class" class="special"
+                     gaintype="fixed" biastype="affine"/>
+            <general name="act_override" joint="j_override" class="special"
+                     gaintype="fixed" biastype="affine"
+                     gainprm="999" biasprm="0 -999 -99"/>
+            <general name="act_child" joint="j_child" class="special_child"
+                     gaintype="fixed" biastype="affine"/>
+            <position name="pos_default" joint="j_child2"/>
+            <position name="pos_class" joint="j_class" class="special"/>
+            <position name="pos_override" joint="j_override" class="special"
+                      kp="9999"/>
+            <position name="pos_child" joint="j_child" class="special_child"/>
+        </actuator>
+    </mujoco>
+    """
 
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf_content)
-        model = builder.finalize()
+    @classmethod
+    def setUpClass(cls):
+        cls.builder = newton.ModelBuilder()
+        cls.builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        cls.model = cls.builder.finalize()
 
-        # Get biasprm values from the finalized model
-        biasprm_values = model.mujoco.actuator_biasprm.numpy()
+    def test_shape_defaults(self):
+        """SHAPE: condim, priority, solmix, gap, solimp."""
+        m = self.model.mujoco
+        idx = self.builder.shape_key.index
 
-        # Should have 3 actuators
-        self.assertEqual(biasprm_values.shape[0], 3)
+        g_def = idx("g_default")
+        self.assertEqual(m.condim.numpy()[g_def], 4)
+        self.assertEqual(m.geom_priority.numpy()[g_def], 5)
+        self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_def]), 2.0, places=5)
+        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_def]), 0.01, places=5)
+        np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
 
-        # act1 and act2 should inherit from "robot" class: biasprm="0 -2000 -400"
-        np.testing.assert_allclose(biasprm_values[0, :3], [0.0, -2000.0, -400.0], atol=1.0)
-        np.testing.assert_allclose(biasprm_values[1, :3], [0.0, -2000.0, -400.0], atol=1.0)
+        g_cls = idx("g_class")
+        self.assertEqual(m.condim.numpy()[g_cls], 6)
+        self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
+        self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
+        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_cls]), 0.01, places=5)
+        np.testing.assert_allclose(m.geom_solimp.numpy()[g_cls], [0.7, 0.85, 0.005, 0.3, 1.5], atol=1e-4)
 
-        # act3 should inherit from "small" class (child of "robot"): biasprm="0 -500 -100"
-        np.testing.assert_allclose(biasprm_values[2, :3], [0.0, -500.0, -100.0], atol=1.0)
+        g_ovr = idx("g_override")
+        self.assertEqual(m.condim.numpy()[g_ovr], 1)
 
-    def test_general_actuator_inherits_gainprm_from_class(self):
-        """Test that general actuators inherit gainprm from default class."""
-        mjcf_content = """
-        <mujoco>
-            <default>
-                <default class="strong">
-                    <general gainprm="5000"/>
-                </default>
-            </default>
-            <worldbody>
-                <body name="base">
-                    <joint name="joint1" type="hinge" axis="0 0 1"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </worldbody>
-            <actuator>
-                <general class="strong" name="act1" joint="joint1"/>
-            </actuator>
-        </mujoco>
-        """
-        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+        g_child = idx("g_child")
+        self.assertEqual(m.condim.numpy()[g_child], 6)
+        self.assertEqual(m.geom_priority.numpy()[g_child], 99)
+        self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
+        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_child]), 0.05, places=5)
 
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf_content)
-        model = builder.finalize()
+    def test_body_defaults(self):
+        """BODY: gravcomp."""
+        gravcomp = self.model.mujoco.gravcomp.numpy()
+        idx = self.builder.body_key.index
 
-        gainprm_values = model.mujoco.actuator_gainprm.numpy()
+        self.assertAlmostEqual(float(gravcomp[idx("b_default")]), 0.5, places=5)
+        self.assertAlmostEqual(float(gravcomp[idx("b_class")]), 1.0, places=5)
+        self.assertAlmostEqual(float(gravcomp[idx("b_override")]), 0.75, places=5)
 
-        self.assertEqual(gainprm_values.shape[0], 1)
-        self.assertAlmostEqual(gainprm_values[0, 0], 5000.0, places=1)
+    def test_joint_dof_defaults(self):
+        """JOINT_DOF: margin, solimplimit, solreffriction, solimpfriction,
+        stiffness, damping, springref, ref, actuatorgravcomp."""
+        m = self.model.mujoco
+        idx = self.builder.joint_key.index
 
-    def test_position_actuator_inherits_kp_from_class(self):
-        """Test that position actuators inherit kp from default class."""
-        mjcf_content = """
-        <mujoco>
-            <default>
-                <default class="stiff">
-                    <position kp="1000"/>
-                </default>
-            </default>
-            <worldbody>
-                <body name="base">
-                    <joint name="joint1" type="hinge" axis="0 0 1"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </worldbody>
-            <actuator>
-                <position class="stiff" name="pos1" joint="joint1"/>
-            </actuator>
-        </mujoco>
-        """
-        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+        j_def = idx("j_default")
+        self.assertAlmostEqual(float(m.limit_margin.numpy()[j_def]), 1.0, places=5)
+        np.testing.assert_allclose(m.solimplimit.numpy()[j_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
+        np.testing.assert_allclose(m.solreffriction.numpy()[j_def], [0.05, 2.0], atol=1e-4)
+        np.testing.assert_allclose(m.solimpfriction.numpy()[j_def], [0.7, 0.85, 0.02, 0.3, 1.5], atol=1e-4)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0 * self.RAD2DEG, places=2)
+        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_def]), 3.0 * self.RAD2DEG, places=2)
+        self.assertAlmostEqual(float(m.dof_springref.numpy()[j_def]), 45.0 * self.DEG2RAD, places=4)
+        self.assertAlmostEqual(float(m.dof_ref.numpy()[j_def]), 30.0 * self.DEG2RAD, places=4)
+        self.assertEqual(bool(m.jnt_actgravcomp.numpy()[j_def]), True)
 
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf_content, ctrl_direct=True)
-        model = builder.finalize()
+        j_cls = idx("j_class")
+        self.assertAlmostEqual(float(m.limit_margin.numpy()[j_cls]), 10.0, places=5)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0 * self.RAD2DEG, places=1)
+        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_cls]), 30.0 * self.RAD2DEG, places=1)
+        self.assertAlmostEqual(float(m.dof_springref.numpy()[j_cls]), 90.0 * self.DEG2RAD, places=4)
+        self.assertAlmostEqual(float(m.dof_ref.numpy()[j_cls]), 60.0 * self.DEG2RAD, places=4)
 
-        # For position actuators with ctrl_direct, gainprm[0] = kp
-        gainprm_values = model.mujoco.actuator_gainprm.numpy()
+        j_ovr = idx("j_override")
+        self.assertAlmostEqual(float(m.limit_margin.numpy()[j_ovr]), 99.0, places=5)
 
-        self.assertEqual(gainprm_values.shape[0], 1)
-        self.assertAlmostEqual(gainprm_values[0, 0], 1000.0, places=1)
+    def test_general_actuator_defaults(self):
+        """ACTUATOR (general): gainprm, biasprm, dyntype, ctrllimited, forcelimited,
+        ctrlrange, forcerange, gear, dynprm, actlimited, actrange, actdim, actearly."""
+        m = self.model.mujoco
+
+        np.testing.assert_allclose(m.actuator_gainprm.numpy()[0, 0], 100.0, atol=1.0)
+        np.testing.assert_allclose(m.actuator_biasprm.numpy()[0, :3], [0.0, -100.0, -10.0], atol=1.0)
+        self.assertEqual(m.actuator_dyntype.numpy()[0], 2)
+        self.assertEqual(m.actuator_ctrllimited.numpy()[0], 1)
+        self.assertEqual(m.actuator_forcelimited.numpy()[0], 1)
+        np.testing.assert_allclose(m.actuator_ctrlrange.numpy()[0], [-2.0, 2.0], atol=1e-4)
+        np.testing.assert_allclose(m.actuator_forcerange.numpy()[0], [-100.0, 100.0], atol=1e-4)
+        np.testing.assert_allclose(m.actuator_gear.numpy()[0, :2], [2.0, 0.0], atol=1e-4)
+        self.assertAlmostEqual(float(m.actuator_dynprm.numpy()[0, 0]), 0.5, places=4)
+        self.assertEqual(m.actuator_actlimited.numpy()[0], 1)
+        np.testing.assert_allclose(m.actuator_actrange.numpy()[0], [-1.0, 1.0], atol=1e-4)
+        self.assertEqual(m.actuator_actdim.numpy()[0], 2)
+        self.assertEqual(m.actuator_actearly.numpy()[0], 1)
+
+        np.testing.assert_allclose(m.actuator_gainprm.numpy()[1, 0], 200.0, atol=1.0)
+        np.testing.assert_allclose(m.actuator_biasprm.numpy()[1, :3], [0.0, -200.0, -20.0], atol=1.0)
+        self.assertEqual(m.actuator_ctrllimited.numpy()[1], 0)
+        np.testing.assert_allclose(m.actuator_ctrlrange.numpy()[1], [-5.0, 5.0], atol=1e-4)
+        np.testing.assert_allclose(m.actuator_gear.numpy()[1, :2], [3.0, 0.0], atol=1e-4)
+
+        np.testing.assert_allclose(m.actuator_gainprm.numpy()[2, 0], 999.0, atol=1.0)
+        np.testing.assert_allclose(m.actuator_biasprm.numpy()[2, :3], [0.0, -999.0, -99.0], atol=1.0)
+
+        np.testing.assert_allclose(m.actuator_gainprm.numpy()[3, 0], 300.0, atol=1.0)
+        np.testing.assert_allclose(m.actuator_biasprm.numpy()[3, :3], [0.0, -300.0, -30.0], atol=1.0)
+
+    def test_position_actuator_defaults(self):
+        """ACTUATOR (position): kp inherited from <position> defaults."""
+        gainprm = self.model.mujoco.actuator_gainprm.numpy()
+
+        self.assertAlmostEqual(float(gainprm[4, 0]), 50.0, places=1)
+        self.assertAlmostEqual(float(gainprm[5, 0]), 500.0, places=1)
+        self.assertAlmostEqual(float(gainprm[6, 0]), 9999.0, places=1)
+        self.assertAlmostEqual(float(gainprm[7, 0]), 3000.0, places=1)
 
 
 if __name__ == "__main__":
