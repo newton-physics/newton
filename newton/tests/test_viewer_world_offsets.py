@@ -54,7 +54,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
-            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="test_body",
         )
         world.add_shape_box(
@@ -118,7 +118,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world_z.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
-            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="test_body",
         )
         world_z.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
@@ -141,7 +141,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world_y.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
-            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="test_body",
         )
         world_y.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
@@ -170,7 +170,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
-            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="box_body",
         )
         world.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
@@ -208,7 +208,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world.add_body(
             xform=wp.transform(body_pos, wp.quat_identity()),
             mass=1.0,
-            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="offset_body",
         )
         # Add shape with local offset
@@ -255,7 +255,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
             mass=1.0,
-            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="test_body",
         )
 
@@ -346,7 +346,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
                 world.add_body(
                     xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
                     mass=1.0,
-                    I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+                    inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
                     key="test_body",
                 )
                 builder.replicate(world, num_worlds)
@@ -380,7 +380,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
-            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="test_body",
         )
         builder.replicate(world, num_worlds)
@@ -420,7 +420,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
             mass=1.0,
-            I_m=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="world_body",
         )
         cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
@@ -481,7 +481,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
     world.add_body(
         xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
         mass=1.0,
-        I_m=wp.mat33(np.eye(3)),
+        inertia=wp.mat33(np.eye(3)),
         key="test_body",
     )
     cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)

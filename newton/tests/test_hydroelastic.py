@@ -286,7 +286,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             xform=wp.transform(p=lower_pos, q=wp.quat_identity()),
             key=f"lower_{i}",
             mass=mass_lower,
-            I_m=I_m_lower,
+            inertia=I_m_lower,
         )
         shape_lower = builder.add_shape_box(
             body_lower, hx=box_half_lower, hy=box_half_lower, hz=box_half_lower, cfg=shape_cfg
@@ -302,7 +302,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             xform=wp.transform(p=upper_pos, q=wp.quat_identity()),
             key=f"upper_{i}",
             mass=mass_upper,
-            I_m=I_m_upper,
+            inertia=I_m_upper,
         )
         shape_upper = builder.add_shape_box(body_upper, hx=upper_half, hy=upper_half, hz=upper_half, cfg=shape_cfg)
         upper_body_indices.append(body_upper)

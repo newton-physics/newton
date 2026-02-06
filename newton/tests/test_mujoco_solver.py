@@ -44,7 +44,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         """Test that ls_parallel option is properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia
         builder = newton.ModelBuilder()
-        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         joint = builder.add_joint_revolute(-1, link)
         builder.add_articulation([joint])
         model = builder.finalize()
@@ -61,7 +61,7 @@ class TestMuJoCoSolver(unittest.TestCase):
         """Test that tolerance and ls_tolerance options are properly set on the MuJoCo Warp model."""
         # Create minimal model with proper inertia
         builder = newton.ModelBuilder()
-        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        link = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         joint = builder.add_joint_revolute(-1, link)
         builder.add_articulation([joint])
         model = builder.finalize()
@@ -1320,7 +1320,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         pendulum = template_builder.add_link(
             mass=1.0,
             com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
         )
         template_builder.add_shape_box(
             body=pendulum,
@@ -1644,8 +1644,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         SolverMuJoCo.register_custom_attributes(builder)
 
         # Add two bodies with revolute joints
-        body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        body2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        body2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
 
         # Add shapes
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
@@ -2455,8 +2455,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         SolverMuJoCo.register_custom_attributes(builder)
 
         # Add two bodies with shapes
-        body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        body2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        body1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        body2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
 
         # Add shapes with custom priority values
         builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, custom_attributes={"mujoco:geom_priority": 1})
@@ -3036,9 +3036,9 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         SolverMuJoCo.register_custom_attributes(template_builder)
 
         # Create 3 bodies with free joints for CONNECT and WELD constraints
-        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
-        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
-        b3 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+        b3 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
         j1 = template_builder.add_joint_free(child=b1)
         j2 = template_builder.add_joint_free(child=b2)
         j3 = template_builder.add_joint_free(child=b3)
@@ -3050,8 +3050,8 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         template_builder.add_articulation([j3])
 
         # Create 2 bodies with revolute joints for JOINT constraint
-        b4 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
-        b5 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        b4 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+        b5 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
         j4 = template_builder.add_joint_revolute(parent=-1, child=b4, axis=wp.vec3(0.0, 0.0, 1.0))
         j5 = template_builder.add_joint_revolute(parent=-1, child=b5, axis=wp.vec3(0.0, 0.0, 1.0))
         template_builder.add_shape_box(body=b4, hx=0.1, hy=0.1, hz=0.1)
@@ -3294,13 +3294,13 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         SolverMuJoCo.register_custom_attributes(template_builder)
 
         # Articulation 1: free joint from world
-        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
         j1 = template_builder.add_joint_free(child=b1)
         template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_articulation([j1])
 
         # Articulation 2: free joint from world (separate chain)
-        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
         j2 = template_builder.add_joint_free(child=b2)
         template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_articulation([j2])
@@ -3401,13 +3401,13 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         SolverMuJoCo.register_custom_attributes(template_builder)
 
         # Articulation 1: free joint from world
-        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
         j1 = template_builder.add_joint_free(child=b1)
         template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_articulation([j1])
 
         # Articulation 2: free joint from world (separate chain)
-        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), I_m=wp.mat33(np.eye(3)))
+        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
         j2 = template_builder.add_joint_free(child=b2)
         template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
         template_builder.add_articulation([j2])
@@ -3660,8 +3660,8 @@ class TestMuJoCoValidation(unittest.TestCase):
         """Create a valid homogeneous multi-world model for validation tests."""
         # Create a simple robot template (following pattern from working tests)
         template = newton.ModelBuilder()
-        b1 = template.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
-        b2 = template.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        b1 = template.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = template.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         j1 = template.add_joint_revolute(-1, b1, axis=(0.0, 0.0, 1.0))
         j2 = template.add_joint_revolute(b1, b2, axis=(0.0, 0.0, 1.0))
         template.add_articulation([j1, j2])
@@ -3694,14 +3694,14 @@ class TestMuJoCoValidation(unittest.TestCase):
         """Test that different body counts per world raises ValueError."""
         # Create two robots with different body counts
         robot1 = newton.ModelBuilder()
-        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot1.add_joint_revolute(-1, b1)
         robot1.add_articulation([j1])
         robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
 
         robot2 = newton.ModelBuilder()
-        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
-        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot2.add_joint_revolute(-1, b1)
         j2 = robot2.add_joint_revolute(b1, b2)
         robot2.add_articulation([j1, j2])
@@ -3720,13 +3720,13 @@ class TestMuJoCoValidation(unittest.TestCase):
     def test_heterogeneous_shape_count_fails(self):
         """Test that different shape counts per world raises ValueError."""
         robot1 = newton.ModelBuilder()
-        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot1.add_joint_revolute(-1, b1)
         robot1.add_articulation([j1])
         robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
 
         robot2 = newton.ModelBuilder()
-        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot2.add_joint_revolute(-1, b1)
         robot2.add_articulation([j1])
         robot2.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
@@ -3744,13 +3744,13 @@ class TestMuJoCoValidation(unittest.TestCase):
     def test_mismatched_joint_types_fails(self):
         """Test that different joint types at same position across worlds raises ValueError."""
         robot1 = newton.ModelBuilder()
-        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot1.add_joint_revolute(-1, b1)  # Revolute joint
         robot1.add_articulation([j1])
         robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
 
         robot2 = newton.ModelBuilder()
-        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot2.add_joint_prismatic(-1, b1)  # Prismatic joint (different type)
         robot2.add_articulation([j1])
         robot2.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
@@ -3767,13 +3767,13 @@ class TestMuJoCoValidation(unittest.TestCase):
     def test_mismatched_shape_types_fails(self):
         """Test that different shape types at same position across worlds raises ValueError."""
         robot1 = newton.ModelBuilder()
-        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot1.add_joint_revolute(-1, b1)
         robot1.add_articulation([j1])
         robot1.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)  # Box
 
         robot2 = newton.ModelBuilder()
-        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot2.add_joint_revolute(-1, b1)
         robot2.add_articulation([j1])
         robot2.add_shape_sphere(b1, radius=0.1)  # Sphere (different type)
@@ -3796,7 +3796,7 @@ class TestMuJoCoValidation(unittest.TestCase):
 
         # Manually create a body in global world
         builder.current_world = -1
-        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         # Need a joint to make this a valid model
         builder.current_world = -1
         j1 = builder.add_joint_free(b1)
@@ -3804,14 +3804,14 @@ class TestMuJoCoValidation(unittest.TestCase):
 
         # Add normal world content
         builder.begin_world()
-        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j2 = builder.add_joint_revolute(-1, b2)
         builder.add_articulation([j2])
         builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
         builder.end_world()
 
         builder.begin_world()
-        b3 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b3 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j3 = builder.add_joint_revolute(-1, b3)
         builder.add_articulation([j3])
         builder.add_shape_box(b3, hx=0.1, hy=0.1, hz=0.1)
@@ -3830,20 +3830,20 @@ class TestMuJoCoValidation(unittest.TestCase):
 
         # Add a body in global world with a joint
         builder.current_world = -1
-        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = builder.add_joint_revolute(-1, b1)
         builder.add_articulation([j1])
 
         # Add normal world content
         builder.begin_world()
-        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j2 = builder.add_joint_revolute(-1, b2)
         builder.add_articulation([j2])
         builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
         builder.end_world()
 
         builder.begin_world()
-        b3 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b3 = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j3 = builder.add_joint_revolute(-1, b3)
         builder.add_articulation([j3])
         builder.add_shape_box(b3, hx=0.1, hy=0.1, hz=0.1)
@@ -3874,8 +3874,8 @@ class TestMuJoCoValidation(unittest.TestCase):
     def test_heterogeneous_equality_constraint_count_fails(self):
         """Test that different equality constraint counts per world raises ValueError."""
         robot1 = newton.ModelBuilder()
-        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
-        b2 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot1.add_joint_revolute(-1, b1)
         j2 = robot1.add_joint_revolute(b1, b2)
         robot1.add_articulation([j1, j2])
@@ -3884,8 +3884,8 @@ class TestMuJoCoValidation(unittest.TestCase):
         robot1.add_equality_constraint_weld(body1=b1, body2=b2)  # 1 constraint
 
         robot2 = newton.ModelBuilder()
-        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
-        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot2.add_joint_revolute(-1, b1)
         j2 = robot2.add_joint_revolute(b1, b2)
         robot2.add_articulation([j1, j2])
@@ -3905,8 +3905,8 @@ class TestMuJoCoValidation(unittest.TestCase):
     def test_mismatched_equality_constraint_types_fails(self):
         """Test that different constraint types at same position across worlds raises ValueError."""
         robot1 = newton.ModelBuilder()
-        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
-        b2 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = robot1.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot1.add_joint_revolute(-1, b1)
         j2 = robot1.add_joint_revolute(b1, b2)
         robot1.add_articulation([j1, j2])
@@ -3915,8 +3915,8 @@ class TestMuJoCoValidation(unittest.TestCase):
         robot1.add_equality_constraint_weld(body1=b1, body2=b2)  # WELD type
 
         robot2 = newton.ModelBuilder()
-        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
-        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = robot2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot2.add_joint_revolute(-1, b1)
         j2 = robot2.add_joint_revolute(b1, b2)
         robot2.add_articulation([j1, j2])
@@ -3937,8 +3937,8 @@ class TestMuJoCoValidation(unittest.TestCase):
         """Test that an equality constraint in global world (-1) raises ValueError."""
         # Create a model with a global equality constraint
         robot = newton.ModelBuilder()
-        b1 = robot.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
-        b2 = robot.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        b1 = robot.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        b2 = robot.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         j1 = robot.add_joint_revolute(-1, b1)
         j2 = robot.add_joint_revolute(b1, b2)
         robot.add_articulation([j1, j2])
@@ -4014,7 +4014,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         """Test that separate_worlds=False is rejected for multi-world models."""
         # Create a model with 2 worlds
         template_builder = newton.ModelBuilder()
-        body = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        body = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         template_builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
         joint = template_builder.add_joint_revolute(-1, body, axis=(0.0, 0.0, 1.0))
         template_builder.add_articulation([joint])
@@ -4043,7 +4043,7 @@ class TestMuJoCoConversion(unittest.TestCase):
     def test_separate_worlds_false_single_world_works(self):
         """Test that separate_worlds=False works correctly for single-world models."""
         builder = newton.ModelBuilder()
-        b = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        b = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1)
         j = builder.add_joint_revolute(-1, b, axis=(0.0, 0.0, 1.0))
         builder.add_articulation([j])
@@ -4065,14 +4065,14 @@ class TestMuJoCoConversion(unittest.TestCase):
         parent_body = builder.add_link(
             mass=1.0,
             com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
         )
 
         # Add child body with identity transform and inertia
         child_body = builder.add_link(
             mass=1.0,
             com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
         )
 
         # Define translations for the joint frames in parent and child
@@ -4193,7 +4193,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         pendulum = builder.add_link(
             mass=mass,
-            I_m=I_sphere,
+            inertia=I_sphere,
         )
 
         # Add joint with limits - attach to world (-1)
@@ -4280,7 +4280,7 @@ class TestMuJoCoConversion(unittest.TestCase):
         # Create a simple model with one revolute joint
         builder = newton.ModelBuilder()
 
-        body = builder.add_link(mass=1.0, I_m=wp.diag(wp.vec3(1.0, 1.0, 1.0)))
+        body = builder.add_link(mass=1.0, inertia=wp.diag(wp.vec3(1.0, 1.0, 1.0)))
 
         # Add joint with known transforms
         parent_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -4638,7 +4638,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         mocap_body = builder.add_link(
             mass=10.0,
             com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
 
@@ -4655,7 +4655,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         platform_body = builder.add_link(
             mass=5.0,
             com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
         )
 
         # Add FIXED joint from mocap body to platform (welded connection)
@@ -4686,7 +4686,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         ball_body = builder.add_body(
             mass=1.0,
             com=wp.vec3(0.0, 0.0, 0.0),
-            I_m=wp.mat33(np.eye(3) * 0.01),
+            inertia=wp.mat33(np.eye(3) * 0.01),
             xform=wp.transform(wp.vec3(1.0, 0.0, 0.5 + platform_height + ball_radius), wp.quat_identity()),
         )
         builder.add_shape_sphere(
@@ -5042,7 +5042,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
 
-        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        pendulum = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         template_builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
         joint = template_builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
         template_builder.add_articulation([joint])
@@ -5422,7 +5422,7 @@ class TestMuJoCoOptions(unittest.TestCase):
 
         # Create model WITHOUT registering custom attributes
         builder = newton.ModelBuilder()
-        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
         joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
         builder.add_articulation([joint])
@@ -5480,7 +5480,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         """
         # Create model WITHOUT registering custom attributes
         builder = newton.ModelBuilder()
-        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), I_m=wp.mat33(np.eye(3)))
+        pendulum = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body=pendulum, hx=0.05, hy=0.05, hz=0.05)
         joint = builder.add_joint_revolute(parent=-1, child=pendulum, axis=(0.0, 0.0, 1.0))
         builder.add_articulation([joint])

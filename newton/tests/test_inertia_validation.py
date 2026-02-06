@@ -170,7 +170,7 @@ class TestInertiaValidation(unittest.TestCase):
         invalid_inertia = wp.mat33([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 1.0]])
         body_idx = builder.add_body(
             mass=0.05,  # Below bound
-            I_m=invalid_inertia,  # Violates triangle inequality
+            inertia=invalid_inertia,  # Violates triangle inequality
             key="test_body",
         )
 
@@ -205,7 +205,7 @@ class TestInertiaValidation(unittest.TestCase):
         invalid_inertia = wp.mat33([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 1.0]])
         body_idx = builder.add_body(
             mass=0.05,  # Below bound
-            I_m=invalid_inertia,  # Violates triangle inequality
+            inertia=invalid_inertia,  # Violates triangle inequality
             key="test_body",
         )
 

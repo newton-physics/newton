@@ -31,7 +31,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_creation(self):
         """Test basic sensor creation."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body, key="imu_site")
         model = builder.finalize()
 
@@ -44,7 +44,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_multiple_sites(self):
         """Test sensor with multiple sites."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site1 = builder.add_site(body, key="site1")
         site2 = builder.add_site(body, key="site2")
         site3 = builder.add_site(body, key="site3")
@@ -59,7 +59,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_validation_empty_sites(self):
         """Test error when sites is empty."""
         builder = newton.ModelBuilder()
-        builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
@@ -68,7 +68,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_validation_invalid_site_index(self):
         """Test error when site index is out of bounds."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_site(body)
         model = builder.finalize()
 
@@ -78,7 +78,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_validation_not_a_site(self):
         """Test error when index is not a site."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         shape = builder.add_shape_sphere(body, radius=0.1)
         model = builder.finalize()
 
@@ -88,7 +88,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_update_without_body_qdd(self):
         """Test error when updating without body_qdd."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
@@ -101,7 +101,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_update_with_body_qdd(self):
         """Test sensor update with body_qdd allocated."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(2, 4, 6)), 4.0)
         site = builder.add_site(body, key="imu", xform=wp.transform(wp.vec3(0, 0, 0), rot))
         model = builder.finalize()
@@ -123,7 +123,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_static_body_gravity(self):
         """Test IMU on static body measures gravity."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body, key="imu")
         model = builder.finalize()
 
@@ -163,7 +163,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_rotated_site(self):
         """Test IMU with rotated site frame."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         rot_90_z = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)
         site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), rot_90_z), key="imu")

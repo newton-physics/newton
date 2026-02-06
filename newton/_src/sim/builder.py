@@ -2318,7 +2318,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         armature: float | None = None,
         com: Vec3 | None = None,
-        I_m: Mat33 | None = None,
+        inertia: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
@@ -2336,7 +2336,7 @@ class ModelBuilder:
             xform: The location of the body in the world frame.
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body (optional).
             custom_attributes: Dictionary of custom attribute names to values.
@@ -2360,17 +2360,17 @@ class ModelBuilder:
             com = wp.vec3()
         else:
             com = wp.vec3(*com)
-        if I_m is None:
-            I_m = wp.mat33()
+        if inertia is None:
+            inertia = wp.mat33()
         else:
-            I_m = self._coerce_mat33(I_m)
+            inertia = self._coerce_mat33(inertia)
 
         body_id = len(self.body_mass)
 
         # body data
         if armature is None:
             armature = self.default_body_armature
-        inertia = I_m + wp.mat33(np.eye(3, dtype=np.float32)) * armature
+        inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
@@ -2407,7 +2407,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         armature: float | None = None,
         com: Vec3 | None = None,
-        I_m: Mat33 | None = None,
+        inertia: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
@@ -2429,7 +2429,7 @@ class ModelBuilder:
             xform: The location of the body in the world frame.
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body. When provided, the auto-created free joint and articulation
                 are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
@@ -2450,7 +2450,7 @@ class ModelBuilder:
             xform=xform,
             armature=armature,
             com=com,
-            I_m=I_m,
+            inertia=inertia,
             mass=mass,
             key=key,
             custom_attributes=custom_attributes,
