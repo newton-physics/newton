@@ -485,7 +485,7 @@ class Heightfield:
                 max(avg_height, 1e-6),
             )
         else:
-            self.I = wp.mat33(np.eye(3))
+            self.I = wp.mat33()
             self.mass = 0.0  # Static by default
             self.com = wp.vec3()
 

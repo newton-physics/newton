@@ -28,11 +28,12 @@ import warp as wp
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import MESH_MAXHULLVERT, ShapeFlags
+from ..geometry.types import Heightfield
 from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
-from .heightfield import load_heightfield_from_file
+from .heightfield import load_heightfield_elevation
 from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
 from .mesh import load_meshes_from_file
 
@@ -327,11 +328,24 @@ def parse_mjcf(
             file_path = None
             if file_attr:
                 file_path = path_resolver(base_dir, file_attr)
+            # Parse optional inline elevation data
+            elevation_str = hfield.attrib.get("elevation")
+            elevation_data = None
+            if elevation_str and not file_attr:
+                elevation_arr = np.fromstring(elevation_str, sep=" ", dtype=np.float32)
+                if elevation_arr.size == nrow * ncol:
+                    elevation_data = elevation_arr.reshape(nrow, ncol)
+                elif verbose:
+                    print(
+                        f"Warning: hfield '{hfield_name}' elevation has {elevation_arr.size} values, "
+                        f"expected {nrow * ncol} ({nrow}x{ncol}), ignoring"
+                    )
             hfield_assets[hfield_name] = {
                 "nrow": nrow,
                 "ncol": ncol,
                 "size": size,  # (size_x, size_y, size_z, size_base)
                 "file": file_path,
+                "elevation": elevation_data,
             }
 
     class_parent = {}
@@ -653,11 +667,20 @@ def parse_mjcf(
                     continue
 
                 hfield_asset = hfield_assets[hfield_name]
+                nrow, ncol = hfield_asset["nrow"], hfield_asset["ncol"]
                 hfield_size = tuple(s * scale for s in hfield_asset["size"])
-                heightfield = load_heightfield_from_file(
-                    hfield_asset["file"],
-                    hfield_asset["nrow"],
-                    hfield_asset["ncol"],
+
+                if hfield_asset["elevation"] is not None:
+                    elevation = hfield_asset["elevation"]
+                elif hfield_asset["file"] is not None:
+                    elevation = load_heightfield_elevation(hfield_asset["file"], nrow, ncol)
+                else:
+                    elevation = np.zeros((nrow, ncol), dtype=np.float32)
+
+                heightfield = Heightfield(
+                    data=elevation,
+                    nrow=nrow,
+                    ncol=ncol,
                     size=hfield_size,
                 )
 

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import tempfile
 import unittest
 
@@ -163,21 +164,51 @@ class TestHeightfield(unittest.TestCase):
         </mujoco>
         """
 
+        try:
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(
+                mjcf,
+                parse_meshes=True,
+                path_resolver=resolver,
+            )
+
+            hfield_shapes = [i for i in range(builder.shape_count) if builder.shape_type[i] == newton.GeoType.HFIELD]
+            self.assertEqual(len(hfield_shapes), 1)
+
+            hfield = builder.shape_source[hfield_shapes[0]]
+            self.assertEqual(hfield.nrow, nrow)
+            self.assertEqual(hfield.ncol, ncol)
+            self.assertEqual(hfield.size, (3.0, 2.0, 1.0, 0.0))
+            assert_np_equal(hfield.data, elevation, tol=1e-6)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_mjcf_hfield_inline_elevation(self):
+        """Test parsing MJCF with inline elevation attribute."""
+        mjcf = """
+        <mujoco>
+          <asset>
+            <hfield name="terrain" nrow="3" ncol="3"
+                    size="2 2 1 0"
+                    elevation="0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9"/>
+          </asset>
+          <worldbody>
+            <geom type="hfield" hfield="terrain"/>
+          </worldbody>
+        </mujoco>
+        """
+
         builder = newton.ModelBuilder()
-        builder.add_mjcf(
-            mjcf,
-            parse_meshes=True,
-            path_resolver=resolver,
-        )
+        builder.add_mjcf(mjcf, parse_meshes=True)
 
         hfield_shapes = [i for i in range(builder.shape_count) if builder.shape_type[i] == newton.GeoType.HFIELD]
         self.assertEqual(len(hfield_shapes), 1)
 
         hfield = builder.shape_source[hfield_shapes[0]]
-        self.assertEqual(hfield.nrow, nrow)
-        self.assertEqual(hfield.ncol, ncol)
-        self.assertEqual(hfield.size, (3.0, 2.0, 1.0, 0.0))
-        assert_np_equal(hfield.data, elevation, tol=1e-6)
+        self.assertEqual(hfield.nrow, 3)
+        self.assertEqual(hfield.ncol, 3)
+        expected = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]], dtype=np.float32)
+        assert_np_equal(hfield.data, expected, tol=1e-6)
 
     def test_solver_mujoco_hfield(self):
         """Test converting Newton model with heightfield to MuJoCo."""
@@ -327,8 +358,8 @@ class TestHeightfield(unittest.TestCase):
         scale = (1.0, 1.0, 1.0)
         radius = compute_shape_radius(newton.GeoType.HFIELD, scale, hfield)
 
-        # Expected: sqrt((size_x/2)^2 + (size_y/2)^2 + size_z^2)
-        expected_radius = np.sqrt((4.0 / 2) ** 2 + (3.0 / 2) ** 2 + 2.0**2)
+        # Expected: sqrt((size_x/2)^2 + (size_y/2)^2 + ((size_z+size_base)/2)^2)
+        expected_radius = np.sqrt((4.0 / 2) ** 2 + (3.0 / 2) ** 2 + ((2.0 + 0.0) / 2) ** 2)
         self.assertAlmostEqual(radius, expected_radius, places=5)
 
     def test_heightfield_finalize(self):

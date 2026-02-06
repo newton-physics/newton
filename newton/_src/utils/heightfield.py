@@ -19,16 +19,13 @@ import os
 
 import numpy as np
 
-from ..geometry.types import Heightfield
 
-
-def load_heightfield_from_file(
-    filename: str | None,
+def load_heightfield_elevation(
+    filename: str,
     nrow: int,
     ncol: int,
-    size: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 0.0),
-) -> Heightfield:
-    """Load a heightfield from a file.
+) -> np.ndarray:
+    """Load elevation data from a PNG or binary file.
 
     Supports two formats following MuJoCo conventions:
     - PNG: Grayscale image where white=high, black=low
@@ -36,40 +33,8 @@ def load_heightfield_from_file(
     - Binary: MuJoCo custom format with int32 header
       (nrow, ncol) followed by float32 data
 
-    If filename is None, returns a flat (zeros) heightfield.
-
     Args:
-        filename: Path to the heightfield file (PNG or binary),
-            or None for flat terrain.
-        nrow: Expected number of rows.
-        ncol: Expected number of columns.
-        size: Heightfield size (size_x, size_y, size_z, size_base).
-
-    Returns:
-        Heightfield object with loaded elevation data.
-    """
-    if filename is None:
-        data = np.zeros((nrow, ncol), dtype=np.float32)
-    else:
-        data = _load_elevation_data(filename, nrow, ncol)
-
-    return Heightfield(
-        data=data,
-        nrow=nrow,
-        ncol=ncol,
-        size=size,
-    )
-
-
-def _load_elevation_data(
-    filename: str,
-    nrow: int,
-    ncol: int,
-) -> np.ndarray:
-    """Load raw elevation data from a PNG or binary file.
-
-    Args:
-        filename: Path to the heightfield file.
+        filename: Path to the heightfield file (PNG or binary).
         nrow: Expected number of rows.
         ncol: Expected number of columns.
 

@@ -25,6 +25,7 @@ import warp as wp
 from .types import (
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
     Vec3,
 )
@@ -458,7 +459,7 @@ def transform_inertia(m: float, I: wp.mat33, p: wp.vec3, q: wp.quat) -> wp.mat33
 def compute_shape_inertia(
     type: int,
     scale: Vec3,
-    src: SDF | Mesh | None,
+    src: SDF | Mesh | Heightfield | None,
     density: float,
     is_solid: bool = True,
     thickness: list[float] | float = 0.001,
