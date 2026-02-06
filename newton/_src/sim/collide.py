@@ -121,8 +121,8 @@ class CollisionPipeline:
         state: State,
         contacts: Contacts,
         *,
-        soft_contact_margin: float = 0.01,
-        edge_sdf_iter: int = 10,
+        soft_contact_margin: float | None = None,
+        edge_sdf_iter: int | None = None,
     ):
         """
         Run collision detection and populate the contacts buffer.
@@ -130,8 +130,8 @@ class CollisionPipeline:
         Args:
             state: The current simulation state.
             contacts: The contacts buffer to populate (will be cleared first).
-            soft_contact_margin: Margin for soft contact generation. Default is 0.01.
-            edge_sdf_iter: Number of search iterations for finding closest contact points between edges and SDF. Default is 10.
+            soft_contact_margin: Margin for soft contact generation. If None, uses the value from construction.
+            edge_sdf_iter: Number of search iterations for finding closest contact points between edges and SDF. If None, uses the value from construction.
 
         Note:
             Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`.

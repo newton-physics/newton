@@ -156,13 +156,14 @@ class CollisionSetup:
             self.graph = None
 
     def simulate(self):
+        self.collision_pipeline.collide(self.state_0, self.contacts)
+
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states

@@ -832,7 +832,8 @@ def test_avbd_particle_ground_penalty_grows(test, device):
 
     state_in = model.state()
     state_out = model.state()
-    contacts = model.collide(state_in)
+    contacts = model.contacts()
+    model.collide(state_in, contacts)
 
     soft_count = int(contacts.soft_contact_count.numpy()[0])
     test.assertGreater(soft_count, 0)

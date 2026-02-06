@@ -274,6 +274,8 @@ class Example:
         for i in range(self.sim_substeps):
             t = sim_step * self.sim_substeps + i
             self.states[t].clear_forces()
+            # Allocate fresh contacts each substep for gradient tracking
+            self.contacts = self.collision_pipeline.contacts()
             self.collision_pipeline.collide(self.states[t], self.contacts)
             self.solver.step(self.states[t], self.states[t + 1], self.control, self.contacts, self.sim_dt)
 

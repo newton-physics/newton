@@ -156,6 +156,7 @@ def run_stacked_cubes_hydroelastic_test(
     )
 
     contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state_0, contacts)
 
     sdf_sdf_count = collision_pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0]
     test.assertEqual(sdf_sdf_count, NUM_CUBES - 1, f"Expected {NUM_CUBES - 1} sdf_sdf collisions, got {sdf_sdf_count}")
