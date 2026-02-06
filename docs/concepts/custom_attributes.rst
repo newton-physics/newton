@@ -552,6 +552,69 @@ The ``usd_prim_filter`` callback receives:
 
 This enables solvers like MuJoCo to define their own USD schemas and have them automatically parsed during model loading.
 
+Deriving Values from Prim Data (Wildcard Attribute)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default, each custom attribute reads its value from a specific USD attribute on the prim (e.g., ``newton:myns:my_attr``). Sometimes, however, you want to **compute** an attribute value from arbitrary prim data rather than reading a single named attribute. This is what the wildcard ``usd_attribute_name="*"`` is for.
+
+When ``usd_attribute_name`` is set to ``"*"``, the attribute's ``usd_value_transformer`` is called for **every prim** matching the attribute's frequency — regardless of which USD attributes exist on that prim. The transformer receives ``None`` as the value (since there is no specific attribute to read) and a context dictionary containing the prim and the attribute definition.
+
+A ``usd_value_transformer`` **must** be provided when using ``"*"``; omitting it raises a ``ValueError``.
+
+**Example:** Suppose your USD stage contains "sensor" prims, each with an arbitrary ``sensor:position`` attribute. You want to store the distance from the origin as a custom attribute, computed at parse time:
+
+.. code-block:: python
+
+   import numpy as np
+
+   # 1. Register the custom frequency with a filter that selects sensor prims
+   def is_sensor(prim, context):
+       return prim.GetName().startswith("Sensor")
+
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(
+           name="sensor",
+           namespace="myns",
+           usd_prim_filter=is_sensor,
+       )
+   )
+
+   # 2. Define a transformer that computes the distance from prim data
+   def compute_distance(value, context):
+       pos = context["prim"].GetAttribute("sensor:position").Get()
+       return wp.float32(float(np.linalg.norm(pos)))
+
+   # 3. Register the attribute with usd_attribute_name="*"
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="distance",
+           frequency="myns:sensor",
+           dtype=wp.float32,
+           default=0.0,
+           namespace="myns",
+           usd_attribute_name="*",
+           usd_value_transformer=compute_distance,
+       )
+   )
+
+   # 4. Parse the USD stage — the transformer runs for every matching prim
+   builder.add_usd(stage)
+   model = builder.finalize()
+
+   # Access the computed values
+   distances = model.myns.distance.numpy()
+
+The transformer context dictionary contains:
+
+* ``"prim"``: The current USD prim.
+* ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` being evaluated.
+
+This pattern is useful when:
+
+* The value you need doesn't exist as a single USD attribute (it must be derived from multiple attributes, prim metadata, or relationships).
+* You want to run the same computation for every prim of a given frequency without requiring an authored attribute on each prim.
+* You need to look up related entities (e.g., resolving a prim relationship to a body index using the context's ``path_body_map``).
+
 Multi-World Merging
 -------------------
 
