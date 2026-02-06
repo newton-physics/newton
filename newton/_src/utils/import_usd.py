@@ -20,8 +20,12 @@ import itertools
 import os
 import re
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from pxr import Usd
 
 import numpy as np
 import warp as wp
@@ -63,6 +67,7 @@ def parse_usd(
     mesh_maxhullvert: int = MESH_MAXHULLVERT,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
+    parse_actuator_fn: Callable[[Any], Any | None] | None = None,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -108,6 +113,17 @@ def parse_usd(
             damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
 
+        parse_actuator_fn (Callable[[pxr.Usd.Prim], Any | None] | None): Optional callback for parsing actuator prims.
+            The callback accepts a single ``pxr.Usd.Prim`` and returns either ``None`` (to skip the prim) or an
+            object with the following attributes:
+
+            - ``target_paths`` (list[str]): List of prim paths that this actuator controls.
+            - ``actuator_class`` (type): The actuator class to instantiate (e.g., ``ActuatorPD``).
+            - ``kwargs`` (dict): Dictionary of extra keyword arguments passed to ``ModelBuilder.add_actuator()``.
+
+            This enables parsing custom actuator definitions from USD files. See ``newton_actuators.parse_actuator_prim``
+            for an example implementation.
+
     Returns:
         dict: Dictionary with the following entries:
 
@@ -146,6 +162,8 @@ def parse_usd(
               - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
             * - ``"path_original_body_map"``
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
+            * - ``"actuator_count"``
+              - Number of actuators added via ``parse_actuator_fn`` (0 if ``parse_actuator_fn`` is None)
     """
     if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
@@ -1757,6 +1775,24 @@ def parse_usd(
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {key: idx for idx, key in enumerate(builder.joint_key)}
 
+    actuator_count = 0
+    if parse_actuator_fn is not None:
+        path_to_dof = {
+            path: builder.joint_qd_start[idx]
+            for path, idx in path_joint_map.items()
+            if idx < len(builder.joint_qd_start)
+        }
+        for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+            parsed = parse_actuator_fn(prim)
+            if parsed is None:
+                continue
+            dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
+            if dof_indices:
+                builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
+                actuator_count += 1
+        if verbose and actuator_count > 0:
+            print(f"Added {actuator_count} actuator(s) from USD")
+
     return {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
@@ -1775,6 +1811,7 @@ def parse_usd(
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
+        "actuator_count": actuator_count,
     }
 
 
