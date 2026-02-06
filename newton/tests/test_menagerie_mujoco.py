@@ -547,6 +547,19 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_sizes() which understands type-specific semantics
     "geom_size",
+    # Solver options: Newton uses different defaults than MuJoCo
+    # Tests override key settings (solver, iterations, ls_iterations) but other opt fields
+    # may still differ. Compare critical physics-affecting options separately if needed.
+    "opt.ccd_iterations",
+    "opt.ccd_tolerance",
+    "opt.noslip_iterations",
+    "opt.noslip_tolerance",
+    "opt.cone",
+    "opt.o_solref",
+    "opt.o_solimp",
+    "opt.o_friction",
+    "opt.sdf_iterations",
+    "opt.sdf_initpoints",
 }
 
 
@@ -1017,6 +1030,10 @@ def compare_mjw_models(
             # Special case: Option object - compare each field
             for opt_attr in dir(native_val):
                 if opt_attr.startswith("_"):
+                    continue
+                # Check if this opt sub-field should be skipped
+                opt_full_name = f"opt.{opt_attr}"
+                if any(skip in opt_full_name for skip in skip_fields):
                     continue
                 opt_newton = getattr(newton_val, opt_attr, None)
                 opt_native = getattr(native_val, opt_attr, None)
