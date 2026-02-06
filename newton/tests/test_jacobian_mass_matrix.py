@@ -104,7 +104,9 @@ def test_jacobian_numerical_verification(test, device):
     state = model.state()
 
     # Set a non-zero joint angle
-    state.joint_q.numpy()[0] = 0.5
+    joint_q = state.joint_q.numpy()
+    joint_q[0] = 0.5
+    state.joint_q.assign(joint_q)
 
     # Compute FK
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
@@ -156,8 +158,10 @@ def test_mass_matrix_symmetry(test, device):
     state = model.state()
 
     # Set some joint angles
-    state.joint_q.numpy()[0] = 0.3
-    state.joint_q.numpy()[1] = 0.5
+    joint_q = state.joint_q.numpy()
+    joint_q[0] = 0.3
+    joint_q[1] = 0.5
+    state.joint_q.assign(joint_q)
 
     # Compute FK first
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
