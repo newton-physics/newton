@@ -456,16 +456,47 @@ class RandomControlStrategy(ControlStrategy):
 
 # Default tolerances for MjData field comparison
 DEFAULT_TOLERANCES: dict[str, float] = {
+    # Core state
     "qpos": 1e-6,
     "qvel": 1e-5,
     "qacc": 1e-4,
+    # Body kinematics
     "xpos": 1e-6,
     "xquat": 1e-6,
-    "ctrl": 1e-10,
+    "xmat": 1e-6,
+    "geom_xpos": 1e-6,
+    "geom_xmat": 1e-6,
+    "site_xpos": 1e-6,
+    "site_xmat": 1e-6,
+    # Forces
+    "qfrc_bias": 1e-4,
+    "qfrc_passive": 1e-4,
+    "qfrc_actuator": 1e-4,
+    # Composite quantities
+    "subtree_com": 1e-6,
 }
 
-# Default fields to compare in MjData
-DEFAULT_COMPARE_FIELDS: list[str] = ["qpos", "qvel"]
+# Default fields to compare in MjData (core physics)
+DEFAULT_COMPARE_FIELDS: list[str] = [
+    # Core state
+    "qpos",
+    "qvel",
+    "qacc",
+    # Body kinematics
+    "xpos",
+    "xquat",
+    "xmat",
+    "geom_xpos",
+    "geom_xmat",
+    "site_xpos",
+    "site_xmat",
+    # Forces
+    "qfrc_bias",
+    "qfrc_passive",
+    "qfrc_actuator",
+    # Composite quantities
+    "subtree_com",
+]
 
 # Default fields to skip in MjWarpModel comparison (internal/non-comparable)
 DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
