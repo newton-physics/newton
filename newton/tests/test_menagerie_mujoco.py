@@ -39,27 +39,24 @@ These are changes/workarounds made to get tests passing that should be revisited
 1. FRICTION DEFAULTS
    - DONE: Newton's MJCF parser sets friction to match MuJoCo defaults when not specified
 
-2. SELF-COLLISIONS
-   - DONE: enable_self_collisions=True is now the default in import_mjcf.py
-
-3. VISUAL GEOMS
+2. VISUAL GEOMS
    - Using <compiler discardvisual="true"/> for native MuJoCo
    - Using parse_visuals=False for Newton's MJCF parser
    - TODO: Test with visuals enabled when needed
 
-4. COLLISION EXCLUSIONS (nexclude)
+3. COLLISION EXCLUSIONS (nexclude)
    - Skipped in model comparison
    - TODO: Fix parent/child filtering in Newton for collision exclusion equivalence
 
-5. MOCAP BODIES (mocap_*, nmocap, body_mocapid)
+4. MOCAP BODIES (mocap_*, nmocap, body_mocapid)
    - Skipped in model comparison
    - TODO: Newton handles fixed base differently; align mocap body handling
 
-6. CONTROL STRATEGY
+5. CONTROL STRATEGY
    - Using ZeroControlStrategy for initial debugging
    - TODO: Enable randomized/structured control for comprehensive testing
 
-7. MODEL COMPARISON SKIPS (DEFAULT_MODEL_SKIP_FIELDS)
+6. MODEL COMPARISON SKIPS (DEFAULT_MODEL_SKIP_FIELDS)
    - qM_tiles, qLD_tiles, qLDiagInv_tiles: Matrix tile types not comparable
    - light_*, nlight: Newton doesn't parse lights from MJCF
    - geom_group: Newton defaults to 0, native may use other groups
@@ -71,19 +68,19 @@ These are changes/workarounds made to get tests passing that should be revisited
    - DONE: All opt.* fields now match (fixed ccd_iterations default 50->35)
    - DONE: site_size uses MuJoCo defaults for unspecified components
 
-8. PER-ROBOT SKIPS (model_skip_fields in test classes)
+7. PER-ROBOT SKIPS (model_skip_fields in test classes)
    - UR5e: jnt_actfrclimited, jnt_actfrcrange (Newton enables by default)
    - TODO: Match MuJoCo's default behavior for jnt_actfrclimited
 
-9. SOLVER DEFAULTS
+8. SOLVER DEFAULTS
    - Tests override Newton defaults to use MuJoCo's: solver=Newton, iterations=100
    - Newton's own defaults: solver=CG, iterations=20, ls_iterations=10
    - This is intentional for equivalence testing
 
-10. TIMESTEP FROM MODEL
-    - Newton's MJCF parser doesn't extract timestep from <option> tag yet
-    - Tests extract timestep from native MuJoCo model after loading
-    - TODO: Parse timestep from MJCF <option timestep="..."/> into Newton model
+9. TIMESTEP FROM MODEL
+   - Newton's MJCF parser doesn't extract timestep from <option> tag yet
+   - Tests extract timestep from native MuJoCo model after loading
+   - TODO: Parse timestep from MJCF <option timestep="..."/> into Newton model
 
 --------------------------------------------------------------------------------
 """
@@ -194,7 +191,6 @@ def create_newton_model_from_mjcf(
         str(mjcf_path),
         floating=floating,
         parse_visuals=parse_visuals,
-        enable_self_collisions=True,  # Match native MuJoCo behavior
         ignore_inertial_definitions=False,  # Use MJCF-defined inertials to match MuJoCo
     )
 
