@@ -509,6 +509,8 @@ class Model:
         """
         self.max_joints_per_articulation = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
+        self.max_dofs_per_articulation = 0
+        """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
