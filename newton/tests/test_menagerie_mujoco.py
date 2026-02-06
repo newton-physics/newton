@@ -547,12 +547,8 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_sizes() which understands type-specific semantics
     "geom_size",
-    # Solver options: Newton uses different defaults than MuJoCo
-    # Tests override key settings (solver, iterations, ls_iterations) but other opt fields
-    # may still differ. Compare critical physics-affecting options separately if needed.
-    "opt.ccd_iterations",
-    "opt.ccd_tolerance",
-    "opt.noslip_iterations",
+    # Solver options: remaining fields that differ between Newton and MuJoCo
+    # TODO: Review each and determine if Newton should match MuJoCo defaults
     "opt.noslip_tolerance",
     "opt.cone",
     "opt.o_solref",
