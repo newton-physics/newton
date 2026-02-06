@@ -191,6 +191,7 @@ class Example:
     ):
         self.viewer = viewer
         self.sim_time = 0.0
+        self.args = args
 
         # Visualization scale: simulation is in cm, visualization in meters
         self.viz_scale = 0.01
