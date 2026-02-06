@@ -1,0 +1,1066 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Worlds &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/worlds';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Articulations" href="articulations.html" />
+    <link rel="prev" title="Development" href="../guide/development.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Worlds</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="worlds">
+<span id="id1"></span><h1>Worlds<a class="headerlink" href="#worlds" title="Link to this heading">#</a></h1>
+<p>Newton enables multiple independent simulations, referred to <em>worlds</em>, within a single <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> object.
+Each <em>world</em>, thus provides an index-based grouping of all primary simulation entities such as particles, bodies, shapes, joints, articulations and equality constraints.</p>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>GPU-accelerated operations in Newton often involve parallelizing over an entire set of model entities, e.g. bodies, shapes or joints, without needing to consider which specific world they belong to.
+However, some operations such as those part of Collision Detection (CD), can exploit world-based grouping to effectively filter-out potential collisions between shapes that belong to different worlds.
+Moreover, world-based grouping can also facilitate partitioning of thread grids according to both world indices and the number of entities per world.
+Such operations facilitate support for simulating multiple, and potentially heterogeneous, worlds defined within a <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> instance.
+Lastly, world-based grouping also enables selectively operating on only the entities that belong to a specific world, i.e. masking, as well as partitioning of the <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> and <a class="reference internal" href="../api/_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-class docutils literal notranslate"><span class="pre">State</span></code></a> data.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Support for fully heterogeneous simulations is still under active development and quite experimental.
+At present time, although the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a> and <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> objects support instantiating worlds with different disparate entities, not all solvers are able to simulate them.
+Moreover, the selection API still operates under the assumption of model homogeneity, but this is expected to also support heterogeneous simulations in the near future.</p>
+</div>
+</section>
+<section id="world-assignment">
+<span id="id2"></span><h2>World Assignment<a class="headerlink" href="#world-assignment" title="Link to this heading">#</a></h2>
+<p>World assignment occurs when entities are added to an instance of <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>, using one of the entity-specific methods such as <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_body" title="newton.ModelBuilder.add_body"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_body()</span></code></a>,
+<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_joint" title="newton.ModelBuilder.add_joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_joint()</span></code></a>, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape" title="newton.ModelBuilder.add_shape"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_shape()</span></code></a> etc, and this can either be global (world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>) or specific to a particular world (world index <code class="docutils literal notranslate"><span class="pre">0,</span> <span class="pre">1,</span> <span class="pre">2,</span> <span class="pre">...</span></code>).
+When entities are added before the first call to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a>, or the last call to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.end_world" title="newton.ModelBuilder.end_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_world()</span></code></a>, they are assigned to the global world (index <code class="docutils literal notranslate"><span class="pre">-1</span></code>).
+Conversely, entities can be assigned to specific worlds when added between calls to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a> and <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.end_world" title="newton.ModelBuilder.end_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_world()</span></code></a>.
+Each entity added between these calls is assigned the current world index. The following example illustrates how to create two different worlds within a single model:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Global entity at front (world -1)</span>
+<span class="n">ground</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+
+<span class="c1"># World 0</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">begin_world</span><span class="p">()</span>
+<span class="n">body00</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.1</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">body01</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.2</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">shape00</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body00</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">shape02</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body01</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">end_world</span><span class="p">()</span>
+
+<span class="c1"># World 1</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">begin_world</span><span class="p">()</span>
+<span class="n">body10</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">body11</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">joint11</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span><span class="n">parent</span><span class="o">=</span><span class="n">body10</span><span class="p">,</span> <span class="n">child</span><span class="o">=</span><span class="n">body11</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">shape10</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body10</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">shape11</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body11</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">end_world</span><span class="p">()</span>
+
+<span class="c1"># Global entity at back (world -1)</span>
+<span class="n">static_box</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+
+<span class="c1"># Finalize model</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>In this example, we are creating a model with two worlds (world <code class="docutils literal notranslate"><span class="pre">0</span></code> and world <code class="docutils literal notranslate"><span class="pre">1</span></code>) containing different bodies, shapes and joints, as well as the global ground plane entity (with world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p>
+</section>
+<section id="world-grouping">
+<span id="id3"></span><h2>World Grouping<a class="headerlink" href="#world-grouping" title="Link to this heading">#</a></h2>
+<p>The <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a> maintains internal lists that track the world assignment of each entity added to it.
+When <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a> is called, the <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> object generated will contain arrays that store the world indices for each entity type.</p>
+<p>Specifically, the entity types that currently support world grouping include:</p>
+<ul class="simple">
+<li><p>Particles: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_world" title="newton.Model.particle_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_world</span></code></a></p></li>
+<li><p>Bodies: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world" title="newton.Model.body_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world</span></code></a></p></li>
+<li><p>Shapes: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_world" title="newton.Model.shape_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_world</span></code></a></p></li>
+<li><p>Joints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_world" title="newton.Model.joint_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_world</span></code></a></p></li>
+<li><p>Articulations: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.articulation_world" title="newton.Model.articulation_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">articulation_world</span></code></a></p></li>
+<li><p>Equality Constraints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.equality_constraint_world" title="newton.Model.equality_constraint_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">equality_constraint_world</span></code></a></p></li>
+</ul>
+<p>For the example above, the corresponding world grouping arrays would be as follows:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Body worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">body_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>  <span class="c1"># Example: Body worlds: [0  0  1  1]</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">shape_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>  <span class="c1"># Example: Shape worlds: [-1  0  0  1  1  -1]</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Joint worlds:&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">joint_world</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>  <span class="c1"># Example: Joint worlds: [0  0  1  1]</span>
+</pre></div>
+</div>
+</section>
+<section id="world-start-indices-dimensions">
+<span id="world-starts"></span><h2>World Start Indices &amp; Dimensions<a class="headerlink" href="#world-start-indices-dimensions" title="Link to this heading">#</a></h2>
+<p>In addition to the world grouping arrays, the <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> object will also contain Warp arrays that store the per-world starting indices for each entity type.</p>
+<p>These arrays include:
+- Particles: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.particle_world_start" title="newton.Model.particle_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">particle_world_start</span></code></a>
+- Bodies: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world_start" title="newton.Model.body_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world_start</span></code></a>
+- Shapes: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_world_start" title="newton.Model.shape_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_world_start</span></code></a>
+- Joints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_world_start" title="newton.Model.joint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_world_start</span></code></a>
+- Articulations: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.articulation_world_start" title="newton.Model.articulation_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">articulation_world_start</span></code></a>
+- Equality Constraints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.equality_constraint_world_start" title="newton.Model.equality_constraint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">equality_constraint_world_start</span></code></a></p>
+<p>To handle the special case of joint entities, that vary in the number of DOFs, coordinates and constraints, the model also provides arrays that store the per-world starting indices in these specific dimensions:
+- Joint DOFs: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_dof_world_start" title="newton.Model.joint_dof_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_dof_world_start</span></code></a>
+- Joint Coordinates: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_coord_world_start" title="newton.Model.joint_coord_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_coord_world_start</span></code></a>
+- Joint Constraints: <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_constraint_world_start" title="newton.Model.joint_constraint_world_start"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_constraint_world_start</span></code></a></p>
+<p>All <code class="xref py py-attr docutils literal notranslate"><span class="pre">world_*_start</span></code> arrays adopt a special format that facilitates accounting of the total number of entities in each world as well as the global world (index <code class="docutils literal notranslate"><span class="pre">-1</span></code>) at the front and back of each per-entity array such as <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.body_world" title="newton.Model.body_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_world</span></code></a>.
+Specifically, each <code class="xref py py-attr docutils literal notranslate"><span class="pre">world_*_start</span></code> array contains <code class="docutils literal notranslate"><span class="pre">num_worlds</span> <span class="pre">+</span> <span class="pre">2</span></code> entries, with the first <code class="docutils literal notranslate"><span class="pre">num_worlds</span></code> entries corresponding to starting indices of each <code class="docutils literal notranslate"><span class="pre">world</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code> world,
+the second last entry corresponds to the starting index of the global entities at the back (world index <code class="docutils literal notranslate"><span class="pre">-1</span></code>), and the last entry corresponding to total number of entities or dimensions in the model.</p>
+<p>With this format, we can easily compute the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
+as well as the total number of global entities by summing the first entry with the difference of the last two.</p>
+<p>For the previous example, we can compute the per-world shape counts as follows:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># Total number of worlds</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;model.num_worlds :&quot;</span><span class="p">,</span> <span class="n">model</span><span class="o">.</span><span class="n">num_worlds</span><span class="p">)</span>  <span class="c1"># In this example, we have worlds 0 and 1, and num_worlds = 2</span>
+
+<span class="c1"># Shape start indices per world</span>
+<span class="c1"># Entries: [start_world_0, start_world_1, start_global_back, total_shapes]</span>
+<span class="n">shape_start</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">shape_world_start</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape starts: &quot;</span><span class="p">,</span> <span class="n">shape_start</span><span class="p">)</span>
+<span class="c1"># Output: Shape starts: [1  3  5  6]  # 1 global shape at front, 2 shapes in world 0, 2 shapes in world 1, 1 global shape at back, total 6 shapes</span>
+
+<span class="c1"># Compute per-world body counts</span>
+<span class="n">world_shape_counts</span> <span class="o">=</span> <span class="p">[</span><span class="n">shape_start</span><span class="p">[</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">shape_start</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">num_worlds</span><span class="p">)]</span>
+<span class="n">global_shape_count</span> <span class="o">=</span> <span class="n">shape_start</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">shape_start</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">+</span> <span class="n">shape_start</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># Global shapes at front and back</span>
+
+<span class="c1"># Print shape counts</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Shape counts per world: &quot;</span><span class="p">,</span> <span class="n">world_shape_counts</span><span class="p">)</span>  <span class="c1"># Output: Shape counts per world: [2, 2]</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Global shape count: &quot;</span><span class="p">,</span> <span class="n">global_shape_count</span><span class="p">)</span>      <span class="c1"># Output: Global shape count: 2</span>
+</pre></div>
+</div>
+</section>
+<section id="world-entity-gpu-thread-partitioning">
+<span id="world-entity-partitioning"></span><h2>World-Entity GPU Thread Partitioning<a class="headerlink" href="#world-entity-gpu-thread-partitioning" title="Link to this heading">#</a></h2>
+<p>Another important use of world grouping is to facilitate partitioning of GPU thread grids according to both world indices and the number of entities per world, i.e. into 2D world-entity grids.</p>
+<p>For example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
+<span class="k">def</span><span class="w"> </span><span class="mi">2</span><span class="n">d_world_body_example_kernel</span><span class="p">(</span>
+    <span class="n">body_world_start</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
+    <span class="n">body_world</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
+    <span class="n">body_twist</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">spatial_vectorf</span><span class="p">),</span>
+<span class="p">):</span>
+    <span class="n">world_id</span><span class="p">,</span> <span class="n">body_world_id</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">tid</span><span class="p">()</span>  <span class="c1"># 2D world-entity grid</span>
+    <span class="c1"># Perform operations specific to the world and entity here</span>
+    <span class="n">world_start</span> <span class="o">=</span> <span class="n">body_world_start</span><span class="p">[</span><span class="n">world_id</span><span class="p">]</span>
+    <span class="n">num_bodies_in_world</span> <span class="o">=</span> <span class="n">body_world_start</span><span class="p">[</span><span class="n">world_id</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">world_start</span>
+    <span class="k">if</span> <span class="n">body_world_id</span> <span class="o">&lt;</span> <span class="n">num_bodies_in_world</span><span class="p">:</span>
+       <span class="n">global_body_id</span> <span class="o">=</span> <span class="n">world_start</span> <span class="o">+</span> <span class="n">body_world_id</span>
+       <span class="c1"># Access body-specific data using global_body_id</span>
+       <span class="n">twist</span> <span class="o">=</span> <span class="n">body_twist</span><span class="p">[</span><span class="n">global_body_id</span><span class="p">]</span>
+       <span class="c1"># ... perform computations on twist ...</span>
+
+<span class="c1"># Create model with multiple worlds</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="c1"># ... add entities to multiple worlds ...</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="c1"># Define number of entities per world (e.g., bodies)</span>
+<span class="n">body_world_start</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">body_world_start</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">num_bodies_per_world</span> <span class="o">=</span> <span class="p">[</span><span class="n">body_world_start</span><span class="p">[</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">]</span> <span class="o">-</span> <span class="n">body_world_start</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">num_worlds</span><span class="p">)]</span>
+
+<span class="c1"># Launch kernel with 2D grid: (num_worlds, max_num_entities)</span>
+<span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="mi">2</span><span class="n">d_world_body_example_kernel</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">num_worlds</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="n">num_bodies_per_world</span><span class="p">)),</span> <span class="o">...</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>This kernel thread partitioning allows each thread to uniquely identify both the world it is operating on (via <code class="docutils literal notranslate"><span class="pre">world_id</span></code>) and the relative entity index w.r.t that world (via <code class="docutils literal notranslate"><span class="pre">entity_id</span></code>).
+The world-relative <code class="docutils literal notranslate"><span class="pre">entity_id</span></code> index is useful in certain operations such as accessing the body-specific column of constraint Jacobian matrices in maximal-coordinate formulations, which are stored in contiguous blocks per world.
+This relative index can then be mapped to the global entity index within the model by adding the corresponding starting index from the <code class="xref py py-attr docutils literal notranslate"><span class="pre">world_*_start</span></code> arrays.</p>
+<p>Note that in the simpler case of a homogeneous model consisting of identical worlds, the <code class="docutils literal notranslate"><span class="pre">max(num_bodies_per_world)</span></code> reduces to a constant value, and this effectively becomes a <em>batched</em> operation.
+For the more general heterogeneous case, the kernel needs to account for the varying number of entities per world, and an important pattern arises w.r.t 2D thread indexing and memory allocations that applies to all per-entity and per-world arrays.</p>
+<p>Essentially, the sum <code class="docutils literal notranslate"><span class="pre">sum(num_bodies_per_world)</span></code> will always equal the total number of bodies in the model <code class="docutils literal notranslate"><span class="pre">model.num_bodies</span></code> corresponding memory allocated for per-body arrays (i.e. when multiplied by the size of the relevant <code class="docutils literal notranslate"><span class="pre">dtype</span></code>),
+and the maximum <code class="docutils literal notranslate"><span class="pre">max(num_bodies_per_world)</span></code> will determine the second dimension of the 2D thread grid used to launch the kernel.
+However, since different worlds may have different number of bodies, some threads in the 2D grid will be inactive for worlds with fewer bodies than the maximum.
+Therefore, kernels need to check whether the relative entity index is within bounds for the current world before performing any operations, as shown in the example above.</p>
+<p>This pattern of computing <code class="docutils literal notranslate"><span class="pre">sum_of_num_*</span></code> and <code class="docutils literal notranslate"><span class="pre">max_of_num_*</span></code> thus provides a consistent way to handle memory allocations and thread grid dimensions for heterogeneous multi-world simulations in Newton.</p>
+</section>
+<section id="see-also">
+<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a></p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a></p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#world-assignment">World Assignment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#world-grouping">World Grouping</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#world-start-indices-dimensions">World Start Indices &amp; Dimensions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#world-entity-gpu-thread-partitioning">World-Entity GPU Thread Partitioning</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See Also</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

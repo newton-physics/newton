@@ -1,0 +1,6 @@
+﻿newton.geometry.create\_box\_mesh
+=================================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: create_box_mesh

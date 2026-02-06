@@ -1,0 +1,1412 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Custom Attributes &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/custom_attributes';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Extended Attributes" href="extended_attributes.html" />
+    <link rel="prev" title="USD Parsing and Schema Resolver System" href="usd_parsing.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Custom Attributes</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="custom-attributes">
+<span id="id1"></span><h1>Custom Attributes<a class="headerlink" href="#custom-attributes" title="Link to this heading">#</a></h1>
+<p>Newton’s simulation model uses flat buffer arrays to represent physical properties and simulation state. These arrays can be extended with user-defined custom attributes to store application-specific data alongside the standard physics quantities.</p>
+<section id="use-cases">
+<h2>Use Cases<a class="headerlink" href="#use-cases" title="Link to this heading">#</a></h2>
+<p>Custom attributes enable a wide range of simulation extensions:</p>
+<ul class="simple">
+<li><p><strong>Per-body properties</strong>: Store thermal properties, material composition, sensor IDs, or hardware specifications</p></li>
+<li><p><strong>Advanced control</strong>: Store PD gains, velocity limits, control modes, or actuator parameters per-joint or per-DOF</p></li>
+<li><p><strong>Visualization</strong>: Attach colors, labels, rendering properties, or UI metadata to simulation entities</p></li>
+<li><p><strong>Multi-physics coupling</strong>: Store quantities like surface stress, temperature fields, or electromagnetic properties</p></li>
+<li><p><strong>Reinforcement learning</strong>: Store observation buffers, reward weights, optimization parameters, or policy-specific data directly on entities</p></li>
+<li><p><strong>Solver-specific data</strong>: Store contact pair parameters, tendon properties, or other solver-specific entity types</p></li>
+</ul>
+<p>Custom attributes follow Newton’s flat array indexing scheme, enabling efficient GPU-parallel access while maintaining flexibility for domain-specific extensions.</p>
+</section>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
+<p>Newton organizes simulation data into four primary objects, each containing flat arrays indexed by simulation entities:</p>
+<ul class="simple">
+<li><p><strong>Model Object</strong> - Static configuration and physical properties that remain constant during simulation</p></li>
+<li><p><strong>State Object</strong> - Dynamic quantities that evolve during simulation</p></li>
+<li><p><strong>Control Object</strong> - Control inputs and actuator commands</p></li>
+<li><p><strong>Contact Object</strong> - Contact-specific properties</p></li>
+</ul>
+<p>Custom attributes extend these objects with user-defined arrays that follow the same indexing scheme as Newton’s built-in attributes.</p>
+</section>
+<section id="declaring-custom-attributes">
+<h2>Declaring Custom Attributes<a class="headerlink" href="#declaring-custom-attributes" title="Link to this heading">#</a></h2>
+<p>Custom attributes must be declared before use via the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_attribute" title="newton.ModelBuilder.add_custom_attribute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_custom_attribute()</span></code></a> method. Each declaration specifies:</p>
+<ul class="simple">
+<li><p><strong>name</strong>: Attribute name</p></li>
+<li><p><strong>frequency</strong>: Determines array size and indexing—either a <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.AttributeFrequency" title="newton.Model.AttributeFrequency"><code class="xref py py-class docutils literal notranslate"><span class="pre">AttributeFrequency</span></code></a> enum value (<code class="docutils literal notranslate"><span class="pre">BODY</span></code>, <code class="docutils literal notranslate"><span class="pre">SHAPE</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT_DOF</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT_COORD</span></code>, <code class="docutils literal notranslate"><span class="pre">ARTICULATION</span></code>) or a string for custom frequencies</p></li>
+<li><p><strong>dtype</strong>: Warp data type (<code class="docutils literal notranslate"><span class="pre">wp.float32</span></code>, <code class="docutils literal notranslate"><span class="pre">wp.vec3</span></code>, <code class="docutils literal notranslate"><span class="pre">wp.quat</span></code>, etc.)</p></li>
+<li><p><strong>assignment</strong>: Which simulation object owns the attribute (<code class="docutils literal notranslate"><span class="pre">MODEL</span></code>, <code class="docutils literal notranslate"><span class="pre">STATE</span></code>, <code class="docutils literal notranslate"><span class="pre">CONTROL</span></code>, <code class="docutils literal notranslate"><span class="pre">CONTACT</span></code>)</p></li>
+<li><p><strong>default</strong> (optional): Default value for unspecified entities</p></li>
+<li><p><strong>namespace</strong> (optional): Hierarchical organization for grouping related attributes</p></li>
+<li><p><strong>references</strong> (optional): For multi-world merging, specifies how values are transformed (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;body&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;shape&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;world&quot;</span></code>, or a custom frequency key)</p></li>
+</ul>
+<p>When <strong>no namespace</strong> is specified, attributes are added directly to their assignment object (e.g., <code class="docutils literal notranslate"><span class="pre">model.temperature</span></code>). When a <strong>namespace</strong> is provided, Newton creates a namespace container (e.g., <code class="docutils literal notranslate"><span class="pre">model.mujoco.damping</span></code>).</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">Model</span><span class="p">,</span> <span class="n">ModelBuilder</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Default namespace attributes - added directly to assignment objects</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;temperature&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">BODY</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">20.0</span><span class="p">,</span>  <span class="c1"># Explicit default value</span>
+        <span class="n">assignment</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeAssignment</span><span class="o">.</span><span class="n">MODEL</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="c1"># → Accessible as: model.temperature</span>
+
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;velocity_limit&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">BODY</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>  <span class="c1"># Default vector value</span>
+        <span class="n">assignment</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeAssignment</span><span class="o">.</span><span class="n">STATE</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="c1"># → Accessible as: state.velocity_limit</span>
+
+<span class="c1"># Namespaced attributes - organized under namespace containers</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;float_attr&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">BODY</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>
+        <span class="n">assignment</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeAssignment</span><span class="o">.</span><span class="n">MODEL</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;namespace_a&quot;</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="c1"># → Accessible as: model.namespace_a.float_attr</span>
+
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;bool_attr&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">SHAPE</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">assignment</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeAssignment</span><span class="o">.</span><span class="n">MODEL</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;namespace_a&quot;</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="c1"># → Accessible as: model.namespace_a.bool_attr</span>
+
+<span class="c1"># Articulation frequency attributes - one value per articulation</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;articulation_stiffness&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">ARTICULATION</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">100.0</span><span class="p">,</span>
+        <span class="n">assignment</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeAssignment</span><span class="o">.</span><span class="n">MODEL</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="c1"># → Accessible as: model.articulation_stiffness</span>
+</pre></div>
+</div>
+<p><strong>Default Value Behavior:</strong></p>
+<p>When entities don’t explicitly specify custom attribute values, the default value is used:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># First body uses the default value (20.0)</span>
+<span class="n">body1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+
+<span class="c1"># Second body overrides with explicit value</span>
+<span class="n">body2</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span>
+    <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">custom_attributes</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;temperature&quot;</span><span class="p">:</span> <span class="mf">37.5</span><span class="p">}</span>
+<span class="p">)</span>
+
+<span class="c1"># Articulation attributes: create articulations with custom values</span>
+<span class="c1"># Each add_articulation creates one articulation at the next index</span>
+<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">):</span>
+    <span class="n">base</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+    <span class="n">joint</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_free</span><span class="p">(</span><span class="n">child</span><span class="o">=</span><span class="n">base</span><span class="p">)</span>
+    <span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">(</span>
+        <span class="n">joints</span><span class="o">=</span><span class="p">[</span><span class="n">joint</span><span class="p">],</span>
+        <span class="n">custom_attributes</span><span class="o">=</span><span class="p">{</span>
+            <span class="s2">&quot;articulation_stiffness&quot;</span><span class="p">:</span> <span class="mf">100.0</span> <span class="o">+</span> <span class="nb">float</span><span class="p">(</span><span class="n">i</span><span class="p">)</span> <span class="o">*</span> <span class="mf">50.0</span>  <span class="c1"># 100, 150, 200</span>
+        <span class="p">}</span>
+    <span class="p">)</span>
+
+<span class="c1"># After finalization, access attributes</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">temps</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">temperature</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">arctic_stiff</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">articulation_stiffness</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Body 1: </span><span class="si">{</span><span class="n">temps</span><span class="p">[</span><span class="n">body1</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># 20.0 (default)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Body 2: </span><span class="si">{</span><span class="n">temps</span><span class="p">[</span><span class="n">body2</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># 37.5 (authored)</span>
+<span class="c1"># Articulation indices reflect all articulations in the model</span>
+<span class="c1"># (including any implicit ones from add_body)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Articulations: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">arctic_stiff</span><span class="p">)</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Last articulation stiffness: </span><span class="si">{</span><span class="n">arctic_stiff</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>  <span class="c1"># 200.0</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Body 1: 20.0
+Body 2: 37.5
+Articulations: 5
+Last articulation stiffness: 200.0
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Uniqueness is determined by the full identifier (namespace + name):</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">model.float_attr</span></code> (key: <code class="docutils literal notranslate"><span class="pre">&quot;float_attr&quot;</span></code>) and <code class="docutils literal notranslate"><span class="pre">model.namespace_a.float_attr</span></code> (key: <code class="docutils literal notranslate"><span class="pre">&quot;namespace_a:float_attr&quot;</span></code>) can coexist</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">model.float_attr</span></code> (key: <code class="docutils literal notranslate"><span class="pre">&quot;float_attr&quot;</span></code>) and <code class="docutils literal notranslate"><span class="pre">state.namespace_a.float_attr</span></code> (key: <code class="docutils literal notranslate"><span class="pre">&quot;namespace_a:float_attr&quot;</span></code>) can coexist</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">model.float_attr</span></code> (key: <code class="docutils literal notranslate"><span class="pre">&quot;float_attr&quot;</span></code>) and <code class="docutils literal notranslate"><span class="pre">state.float_attr</span></code> (key: <code class="docutils literal notranslate"><span class="pre">&quot;float_attr&quot;</span></code>) cannot coexist - same key</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">model.namespace_a.float_attr</span></code> and <code class="docutils literal notranslate"><span class="pre">state.namespace_a.float_attr</span></code> cannot coexist - same key <code class="docutils literal notranslate"><span class="pre">&quot;namespace_a:float_attr&quot;</span></code></p></li>
+</ul>
+</div>
+<p><strong>Registering Solver Attributes:</strong></p>
+<p>Before loading assets, register solver-specific attributes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers</span><span class="w"> </span><span class="kn">import</span> <span class="n">SolverMuJoCo</span>
+
+<span class="n">builder_mujoco</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">SolverMuJoCo</span><span class="o">.</span><span class="n">register_custom_attributes</span><span class="p">(</span><span class="n">builder_mujoco</span><span class="p">)</span>
+
+<span class="c1"># Now build your scene...</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder_mujoco</span><span class="o">.</span><span class="n">add_link</span><span class="p">()</span>
+<span class="n">joint</span> <span class="o">=</span> <span class="n">builder_mujoco</span><span class="o">.</span><span class="n">add_joint_free</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>
+<span class="n">builder_mujoco</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">joint</span><span class="p">])</span>
+<span class="n">shape</span> <span class="o">=</span> <span class="n">builder_mujoco</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
+
+<span class="n">model_mujoco</span> <span class="o">=</span> <span class="n">builder_mujoco</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="k">assert</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">model_mujoco</span><span class="p">,</span> <span class="s2">&quot;mujoco&quot;</span><span class="p">)</span>
+<span class="k">assert</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">model_mujoco</span><span class="o">.</span><span class="n">mujoco</span><span class="p">,</span> <span class="s2">&quot;condim&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="authoring-custom-attributes">
+<h2>Authoring Custom Attributes<a class="headerlink" href="#authoring-custom-attributes" title="Link to this heading">#</a></h2>
+<p>After declaration, values are assigned through the standard entity creation API (<code class="docutils literal notranslate"><span class="pre">add_body</span></code>, <code class="docutils literal notranslate"><span class="pre">add_shape</span></code>, <code class="docutils literal notranslate"><span class="pre">add_joint</span></code>). For default namespace attributes, use the attribute name directly. For namespaced attributes, use the format <code class="docutils literal notranslate"><span class="pre">&quot;namespace:attr_name&quot;</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Create a body with both default and namespaced attributes</span>
+<span class="n">body_id</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span>
+    <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+    <span class="n">custom_attributes</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">&quot;temperature&quot;</span><span class="p">:</span> <span class="mf">37.5</span><span class="p">,</span>                  <span class="c1"># default → model.temperature</span>
+        <span class="s2">&quot;velocity_limit&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mf">2.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">],</span>    <span class="c1"># default → state.velocity_limit</span>
+        <span class="s2">&quot;namespace_a:float_attr&quot;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">,</span>        <span class="c1"># namespaced → model.namespace_a.float_attr</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+
+<span class="c1"># Create a shape with a namespaced attribute</span>
+<span class="n">shape_id</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span>
+    <span class="n">body</span><span class="o">=</span><span class="n">body_id</span><span class="p">,</span>
+    <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
+    <span class="n">custom_attributes</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">&quot;namespace_a:bool_attr&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>  <span class="c1"># → model.namespace_a.bool_attr</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Joint Frequency Types:</strong></p>
+<p>For joints, Newton provides three frequency types to store different granularities of data:</p>
+<ul class="simple">
+<li><p><strong>JOINT frequency</strong> → One value per joint</p></li>
+<li><p><strong>JOINT_DOF frequency</strong> → Values per degree of freedom (list, dict, or scalar for single-DOF joints)</p></li>
+<li><p><strong>JOINT_COORD frequency</strong> → Values per position coordinate (list, dict, or scalar for single-coordinate joints)</p></li>
+</ul>
+<p>For <code class="docutils literal notranslate"><span class="pre">JOINT_DOF</span></code> and <code class="docutils literal notranslate"><span class="pre">JOINT_COORD</span></code> frequencies, values can be provided in three formats:</p>
+<ol class="arabic simple">
+<li><p><strong>List format</strong>: Explicit values for all DOFs/coordinates (e.g., <code class="docutils literal notranslate"><span class="pre">[100.0,</span> <span class="pre">200.0]</span></code> for 2-DOF joint)</p></li>
+<li><p><strong>Dict format</strong>: Sparse specification mapping indices to values (e.g., <code class="docutils literal notranslate"><span class="pre">{0:</span> <span class="pre">100.0,</span> <span class="pre">2:</span> <span class="pre">300.0}</span></code> sets only DOF 0 and 2)</p></li>
+<li><p><strong>Scalar format</strong>: Single value for single-DOF/single-coordinate joints, automatically expanded to a list</p></li>
+</ol>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Declare joint attributes with different frequencies</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;int_attr&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">JOINT</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;float_attr_dof&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">JOINT_DOF</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;float_attr_coord&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="n">Model</span><span class="o">.</span><span class="n">AttributeFrequency</span><span class="o">.</span><span class="n">JOINT_COORD</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+
+<span class="c1"># Create a D6 joint with 2 DOFs (1 linear + 1 angular) and 2 coordinates</span>
+<span class="n">parent</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">child</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+
+<span class="n">cfg</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">JointDofConfig</span>
+<span class="n">joint_id</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_d6</span><span class="p">(</span>
+    <span class="n">parent</span><span class="o">=</span><span class="n">parent</span><span class="p">,</span>
+    <span class="n">child</span><span class="o">=</span><span class="n">child</span><span class="p">,</span>
+    <span class="n">linear_axes</span><span class="o">=</span><span class="p">[</span><span class="n">cfg</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">])],</span>      <span class="c1"># 1 linear DOF</span>
+    <span class="n">angular_axes</span><span class="o">=</span><span class="p">[</span><span class="n">cfg</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">])],</span>     <span class="c1"># 1 angular DOF</span>
+    <span class="n">custom_attributes</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">&quot;int_attr&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span>                      <span class="c1"># JOINT frequency: single value</span>
+        <span class="s2">&quot;float_attr_dof&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mf">100.0</span><span class="p">,</span> <span class="mf">200.0</span><span class="p">],</span>   <span class="c1"># JOINT_DOF frequency: list with 2 values (one per DOF)</span>
+        <span class="s2">&quot;float_attr_coord&quot;</span><span class="p">:</span> <span class="p">[</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.7</span><span class="p">],</span>     <span class="c1"># JOINT_COORD frequency: list with 2 values (one per coordinate)</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">joint_id</span><span class="p">])</span>
+
+<span class="c1"># Scalar format for single-DOF joints (automatically expanded to list)</span>
+<span class="n">parent2</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">child2</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">revolute_joint</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_revolute</span><span class="p">(</span>
+    <span class="n">parent</span><span class="o">=</span><span class="n">parent2</span><span class="p">,</span>
+    <span class="n">child</span><span class="o">=</span><span class="n">child2</span><span class="p">,</span>
+    <span class="n">axis</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span>
+    <span class="n">custom_attributes</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">&quot;float_attr_dof&quot;</span><span class="p">:</span> <span class="mf">150.0</span><span class="p">,</span>    <span class="c1"># Scalar for 1-DOF joint (expanded to [150.0])</span>
+        <span class="s2">&quot;float_attr_coord&quot;</span><span class="p">:</span> <span class="mf">0.8</span><span class="p">,</span>    <span class="c1"># Scalar for 1-coord joint (expanded to [0.8])</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">revolute_joint</span><span class="p">])</span>
+
+<span class="c1"># Dict format for sparse specification (only set specific DOF/coord indices)</span>
+<span class="n">parent3</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">child3</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">d6_joint</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_joint_d6</span><span class="p">(</span>
+    <span class="n">parent</span><span class="o">=</span><span class="n">parent3</span><span class="p">,</span>
+    <span class="n">child</span><span class="o">=</span><span class="n">child3</span><span class="p">,</span>
+    <span class="n">linear_axes</span><span class="o">=</span><span class="p">[</span><span class="n">cfg</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">]),</span> <span class="n">cfg</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">])],</span>  <span class="c1"># 2 linear DOFs</span>
+    <span class="n">angular_axes</span><span class="o">=</span><span class="p">[</span><span class="n">cfg</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">])],</span>                      <span class="c1"># 1 angular DOF</span>
+    <span class="n">custom_attributes</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">&quot;float_attr_dof&quot;</span><span class="p">:</span> <span class="p">{</span><span class="mi">0</span><span class="p">:</span> <span class="mf">100.0</span><span class="p">,</span> <span class="mi">2</span><span class="p">:</span> <span class="mf">300.0</span><span class="p">},</span>  <span class="c1"># Dict: only DOF 0 and 2 specified</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">d6_joint</span><span class="p">])</span>
+</pre></div>
+</div>
+</section>
+<section id="accessing-custom-attributes">
+<h2>Accessing Custom Attributes<a class="headerlink" href="#accessing-custom-attributes" title="Link to this heading">#</a></h2>
+<p>After finalization, custom attributes become accessible as Warp arrays. Default namespace attributes are accessed directly on their assignment object, while namespaced attributes are accessed through their namespace container.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Finalize the model</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+
+<span class="c1"># Access default namespace attributes (direct access on assignment objects)</span>
+<span class="n">temperatures</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">temperature</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">velocity_limits</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">velocity_limit</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Temperature: </span><span class="si">{</span><span class="n">temperatures</span><span class="p">[</span><span class="n">body_id</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Velocity limit: </span><span class="si">{</span><span class="n">velocity_limits</span><span class="p">[</span><span class="n">body_id</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+
+<span class="c1"># Access namespaced attributes (via namespace containers)</span>
+<span class="n">namespace_a_body_floats</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">float_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">namespace_a_shape_bools</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">bool_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Namespace A body float: </span><span class="si">{</span><span class="n">namespace_a_body_floats</span><span class="p">[</span><span class="n">body_id</span><span class="p">]</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Namespace A shape bool: </span><span class="si">{</span><span class="nb">bool</span><span class="p">(</span><span class="n">namespace_a_shape_bools</span><span class="p">[</span><span class="n">shape_id</span><span class="p">])</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>Temperature: 37.5
+Velocity limit: [2. 2. 2.]
+Namespace A body float: 0.5
+Namespace A shape bool: True
+</pre></div>
+</div>
+<p>Custom attributes follow the same GPU/CPU synchronization rules as built-in attributes and can be modified during simulation.</p>
+</section>
+<section id="usd-integration">
+<h2>USD Integration<a class="headerlink" href="#usd-integration" title="Link to this heading">#</a></h2>
+<p>Custom attributes can be authored in USD files using a declaration-first pattern, similar to the Python API. Declarations are placed on the PhysicsScene prim, and individual prims can then assign values to these attributes.</p>
+<p><strong>Declaration Format (on PhysicsScene prim):</strong></p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="k k-Tokens">def</span><span class="w"> </span>PhysicsScene<span class="w"> </span><span class="s">&quot;physicsScene&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># Default namespace attributes</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:float_attr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.0</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;body&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float3</span><span class="w"> </span><span class="na">newton:vec3_attr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="m">0.0</span><span class="p">,</span><span class="w"> </span><span class="m">0.0</span><span class="p">,</span><span class="w"> </span><span class="m">0.0</span><span class="p">)</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;state&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;body&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1"># ARTICULATION frequency attribute</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:articulation_stiffness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">100.0</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;articulation&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1"># Custom namespace attributes</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:namespace_a:some_attrib</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">150.0</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;control&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;joint_dof&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="na">newton:namespace_a:bool_attr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span>false<span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;shape&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><strong>Assignment Format (on individual prims):</strong></p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="k k-Tokens">def</span><span class="w"> </span>Xform<span class="w"> </span><span class="s">&quot;robot_arm&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsRigidBodyAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># Override declared attributes with custom values</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:float_attr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">850.0</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float3</span><span class="w"> </span><span class="na">newton:vec3_attr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="m">1.0</span><span class="p">,</span><span class="w"> </span><span class="m">0.5</span><span class="p">,</span><span class="w"> </span><span class="m">0.3</span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:namespace_a:some_attrib</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">250.0</span>
+<span class="p">}</span>
+
+<span class="k k-Tokens">def</span><span class="w"> </span>Mesh<span class="w"> </span><span class="s">&quot;gripper&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsRigidBodyAPI&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;PhysicsCollisionAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="na">newton:namespace_a:bool_attr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span>true
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>After importing the USD file, attributes are accessible following the same patterns as programmatically declared attributes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">ModelBuilder</span>
+
+<span class="n">builder_usd</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder_usd</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span><span class="s2">&quot;robot_arm.usda&quot;</span><span class="p">)</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder_usd</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+
+<span class="c1"># Access default namespace attributes</span>
+<span class="n">float_values</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">float_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">vec3_values</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">vec3_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+
+<span class="c1"># Access namespaced attributes</span>
+<span class="n">namespace_a_floats</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">float_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">namespace_b_floats</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">namespace_b</span><span class="o">.</span><span class="n">float_attr</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">control_floats</span> <span class="o">=</span> <span class="n">control</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">float_attr_dof</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>For more information about USD integration and the schema resolver system, see <a class="reference internal" href="usd_parsing.html"><span class="doc">USD Parsing and Schema Resolver System</span></a>.</p>
+</section>
+<section id="validation-and-constraints">
+<h2>Validation and Constraints<a class="headerlink" href="#validation-and-constraints" title="Link to this heading">#</a></h2>
+<p>The custom attribute system enforces several constraints to ensure correctness:</p>
+<ul class="simple">
+<li><p>Attributes must be declared via <code class="docutils literal notranslate"><span class="pre">add_custom_attribute()</span></code> before use (raises <code class="docutils literal notranslate"><span class="pre">AttributeError</span></code> otherwise)</p></li>
+<li><p>Each attribute must be used with entities matching its declared frequency (raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code> otherwise)</p></li>
+<li><p>Each full attribute identifier (namespace + name) can only be declared once with a specific assignment, frequency, and dtype</p></li>
+<li><p>The same attribute name can exist in different namespaces because they create different full identifiers</p></li>
+</ul>
+</section>
+</section>
+<section id="custom-frequencies">
+<h1>Custom Frequencies<a class="headerlink" href="#custom-frequencies" title="Link to this heading">#</a></h1>
+<p>While enum frequencies (<code class="docutils literal notranslate"><span class="pre">BODY</span></code>, <code class="docutils literal notranslate"><span class="pre">SHAPE</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the <code class="docutils literal notranslate"><span class="pre">frequency</span></code> parameter.</p>
+<p><strong>Example use case:</strong> MuJoCo’s <code class="docutils literal notranslate"><span class="pre">&lt;contact&gt;&lt;pair&gt;</span></code> elements define contact pairs between geometries. These pairs have their own count independent of bodies or shapes, and their indices must be remapped when merging worlds.</p>
+<section id="declaring-custom-frequencies">
+<h2>Declaring Custom Frequencies<a class="headerlink" href="#declaring-custom-frequencies" title="Link to this heading">#</a></h2>
+<p>Pass a string instead of an enum for the <code class="docutils literal notranslate"><span class="pre">frequency</span></code> parameter:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair_geom1&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;pair&quot;</span><span class="p">,</span>  <span class="c1"># Custom frequency (string)</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="c1"># → Frequency resolves to &quot;mujoco:pair&quot; via namespace</span>
+</pre></div>
+</div>
+<p>When a namespace is provided, it is automatically prepended to the frequency string, matching how attribute keys work.</p>
+</section>
+<section id="adding-values">
+<h2>Adding Values<a class="headerlink" href="#adding-values" title="Link to this heading">#</a></h2>
+<p>Custom frequency values are appended using <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_values" title="newton.ModelBuilder.add_custom_values"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_custom_values()</span></code></a>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Declare attributes sharing a frequency</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_id&quot;</span><span class="p">,</span> <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;item&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_value&quot;</span><span class="p">,</span> <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;item&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
+<span class="p">)</span>
+
+<span class="c1"># Append values together</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_values</span><span class="p">(</span><span class="o">**</span><span class="p">{</span>
+    <span class="s2">&quot;myns:item_id&quot;</span><span class="p">:</span> <span class="mi">100</span><span class="p">,</span>
+    <span class="s2">&quot;myns:item_value&quot;</span><span class="p">:</span> <span class="mf">2.5</span><span class="p">,</span>
+<span class="p">})</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_values</span><span class="p">(</span><span class="o">**</span><span class="p">{</span>
+    <span class="s2">&quot;myns:item_id&quot;</span><span class="p">:</span> <span class="mi">101</span><span class="p">,</span>
+    <span class="s2">&quot;myns:item_value&quot;</span><span class="p">:</span> <span class="mf">3.0</span><span class="p">,</span>
+<span class="p">})</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">myns</span><span class="o">.</span><span class="n">item_id</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>    <span class="c1"># [100, 101]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">model</span><span class="o">.</span><span class="n">myns</span><span class="o">.</span><span class="n">item_value</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span> <span class="c1"># [2.5, 3.0]</span>
+</pre></div>
+</div>
+<p><strong>Validation:</strong> All attributes sharing a custom frequency must have the same count at <code class="docutils literal notranslate"><span class="pre">finalize()</span></code> time. This catches synchronization bugs early.</p>
+</section>
+<section id="multi-world-merging">
+<h2>Multi-World Merging<a class="headerlink" href="#multi-world-merging" title="Link to this heading">#</a></h2>
+<p>When using <code class="docutils literal notranslate"><span class="pre">add_world()</span></code> to create multi-world simulations, the <code class="docutils literal notranslate"><span class="pre">references</span></code> field specifies how attribute values should be transformed:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair_world&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;pair&quot;</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">,</span>
+        <span class="n">references</span><span class="o">=</span><span class="s2">&quot;world&quot;</span><span class="p">,</span>  <span class="c1"># Replaced with current_world during merge</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair_geom1&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;pair&quot;</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">,</span>
+        <span class="n">references</span><span class="o">=</span><span class="s2">&quot;shape&quot;</span><span class="p">,</span>  <span class="c1"># Offset by shape count during merge</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Supported reference types:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">&quot;body&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;shape&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint_dof&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;joint_coord&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;articulation&quot;</span></code> — offset by entity count</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">&quot;world&quot;</span></code> — replaced with <code class="docutils literal notranslate"><span class="pre">current_world</span></code></p></li>
+<li><p>Custom frequency keys (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:pair&quot;</span></code>) — offset by that frequency’s count</p></li>
+</ul>
+</section>
+<section id="querying-counts">
+<h2>Querying Counts<a class="headerlink" href="#querying-counts" title="Link to this heading">#</a></h2>
+<p>Use <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.get_custom_frequency_count" title="newton.Model.get_custom_frequency_count"><code class="xref py py-meth docutils literal notranslate"><span class="pre">get_custom_frequency_count()</span></code></a> to get the count for a custom frequency (raises <code class="docutils literal notranslate"><span class="pre">KeyError</span></code> if unknown):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">pair_count</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">get_custom_frequency_count</span><span class="p">(</span><span class="s2">&quot;mujoco:pair&quot;</span><span class="p">)</span>
+
+<span class="c1"># Or check directly without raising:</span>
+<span class="n">pair_count</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">custom_frequency_counts</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;mujoco:pair&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>When querying, use the <strong>resolved</strong> frequency key with namespace prefix (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:pair&quot;</span></code>), not the raw string used in the declaration (<code class="docutils literal notranslate"><span class="pre">&quot;pair&quot;</span></code>). This matches how attribute keys work: <code class="docutils literal notranslate"><span class="pre">model.get_attribute_frequency(&quot;mujoco:condim&quot;)</span></code> for a namespaced attribute.</p>
+</div>
+</section>
+<section id="articulationview-limitations">
+<h2>ArticulationView Limitations<a class="headerlink" href="#articulationview-limitations" title="Link to this heading">#</a></h2>
+<p>Custom frequency attributes are not accessible via <code class="xref py py-class docutils literal notranslate"><span class="pre">ArticulationView</span></code> because they represent entity types that aren’t tied to articulation structure. For per-articulation data, use enum frequencies like <code class="docutils literal notranslate"><span class="pre">ARTICULATION</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, or <code class="docutils literal notranslate"><span class="pre">BODY</span></code>.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#">Custom Attributes</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#use-cases">Use Cases</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#declaring-custom-attributes">Declaring Custom Attributes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#authoring-custom-attributes">Authoring Custom Attributes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#accessing-custom-attributes">Accessing Custom Attributes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usd-integration">USD Integration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#validation-and-constraints">Validation and Constraints</a></li>
+</ul>
+</li>
+<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-frequencies">Custom Frequencies</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#declaring-custom-frequencies">Declaring Custom Frequencies</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-values">Adding Values</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-world-merging">Multi-World Merging</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#querying-counts">Querying Counts</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#articulationview-limitations">ArticulationView Limitations</a></li>
+</ul>
+</li>
+</ul>
+
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

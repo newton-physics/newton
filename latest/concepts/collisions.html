@@ -1,0 +1,2160 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Collisions &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/collisions';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="newton" href="../api/newton.html" />
+    <link rel="prev" title="Extended Attributes" href="extended_attributes.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Collisions</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="collisions">
+<span id="id1"></span><h1>Collisions<a class="headerlink" href="#collisions" title="Link to this heading">#</a></h1>
+<p>Newton provides a flexible collision detection system for rigid-rigid and soft-rigid contacts. The pipeline handles broad phase culling, narrow phase contact generation, and filtering.</p>
+<p>Newton’s collision system is also compatible with MuJoCo-imported models via MJWarp, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes. See <code class="docutils literal notranslate"><span class="pre">examples/mjwarp/</span></code> for usage.</p>
+<section id="collision-pipelines">
+<span id="collision-pipelines-overview"></span><h2>Collision Pipelines<a class="headerlink" href="#collision-pipelines" title="Link to this heading">#</a></h2>
+<p>Newton provides two collision pipeline implementations:</p>
+<dl class="simple">
+<dt><strong>CollisionPipeline</strong> (Standard)</dt><dd><p>Uses precomputed shape pairs determined during model finalization. Efficient when the number of potentially colliding pairs is limited (NxN minus filtering rules). For scenes with many shapes where most pairs are filtered out, this avoids runtime broad phase overhead.</p>
+</dd>
+<dt><strong>CollisionPipelineUnified</strong></dt><dd><p>Supports multiple broad phase algorithms. Use this when the number of potential collision pairs would be large (e.g., hundreds of shapes that could all collide). Also required for advanced contact models like SDF-based and hydroelastic contacts. See <a class="reference internal" href="#unified-pipeline"><span class="std std-ref">Unified Pipeline</span></a> for details.</p>
+</dd>
+</dl>
+<p>Basic usage:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Default: uses CollisionPipeline with precomputed pairs</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+
+<span class="c1"># Or explicitly create a pipeline</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipelineUnified</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipelineUnified</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="supported-shape-types">
+<span id="id2"></span><h2>Supported Shape Types<a class="headerlink" href="#supported-shape-types" title="Link to this heading">#</a></h2>
+<p>Newton supports the following geometry types via <a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType" title="newton.GeoType"><code class="xref py py-class docutils literal notranslate"><span class="pre">GeoType</span></code></a>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 80.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Type</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">PLANE</span></code></p></td>
+<td><p>Infinite plane (ground)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">SPHERE</span></code></p></td>
+<td><p>Sphere primitive</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CAPSULE</span></code></p></td>
+<td><p>Cylinder with hemispherical ends</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BOX</span></code></p></td>
+<td><p>Axis-aligned box</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CYLINDER</span></code></p></td>
+<td><p>Cylinder</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CONE</span></code></p></td>
+<td><p>Cone</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ELLIPSOID</span></code></p></td>
+<td><p>Ellipsoid</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">MESH</span></code></p></td>
+<td><p>Triangle mesh (arbitrary, including non-convex)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CONVEX_MESH</span></code></p></td>
+<td><p>Convex hull mesh</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Heightfields</strong> (<code class="docutils literal notranslate"><span class="pre">HFIELD</span></code>) are not implemented. Convert heightfield terrain to a triangle mesh.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>SDF is a collision option</strong>, not a standalone shape type. Enable SDF generation on any shape
+via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code> to precompute a signed distance field
+from the shape’s geometry. The SDF provides O(1) distance queries that accelerate collision
+detection, especially for mesh-mesh pairs. The collision pipeline decides when to use SDF data
+based on efficiency.</p>
+</div>
+</section>
+<section id="shapes-and-rigid-bodies">
+<span id="shapes-and-bodies"></span><h2>Shapes and Rigid Bodies<a class="headerlink" href="#shapes-and-rigid-bodies" title="Link to this heading">#</a></h2>
+<p>Collision shapes are attached to rigid bodies. Each shape has:</p>
+<ul class="simple">
+<li><p><strong>Body index</strong> (<code class="docutils literal notranslate"><span class="pre">shape_body</span></code>): The rigid body this shape is attached to. Use <code class="docutils literal notranslate"><span class="pre">body=-1</span></code> for static/world-fixed shapes.</p></li>
+<li><p><strong>Local transform</strong> (<code class="docutils literal notranslate"><span class="pre">shape_transform</span></code>): Position and orientation relative to the body frame.</p></li>
+<li><p><strong>Scale</strong> (<code class="docutils literal notranslate"><span class="pre">shape_scale</span></code>): 3D scale factors applied to the shape geometry.</p></li>
+<li><p><strong>Thickness</strong> (<code class="docutils literal notranslate"><span class="pre">shape_thickness</span></code>): Surface thickness used in contact generation (see <a class="reference internal" href="#shape-configuration"><span class="std std-ref">Shape Configuration</span></a>).</p></li>
+<li><p><strong>Source geometry</strong> (<code class="docutils literal notranslate"><span class="pre">shape_source</span></code>): Reference to the underlying geometry object (e.g., <a class="reference internal" href="../api/_generated/newton.Mesh.html#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>, <a class="reference internal" href="../api/_generated/newton.SDF.html#newton.SDF" title="newton.SDF"><code class="xref py py-class docutils literal notranslate"><span class="pre">SDF</span></code></a>).</p></li>
+</ul>
+<p>During collision detection, shapes are transformed to world space using their parent body’s pose:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Shape world transform = body_pose * shape_local_transform</span>
+<span class="n">X_world_shape</span> <span class="o">=</span> <span class="n">body_q</span><span class="p">[</span><span class="n">shape_body</span><span class="p">]</span> <span class="o">*</span> <span class="n">shape_transform</span><span class="p">[</span><span class="n">shape_id</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>Contacts are generated between shapes, not bodies. Depending on the type of solver, the motion of the bodies is affected by forces or constraints that resolve the penetrations between their attached shapes.</p>
+</section>
+<section id="collision-filtering">
+<span id="id3"></span><h2>Collision Filtering<a class="headerlink" href="#collision-filtering" title="Link to this heading">#</a></h2>
+<p>Both pipelines use the same filtering rules based on world indices and collision groups.</p>
+<section id="world-indices">
+<span id="world-ids"></span><h3>World Indices<a class="headerlink" href="#world-indices" title="Link to this heading">#</a></h3>
+<p>World indices enable multi-world simulations, primarily for reinforcement learning, where objects belonging to different worlds coexist but do not interact through contacts:</p>
+<ul class="simple">
+<li><p><strong>Index -1</strong>: Global entities that collide with all worlds (e.g., ground plane)</p></li>
+<li><p><strong>Index 0, 1, 2, …</strong>: World-specific entities that only interact within their world</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Global ground (default world -1, collides with all worlds)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>
+
+<span class="c1"># Robot template</span>
+<span class="n">robot_builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">robot_builder</span><span class="o">.</span><span class="n">add_link</span><span class="p">()</span>
+<span class="n">robot_builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+<span class="n">joint</span> <span class="o">=</span> <span class="n">robot_builder</span><span class="o">.</span><span class="n">add_joint_free</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>
+<span class="n">robot_builder</span><span class="o">.</span><span class="n">add_articulation</span><span class="p">([</span><span class="n">joint</span><span class="p">])</span>
+
+<span class="c1"># Instantiate in separate worlds - robots won&#39;t collide with each other</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_world</span><span class="p">(</span><span class="n">robot_builder</span><span class="p">)</span>  <span class="c1"># World 0</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_world</span><span class="p">(</span><span class="n">robot_builder</span><span class="p">)</span>  <span class="c1"># World 1</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>For heterogeneous worlds, use <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.begin_world" title="newton.ModelBuilder.begin_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">begin_world()</span></code></a> and <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.end_world" title="newton.ModelBuilder.end_world"><code class="xref py py-meth docutils literal notranslate"><span class="pre">end_world()</span></code></a>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>MJWarp does not currently support heterogeneous environments (different models per world).</p>
+</div>
+<p>World indices are stored in <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_world</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.body_world</span></code>, etc.</p>
+</section>
+<section id="collision-groups">
+<span id="id4"></span><h3>Collision Groups<a class="headerlink" href="#collision-groups" title="Link to this heading">#</a></h3>
+<p>Collision groups control which shapes collide within the same world:</p>
+<ul class="simple">
+<li><p><strong>Group 0</strong>: Collisions disabled</p></li>
+<li><p><strong>Positive groups (1, 2, …)</strong>: Collide with same group or any negative group</p></li>
+<li><p><strong>Negative groups (-1, -2, …)</strong>: Collide with shapes in any positive or negative group, except shapes in the same negative group</p></li>
+</ul>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 55.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Group A</p></th>
+<th class="head"><p>Group B</p></th>
+<th class="head"><p>Collide?</p></th>
+<th class="head"><p>Reason</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>0</p></td>
+<td><p>Any</p></td>
+<td><p>❌</p></td>
+<td><p>Group 0 disables collision</p></td>
+</tr>
+<tr class="row-odd"><td><p>1</p></td>
+<td><p>1</p></td>
+<td><p>✅</p></td>
+<td><p>Same positive group</p></td>
+</tr>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>2</p></td>
+<td><p>❌</p></td>
+<td><p>Different positive groups</p></td>
+</tr>
+<tr class="row-odd"><td><p>1</p></td>
+<td><p>-2</p></td>
+<td><p>✅</p></td>
+<td><p>Positive with any negative</p></td>
+</tr>
+<tr class="row-even"><td><p>-1</p></td>
+<td><p>-1</p></td>
+<td><p>❌</p></td>
+<td><p>Same negative group</p></td>
+</tr>
+<tr class="row-odd"><td><p>-1</p></td>
+<td><p>-2</p></td>
+<td><p>✅</p></td>
+<td><p>Different negative groups</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Group 1: only collides with group 1 and negative groups</span>
+<span class="n">body1</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body1</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span><span class="n">collision_group</span><span class="o">=</span><span class="mi">1</span><span class="p">))</span>
+
+<span class="c1"># Group -1: collides with everything (except other -1)</span>
+<span class="n">body2</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body2</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span><span class="n">collision_group</span><span class="o">=-</span><span class="mi">1</span><span class="p">))</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+<p><strong>Self-collision within articulations</strong></p>
+<p>Self-collisions within an articulation can be enabled or disabled with <code class="docutils literal notranslate"><span class="pre">enable_self_collisions</span></code> when loading models. By default, adjacent body collisions (parent-child pairs connected by joints) are disabled via <code class="docutils literal notranslate"><span class="pre">collision_filter_parent=True</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Enable self-collisions when loading models</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span><span class="s2">&quot;robot.usda&quot;</span><span class="p">,</span> <span class="n">enable_self_collisions</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_mjcf</span><span class="p">(</span><span class="s2">&quot;robot.xml&quot;</span><span class="p">,</span> <span class="n">enable_self_collisions</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="c1"># Or control per-shape (also applies to max-coordinate jointed bodies)</span>
+<span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span><span class="n">collision_group</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">collision_filter_parent</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Controlling particle collisions</strong></p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">has_shape_collision</span></code> and <code class="docutils literal notranslate"><span class="pre">has_particle_collision</span></code> for fine-grained control over what a shape collides with. Setting both to <code class="docutils literal notranslate"><span class="pre">False</span></code> is equivalent to <code class="docutils literal notranslate"><span class="pre">collision_group=0</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Shape that only collides with particles (not other shapes)</span>
+<span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span><span class="n">has_shape_collision</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">has_particle_collision</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="c1"># Shape that only collides with other shapes (not particles)</span>
+<span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span><span class="n">has_shape_collision</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">has_particle_collision</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="usdphysics-collision-filtering">
+<h3>UsdPhysics Collision Filtering<a class="headerlink" href="#usdphysics-collision-filtering" title="Link to this heading">#</a></h3>
+<p>Newton follows the <a class="reference external" href="https://openusd.org/dev/api/usd_physics_page_front.html#usdPhysics_collision_filtering">UsdPhysics collision filtering specification</a>,
+which provides two complementary mechanisms for controlling which shapes collide:</p>
+<ol class="arabic simple">
+<li><p><strong>Collision Groups</strong> - Group-based filtering using <code class="docutils literal notranslate"><span class="pre">UsdPhysicsCollisionGroup</span></code></p></li>
+<li><p><strong>Pairwise Filtering</strong> - Explicit shape pair exclusions using <code class="docutils literal notranslate"><span class="pre">physics:filteredPairs</span></code></p></li>
+</ol>
+<p><strong>Collision Groups</strong></p>
+<p>In UsdPhysics, shapes can be assigned to collision groups defined by <code class="docutils literal notranslate"><span class="pre">UsdPhysicsCollisionGroup</span></code> prims.
+When importing USD files, Newton reads the <code class="docutils literal notranslate"><span class="pre">collisionGroups</span></code> attribute from each shape and maps
+each unique collision group name to a positive integer ID (starting from 1). Shapes in different
+collision groups will not collide with each other unless their groups are configured to interact.</p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="c1"># Define a collision group in USD</span>
+<span class="k k-Tokens">def</span><span class="w"> </span><span class="s">&quot;CollisionGroup_Robot&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsCollisionGroup&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="p">}</span>
+
+<span class="c1"># Assign shape to a collision group</span>
+<span class="k k-Tokens">def</span><span class="w"> </span>Sphere<span class="w"> </span><span class="s">&quot;RobotPart&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsCollisionAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">rel</span><span class="w"> </span><span class="na">physics:collisionGroup</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nn">&lt;/CollisionGroup_Robot&gt;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>When loading this USD, Newton automatically assigns each collision group a unique integer ID
+and sets the shape’s <code class="docutils literal notranslate"><span class="pre">collision_group</span></code> accordingly.</p>
+<p><strong>Pairwise Filtering</strong></p>
+<p>For fine-grained control, UsdPhysics supports explicit pair filtering via the <code class="docutils literal notranslate"><span class="pre">physics:filteredPairs</span></code>
+relationship. This allows excluding specific shape pairs from collision detection regardless of their
+collision groups.</p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="c1"># Exclude specific shape pairs in USD</span>
+<span class="k k-Tokens">def</span><span class="w"> </span>Sphere<span class="w"> </span><span class="s">&quot;ShapeA&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsCollisionAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">rel</span><span class="w"> </span><span class="na">physics:filteredPairs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="nn">&lt;/ShapeB&gt;</span><span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Newton reads these relationships during USD import and converts them to
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelBuilder.shape_collision_filter_pairs</span></code>.</p>
+<p><strong>Collision Enabled Flag</strong></p>
+<p>Shapes with <code class="docutils literal notranslate"><span class="pre">physics:collisionEnabled=false</span></code> are excluded from all collisions by adding filter
+pairs against all other shapes in the scene.</p>
+</section>
+<section id="shape-collision-filter-pairs">
+<h3>Shape Collision Filter Pairs<a class="headerlink" href="#shape-collision-filter-pairs" title="Link to this heading">#</a></h3>
+<p>The <code class="xref py py-attr docutils literal notranslate"><span class="pre">ModelBuilder.shape_collision_filter_pairs</span></code> list stores explicit shape pair exclusions.
+This is Newton’s internal representation for pairwise filtering (including pairs imported from
+UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:filteredPairs</span></code> relationships).</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Add shapes</span>
+<span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">()</span>
+<span class="n">shape_a</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_sphere</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+<span class="n">shape_b</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+
+<span class="c1"># Exclude this specific pair from collision detection</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_collision_filter_pair</span><span class="p">(</span><span class="n">shape_a</span><span class="p">,</span> <span class="n">shape_b</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Filter pairs are automatically populated in several cases:</p>
+<ul class="simple">
+<li><p><strong>Adjacent bodies</strong>: Parent-child body pairs connected by joints (when <code class="docutils literal notranslate"><span class="pre">collision_filter_parent=True</span></code>). Also applies to max-coordinate jointed bodies.</p></li>
+<li><p><strong>Same-body shapes</strong>: Shapes attached to the same rigid body</p></li>
+<li><p><strong>Disabled self-collision</strong>: All shape pairs within an articulation when <code class="docutils literal notranslate"><span class="pre">enable_self_collisions=False</span></code></p></li>
+<li><p><strong>USD filtered pairs</strong>: Pairs defined by <code class="docutils literal notranslate"><span class="pre">physics:filteredPairs</span></code> relationships in USD files</p></li>
+<li><p><strong>USD collision disabled</strong>: Shapes with <code class="docutils literal notranslate"><span class="pre">physics:collisionEnabled=false</span></code> (filtered against all other shapes)</p></li>
+</ul>
+<p>The resulting filter pairs are stored in <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_collision_filter_pairs" title="newton.Model.shape_collision_filter_pairs"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_collision_filter_pairs</span></code></a> as a set of
+<code class="docutils literal notranslate"><span class="pre">(shape_index_a,</span> <span class="pre">shape_index_b)</span></code> tuples (canonical order: <code class="docutils literal notranslate"><span class="pre">a</span> <span class="pre">&lt;</span> <span class="pre">b</span></code>).</p>
+<p><strong>USD Import Example</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Newton automatically imports UsdPhysics collision filtering</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span><span class="s2">&quot;scene.usda&quot;</span><span class="p">)</span>
+
+<span class="c1"># Collision groups and filter pairs are now populated:</span>
+<span class="c1"># - shape_collision_group: integer IDs mapped from UsdPhysicsCollisionGroup</span>
+<span class="c1"># - shape_collision_filter_pairs: pairs from physics:filteredPairs relationships</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="standard-pipeline">
+<span id="id5"></span><h2>Standard Pipeline<a class="headerlink" href="#standard-pipeline" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> is the default implementation. Shape pairs are precomputed during <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a> based on filtering rules.</p>
+<p><strong>When to use:</strong></p>
+<ul class="simple">
+<li><p>Limited number of potential collision pairs (filtering rules eliminate most NxN combinations)</p></li>
+<li><p>Static collision topology (pairs don’t change at runtime)</p></li>
+<li><p>Scenes with &lt;100 potentially colliding shapes</p></li>
+</ul>
+<p><strong>Limitations:</strong></p>
+<ul class="simple">
+<li><p>Does not support advanced contact models (SDF-based, hydroelastic, cylinder, cone primitives)</p></li>
+<li><p>Pairs fixed at finalization - inefficient if NxN minus filtering is still large</p></li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Development is focused on <code class="docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code>, which will replace the standard
+<code class="docutils literal notranslate"><span class="pre">CollisionPipeline</span></code> in the future once feature and performance parity is achieved.
+New contact models (SDF, hydroelastic, cylinder/cone primitives) are only being added to
+the unified pipeline. Consider using <code class="docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code> with
+<code class="docutils literal notranslate"><span class="pre">BroadPhaseMode.EXPLICIT</span></code> if you need static pairs with advanced contact models.</p>
+</div>
+<section id="standard-pipeline-shape-compatibility">
+<h3>Standard Pipeline Shape Compatibility<a class="headerlink" href="#standard-pipeline-shape-compatibility" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 12.9%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"></th>
+<th class="head"><p>Plane</p></th>
+<th class="head"><p>Sphere</p></th>
+<th class="head"><p>Capsule</p></th>
+<th class="head"><p>Box</p></th>
+<th class="head"><p>Cylinder</p></th>
+<th class="head"><p>Cone</p></th>
+<th class="head"><p>Mesh</p></th>
+<th class="head"><p>SDF</p></th>
+<th class="head"><p>Particle</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Plane</strong></p></td>
+<td></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+<td></td>
+<td><p>✅</p></td>
+<td></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Sphere</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+<td></td>
+<td><p>✅</p></td>
+<td></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Capsule</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+<td></td>
+<td><p>✅</p></td>
+<td></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Box</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+<td></td>
+<td><p>✅</p></td>
+<td></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Cylinder</strong></p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Cone</strong></p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Mesh</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+<td></td>
+<td><p>✅</p></td>
+<td></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>SDF</strong></p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td><p>✅</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Particle</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Empty cells indicate unsupported pairs. Use <a class="reference internal" href="../api/_generated/newton.CollisionPipelineUnified.html#newton.CollisionPipelineUnified" title="newton.CollisionPipelineUnified"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code></a> for cylinder, cone, SDF, and hydroelastic contact generation.</p>
+<p>The pipeline is created automatically when calling <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> without arguments:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>  <span class="c1"># Uses CollisionPipeline internally</span>
+</pre></div>
+</div>
+</section>
+</section>
+<section id="unified-pipeline">
+<span id="id6"></span><h2>Unified Pipeline<a class="headerlink" href="#unified-pipeline" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../api/_generated/newton.CollisionPipelineUnified.html#newton.CollisionPipelineUnified" title="newton.CollisionPipelineUnified"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code></a> provides configurable broad phase algorithms:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 15.0%" />
+<col style="width: 85.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Mode</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>NxN</strong></p></td>
+<td><p>All-pairs AABB broad phase. O(N²), optimal for small scenes (&lt;100 shapes).</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>SAP</strong></p></td>
+<td><p>Sweep-and-prune AABB broad phase. O(N log N), better for larger scenes with spatial coherence.</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>EXPLICIT</strong></p></td>
+<td><p>Uses precomputed shape pairs like standard pipeline, but with unified pipeline’s contact algorithms. Combines static pair efficiency with advanced contact models.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipelineUnified</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+
+<span class="c1"># NxN for small scenes</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipelineUnified</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">NXN</span><span class="p">)</span>
+
+<span class="c1"># SAP for larger scenes</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipelineUnified</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">)</span>
+
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="unified-pipeline-shape-compatibility">
+<span id="shape-compatibility"></span><h3>Unified Pipeline Shape Compatibility<a class="headerlink" href="#unified-pipeline-shape-compatibility" title="Link to this heading">#</a></h3>
+<p>The unified pipeline supports collision detection between all shape type combinations:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 12.9%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+<col style="width: 9.7%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"></th>
+<th class="head"><p>Plane</p></th>
+<th class="head"><p>Sphere</p></th>
+<th class="head"><p>Capsule</p></th>
+<th class="head"><p>Box</p></th>
+<th class="head"><p>Cylinder</p></th>
+<th class="head"><p>Cone</p></th>
+<th class="head"><p>Mesh</p></th>
+<th class="head"><p>SDF</p></th>
+<th class="head"><p>Particle</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Plane</strong></p></td>
+<td></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Sphere</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><strong>Capsule</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Box</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><strong>Cylinder</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Cone</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><strong>Mesh</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅⚠️</p></td>
+<td><p>✅⚠️</p></td>
+<td></td>
+</tr>
+<tr class="row-odd"><td><p><strong>SDF</strong></p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅</p></td>
+<td><p>✅⚠️</p></td>
+<td><p>✅</p></td>
+<td></td>
+</tr>
+<tr class="row-even"><td><p><strong>Particle</strong></p></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Legend:</strong> ⚠️ = Can be slow for meshes with high triangle counts</p>
+<p>Ellipsoid and ConvexMesh are also fully supported. The only unsupported type is <code class="docutils literal notranslate"><span class="pre">HFIELD</span></code> (heightfield) - convert to mesh instead.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>SDF</strong> in this table refers to shapes with precomputed SDF data (via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code>). SDFs are generated from a shape’s primary geometry and provide O(1) distance queries.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><code class="docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code> does not currently support particle (soft body) collisions. Use the standard pipeline for particle-shape contacts. The unified pipeline is under active development.</p>
+</div>
+</section>
+</section>
+<section id="narrow-phase-algorithms">
+<span id="narrow-phase"></span><h2>Narrow Phase Algorithms<a class="headerlink" href="#narrow-phase-algorithms" title="Link to this heading">#</a></h2>
+<p>After broad phase identifies candidate pairs, the narrow phase generates contact points.</p>
+<p><strong>MPR (Minkowski Portal Refinement)</strong></p>
+<p>The primary algorithm for convex shape pairs. Uses support mapping functions to find the closest points between shapes via Minkowski difference sampling. Works with all convex primitives (sphere, box, capsule, cylinder, cone, ellipsoid) and convex meshes.</p>
+<p><strong>Multi-contact Generation</strong></p>
+<p>For shape pairs, multiple contact points are generated for stable stacking and resting contacts. For the standard collision pipeline, the maximum contacts per shape pair is controlled by <code class="docutils literal notranslate"><span class="pre">rigid_contact_max_per_pair</span></code> in <code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.collide()</span></code>. The unified collision pipeline automatically estimates buffer sizes based on the model.</p>
+<section id="mesh-collision-handling">
+<span id="mesh-collisions"></span><h3>Mesh Collision Handling<a class="headerlink" href="#mesh-collision-handling" title="Link to this heading">#</a></h3>
+<p>Mesh collisions use different strategies depending on the pair type:</p>
+<p><strong>Mesh vs Primitive (e.g., Sphere, Box)</strong></p>
+<p>Uses BVH (Bounding Volume Hierarchy) queries to find nearby triangles, then generates contacts between primitive vertices and triangle surfaces, plus triangle vertices against the primitive.</p>
+<p><strong>Mesh vs Plane</strong></p>
+<p>Projects mesh vertices onto the plane and generates contacts for vertices below the plane surface.</p>
+<p><strong>Mesh vs Mesh</strong></p>
+<p>Two approaches available:</p>
+<ol class="arabic simple">
+<li><p><strong>BVH-based</strong> (default when no SDF configured): Iterates mesh vertices against the other mesh’s BVH.
+Performance scales with triangle count - can be very slow for complex meshes.</p></li>
+<li><p><strong>SDF-based</strong> (recommended): Uses precomputed signed distance fields for fast queries.
+Enable by setting <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code> on shapes.</p></li>
+</ol>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
+which are <strong>significantly slower</strong>. For production use with complex meshes, configure SDF
+via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span>
+    <span class="n">sdf_max_resolution</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>  <span class="c1"># Precompute SDF for fast mesh-mesh collision</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_mesh</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">my_mesh</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">cfg</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</section>
+<section id="contact-reduction">
+<span id="id7"></span><h3>Contact Reduction<a class="headerlink" href="#contact-reduction" title="Link to this heading">#</a></h3>
+<p>Contact reduction is enabled by default. For scenes with many mesh-mesh interactions that generate thousands of contacts, reduction selects a significantly smaller representative set that maintains stable contact behavior while improving solver performance.</p>
+<p><strong>How it works:</strong></p>
+<ol class="arabic simple">
+<li><p>Contacts are binned by normal direction (20 icosahedron face directions)</p></li>
+<li><p>Within each bin, contacts are scored by spatial distribution and penetration depth</p></li>
+<li><p>Representative contacts are selected using configurable depth thresholds (betas)</p></li>
+</ol>
+<p>To disable reduction, set <code class="docutils literal notranslate"><span class="pre">reduce_contacts=False</span></code> when creating the pipeline.</p>
+<p><strong>Configuring contact reduction (SDFHydroelasticConfig):</strong></p>
+<p>For hydroelastic and SDF-based contacts, use <code class="xref py py-class docutils literal notranslate"><span class="pre">SDFHydroelasticConfig</span></code> to tune reduction behavior:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">SDFHydroelasticConfig</span>
+
+<span class="n">config</span> <span class="o">=</span> <span class="n">SDFHydroelasticConfig</span><span class="p">(</span>
+    <span class="n">reduce_contacts</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>           <span class="c1"># Enable contact reduction</span>
+    <span class="n">betas</span><span class="o">=</span><span class="p">(</span><span class="mf">10.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.5</span><span class="p">),</span>             <span class="c1"># Scoring thresholds (default)</span>
+    <span class="n">sticky_contacts</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>            <span class="c1"># Temporal persistence (0 = disabled)</span>
+    <span class="n">normal_matching</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>           <span class="c1"># Align reduced normals with aggregate force</span>
+    <span class="n">moment_matching</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>          <span class="c1"># Match friction moments (experimental)</span>
+<span class="p">)</span>
+
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipelineUnified</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sdf_hydroelastic_config</span><span class="o">=</span><span class="n">config</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Understanding betas:</strong></p>
+<p>The <code class="docutils literal notranslate"><span class="pre">betas</span></code> tuple controls how contacts are scored for selection. Each beta value (first element, second element, etc.) produces a separate set of representative contacts per normal bin:</p>
+<ul class="simple">
+<li><p><strong>Positive beta</strong> (e.g., <code class="docutils literal notranslate"><span class="pre">10.0</span></code>): Score = <code class="docutils literal notranslate"><span class="pre">spatial_position</span> <span class="pre">+</span> <span class="pre">depth</span> <span class="pre">*</span> <span class="pre">beta</span></code>. Higher values favor deeper contacts.</p></li>
+<li><p><strong>Negative beta</strong> (e.g., <code class="docutils literal notranslate"><span class="pre">-0.5</span></code>): Score = <code class="docutils literal notranslate"><span class="pre">spatial_position</span> <span class="pre">*</span> <span class="pre">depth^(-beta)</span></code> for penetrating contacts.
+This weighs spatial distribution more heavily for shallow contacts.</p></li>
+</ul>
+<p>The default <code class="docutils literal notranslate"><span class="pre">(10.0,</span> <span class="pre">-0.5)</span></code> provides a balance: one set prioritizes penetration depth,
+another prioritizes spatial coverage. More betas = more contacts retained but better coverage.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The beta scoring behavior is subject to refinement. The unified collision pipeline
+is under active development and these parameters may change in future releases.</p>
+</div>
+<p><strong>Other reduction options:</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sticky_contacts</span></code></p></td>
+<td><p>Temporal persistence threshold. When &gt; 0, contacts from previous frames within this distance are preserved to prevent jittering. Default: 0.0 (disabled).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">normal_matching</span></code></p></td>
+<td><p>Rotates selected contact normals so their weighted sum aligns with the aggregate force direction
+from all unreduced contacts. Preserves net force direction after reduction. Default: True.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">moment_matching</span></code></p></td>
+<td><p>Preserves torsional friction by adding an anchor contact at the depth-weighted centroid and
+scaling friction coefficients. This ensures the reduced contact set produces similar resistance
+to rotational sliding as the original contacts. Experimental. Default: False.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">margin_contact_area</span></code></p></td>
+<td><p>Lower bound on contact area. Hydroelastic stiffness is <code class="docutils literal notranslate"><span class="pre">area</span> <span class="pre">*</span> <span class="pre">k_eff</span></code>, but contacts
+within the contact margin that are not yet penetrating (speculative contacts) have zero
+geometric area. This provides a floor value so they still generate repulsive force. Default: 0.01.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+</section>
+<section id="shape-configuration">
+<span id="id8"></span><h2>Shape Configuration<a class="headerlink" href="#shape-configuration" title="Link to this heading">#</a></h2>
+<p>Shape collision behavior is controlled via <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShapeConfig</span></code></a>:</p>
+<p><strong>Collision control:</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collision_group</span></code></p></td>
+<td><p>Collision group ID. 0 disables collisions. Default: 1.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collision_filter_parent</span></code></p></td>
+<td><p>Filter collisions with adjacent body (parent in articulation or connected via joint). Default: True.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">has_shape_collision</span></code></p></td>
+<td><p>Whether shape collides with other shapes. Default: True.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">has_particle_collision</span></code></p></td>
+<td><p>Whether shape collides with particles. Default: True.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Geometry parameters:</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 75.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">thickness</span></code></p></td>
+<td><p>Surface thickness. Pairwise: summed (<code class="docutils literal notranslate"><span class="pre">t_a</span> <span class="pre">+</span> <span class="pre">t_b</span></code>). Creates visible gap at rest. Essential for thin shells and cloth to improve simulation stability and reduce self-intersections. Default: 1e-5.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">contact_margin</span></code></p></td>
+<td><p>AABB expansion for early contact detection. Pairwise: max. The margin only affects contact generation; effective rest distance is not affected and is only governed by <code class="docutils literal notranslate"><span class="pre">thickness</span></code>. Increasing the margin can help avoid tunneling of fast-moving objects because contacts are detected at a greater distance between objects. Must be &gt;= <code class="docutils literal notranslate"><span class="pre">thickness</span></code>. Default: None (uses <code class="docutils literal notranslate"><span class="pre">builder.rigid_contact_margin</span></code>, which defaults to 0.1).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">is_solid</span></code></p></td>
+<td><p>Whether shape is solid or hollow. Affects inertia and SDF sign. Default: True.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">is_hydroelastic</span></code></p></td>
+<td><p>Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See <a class="reference internal" href="#hydroelastic-contacts"><span class="std std-ref">Hydroelastic Contacts</span></a>. Default: False.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">k_hydro</span></code></p></td>
+<td><p>Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when <code class="docutils literal notranslate"><span class="pre">is_hydroelastic=True</span></code>. Default: 1.0e10.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Contact generation</strong>: A contact is created when <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">&lt;</span> <span class="pre">max(margin_a,</span> <span class="pre">margin_b)</span></code>, where
+<code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">=</span> <span class="pre">surface_distance</span> <span class="pre">-</span> <span class="pre">(thickness_a</span> <span class="pre">+</span> <span class="pre">thickness_b)</span></code>. The solver enforces <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code>,
+so objects at rest settle with surfaces separated by <code class="docutils literal notranslate"><span class="pre">thickness_a</span> <span class="pre">+</span> <span class="pre">thickness_b</span></code>.</p>
+</div>
+<p><strong>SDF configuration (generates SDF from shape geometry):</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code></p></td>
+<td><p>Maximum SDF grid dimension (must be divisible by 8). Either this or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code> enables SDF.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code></p></td>
+<td><p>Target voxel size for SDF. Takes precedence over <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code>.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sdf_narrow_band_range</span></code></p></td>
+<td><p>SDF narrow band distance range (inner, outer). Default: (-0.1, 0.1).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span>
+    <span class="n">collision_group</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span>           <span class="c1"># Collide with everything</span>
+    <span class="n">thickness</span><span class="o">=</span><span class="mf">0.001</span><span class="p">,</span>              <span class="c1"># 1mm thickness</span>
+    <span class="n">contact_margin</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>          <span class="c1"># 1cm margin</span>
+    <span class="n">sdf_max_resolution</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>        <span class="c1"># Enable SDF for mesh</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_mesh</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">my_mesh</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">cfg</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Builder default margin:</strong></p>
+<p>The builder’s <code class="docutils literal notranslate"><span class="pre">rigid_contact_margin</span></code> (default 0.1) applies to shapes without explicit <code class="docutils literal notranslate"><span class="pre">contact_margin</span></code>. Alternatively, use <code class="docutils literal notranslate"><span class="pre">builder.default_shape_cfg.contact_margin</span></code>.</p>
+</section>
+<section id="common-patterns">
+<span id="id9"></span><h2>Common Patterns<a class="headerlink" href="#common-patterns" title="Link to this heading">#</a></h2>
+<p><strong>Creating static/ground geometry</strong></p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">body=-1</span></code> to attach shapes to the static world frame:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Static ground plane</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_ground_plane</span><span class="p">()</span>  <span class="c1"># Convenience method</span>
+
+<span class="c1"># Or manually create static shapes</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_plane</span><span class="p">(</span><span class="n">body</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform_identity</span><span class="p">())</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">5.0</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">5.0</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>  <span class="c1"># Static floor</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_mesh</span><span class="p">(</span><span class="n">body</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">terrain_mesh</span><span class="p">)</span>      <span class="c1"># Static terrain</span>
+</pre></div>
+</div>
+<p><strong>Setting default shape configuration</strong></p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">builder.default_shape_cfg</span></code> to set defaults for all shapes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Set defaults before adding shapes</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">ke</span> <span class="o">=</span> <span class="mf">1.0e6</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">kd</span> <span class="o">=</span> <span class="mf">1000.0</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">mu</span> <span class="o">=</span> <span class="mf">0.5</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">is_hydroelastic</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">sdf_max_resolution</span> <span class="o">=</span> <span class="mi">64</span>
+</pre></div>
+</div>
+<p><strong>Running collision less frequently</strong></p>
+<p>For performance, you can run collision detection less often than simulation substeps:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">collide_every_n_substeps</span> <span class="o">=</span> <span class="mi">2</span>
+
+<span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_frames</span><span class="p">):</span>
+    <span class="k">for</span> <span class="n">substep</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">sim_substeps</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">substep</span> <span class="o">%</span> <span class="n">collide_every_n_substeps</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
+        <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="n">sim_dt</span><span class="p">)</span>
+        <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
+</pre></div>
+</div>
+<p><strong>Soft contacts (particle-shape)</strong></p>
+<p>Soft contacts are generated automatically when particles are present. They use a separate margin:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Add particles</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_particle</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="n">vel</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+
+<span class="c1"># Soft contact margin is set at collision time</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">soft_contact_margin</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+
+<span class="c1"># Access soft contact data</span>
+<span class="n">n_soft</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">soft_contact_count</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">particles</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">soft_contact_particle</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n_soft</span><span class="p">]</span>
+<span class="n">shapes</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">soft_contact_shape</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n_soft</span><span class="p">]</span>
+</pre></div>
+</div>
+</section>
+<section id="contact-data">
+<span id="contact-generation"></span><h2>Contact Data<a class="headerlink" href="#contact-data" title="Link to this heading">#</a></h2>
+<p>The <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> class stores the results from the collision detection step
+and is consumed by the solver <a class="reference internal" href="../api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.step" title="newton.solvers.SolverBase.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a> method for contact handling.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Contact forces are not part of the <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> class - it only stores geometric
+contact information. See <code class="xref py py-class docutils literal notranslate"><span class="pre">SensorContact</span></code> for computing contact forces.</p>
+</div>
+<p><strong>Rigid contacts:</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 35.0%" />
+<col style="width: 65.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Attribute</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_count</span></code></p></td>
+<td><p>Number of active rigid contacts (scalar).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_shape0</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_contact_shape1</span></code></p></td>
+<td><p>Indices of colliding shapes.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_point0</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_contact_point1</span></code></p></td>
+<td><p>World-space contact points on each shape.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_offset0</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_contact_offset1</span></code></p></td>
+<td><p>Contact point offsets in body-local space.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_normal</span></code></p></td>
+<td><p>Contact normal direction (from shape0 to shape1).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_thickness0</span></code>, <code class="docutils literal notranslate"><span class="pre">rigid_contact_thickness1</span></code></p></td>
+<td><p>Shape thickness at each contact point.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Soft contacts (particle-shape):</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 35.0%" />
+<col style="width: 65.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Attribute</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_count</span></code></p></td>
+<td><p>Number of active soft contacts.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_particle</span></code></p></td>
+<td><p>Particle indices.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_shape</span></code></p></td>
+<td><p>Shape indices.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_body_pos</span></code>, <code class="docutils literal notranslate"><span class="pre">soft_contact_body_vel</span></code></p></td>
+<td><p>Contact position and velocity on shape.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_normal</span></code></p></td>
+<td><p>Contact normal.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Example usage:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+
+<span class="n">n</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_count</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+<span class="n">points0</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_point0</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n</span><span class="p">]</span>
+<span class="n">points1</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_point1</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n</span><span class="p">]</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_normal</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n</span><span class="p">]</span>
+
+<span class="c1"># Shape indices</span>
+<span class="n">shape0</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_shape0</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n</span><span class="p">]</span>
+<span class="n">shape1</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_shape1</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n</span><span class="p">]</span>
+</pre></div>
+</div>
+</section>
+<section id="model-collide-parameters">
+<span id="collide-method"></span><h2>Model.collide() Parameters<a class="headerlink" href="#model-collide-parameters" title="Link to this heading">#</a></h2>
+<p>The <code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.collide()</span></code> method accepts the following parameters:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 70.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">state</span></code></p></td>
+<td><p>Current simulation state (required).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collision_pipeline</span></code></p></td>
+<td><p>Optional custom collision pipeline. If None, creates/reuses default.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_max_per_pair</span></code></p></td>
+<td><p>Maximum contacts per shape pair. None = no limit.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_max</span></code></p></td>
+<td><p>Maximum soft contacts to allocate.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_margin</span></code></p></td>
+<td><p>Margin for soft contact generation. Default: 0.01.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">edge_sdf_iter</span></code></p></td>
+<td><p>Iterations for edge-SDF contact search. Default: 10.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">requires_grad</span></code></p></td>
+<td><p>Enable gradient computation. Default: model.requires_grad.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="hydroelastic-contacts">
+<span id="id10"></span><h2>Hydroelastic Contacts<a class="headerlink" href="#hydroelastic-contacts" title="Link to this heading">#</a></h2>
+<p>Hydroelastic contacts are an <strong>opt-in</strong> feature that generates contact areas (not just points) using SDF-based collision detection. This provides more realistic and continuous force distribution, particularly useful for robotic manipulation scenarios.</p>
+<p><strong>Default behavior (hydroelastic disabled):</strong></p>
+<p>When <code class="docutils literal notranslate"><span class="pre">is_hydroelastic=False</span></code> (default), shapes use <strong>hard SDF contacts</strong> - point contacts computed from SDF distance queries. This is efficient and suitable for most rigid body simulations.</p>
+<p><strong>Opt-in hydroelastic behavior:</strong></p>
+<p>When <code class="docutils literal notranslate"><span class="pre">is_hydroelastic=True</span></code> on <strong>both</strong> shapes in a pair, the system generates distributed contact areas instead of point contacts. This is useful for:</p>
+<ul class="simple">
+<li><p>More stable and continuous contact forces for non-convex shape interactions</p></li>
+<li><p>Better force distribution across large contact patches</p></li>
+<li><p>Realistic friction behavior for flat-on-flat contacts</p></li>
+</ul>
+<p><strong>Requirements:</strong></p>
+<ul class="simple">
+<li><p>Both shapes in a pair must have <code class="docutils literal notranslate"><span class="pre">is_hydroelastic=True</span></code></p></li>
+<li><p>Shapes must have SDF enabled (<code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code>)</p></li>
+<li><p>Only volumetric shapes supported (not planes, heightfields, or non-watertight meshes)</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span>
+    <span class="n">is_hydroelastic</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>   <span class="c1"># Opt-in to hydroelastic contacts</span>
+    <span class="n">sdf_max_resolution</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>  <span class="c1"># Required for hydroelastic</span>
+    <span class="n">k_hydro</span><span class="o">=</span><span class="mf">1.0e11</span><span class="p">,</span>         <span class="c1"># Contact stiffness</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">cfg</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>How it works:</strong></p>
+<ol class="arabic simple">
+<li><p>SDF intersection finds overlapping regions between shapes</p></li>
+<li><p>Marching cubes extracts the contact iso-surface</p></li>
+<li><p>Contact points are distributed across the surface area</p></li>
+<li><p>Optional contact reduction selects representative points</p></li>
+</ol>
+<p><strong>Hydroelastic stiffness (k_hydro):</strong></p>
+<p>The <code class="docutils literal notranslate"><span class="pre">k_hydro</span></code> parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: <code class="docutils literal notranslate"><span class="pre">k_eff</span> <span class="pre">=</span> <span class="pre">2</span> <span class="pre">*</span> <span class="pre">k_a</span> <span class="pre">*</span> <span class="pre">k_b</span> <span class="pre">/</span> <span class="pre">(k_a</span> <span class="pre">+</span> <span class="pre">k_b)</span></code>. Tune this for desired penetration behavior.</p>
+<p>Contact reduction options for hydroelastic contacts are configured via <code class="xref py py-class docutils literal notranslate"><span class="pre">SDFHydroelasticConfig</span></code> (see <a class="reference internal" href="#contact-reduction"><span class="std std-ref">Contact Reduction</span></a>).</p>
+</section>
+<section id="contact-materials">
+<span id="contact-material-properties"></span><h2>Contact Materials<a class="headerlink" href="#contact-materials" title="Link to this heading">#</a></h2>
+<p>Shape material properties control contact resolution. Configure via <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShapeConfig</span></code></a>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 10.0%" />
+<col style="width: 30.0%" />
+<col style="width: 22.0%" />
+<col style="width: 19.0%" />
+<col style="width: 19.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Property</p></th>
+<th class="head"><p>Description</p></th>
+<th class="head"><p>Solvers</p></th>
+<th class="head"><p>ShapeConfig</p></th>
+<th class="head"><p>Model Array</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mu</span></code></p></td>
+<td><p>Dynamic friction coefficient</p></td>
+<td><p>All</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu" title="newton.ModelBuilder.ShapeConfig.mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_mu" title="newton.Model.shape_material_mu"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_mu</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ke</span></code></p></td>
+<td><p>Contact elastic stiffness</p></td>
+<td><p>SemiImplicit, Featherstone, MuJoCo</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ke" title="newton.ModelBuilder.ShapeConfig.ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ke</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_ke" title="newton.Model.shape_material_ke"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_ke</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">kd</span></code></p></td>
+<td><p>Contact damping</p></td>
+<td><p>SemiImplicit, Featherstone, MuJoCo</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kd" title="newton.ModelBuilder.ShapeConfig.kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kd</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_kd" title="newton.Model.shape_material_kd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_kd</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">kf</span></code></p></td>
+<td><p>Friction damping coefficient</p></td>
+<td><p>SemiImplicit, Featherstone</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kf" title="newton.ModelBuilder.ShapeConfig.kf"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kf</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_kf" title="newton.Model.shape_material_kf"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_kf</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ka</span></code></p></td>
+<td><p>Adhesion distance</p></td>
+<td><p>SemiImplicit, Featherstone</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.ka" title="newton.ModelBuilder.ShapeConfig.ka"><code class="xref py py-attr docutils literal notranslate"><span class="pre">ka</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_ka" title="newton.Model.shape_material_ka"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_ka</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">restitution</span></code></p></td>
+<td><p>Bounciness (requires <code class="docutils literal notranslate"><span class="pre">enable_restitution=True</span></code> in solver)</p></td>
+<td><p>XPBD</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.restitution" title="newton.ModelBuilder.ShapeConfig.restitution"><code class="xref py py-attr docutils literal notranslate"><span class="pre">restitution</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_restitution" title="newton.Model.shape_material_restitution"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_restitution</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">torsional_friction</span></code></p></td>
+<td><p>Resistance to spinning at contact</p></td>
+<td><p>XPBD, MuJoCo</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.torsional_friction" title="newton.ModelBuilder.ShapeConfig.torsional_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">torsional_friction</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_torsional_friction" title="newton.Model.shape_material_torsional_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_torsional_friction</span></code></a></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rolling_friction</span></code></p></td>
+<td><p>Resistance to rolling motion</p></td>
+<td><p>XPBD, MuJoCo</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.rolling_friction" title="newton.ModelBuilder.ShapeConfig.rolling_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">rolling_friction</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_rolling_friction" title="newton.Model.shape_material_rolling_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_rolling_friction</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">k_hydro</span></code></p></td>
+<td><p>Hydroelastic stiffness</p></td>
+<td><p>SemiImplicit, Featherstone, MuJoCo</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.k_hydro" title="newton.ModelBuilder.ShapeConfig.k_hydro"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_hydro</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_k_hydro" title="newton.Model.shape_material_k_hydro"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_k_hydro</span></code></a></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Example:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span>
+    <span class="n">mu</span><span class="o">=</span><span class="mf">0.8</span><span class="p">,</span>           <span class="c1"># High friction</span>
+    <span class="n">ke</span><span class="o">=</span><span class="mf">1.0e6</span><span class="p">,</span>         <span class="c1"># Stiff contact</span>
+    <span class="n">kd</span><span class="o">=</span><span class="mf">1000.0</span><span class="p">,</span>        <span class="c1"># Damping</span>
+    <span class="n">restitution</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span>  <span class="c1"># Bouncy (XPBD only)</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="usd-integration">
+<span id="usd-collision"></span><h2>USD Integration<a class="headerlink" href="#usd-integration" title="Link to this heading">#</a></h2>
+<p>Custom collision properties can be authored in USD:</p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="k k-Tokens">def</span><span class="w"> </span>Xform<span class="w"> </span><span class="s">&quot;Box&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsRigidBodyAPI&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;PhysicsCollisionAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="na">newton:collision_group</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="na">newton:world</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:contact_ke</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">100000.0</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:contact_kd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1000.0</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:contact_kf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1000.0</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:contact_ka</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.0</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:contact_thickness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.00001</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>See <a class="reference internal" href="custom_attributes.html"><span class="doc">Custom Attributes</span></a> and <a class="reference internal" href="usd_parsing.html"><span class="doc">USD Parsing and Schema Resolver System</span></a> for details.</p>
+</section>
+<section id="performance">
+<span id="id11"></span><h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Use <strong>EXPLICIT</strong> or standard pipeline when collision pairs are limited (&lt;100 shapes with most pairs filtered)</p></li>
+<li><p>Use <strong>SAP</strong> for &gt;100 shapes with spatial coherence</p></li>
+<li><p>Use <strong>NxN</strong> for small scenes (&lt;100 shapes) or uniform spatial distribution</p></li>
+<li><p>Minimize global entities (world=-1) as they interact with all worlds</p></li>
+<li><p>Use positive collision groups to reduce candidate pairs</p></li>
+<li><p>Use world indices for parallel simulations (essential for RL with many environments)</p></li>
+<li><p>Contact reduction is enabled by default for mesh-heavy scenes</p></li>
+<li><p>Adjust <code class="docutils literal notranslate"><span class="pre">rigid_contact_max_per_pair</span></code> to limit memory usage in complex scenes</p></li>
+</ul>
+</section>
+<section id="see-also">
+<h2>See Also<a class="headerlink" href="#see-also" title="Link to this heading">#</a></h2>
+<p><strong>Imports:</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+    <span class="n">CollisionPipeline</span><span class="p">,</span>
+    <span class="n">CollisionPipelineUnified</span><span class="p">,</span>
+    <span class="n">BroadPhaseMode</span><span class="p">,</span>
+    <span class="n">Contacts</span><span class="p">,</span>
+    <span class="n">GeoType</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">SDFHydroelasticConfig</span>
+</pre></div>
+</div>
+<p><strong>API Reference:</strong></p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> - Standard collision pipeline</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipelineUnified.html#newton.CollisionPipelineUnified" title="newton.CollisionPipelineUnified"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code></a> - Unified pipeline with broad phase options</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.BroadPhaseMode.html#newton.BroadPhaseMode" title="newton.BroadPhaseMode"><code class="xref py py-class docutils literal notranslate"><span class="pre">BroadPhaseMode</span></code></a> - Broad phase algorithm selection</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> - Contact data container</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType" title="newton.GeoType"><code class="xref py py-class docutils literal notranslate"><span class="pre">GeoType</span></code></a> - Shape geometry types</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShapeConfig</span></code></a> - Shape configuration options</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> - Collision detection method</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.geometry.SDFHydroelasticConfig.html#newton.geometry.SDFHydroelasticConfig" title="newton.geometry.SDFHydroelasticConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">SDFHydroelasticConfig</span></code></a> - Hydroelastic contact configuration</p></li>
+</ul>
+<p><strong>Model attributes:</strong></p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_collision_group" title="newton.Model.shape_collision_group"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_collision_group</span></code></a> - Per-shape collision groups</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_world" title="newton.Model.shape_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_world</span></code></a> - Per-shape world indices</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_contact_margin" title="newton.Model.shape_contact_margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_contact_margin</span></code></a> - Per-shape contact margins</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_thickness" title="newton.Model.shape_thickness"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_thickness</span></code></a> - Per-shape thickness values</p></li>
+</ul>
+<p><strong>Related documentation:</strong></p>
+<ul class="simple">
+<li><p><a class="reference internal" href="custom_attributes.html"><span class="doc">Custom Attributes</span></a> - USD custom attributes for collision properties</p></li>
+<li><p><a class="reference internal" href="usd_parsing.html"><span class="doc">USD Parsing and Schema Resolver System</span></a> - USD import options including collision settings</p></li>
+<li><p><a class="reference internal" href="sites.html"><span class="doc">Sites (Abstract Markers)</span></a> - Non-colliding reference points</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-pipelines">Collision Pipelines</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-shape-types">Supported Shape Types</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shapes-and-rigid-bodies">Shapes and Rigid Bodies</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-filtering">Collision Filtering</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#world-indices">World Indices</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-groups">Collision Groups</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#usdphysics-collision-filtering">UsdPhysics Collision Filtering</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shape-collision-filter-pairs">Shape Collision Filter Pairs</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#standard-pipeline">Standard Pipeline</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#standard-pipeline-shape-compatibility">Standard Pipeline Shape Compatibility</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unified-pipeline">Unified Pipeline</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unified-pipeline-shape-compatibility">Unified Pipeline Shape Compatibility</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#narrow-phase-algorithms">Narrow Phase Algorithms</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mesh-collision-handling">Mesh Collision Handling</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-reduction">Contact Reduction</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shape-configuration">Shape Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-patterns">Common Patterns</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-data">Contact Data</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-collide-parameters">Model.collide() Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hydroelastic-contacts">Hydroelastic Contacts</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-materials">Contact Materials</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usd-integration">USD Integration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#performance">Performance</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#see-also">See Also</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

@@ -1,0 +1,1619 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Conventions &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true, "packages": {"[+]": ["amsmath", "amssymb", "amsfonts"]}, "displayMath": [["$$", "$$"], ["\\[", "\\]"]], "processEnvironments": true, "tags": "ams", "macros": {"RR": "{\\mathbb{R}}", "bold": ["{\\mathbf{#1}}", 1], "vec": ["{\\mathbf{#1}}", 1]}}, "options": {"ignoreHtmlClass": "annotation", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+    <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/conventions';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="USD Parsing and Schema Resolver System" href="usd_parsing.html" />
+    <link rel="prev" title="Sensors" href="sensors.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Conventions</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="conventions">
+<h1>Conventions<a class="headerlink" href="#conventions" title="Link to this heading">#</a></h1>
+<p>This document covers the various conventions used across physics engines and graphics frameworks when working with Newton and other simulation systems.</p>
+<section id="primer-reference-points-for-rigid-body-spatial-force-and-velocity">
+<h2>Primer: Reference Points for Rigid-Body Spatial Force and Velocity<a class="headerlink" href="#primer-reference-points-for-rigid-body-spatial-force-and-velocity" title="Link to this heading">#</a></h2>
+<p>Newton uses rigid-body spatial forces (wrenches) and velocities (twists) in its API. These spatial vectors are defined with respect to a <strong>reference point</strong>.
+When shifting the reference point, the force and velocity are updated in order to preserve the effect of the wrench, and the velocity field described by the twist, with respect to the new reference point.
+The 6D wrench and twist are composed of a linear and an angular 3D-vector component, and in the context of these spatial vectors, their reference-point dependence is as follows:</p>
+<ul class="simple">
+<li><p><strong>Point-independent components</strong>: linear force <span class="math notranslate nohighlight">\(\mathbf{f}\)</span>, angular velocity <span class="math notranslate nohighlight">\(\boldsymbol{\omega}\)</span>.</p></li>
+<li><p><strong>Point-dependent components</strong>: angular torque (moment) <span class="math notranslate nohighlight">\(\boldsymbol{\tau}\)</span>, linear velocity <span class="math notranslate nohighlight">\(\mathbf{v}\)</span>.</p></li>
+</ul>
+<p>Shifting the reference point by <span class="math notranslate nohighlight">\(\mathbf{r} = (\mathbf{p}_{\text{new}} - \mathbf{p}_{\text{old}})\)</span> changes the point-dependent vector components as follows:</p>
+<div class="math notranslate nohighlight">
+\[\boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}, \qquad
+\mathbf{v}_{\text{new}} = \mathbf{v} + \boldsymbol{\omega} \times \mathbf{r}.\]</div>
+<p>Keep this distinction in mind below: In addition to the coordinate frame that wrenches and twists are expressed in,
+Newton documentation states the <strong>reference point</strong> that it expects. If you compute e.g. a wrench with respect to a different reference point, you must shift it to the expected reference point.</p>
+</section>
+<section id="spatial-twist-conventions">
+<h2>Spatial Twist Conventions<a class="headerlink" href="#spatial-twist-conventions" title="Link to this heading">#</a></h2>
+<section id="twists-in-modern-robotics">
+<h3>Twists in Modern Robotics<a class="headerlink" href="#twists-in-modern-robotics" title="Link to this heading">#</a></h3>
+<p>In robotics, a <strong>twist</strong> is a 6-dimensional velocity vector combining angular
+and linear velocity. <em>Modern Robotics</em> (Lynch &amp; Park) defines two equivalent
+representations of a rigid body’s twist, depending on the coordinate frame
+used:</p>
+<ul>
+<li><p><strong>Body twist</strong> (<span class="math notranslate nohighlight">\(V_b\)</span>):
+uses the body’s <em>body frame</em> (often at the body’s center of mass).
+Here <span class="math notranslate nohighlight">\(\omega_b\)</span> is the angular velocity expressed in the body frame,
+and <span class="math notranslate nohighlight">\(v_b\)</span> is the linear velocity of a point at the body origin
+(e.g. the COM) expressed in the body frame.
+Thus <span class="math notranslate nohighlight">\(V_b = (\omega_b,\;v_b)\)</span> gives the body’s own-frame view of its
+motion.</p></li>
+<li><p><strong>Spatial twist</strong> (<span class="math notranslate nohighlight">\(V_s\)</span>):
+uses the fixed <em>space frame</em> (world/inertial frame).
+<span class="math notranslate nohighlight">\(v_s\)</span> represents the linear velocity of a hypothetical point on the
+moving body that is instantaneously at the world origin, and
+<span class="math notranslate nohighlight">\(\omega_s\)</span> is the angular velocity expressed in world coordinates.  Equivalently,</p>
+<div class="math notranslate nohighlight">
+\[v_s \;=\; \dot p \;-\; \omega_s \times p,\]</div>
+<p>where <span class="math notranslate nohighlight">\(p\)</span> is the vector from the world origin to the body origin.
+Hence <span class="math notranslate nohighlight">\(V_s = (v_s,\;\omega_s)\)</span> is called the <strong>spatial twist</strong>.
+<em>Note:</em> <span class="math notranslate nohighlight">\(v_s\)</span> is <strong>not</strong> simply the COM velocity
+(that would be <span class="math notranslate nohighlight">\(\dot p\)</span>); it is the velocity of the <em>world origin</em> as
+if rigidly attached to the body.</p>
+</li>
+</ul>
+<p>In summary, <em>Modern Robotics</em> lets us express the same physical motion either
+in the body frame or in the world frame.  The angular velocity is identical
+up to coordinate rotation; the linear component depends on the chosen
+reference point (world origin vs. body origin).</p>
+</section>
+<section id="physics-engine-conventions-drake-mujoco-isaac">
+<h3>Physics-Engine Conventions (Drake, MuJoCo, Isaac)<a class="headerlink" href="#physics-engine-conventions-drake-mujoco-isaac" title="Link to this heading">#</a></h3>
+<p>Most physics engines store the <strong>COM linear velocity</strong> together with the
+<strong>angular velocity</strong> of the body, typically both in world coordinates.  This
+corresponds conceptually to a twist taken at the COM and expressed in the
+world frame, though details vary:</p>
+<ul class="simple">
+<li><p><strong>Drake</strong>
+Drake’s multibody library uses full spatial vectors with explicit frame
+names.  The default, <span class="math notranslate nohighlight">\(V_{MB}^{E}\)</span>, reads “velocity of frame <em>B</em>
+measured in frame <em>M</em>, expressed in frame <em>E</em>.”  In normal use
+<span class="math notranslate nohighlight">\(V_{WB}^{W}\)</span> (body <em>B</em> in world <em>W</em>, expressed in <em>W</em>) contains
+<span class="math notranslate nohighlight">\((\omega_{WB}^{W},\;v_{WB_o}^{W})\)</span>, i.e. both components in the world
+frame.  This aligns with the usual physics-engine convention.</p></li>
+<li><p><strong>MuJoCo</strong>
+MuJoCo employs a <em>mixed-frame</em> format for free bodies:
+the linear part <span class="math notranslate nohighlight">\((v_x,v_y,v_z)\)</span> is the velocity of the <strong>body frame
+origin</strong> (i.e., where <code class="docutils literal notranslate"><span class="pre">qpos[0:3]</span></code> is located) in the world frame, while the
+angular part <span class="math notranslate nohighlight">\((\omega_x,\omega_y,\omega_z)\)</span> is expressed in the <strong>body
+frame</strong>.  The choice follows from quaternion integration (angular velocities
+“live” in the quaternion’s tangent space, a local frame).  Note that when the
+body’s center of mass (<code class="docutils literal notranslate"><span class="pre">body_ipos</span></code>) is offset from the body frame origin,
+the linear velocity is <em>not</em> the CoM velocity—see <a class="reference internal" href="#mujoco-conversion"><span class="std std-ref">MuJoCo conversion</span></a>
+below for the relationship.</p></li>
+<li><p><strong>Isaac Lab / Isaac Gym</strong>
+NVIDIA’s Isaac tools provide <strong>both</strong> linear and angular velocities in the
+world frame.  The root-state tensor returns
+<span class="math notranslate nohighlight">\((v_x,v_y,v_z,\;\omega_x,\omega_y,\omega_z)\)</span> all expressed globally.
+This matches Bullet/ODE/PhysX practice.</p></li>
+</ul>
+</section>
+<section id="newton-conventions">
+<span id="twist-conventions"></span><h3>Newton Conventions<a class="headerlink" href="#newton-conventions" title="Link to this heading">#</a></h3>
+<p><strong>Newton</strong> follows the standard physics engine convention for most solvers,
+aligning with Isaac Lab’s approach.
+Newton’s <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qd</span></code></a> stores <strong>both</strong> linear and angular velocities
+in the world frame.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">get_body_twist</span><span class="p">(</span><span class="n">body_qd</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">spatial_vector</span><span class="p">)):</span>
+  <span class="n">body_id</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">tid</span><span class="p">()</span>
+  <span class="c1"># body_qd is a 6D wp.spatial_vector in world frame</span>
+  <span class="n">twist</span> <span class="o">=</span> <span class="n">body_qd</span><span class="p">[</span><span class="n">body_id</span><span class="p">]</span>
+  <span class="c1"># linear velocity is the velocity of the body&#39;s center of mass in world frame</span>
+  <span class="n">linear_velocity</span> <span class="o">=</span> <span class="n">twist</span><span class="p">[</span><span class="mi">0</span><span class="p">:</span><span class="mi">3</span><span class="p">]</span>
+  <span class="c1"># angular velocity is the angular velocity of the body in world frame</span>
+  <span class="n">angular_velocity</span> <span class="o">=</span> <span class="n">twist</span><span class="p">[</span><span class="mi">3</span><span class="p">:</span><span class="mi">6</span><span class="p">]</span>
+
+<span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="n">get_body_twist</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">body_count</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">state</span><span class="o">.</span><span class="n">body_qd</span><span class="p">])</span>
+</pre></div>
+</div>
+<p>The linear velocity represents the COM velocity in world
+coordinates, while the angular velocity is also expressed in world coordinates.
+This matches the Isaac Lab convention exactly. Note that Newton will automatically
+convert from this convention to MuJoCo’s mixed-frame format when using the
+SolverMuJoCo, including both the angular velocity frame conversion (world ↔ body)
+and the linear velocity reference point conversion (CoM ↔ body frame origin).</p>
+</section>
+<section id="summary-of-conventions">
+<h3>Summary of Conventions<a class="headerlink" href="#summary-of-conventions" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 28.0%" />
+<col style="width: 27.0%" />
+<col style="width: 27.0%" />
+<col style="width: 18.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Linear velocity (translation)</strong></p></th>
+<th class="head"><p><strong>Angular velocity (rotation)</strong></p></th>
+<th class="head"><p><strong>Twist term</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><em>Modern Robotics</em> — <strong>Body twist</strong></p></td>
+<td><p>Body origin (chosen point; often COM), body frame</p></td>
+<td><p>Body frame</p></td>
+<td><p>“Body twist” (<span class="math notranslate nohighlight">\(V_b\)</span>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><em>Modern Robotics</em> — <strong>Spatial twist</strong></p></td>
+<td><p>World origin, world frame</p></td>
+<td><p>World frame</p></td>
+<td><p>“Spatial twist” (<span class="math notranslate nohighlight">\(V_s\)</span>)</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Drake</strong></p></td>
+<td><p>Body-frame origin <span class="math notranslate nohighlight">\(B_o\)</span> (not necessarily COM), world frame</p></td>
+<td><p>World frame</p></td>
+<td><p>Spatial velocity <span class="math notranslate nohighlight">\(V_{WB}^{W}\)</span></p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p>Body-frame origin, world frame</p></td>
+<td><p>Body frame</p></td>
+<td><p>Mixed-frame 6-vector</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Isaac Gym / Sim</strong></p></td>
+<td><p>COM, world frame</p></td>
+<td><p>World frame</p></td>
+<td><p>“Root” linear/angular velocity</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>PhysX</strong></p></td>
+<td><p>COM, world frame</p></td>
+<td><p>World frame</p></td>
+<td><p>Not named “twist”; typically treated as <span class="math notranslate nohighlight">\([\mathbf{v}_{com}^W;\ \boldsymbol{\omega}^W]\)</span></p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Newton</strong> (except Featherstone solver, see below)</p></td>
+<td><p>COM, world frame</p></td>
+<td><p>World frame</p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_qd</span></code></a></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a> does not correctly handle angular velocity
+for free-floating bodies with <strong>non-zero center of mass offsets</strong>. The body may not
+rotate purely about its CoM.</p>
+<p>We will fix this issue with <a class="github reference external" href="https://github.com/newton-physics/newton/issues/1366">newton-physics/newton#1366</a>.</p>
+</div>
+</section>
+<section id="mapping-between-representations">
+<h3>Mapping Between Representations<a class="headerlink" href="#mapping-between-representations" title="Link to this heading">#</a></h3>
+<p><strong>Body ↔ Spatial (Modern Robotics)</strong>
+For body pose <span class="math notranslate nohighlight">\(T_{sb}=(R,p)\)</span>:</p>
+<div class="math notranslate nohighlight">
+\[\omega_s \;=\; R\,\omega_b,
+\qquad
+v_s \;=\; R\,v_b \;+\; \omega_s \times p.\]</div>
+<p>This is <span class="math notranslate nohighlight">\(V_s = \mathrm{Ad}_{(R,p)}\,V_b\)</span>;
+the inverse uses <span class="math notranslate nohighlight">\(R^{\mathsf T}\)</span> and <span class="math notranslate nohighlight">\(-R^{\mathsf T}p\)</span>.</p>
+<p><strong>Physics engine → MR</strong>
+Given engine values <span class="math notranslate nohighlight">\((v_{\text{com}}^{W},\;\omega^{W})\)</span>
+(world-frame COM velocity and angular velocity):</p>
+<ol class="arabic">
+<li><p>Spatial twist at COM</p>
+<p><span class="math notranslate nohighlight">\(V_{WB}^{W} = (v_{\text{com}}^{W},\;\omega^{W})\)</span></p>
+</li>
+<li><p>Body-frame twist</p>
+<p><span class="math notranslate nohighlight">\(\omega_b = R^{\mathsf T}\omega^{W}\)</span>,
+<span class="math notranslate nohighlight">\(v_b = R^{\mathsf T}v_{\text{com}}^{W}\)</span>.</p>
+</li>
+<li><p>Shift to another origin offset <span class="math notranslate nohighlight">\(r\)</span> from COM:</p>
+<p><span class="math notranslate nohighlight">\(v_{\text{origin}}^{W} = v_{\text{com}}^{W} + \omega^{W}\times r^{W}\)</span>,
+where <span class="math notranslate nohighlight">\(r^{W}=R\,r\)</span>.</p>
+</li>
+</ol>
+<p id="mujoco-conversion"><strong>MuJoCo conversion</strong>
+Two conversions are needed between Newton and MuJoCo:</p>
+<ol class="arabic">
+<li><p><strong>Angular velocity frame</strong>: Rotate MuJoCo’s body-frame angular velocity by
+<span class="math notranslate nohighlight">\(R\)</span> to obtain the world-frame angular velocity (or vice versa):</p>
+<div class="math notranslate nohighlight">
+\[\omega^{W} = R\,\omega^{B}, \qquad \omega^{B} = R^{\mathsf T}\omega^{W}\]</div>
+</li>
+<li><p><strong>Linear velocity reference point</strong>: MuJoCo’s linear velocity is at the
+body frame origin, while Newton uses the CoM velocity.  When the body has a
+non-zero CoM offset <span class="math notranslate nohighlight">\(r\)</span> (<code class="docutils literal notranslate"><span class="pre">body_ipos</span></code> in MuJoCo, <code class="docutils literal notranslate"><span class="pre">body_com</span></code> in
+Newton), convert using:</p>
+<div class="math notranslate nohighlight">
+\[v_{\text{origin}}^{W} = v_{\text{com}}^{W} - \omega^{W} \times r^{W},
+\qquad
+v_{\text{com}}^{W} = v_{\text{origin}}^{W} + \omega^{W} \times r^{W}\]</div>
+<p>where <span class="math notranslate nohighlight">\(r^{W} = R\,r^{B}\)</span> is the CoM offset expressed in world coordinates.</p>
+</li>
+</ol>
+<p>In all cases the conversion boils down to the <strong>reference point</strong>
+(COM vs. another point) and the <strong>frame</strong> (world vs. body) used for each
+component.  Physics is unchanged; any linear velocity at one point follows
+<span class="math notranslate nohighlight">\(v_{\text{new}} = v + \omega\times r\)</span>.</p>
+</section>
+</section>
+<section id="spatial-wrench-conventions">
+<h2>Spatial Wrench Conventions<a class="headerlink" href="#spatial-wrench-conventions" title="Link to this heading">#</a></h2>
+<p>Newton represents external rigid-body forces as <strong>spatial wrenches</strong> in
+<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_f" title="newton.State.body_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_f</span></code></a>. The 6D wrench is stored in world
+frame as:</p>
+<div class="math notranslate nohighlight">
+\[\begin{split}\mathbf{w} = \begin{bmatrix} \mathbf{f} \\ \boldsymbol{\tau} \end{bmatrix},\end{split}\]</div>
+<p>where <span class="math notranslate nohighlight">\(\mathbf{f}\)</span> is the <strong>linear force</strong> and <span class="math notranslate nohighlight">\(\boldsymbol{\tau}\)</span>
+is the <strong>moment about the body’s center of mass (COM)</strong>, both expressed in
+world coordinates. The reference point matters for the moment term, so shifting
+the wrench to a point offset by <span class="math notranslate nohighlight">\(\mathbf{r}\)</span> changes the torque as:</p>
+<div class="math notranslate nohighlight">
+\[\boldsymbol{\tau}_{\text{new}} = \boldsymbol{\tau} + \mathbf{r} \times \mathbf{f}.\]</div>
+<p>This convention is used in all Newton solvers, except for <a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a> which does not correctly handle torque application for free-floating bodies with <strong>non-zero center of mass offsets</strong>.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p><a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a> does not correctly handle torque application
+for free-floating bodies with <strong>non-zero center of mass offsets</strong>. A pure torque will
+incorrectly cause the CoM to translate instead of remaining stationary.</p>
+<p>We will fix this issue with <a class="github reference external" href="https://github.com/newton-physics/newton/issues/1366">newton-physics/newton#1366</a>.</p>
+</div>
+<p>The array of joint forces (torques) in generalized coordinates is stored in <a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Control.joint_f</span></code></a>.
+For free joints, the corresponding 6 dimensions in this array are the spatial wrench applied at the body’s center of mass (COM)
+in world frame, following exactly the same convention as <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_f" title="newton.State.body_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_f</span></code></a>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>MuJoCo represents free-joint generalized forces in a mixed-frame convention in <code class="docutils literal notranslate"><span class="pre">qfrc_applied</span></code>. To preserve Newton’s
+COM-wrench semantics, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> applies free-joint
+<a class="reference internal" href="../api/_generated/newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Control.joint_f</span></code></a> through <code class="docutils literal notranslate"><span class="pre">xfrc_applied</span></code> (world-frame wrench at the COM) and
+uses <code class="docutils literal notranslate"><span class="pre">qfrc_applied</span></code> only for non-free joints. This keeps free-joint <code class="docutils literal notranslate"><span class="pre">joint_f</span></code> behavior aligned with
+<a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_f" title="newton.State.body_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_f</span></code></a>.</p>
+<p>We avoid converting free-joint wrenches into <code class="docutils literal notranslate"><span class="pre">qfrc_applied</span></code> directly because <code class="docutils literal notranslate"><span class="pre">qfrc_applied</span></code> is <strong>generalized-force
+space</strong>, not a physical wrench. For free joints the 6-DOF basis depends on the current <code class="docutils literal notranslate"><span class="pre">cdof</span></code> (subtree COM frame),
+and the rotational components are expressed in the body frame. A naive world-to-body rotation is insufficient because
+the correct mapping is the Jacobian-transpose operation used internally by MuJoCo (the same path as <code class="docutils literal notranslate"><span class="pre">xfrc_applied</span></code>).
+Routing through <code class="docutils literal notranslate"><span class="pre">xfrc_applied</span></code> ensures the wrench is interpreted at the COM in world coordinates and then mapped to
+generalized forces consistently with MuJoCo’s own dynamics.</p>
+</div>
+</section>
+<section id="quaternion-ordering-conventions">
+<h2>Quaternion Ordering Conventions<a class="headerlink" href="#quaternion-ordering-conventions" title="Link to this heading">#</a></h2>
+<p>Different physics engines and graphics frameworks use different conventions
+for storing quaternion components. This can cause significant confusion when
+transferring data between systems or when interfacing with external libraries.</p>
+<p>The quaternion <span class="math notranslate nohighlight">\(q = w + xi + yj + zk\)</span> where <span class="math notranslate nohighlight">\(w\)</span> is the scalar
+(real) part and <span class="math notranslate nohighlight">\((x, y, z)\)</span> is the vector (imaginary) part, can be
+stored in memory using different orderings:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id1">
+<caption><span class="caption-text">Quaternion Component Ordering</span><a class="headerlink" href="#id1" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 35.0%" />
+<col style="width: 35.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Storage Order</strong></p></th>
+<th class="head"><p><strong>Description</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton / Warp</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(x,</span> <span class="pre">y,</span> <span class="pre">z,</span> <span class="pre">w)</span></code></p></td>
+<td><p>Vector part first, scalar last</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Isaac Lab / Isaac Sim</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(w,</span> <span class="pre">x,</span> <span class="pre">y,</span> <span class="pre">z)</span></code></p></td>
+<td><p>Scalar first, vector part last</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>MuJoCo</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(w,</span> <span class="pre">x,</span> <span class="pre">y,</span> <span class="pre">z)</span></code></p></td>
+<td><p>Scalar first, vector part last</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>USD (Universal Scene Description)</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">(x,</span> <span class="pre">y,</span> <span class="pre">z,</span> <span class="pre">w)</span></code></p></td>
+<td><p>Vector part first, scalar last</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Important Notes:</strong></p>
+<ul class="simple">
+<li><p><strong>Mathematical notation</strong> typically writes quaternions as <span class="math notranslate nohighlight">\(q = w + xi + yj + zk\)</span>
+or <span class="math notranslate nohighlight">\(q = (w, x, y, z)\)</span>, but this doesn’t dictate storage order.</p></li>
+<li><p><strong>Conversion between systems</strong> requires careful attention to component ordering.
+For example, converting from Isaac Lab to Newton requires reordering:
+<code class="docutils literal notranslate"><span class="pre">newton_quat</span> <span class="pre">=</span> <span class="pre">(isaac_quat[1],</span> <span class="pre">isaac_quat[2],</span> <span class="pre">isaac_quat[3],</span> <span class="pre">isaac_quat[0])</span></code></p></li>
+<li><p><strong>Rotation semantics</strong> remain the same regardless of storage order—only the
+memory layout differs.</p></li>
+<li><p><strong>Warp’s quat type</strong> uses <code class="docutils literal notranslate"><span class="pre">(x,</span> <span class="pre">y,</span> <span class="pre">z,</span> <span class="pre">w)</span></code> ordering, accessible via:
+<code class="docutils literal notranslate"><span class="pre">quat[0]</span></code> (x), <code class="docutils literal notranslate"><span class="pre">quat[1]</span></code> (y), <code class="docutils literal notranslate"><span class="pre">quat[2]</span></code> (z), <code class="docutils literal notranslate"><span class="pre">quat[3]</span></code> (w).</p></li>
+</ul>
+<p>When working with multiple systems, always verify quaternion ordering in your
+data pipeline to avoid unexpected rotations or orientations.</p>
+</section>
+<section id="coordinate-system-and-up-axis-conventions">
+<h2>Coordinate System and Up Axis Conventions<a class="headerlink" href="#coordinate-system-and-up-axis-conventions" title="Link to this heading">#</a></h2>
+<p>Different physics engines, graphics frameworks, and content creation tools use
+different conventions for coordinate systems and up axis orientation. This can
+cause significant confusion when transferring assets between systems or when
+setting up physics simulations from existing content.</p>
+<p>The <strong>up axis</strong> determines which coordinate axis points “upward” in the world,
+affecting gravity direction, object placement, and overall scene orientation.</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id2">
+<caption><span class="caption-text">Coordinate System and Up Axis Conventions</span><a class="headerlink" href="#id2" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 20.0%" />
+<col style="width: 25.0%" />
+<col style="width: 25.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Up Axis</strong></p></th>
+<th class="head"><p><strong>Handedness</strong></p></th>
+<th class="head"><p><strong>Notes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Z</span></code> (default)</p></td>
+<td><p>Right-handed</p></td>
+<td><p>Configurable via <code class="docutils literal notranslate"><span class="pre">Axis.X/Y/Z</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Z</span></code> (default)</p></td>
+<td><p>Right-handed</p></td>
+<td><p>Standard robotics convention</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>USD</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Y</span></code> (default)</p></td>
+<td><p>Right-handed</p></td>
+<td><p>Configurable as <code class="docutils literal notranslate"><span class="pre">Y</span></code> or <code class="docutils literal notranslate"><span class="pre">Z</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Isaac Lab / Isaac Sim</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Z</span></code> (default)</p></td>
+<td><p>Right-handed</p></td>
+<td><p>Follows robotics conventions</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Important Design Principle:</strong></p>
+<p>Newton itself is <strong>coordinate system agnostic</strong> and can work with any choice
+of up axis. The physics calculations and algorithms do not depend on a specific
+coordinate system orientation. However, it becomes essential to track the
+conventions used by various assets and data sources to enable proper conversion
+and integration at runtime.</p>
+<p><strong>Common Integration Scenarios:</strong></p>
+<ul class="simple">
+<li><p><strong>USD to Newton</strong>: Convert from USD’s Y-up (or Z-up) to Newton’s configured up axis</p></li>
+<li><p><strong>MuJoCo to Newton</strong>: Convert from MuJoCo’s Z-up to Newton’s configured up axis</p></li>
+<li><p><strong>Mixed asset pipelines</strong>: Track up axis per asset and apply appropriate transforms</p></li>
+</ul>
+<p><strong>Conversion Between Systems:</strong></p>
+<p>When converting assets between coordinate systems with different up axes,
+apply the appropriate rotation transforms:</p>
+<ul class="simple">
+<li><p><strong>Y-up ↔ Z-up</strong>: 90° rotation around the X-axis</p></li>
+<li><p><strong>Maintain right-handedness</strong>: Ensure coordinate system handedness is preserved</p></li>
+</ul>
+<p><strong>Example Configuration:</strong></p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="c1"># Configure Newton for Z-up coordinate system (robotics convention)</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">(</span><span class="n">up_axis</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Axis</span><span class="o">.</span><span class="n">Z</span><span class="p">,</span> <span class="n">gravity</span><span class="o">=-</span><span class="mf">9.81</span><span class="p">)</span>
+
+<span class="c1"># Or use Y-up (graphics/animation convention)</span>
+<span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">(</span><span class="n">up_axis</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">Axis</span><span class="o">.</span><span class="n">Y</span><span class="p">,</span> <span class="n">gravity</span><span class="o">=-</span><span class="mf">9.81</span><span class="p">)</span>
+
+<span class="c1"># Gravity vector will automatically align with the chosen up axis:</span>
+<span class="c1"># - Y-up: gravity = (0, -9.81, 0)</span>
+<span class="c1"># - Z-up: gravity = (0, 0, -9.81)</span>
+</pre></div>
+</div>
+</section>
+<section id="collision-primitive-conventions">
+<h2>Collision Primitive Conventions<a class="headerlink" href="#collision-primitive-conventions" title="Link to this heading">#</a></h2>
+<p>This section documents the conventions used for collision primitive shapes in Newton and compares them with other physics engines and formats. Understanding these conventions is essential when:</p>
+<ul class="simple">
+<li><p>Creating collision geometry programmatically with ModelBuilder</p></li>
+<li><p>Debugging unexpected collision behavior after asset import</p></li>
+<li><p>Understanding center of mass calculations for asymmetric shapes</p></li>
+</ul>
+<section id="newton-collision-primitives">
+<h3>Newton Collision Primitives<a class="headerlink" href="#newton-collision-primitives" title="Link to this heading">#</a></h3>
+<p>Newton defines collision primitives with consistent conventions across all shape types. The following table summarizes the key parameters and properties for each primitive:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id3">
+<caption><span class="caption-text">Newton Collision Primitive Specifications</span><a class="headerlink" href="#id3" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 15.0%" />
+<col style="width: 20.0%" />
+<col style="width: 35.0%" />
+<col style="width: 30.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>Shape</strong></p></th>
+<th class="head"><p><strong>Origin</strong></p></th>
+<th class="head"><p><strong>Parameters</strong></p></th>
+<th class="head"><p><strong>Notes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Box</strong></p></td>
+<td><p>Geometric center</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">hx</span></code>, <code class="docutils literal notranslate"><span class="pre">hy</span></code>, <code class="docutils literal notranslate"><span class="pre">hz</span></code> (half-extents)</p></td>
+<td><p>Edges aligned with local axes</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Sphere</strong></p></td>
+<td><p>Center</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code></p></td>
+<td><p>Uniform in all directions</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Capsule</strong></p></td>
+<td><p>Geometric center</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">half_height</span></code></p></td>
+<td><p>Extends along Z-axis; half_height excludes hemispherical caps</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Cylinder</strong></p></td>
+<td><p>Geometric center</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">half_height</span></code></p></td>
+<td><p>Extends along Z-axis</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Cone</strong></p></td>
+<td><p>Geometric center</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code> (base), <code class="docutils literal notranslate"><span class="pre">half_height</span></code></p></td>
+<td><p>Extends along Z-axis; base at -half_height, apex at +half_height</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Plane</strong></p></td>
+<td><p>Shape frame origin</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">width</span></code>, <code class="docutils literal notranslate"><span class="pre">length</span></code> (or 0,0 for infinite)</p></td>
+<td><p>Normal along +Z of shape frame</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Mesh</strong></p></td>
+<td><p>User-defined</p></td>
+<td><p>Vertex and triangle arrays</p></td>
+<td><p>General triangle mesh (can be non-convex)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Shape Orientation and Alignment</strong></p>
+<p>All Newton primitives that have a primary axis (capsule, cylinder, cone) are aligned along the Z-axis in their local coordinate frame. The shape’s transform determines its final position and orientation in the world or parent body frame.</p>
+<p><strong>Center of Mass Considerations</strong></p>
+<p>For most primitives, the center of mass coincides with the geometric origin. The cone is a notable exception:</p>
+<ul class="simple">
+<li><p><strong>Cone COM</strong>: Located at <code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">0,</span> <span class="pre">-half_height/2)</span></code> in the shape’s local frame, which is 1/4 of the total height from the base toward the apex.</p></li>
+</ul>
+</section>
+<section id="collision-primitive-conventions-across-engines">
+<h3>Collision Primitive Conventions Across Engines<a class="headerlink" href="#collision-primitive-conventions-across-engines" title="Link to this heading">#</a></h3>
+<p>The following tables compare how different engines and formats define common collision primitives:</p>
+<p><strong>Sphere Primitives</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Parameter Convention</strong></p></th>
+<th class="head"><p><strong>Notes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code></p></td>
+<td><p>Origin at center</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">size[0]</span></code> = radius</p></td>
+<td><p>Origin at center</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>USD (UsdGeomSphere)</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code> attribute</p></td>
+<td><p>Origin at center</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>USD Physics</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code> attribute</p></td>
+<td><p>Origin at center</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Box Primitives</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Parameter Convention</strong></p></th>
+<th class="head"><p><strong>Notes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p>Half-extents (<code class="docutils literal notranslate"><span class="pre">hx</span></code>, <code class="docutils literal notranslate"><span class="pre">hy</span></code>, <code class="docutils literal notranslate"><span class="pre">hz</span></code>)</p></td>
+<td><p>Distance from center to face</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p>Half-sizes in <code class="docutils literal notranslate"><span class="pre">size</span></code> attribute</p></td>
+<td><p>Can use <code class="docutils literal notranslate"><span class="pre">fromto</span></code> (Newton importer doesn’t support)</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>USD (UsdGeomCube)</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">size</span></code> attribute (full dimensions)</p></td>
+<td><p>Edge length, not half-extent</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>USD Physics</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">halfExtents</span></code> attribute</p></td>
+<td><p>Matches Newton convention</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Capsule Primitives</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Parameter Convention</strong></p></th>
+<th class="head"><p><strong>Notes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">half_height</span></code> (excludes caps)</p></td>
+<td><p>Total length = 2*(radius + half_height)</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">size[0]</span></code> = radius, <code class="docutils literal notranslate"><span class="pre">size[1]</span></code> = half-length (excludes caps)</p></td>
+<td><p>Can also use <code class="docutils literal notranslate"><span class="pre">fromto</span></code> for endpoints</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>USD (UsdGeomCapsule)</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">height</span></code> (excludes caps)</p></td>
+<td><p>Full height of cylindrical portion</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>USD Physics</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">halfHeight</span></code> (excludes caps)</p></td>
+<td><p>Similar to Newton</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Cylinder Primitives</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Parameter Convention</strong></p></th>
+<th class="head"><p><strong>Notes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">half_height</span></code></p></td>
+<td><p>Extends along Z-axis</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">size[0]</span></code> = radius, <code class="docutils literal notranslate"><span class="pre">size[1]</span></code> = half-length</p></td>
+<td><p>Can use <code class="docutils literal notranslate"><span class="pre">fromto</span></code>; Newton’s MJCF importer maps to capsule</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>USD (UsdGeomCylinder)</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">height</span></code> (full height)</p></td>
+<td><p>Visual shape</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>USD Physics</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">halfHeight</span></code></p></td>
+<td><p>Newton’s USD importer creates actual cylinders</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Cone Primitives</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Parameter Convention</strong></p></th>
+<th class="head"><p><strong>Notes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code> (base), <code class="docutils literal notranslate"><span class="pre">half_height</span></code></p></td>
+<td><p>COM offset at -half_height/2</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p>Not supported</p></td>
+<td><p>N/A</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>USD (UsdGeomCone)</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">height</span></code> (full height)</p></td>
+<td><p>Visual representation</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>USD Physics</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">radius</span></code>, <code class="docutils literal notranslate"><span class="pre">halfHeight</span></code></p></td>
+<td><p>Physics representation</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Plane Primitives</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Definition Method</strong></p></th>
+<th class="head"><p><strong>Normal Direction</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p>Transform-based or plane equation</p></td>
+<td><p>+Z of shape frame</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p>Size and orientation in body frame</p></td>
+<td><p>+Z of geom frame</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>USD</strong></p></td>
+<td><p>No standard plane primitive</p></td>
+<td><p>Implementation-specific</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Mesh Primitives</strong></p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 35.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>System</strong></p></th>
+<th class="head"><p><strong>Mesh Type</strong></p></th>
+<th class="head"><p><strong>Notes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p>General triangle mesh</p></td>
+<td><p>Can be non-convex</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p>Convex hull only for collision</p></td>
+<td><p>Visual mesh can be non-convex</p></td>
+</tr>
+<tr class="row-even"><td><p><strong>USD (UsdGeomMesh)</strong></p></td>
+<td><p>General polygon mesh</p></td>
+<td><p>Visual representation</p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>USD Physics</strong></p></td>
+<td><p>Implementation-dependent</p></td>
+<td><p>May use convex approximation</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="import-handling">
+<h3>Import Handling<a class="headerlink" href="#import-handling" title="Link to this heading">#</a></h3>
+<p>Newton’s importers automatically handle convention differences when loading assets. No manual conversion is required when using these importers—they automatically transform shapes to Newton’s conventions.</p>
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#primer-reference-points-for-rigid-body-spatial-force-and-velocity">Primer: Reference Points for Rigid-Body Spatial Force and Velocity</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spatial-twist-conventions">Spatial Twist Conventions</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#twists-in-modern-robotics">Twists in Modern Robotics</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#physics-engine-conventions-drake-mujoco-isaac">Physics-Engine Conventions (Drake, MuJoCo, Isaac)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton-conventions">Newton Conventions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#summary-of-conventions">Summary of Conventions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mapping-between-representations">Mapping Between Representations</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spatial-wrench-conventions">Spatial Wrench Conventions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#quaternion-ordering-conventions">Quaternion Ordering Conventions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#coordinate-system-and-up-axis-conventions">Coordinate System and Up Axis Conventions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-primitive-conventions">Collision Primitive Conventions</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton-collision-primitives">Newton Collision Primitives</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-primitive-conventions-across-engines">Collision Primitive Conventions Across Engines</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#import-handling">Import Handling</a></li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

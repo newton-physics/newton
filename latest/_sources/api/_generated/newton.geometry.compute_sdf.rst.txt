@@ -1,0 +1,6 @@
+﻿newton.geometry.compute\_sdf
+============================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: compute_sdf

@@ -1,0 +1,1384 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>USD Parsing and Schema Resolver System &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=b2b65678" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=938c9ccc"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'concepts/usd_parsing';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.16.1';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Custom Attributes" href="custom_attributes.html" />
+    <link rel="prev" title="Conventions" href="conventions.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(0.2.0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="#">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Visualization
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/key-concepts.html">
+    Key Concepts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="extended_attributes.html">
+    Extended Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../api/newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../integrations/index.html">
+    Integrations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Visualization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/key-concepts.html">Key Concepts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="conventions.html">Conventions</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="extended_attributes.html">Extended Attributes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="collisions.html">Collisions and Contacts</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../api/newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../api/newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../integrations/index.html">Integrations</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">USD Parsing and Schema Resolver System</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="usd-parsing-and-schema-resolver-system">
+<span id="usd-parsing"></span><h1>USD Parsing and Schema Resolver System<a class="headerlink" href="#usd-parsing-and-schema-resolver-system" title="Link to this heading">#</a></h1>
+<p>Newton provides USD (Universal Scene Description) ingestion and schema resolver pipelines that enable integration of physics assets authored for different simulation solvers. This system allows Newton to use existing USD assets authored for other simulation solvers.</p>
+<section id="understanding-usd-and-usdphysics">
+<h2>Understanding USD and UsdPhysics<a class="headerlink" href="#understanding-usd-and-usdphysics" title="Link to this heading">#</a></h2>
+<p>USD (Universal Scene Description) is Pixar’s open-source framework for interchange of 3D computer graphics data. It provides an ecosystem for describing 3D scenes with hierarchical composition, animation, and metadata.
+UsdPhysics is the standard USD schema for physics simulation, defining for instance:</p>
+<ul class="simple">
+<li><p>Rigid bodies (<code class="docutils literal notranslate"><span class="pre">UsdPhysics.RigidBodyAPI</span></code>)</p></li>
+<li><p>Collision shapes (<code class="docutils literal notranslate"><span class="pre">UsdPhysics.CollisionAPI</span></code>)</p></li>
+<li><p>Joints and constraints (<code class="docutils literal notranslate"><span class="pre">UsdPhysics.Joint</span></code>)</p></li>
+<li><p>Materials and contact properties (<code class="docutils literal notranslate"><span class="pre">UsdPhysics.MaterialAPI</span></code>)</p></li>
+<li><p>Scene-level physics settings (<code class="docutils literal notranslate"><span class="pre">UsdPhysics.Scene</span></code>)</p></li>
+</ul>
+<p>However, UsdPhysics provides only a basic foundation. Different physics solvers like PhysX and MuJoCo often require additional attributes not covered by these standard schemas.
+PhysX and MuJoCo have their own schemas for describing physics assets. While some of these attributes are <em>conceptually</em> common between many solvers, many are solver-specific.
+Even among the common attributes, the names and semantics may differ and they are only conceptually similar. Therefore, some transformation is needed to make these attributes usable by Newton.
+Newton’s schema resolver system automatically handles these differences, allowing assets authored for any solver to work with Newton’s simulation. See the next section for more details.</p>
+</section>
+<section id="newton-s-usd-import-system">
+<h2>Newton’s USD Import System<a class="headerlink" href="#newton-s-usd-import-system" title="Link to this heading">#</a></h2>
+<p>Newton’s <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a> method provides a USD import pipeline that:</p>
+<ul class="simple">
+<li><p>Parses standard UsdPhysics schema for basic rigid body simulation setup</p></li>
+<li><p>Resolves common solver attributes that are conceptually similar between different solvers through configurable schema resolvers</p></li>
+<li><p>Handles priority-based attribute resolution when multiple solvers define conflicting values for conceptually similar properties</p></li>
+<li><p>Collects solver-specific attributes preserving solver-native attributes for potential use in the solver</p></li>
+<li><p>Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements</p></li>
+</ul>
+</section>
+<section id="solver-attribute-remapping">
+<span id="schema-resolvers"></span><h2>1. Solver Attribute Remapping<a class="headerlink" href="#solver-attribute-remapping" title="Link to this heading">#</a></h2>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Using the <code class="docutils literal notranslate"><span class="pre">schema_resolvers</span></code> argument in <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_usd()</span></code></a> to collect solver-specific attributes is an experimental feature that may be removed or changed significantly in the future.</p>
+</div>
+<p>When working with USD assets authored for other physics solvers like PhysX or MuJoCo, Newton’s schema resolver system can automatically remap various solver attributes to Newton’s internal representation. This enables Newton to use physics properties from assets originally designed for other simulators without manual conversion.</p>
+<p>The following tables show examples of how solver-specific attributes are mapped to Newton’s internal representation. Some attributes map directly while others require mathematical transformations.</p>
+<p><strong>PhysX Attribute Remapping Examples:</strong></p>
+<p>The table below demonstrates PhysX attribute remapping with both direct mapping and transformation examples:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id1">
+<caption><span class="caption-text">PhysX Attribute Remapping</span><a class="headerlink" href="#id1" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 30.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>PhysX Attribute</strong></p></th>
+<th class="head"><p><strong>Newton Equivalent</strong></p></th>
+<th class="head"><p><strong>Transformation</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">physxJoint:armature</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">armature</span></code></p></td>
+<td><p>Direct mapping</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">physxScene:timeStepsPerSecond</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">time_step</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span> <span class="pre">/</span> <span class="pre">timeStepsPerSecond</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>MuJoCo Attribute Remapping Examples:</strong></p>
+<p>Similarly, MuJoCo attributes can be remapped to Newton. Note that <code class="docutils literal notranslate"><span class="pre">mjc:solref</span></code> requires a more complex transformation to convert MuJoCo’s solver reference parameters into stiffness and damping coefficients:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id2">
+<caption><span class="caption-text">MuJoCo Attribute Remapping</span><a class="headerlink" href="#id2" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 30.0%" />
+<col style="width: 30.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>MuJoCo Attribute</strong></p></th>
+<th class="head"><p><strong>Newton Equivalent</strong></p></th>
+<th class="head"><p><strong>Transformation</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mjc:armature</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">armature</span></code></p></td>
+<td><p>Direct mapping</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mjc:solref</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">stiffness</span></code>/<code class="docutils literal notranslate"><span class="pre">damping</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">k</span> <span class="pre">=</span> <span class="pre">1/(timeconst^2)</span></code>, <code class="docutils literal notranslate"><span class="pre">b</span> <span class="pre">=</span> <span class="pre">2*dampratio/timeconst</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Example USD with remapped attributes:</strong></p>
+<p>The following USD example demonstrates how PhysX attributes are authored in a USD file. The schema resolver automatically applies the transformations shown in the table above during import:</p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="c1">#usda 1.0</span>
+
+<span class="k k-Tokens">def</span><span class="w"> </span>PhysicsScene<span class="w"> </span><span class="s">&quot;Scene&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysxSceneAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># PhysX scene settings that Newton can understand</span>
+<span class="w">    </span><span class="kt">uint</span><span class="w"> </span><span class="na">physxScene:timeStepsPerSecond</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">120</span><span class="w">  </span><span class="c1"># → time_step = 1/120 = 0.0083</span>
+<span class="w">    </span><span class="kt">uint</span><span class="w"> </span><span class="na">physxScene:maxVelocityIterationCount</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">16</span><span class="w">  </span><span class="c1"># → max_solver_iterations = 16</span>
+<span class="p">}</span>
+
+<span class="k k-Tokens">def</span><span class="w"> </span>RevoluteJoint<span class="w"> </span><span class="s">&quot;elbow_joint&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysxJointAPI&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;PhysxLimitAPI:angular&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># PhysX joint attributes remapped to Newton</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">physxJoint:armature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.1</span><span class="w">  </span><span class="c1"># → armature = 0.1</span>
+<span class="w">    </span><span class="c1"># PhysX limit attributes (applied via PhysxLimitAPI:angular)</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">physxLimit:angular:stiffness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1000.0</span><span class="w">  </span><span class="c1"># → limit_angular_ke = 1000.0</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">physxLimit:angular:damping</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">10.0</span><span class="w">  </span><span class="c1"># → limit_angular_kd = 10.0</span>
+
+<span class="w">    </span><span class="c1"># Initial joint state</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">state:angular:physics:position</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1.57</span><span class="w">  </span><span class="c1"># → joint_q = 1.57 rad</span>
+<span class="p">}</span>
+
+<span class="k k-Tokens">def</span><span class="w"> </span>Mesh<span class="w"> </span><span class="s">&quot;collision_shape&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsCollisionAPI&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;PhysxCollisionAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># PhysX collision settings</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">physxCollision:contactOffset</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.02</span><span class="w">  </span><span class="c1"># → contact_margin = 0.02</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="priority-based-resolution">
+<h2>2. Priority-Based Resolution<a class="headerlink" href="#priority-based-resolution" title="Link to this heading">#</a></h2>
+<p>When multiple physics solvers define conflicting attributes for the same property, the user can define which solver attributes should be preferred by configuring the resolver order.</p>
+<p><strong>Resolution Hierarchy:</strong></p>
+<p>The attribute resolution process follows a three-layer fallback hierarchy to determine which value to use:</p>
+<ol class="arabic simple">
+<li><p><strong>Authored Values</strong>: First resolver in priority order with an authored value wins</p></li>
+<li><p><strong>Explicit Defaults</strong>: User-provided default parameter in <code class="docutils literal notranslate"><span class="pre">Resolver.get_value(default=...)</span></code> calls with a non-None value wins if no authored value is found</p></li>
+<li><p><strong>Schema Mapping Defaults</strong>: Resolver-specific default values from the schema definition if no authored value or explicit default is found</p></li>
+</ol>
+<p><strong>Configuring Resolver Priority:</strong></p>
+<p>The order of resolvers in the <code class="docutils literal notranslate"><span class="pre">schema_resolvers</span></code> list determines priority, with earlier entries taking precedence. To demonstrate this, consider a USD asset where the same joint has conflicting armature values authored for different solvers:</p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="k k-Tokens">def</span><span class="w"> </span>RevoluteJoint<span class="w"> </span><span class="s">&quot;shoulder_joint&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:armature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.01</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">physxJoint:armature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.02</span>
+<span class="w">    </span><span class="kt">float</span><span class="w"> </span><span class="na">mjc:armature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">0.03</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>By changing the order of resolvers in the <code class="docutils literal notranslate"><span class="pre">schema_resolvers</span></code> list, different attribute values will be selected from the same USD file. The following examples show how the same asset produces different results based on resolver priority:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">ModelBuilder</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton._src.usd.schemas</span><span class="w"> </span><span class="kn">import</span> <span class="n">SchemaResolverNewton</span><span class="p">,</span> <span class="n">SchemaResolverPhysx</span><span class="p">,</span> <span class="n">SchemaResolverMjc</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Configuration 1: Newton priority</span>
+<span class="n">result_newton</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">&quot;conflicting_asset.usda&quot;</span><span class="p">,</span>
+    <span class="n">schema_resolvers</span><span class="o">=</span><span class="p">[</span><span class="n">SchemaResolverNewton</span><span class="p">(),</span> <span class="n">SchemaResolverPhysx</span><span class="p">(),</span> <span class="n">SchemaResolverMjc</span><span class="p">()]</span>
+<span class="p">)</span>
+<span class="c1"># Result: Uses newton:armature = 0.01</span>
+
+<span class="c1"># Configuration 2: PhysX priority</span>
+<span class="n">builder2</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">result_physx</span> <span class="o">=</span> <span class="n">builder2</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">&quot;conflicting_asset.usda&quot;</span><span class="p">,</span>
+    <span class="n">schema_resolvers</span><span class="o">=</span><span class="p">[</span><span class="n">SchemaResolverPhysx</span><span class="p">(),</span> <span class="n">SchemaResolverNewton</span><span class="p">(),</span> <span class="n">SchemaResolverMjc</span><span class="p">()]</span>
+<span class="p">)</span>
+<span class="c1"># Result: Uses physxJoint:armature = 0.02</span>
+
+<span class="c1"># Configuration 3: MuJoCo priority</span>
+<span class="n">builder3</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">result_mjc</span> <span class="o">=</span> <span class="n">builder3</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">&quot;conflicting_asset.usda&quot;</span><span class="p">,</span>
+    <span class="n">schema_resolvers</span><span class="o">=</span><span class="p">[</span><span class="n">SchemaResolverMjc</span><span class="p">(),</span> <span class="n">SchemaResolverNewton</span><span class="p">(),</span> <span class="n">SchemaResolverPhysx</span><span class="p">()]</span>
+<span class="p">)</span>
+<span class="c1"># Result: Uses mjc:armature = 0.03</span>
+</pre></div>
+</div>
+</section>
+<section id="solver-specific-attribute-collection">
+<h2>3. Solver-Specific Attribute Collection<a class="headerlink" href="#solver-specific-attribute-collection" title="Link to this heading">#</a></h2>
+<p>Some attributes are solver-specific and cannot be directly used by Newton’s simulation. The schema resolver system preserves these solver-specific attributes during import, making them accessible as part of the parsing results. This is useful for:</p>
+<ul class="simple">
+<li><p>Debugging and inspection of solver-specific properties</p></li>
+<li><p>Future compatibility when Newton adds support for additional attributes</p></li>
+<li><p>Custom pipelines that need to access solver-native properties</p></li>
+<li><p>Sim-to-sim transfer where you might need to rebuild assets for other solvers</p></li>
+</ul>
+<p><strong>Solver-Specific Attribute Namespaces:</strong></p>
+<p>Each solver has its own namespace prefixes for solver-specific attributes. The table below shows the namespace conventions and provides examples of attributes that would be collected from each solver:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id3">
+<caption><span class="caption-text">Solver-Specific Namespaces</span><a class="headerlink" href="#id3" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 40.0%" />
+<col style="width: 40.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>Engine</strong></p></th>
+<th class="head"><p><strong>Namespace Prefixes</strong></p></th>
+<th class="head"><p><strong>Example Attributes</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><strong>PhysX</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">physx</span></code>, <code class="docutils literal notranslate"><span class="pre">physxScene</span></code>, <code class="docutils literal notranslate"><span class="pre">physxRigidBody</span></code>, <code class="docutils literal notranslate"><span class="pre">physxCollision</span></code>, <code class="docutils literal notranslate"><span class="pre">physxArticulation</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">physxArticulation:enabledSelfCollisions</span></code>, <code class="docutils literal notranslate"><span class="pre">physxSDFMeshCollision:meshScale</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>MuJoCo</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjc</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">mjc:model:joint:testMjcJointScalar</span></code>, <code class="docutils literal notranslate"><span class="pre">mjc:state:joint:testMjcJointVec3</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><strong>Newton</strong></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">newton</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">newton:hullVertexLimit</span></code>, <code class="docutils literal notranslate"><span class="pre">newton:contactMargin</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Accessing Collected Solver-Specific Attributes:</strong></p>
+<p>The collected attributes are returned in the result dictionary and can be accessed by solver namespace:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">ModelBuilder</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton._src.usd.schemas</span><span class="w"> </span><span class="kn">import</span> <span class="n">SchemaResolverPhysx</span><span class="p">,</span> <span class="n">SchemaResolverNewton</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">&quot;physx_humanoid.usda&quot;</span><span class="p">,</span>
+    <span class="n">schema_resolvers</span><span class="o">=</span><span class="p">[</span><span class="n">SchemaResolverPhysx</span><span class="p">(),</span> <span class="n">SchemaResolverNewton</span><span class="p">()],</span>
+<span class="p">)</span>
+
+<span class="c1"># Access collected solver-specific attributes</span>
+<span class="n">solver_attrs</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;schema_attrs&quot;</span><span class="p">,</span> <span class="p">{})</span>
+
+<span class="k">if</span> <span class="s2">&quot;physx&quot;</span> <span class="ow">in</span> <span class="n">solver_attrs</span><span class="p">:</span>
+    <span class="n">physx_attrs</span> <span class="o">=</span> <span class="n">solver_attrs</span><span class="p">[</span><span class="s2">&quot;physx&quot;</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">prim_path</span><span class="p">,</span> <span class="n">attrs</span> <span class="ow">in</span> <span class="n">physx_attrs</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="k">if</span> <span class="s2">&quot;physxJoint:armature&quot;</span> <span class="ow">in</span> <span class="n">attrs</span><span class="p">:</span>
+            <span class="n">armature_value</span> <span class="o">=</span> <span class="n">attrs</span><span class="p">[</span><span class="s2">&quot;physxJoint:armature&quot;</span><span class="p">]</span>
+            <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;PhysX joint </span><span class="si">{</span><span class="n">prim_path</span><span class="si">}</span><span class="s2"> has armature: </span><span class="si">{</span><span class="n">armature_value</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="custom-attribute-framework">
+<h2>4. Custom Attribute Framework<a class="headerlink" href="#custom-attribute-framework" title="Link to this heading">#</a></h2>
+<p>USD assets can define custom attributes that become part of the model/state/control attributes, see <a class="reference internal" href="custom_attributes.html#custom-attributes"><span class="std std-ref">Custom Attributes</span></a> for more information.
+Besides the programmatic way of defining custom attributes through the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_attribute" title="newton.ModelBuilder.add_custom_attribute"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_custom_attribute()</span></code></a> method, Newton’s USD importer also supports declaring custom attributes from within a USD stage.</p>
+<p><strong>Overview:</strong></p>
+<p>Custom attributes enable users to:</p>
+<ul class="simple">
+<li><p>Extend Newton’s data model with application-specific properties</p></li>
+<li><p>Store per-body/joint/dof/shape data directly in USD assets</p></li>
+<li><p>Implement custom simulation behaviors driven by USD-authored data</p></li>
+<li><p>Organize related attributes using namespaces</p></li>
+</ul>
+<p><strong>Declaration-First Pattern:</strong></p>
+<p>Custom attributes must be declared on the <code class="docutils literal notranslate"><span class="pre">PhysicsScene</span></code> prim with metadata before being used on individual prims:</p>
+<ol class="arabic simple">
+<li><p><strong>Declare on PhysicsScene</strong>: Define attributes with <code class="docutils literal notranslate"><span class="pre">customData</span></code> metadata specifying assignment and frequency</p></li>
+<li><p><strong>Assign on individual prims</strong>: Override default values using shortened attribute names</p></li>
+</ol>
+<p><strong>Declaration Format:</strong></p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="k k-Tokens">custom</span><span class="w"> </span><span class="nn">&lt;type&gt;</span><span class="w"> </span><span class="na">newton:namespace:attr_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span>default_value<span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">        </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model|state|control|contact&quot;</span>
+<span class="w">        </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;body|shape|joint|joint_dof|joint_coord|articulation&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Where:</p>
+<ul class="simple">
+<li><p><strong>namespace</strong> (optional): Custom namespace for organizing related attributes (omit for default namespace)</p></li>
+<li><p><strong>attr_name</strong>: User-defined attribute name</p></li>
+<li><p><strong>assignment</strong>: Storage location (<code class="docutils literal notranslate"><span class="pre">model</span></code>, <code class="docutils literal notranslate"><span class="pre">state</span></code>, <code class="docutils literal notranslate"><span class="pre">control</span></code>, <code class="docutils literal notranslate"><span class="pre">contact</span></code>)</p></li>
+<li><p><strong>frequency</strong>: Per-entity granularity (<code class="docutils literal notranslate"><span class="pre">body</span></code>, <code class="docutils literal notranslate"><span class="pre">shape</span></code>, <code class="docutils literal notranslate"><span class="pre">joint</span></code>, <code class="docutils literal notranslate"><span class="pre">joint_dof</span></code>, <code class="docutils literal notranslate"><span class="pre">joint_coord</span></code>, <code class="docutils literal notranslate"><span class="pre">articulation</span></code>)</p></li>
+</ul>
+<p><strong>Supported Data Types:</strong></p>
+<p>The system automatically infers data types from authored USD values. The following table shows the mapping between USD types and Warp types used internally by Newton:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id4">
+<caption><span class="caption-text">Custom Attribute Data Types</span><a class="headerlink" href="#id4" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 25.0%" />
+<col style="width: 25.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>USD Type</strong></p></th>
+<th class="head"><p><strong>Warp Type</strong></p></th>
+<th class="head"><p><strong>Example</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">float</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wp.float32</span></code></p></td>
+<td><p>Scalar values</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bool</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wp.bool</span></code></p></td>
+<td><p>Boolean flags</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">int</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wp.int32</span></code></p></td>
+<td><p>Integer values</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">float2</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wp.vec2</span></code></p></td>
+<td><p>2D vectors</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">float3</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wp.vec3</span></code></p></td>
+<td><p>3D vectors, positions</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">float4</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wp.vec4</span></code></p></td>
+<td><p>4D vectors</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">quatf</span></code>/<code class="docutils literal notranslate"><span class="pre">quatd</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wp.quat</span></code></p></td>
+<td><p>Quaternions (with automatic reordering)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>Assignment Types:</strong></p>
+<p>The <code class="docutils literal notranslate"><span class="pre">assignment</span></code> field in the declaration determines where the custom attribute data will be stored. The following table describes each assignment type and its typical use cases:</p>
+<div class="pst-scrollable-table-container"><table class="table" id="id5">
+<caption><span class="caption-text">Custom Attribute Assignments</span><a class="headerlink" href="#id5" title="Link to this table">#</a></caption>
+<colgroup>
+<col style="width: 15.0%" />
+<col style="width: 25.0%" />
+<col style="width: 60.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p><strong>Assignment</strong></p></th>
+<th class="head"><p><strong>Storage Location</strong></p></th>
+<th class="head"><p><strong>Use Cases</strong></p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">model</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Model</span></code> object</p></td>
+<td><p>Static configuration, physical properties, metadata</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">state</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">State</span></code> object</p></td>
+<td><p>Dynamic quantities, targets, sensor readings</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">control</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Control</span></code> object</p></td>
+<td><p>Control parameters, actuator settings, gains</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">contact</span></code></p></td>
+<td><p>Contact container</p></td>
+<td><p>Contact-specific properties (future use)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>USD Authoring with Custom Attributes:</strong></p>
+<p>The following USD example demonstrates the complete workflow for authoring custom attributes. Note how attributes are first declared on the <code class="docutils literal notranslate"><span class="pre">PhysicsScene</span></code> with their metadata, then assigned with specific values on individual prims:</p>
+<div class="highlight-usda notranslate"><div class="highlight"><pre><span></span><span class="c1"># robot_with_custom_attrs.usda</span>
+<span class="c1">#usda 1.0</span>
+
+<span class="k k-Tokens">def</span><span class="w"> </span>PhysicsScene<span class="w"> </span><span class="s">&quot;physicsScene&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># Declare custom attributes with metadata (default namespace)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:mass_scale</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1.0</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;body&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float3</span><span class="w"> </span><span class="na">newton:local_marker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="m">0.0</span><span class="p">,</span><span class="w"> </span><span class="m">0.0</span><span class="p">,</span><span class="w"> </span><span class="m">0.0</span><span class="p">)</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;body&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="na">newton:is_sensor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span>false<span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;body&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float3</span><span class="w"> </span><span class="na">newton:target_position</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="m">0.0</span><span class="p">,</span><span class="w"> </span><span class="m">0.0</span><span class="p">,</span><span class="w"> </span><span class="m">0.0</span><span class="p">)</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;state&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;body&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1"># Declare namespaced custom attributes (namespace_a)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:namespace_a:mass_scale</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1.0</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;state&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;body&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:namespace_a:gear_ratio</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1.0</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;joint&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float2</span><span class="w"> </span><span class="na">newton:namespace_a:pid_gains</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="m">0.0</span><span class="p">,</span><span class="w"> </span><span class="m">0.0</span><span class="p">)</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;control&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;joint&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1"># ARTICULATION frequency attribute</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:articulation_stiffness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">100.0</span><span class="w"> </span><span class="p">(</span>
+<span class="w">        </span><span class="k k-Tokens">customData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">assignment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;model&quot;</span>
+<span class="w">            </span><span class="kt">string</span><span class="w"> </span><span class="na">frequency</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;articulation&quot;</span>
+<span class="w">        </span><span class="p">}</span>
+<span class="w">    </span><span class="p">)</span>
+<span class="p">}</span>
+
+<span class="k k-Tokens">def</span><span class="w"> </span>Xform<span class="w"> </span><span class="s">&quot;robot_body&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsRigidBodyAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># Assign values to declared attributes (default namespace)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:mass_scale</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">1.5</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float3</span><span class="w"> </span><span class="na">newton:local_marker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="m">0.1</span><span class="p">,</span><span class="w"> </span><span class="m">0.2</span><span class="p">,</span><span class="w"> </span><span class="m">0.3</span><span class="p">)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">bool</span><span class="w"> </span><span class="na">newton:is_sensor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span>true
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float3</span><span class="w"> </span><span class="na">newton:target_position</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="m">1.0</span><span class="p">,</span><span class="w"> </span><span class="m">2.0</span><span class="p">,</span><span class="w"> </span><span class="m">3.0</span><span class="p">)</span>
+
+<span class="w">    </span><span class="c1"># Assign values to namespaced attributes (namespace_a)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:namespace_a:mass_scale</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">2.5</span>
+<span class="p">}</span>
+
+<span class="k k-Tokens">def</span><span class="w"> </span>RevoluteJoint<span class="w"> </span><span class="s">&quot;joint1&quot;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># Assign joint attributes (namespace_a)</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:namespace_a:gear_ratio</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">2.25</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float2</span><span class="w"> </span><span class="na">newton:namespace_a:pid_gains</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">(</span><span class="m">100.0</span><span class="p">,</span><span class="w"> </span><span class="m">10.0</span><span class="p">)</span>
+<span class="p">}</span>
+
+<span class="c1"># Articulation frequency attributes must be defined on the prim with PhysicsArticulationRootAPI</span>
+<span class="k k-Tokens">def</span><span class="w"> </span>Xform<span class="w"> </span><span class="s">&quot;robot_articulation&quot;</span><span class="w"> </span><span class="p">(</span>
+<span class="w">    </span><span class="kt">prepend</span><span class="w"> </span><span class="na">apiSchemas</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s">&quot;PhysicsArticulationRootAPI&quot;</span><span class="p">]</span>
+<span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1"># Assign articulation-level attributes</span>
+<span class="w">    </span><span class="k k-Token">custom</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="na">newton:articulation_stiffness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="m">150.0</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><strong>Articulation Frequency Attributes</strong>: Attributes with <code class="docutils literal notranslate"><span class="pre">frequency</span> <span class="pre">=</span> <span class="pre">&quot;articulation&quot;</span></code> store per-articulation values and must be authored on USD prims that have the <code class="docutils literal notranslate"><span class="pre">PhysicsArticulationRootAPI</span></code> schema applied. The USD parser automatically detects articulation root prims and extracts custom articulation attributes when importing the scene.</p>
+</div>
+<p><strong>Accessing Custom Attributes in Python:</strong></p>
+<p>After importing the USD file with the custom attributes shown above, they become accessible as properties on the appropriate objects (<code class="docutils literal notranslate"><span class="pre">Model</span></code>, <code class="docutils literal notranslate"><span class="pre">State</span></code>, or <code class="docutils literal notranslate"><span class="pre">Control</span></code>) based on their assignment. The following example shows how to import and access these attributes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">ModelBuilder</span>
+
+<span class="n">builder</span> <span class="o">=</span> <span class="n">ModelBuilder</span><span class="p">()</span>
+
+<span class="c1"># Import the USD file with custom attributes (from example above)</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">&quot;robot_with_custom_attrs.usda&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
+
+<span class="c1"># Access default namespace model-assigned attributes</span>
+<span class="n">body_mass_scale</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">mass_scale</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>        <span class="c1"># Per-body scalar</span>
+<span class="n">local_markers</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">local_marker</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>        <span class="c1"># Per-body vec3</span>
+<span class="n">sensor_flags</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">is_sensor</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>            <span class="c1"># Per-body bool</span>
+
+<span class="c1"># Access default namespace state-assigned attributes</span>
+<span class="n">target_positions</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">target_position</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># Per-body vec3</span>
+
+<span class="c1"># Access namespaced attributes (namespace_a)</span>
+<span class="c1"># Note: Same attribute name can exist in different namespaces with different assignments</span>
+<span class="n">namespaced_mass</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">mass_scale</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># Per-body scalar (state assignment)</span>
+<span class="n">gear_ratios</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">gear_ratio</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>       <span class="c1"># Per-joint scalar</span>
+<span class="n">pid_gains</span> <span class="o">=</span> <span class="n">control</span><span class="o">.</span><span class="n">namespace_a</span><span class="o">.</span><span class="n">pid_gains</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>        <span class="c1"># Per-joint vec2</span>
+
+<span class="c1"># Access ARTICULATION frequency attributes</span>
+<span class="n">arctic_stiff</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">articulation_stiffness</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>       <span class="c1"># Per-articulation scalar (ARTICULATION frequency)</span>
+
+<span class="c1"># Namespace isolation: model.mass_scale and state.namespace_a.mass_scale are independent</span>
+<span class="c1"># - model.mass_scale has value 1.5 for robot_body (default namespace, model assignment)</span>
+<span class="c1"># - state.namespace_a.mass_scale has value 2.5 for the same robot_body (namespace_a, state assignment)</span>
+<span class="c1"># These are separate attributes stored in different objects with independent values</span>
+</pre></div>
+</div>
+<p><strong>Namespace Isolation:</strong></p>
+<p>Attributes with the same name in different namespaces are completely independent and stored separately. This allows the same attribute name to be used for different purposes across namespaces. In the example above, <code class="docutils literal notranslate"><span class="pre">mass_scale</span></code> appears in both the default namespace (as a model attribute) and in <code class="docutils literal notranslate"><span class="pre">namespace_a</span></code> (as a state attribute). These are treated as completely separate attributes with independent values, assignments, and storage locations.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#understanding-usd-and-usdphysics">Understanding USD and UsdPhysics</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton-s-usd-import-system">Newton’s USD Import System</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-attribute-remapping">1. Solver Attribute Remapping</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#priority-based-resolution">2. Priority-Based Resolution</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-specific-attribute-collection">3. Solver-Specific Attribute Collection</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-attribute-framework">4. Custom Attribute Framework</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 8.2.3.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
