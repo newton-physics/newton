@@ -437,7 +437,7 @@ The custom attribute system enforces several constraints to ensure correctness:
 Custom Frequencies
 ==================
 
-While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the ``frequency`` parameter.
+While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` parameter.
 
 **Example use case:** MuJoCo's ``<contact><pair>`` elements define contact pairs between geometries. These pairs have their own count independent of bodies or shapes, and their indices must be remapped when merging worlds.
 
@@ -456,12 +456,12 @@ Custom frequencies must be **registered before use** via :meth:`~newton.ModelBui
        )
    )
 
-The frequency key follows the same namespace rules as attribute keys: if a namespace is provided, it is prepended to the name (e.g., ``"mujoco:pair"``). When declaring a custom attribute, the ``frequency`` string must match this full key.
+The frequency key follows the same namespace rules as attribute keys: if a namespace is provided, it is prepended to the name (e.g., ``"mujoco:pair"``). When declaring a custom attribute, the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` string must match this full key.
 
 Declaring Custom Frequency Attributes
 -------------------------------------
 
-Once a custom frequency is registered, pass a string instead of an enum for the ``frequency`` parameter when adding attributes:
+Once a custom frequency is registered, pass a string instead of an enum for the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` parameter when adding attributes:
 
 .. code-block:: python
 
@@ -520,7 +520,7 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 USD Parsing Support
 -------------------
 
-Custom frequencies can optionally support automatic USD parsing by providing a ``usd_prim_filter`` callback when registering the frequency. This callback is invoked during :meth:`~newton.ModelBuilder.add_usd` for each prim in the USD stage to determine whether custom attribute values should be extracted from it.
+Custom frequencies can optionally support automatic USD parsing by providing a :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter` callback when registering the frequency. This callback is invoked during :meth:`~newton.ModelBuilder.add_usd` for each prim in the USD stage to determine whether custom attribute values should be extracted from it.
 
 .. code-block:: python
 
@@ -539,13 +539,13 @@ Custom frequencies can optionally support automatic USD parsing by providing a `
 When :meth:`~newton.ModelBuilder.add_usd` is called, it will:
 
 1. After parsing all standard entities (bodies, shapes, joints, etc.), iterate over registered custom frequencies
-2. For each frequency with a ``usd_prim_filter``, traverse all prims in the stage (including instance proxies under instanceable prims)
+2. For each frequency with a :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter`, traverse all prims in the stage (including instance proxies under instanceable prims)
 3. For each prim where the filter returns ``True``, extract custom attribute values and add them via :meth:`newton.ModelBuilder.add_custom_values`
 
 .. note::
    The traversal uses ``Usd.TraverseInstanceProxies()`` so that prims under instanceable prims are visited. This allows custom frequencies to be parsed from instanced geometry.
 
-The ``usd_prim_filter`` callback receives:
+The :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter` callback receives:
 
 * ``prim``: The USD prim being evaluated.
 * ``context``: A dictionary with parsing results (path maps, units, etc.) that can be used to resolve references. This dictionary matches the return value of :meth:`~newton.ModelBuilder.add_usd` and includes keys such as ``path_body_map``, ``path_joint_map``, ``path_shape_map``, ``linear_unit``, ``mass_unit``, etc.
@@ -555,11 +555,11 @@ This enables solvers like MuJoCo to define their own USD schemas and have them a
 Deriving Values from Prim Data (Wildcard Attribute)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default, each custom attribute reads its value from a specific USD attribute on the prim (e.g., ``newton:myns:my_attr``). Sometimes, however, you want to **compute** an attribute value from arbitrary prim data rather than reading a single named attribute. This is what the wildcard ``usd_attribute_name="*"`` is for.
+By default, each custom attribute reads its value from a specific USD attribute on the prim (e.g., ``newton:myns:my_attr``). Sometimes, however, you want to **compute** an attribute value from arbitrary prim data rather than reading a single named attribute. This is what setting :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` to ``"*"`` is for.
 
-When ``usd_attribute_name`` is set to ``"*"``, the attribute's ``usd_value_transformer`` is called for **every prim** matching the attribute's frequency — regardless of which USD attributes exist on that prim. The transformer receives ``None`` as the value (since there is no specific attribute to read) and a context dictionary containing the prim and the attribute definition.
+When :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` is set to ``"*"``, the attribute's :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` is called for **every prim** matching the attribute's frequency — regardless of which USD attributes exist on that prim. The transformer receives ``None`` as the value (since there is no specific attribute to read) and a context dictionary containing the prim and the attribute definition.
 
-A ``usd_value_transformer`` **must** be provided when using ``"*"``; omitting it raises a ``ValueError``.
+A :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` **must** be provided when using ``"*"``; omitting it raises a :class:`ValueError`.
 
 **Example:** Suppose your USD stage contains "sensor" prims, each with an arbitrary ``sensor:position`` attribute. You want to store the distance from the origin as a custom attribute, computed at parse time:
 
@@ -618,7 +618,7 @@ This pattern is useful when:
 Multi-World Merging
 -------------------
 
-When using ``add_world()`` to create multi-world simulations, the ``references`` field specifies how attribute values should be transformed:
+When using ``add_world()`` to create multi-world simulations, the :attr:`~newton.ModelBuilder.CustomAttribute.references` field specifies how attribute values should be transformed:
 
 .. code-block:: python
 
