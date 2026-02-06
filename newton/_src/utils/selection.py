@@ -180,7 +180,7 @@ for dtype in [float, int, wp.transform, wp.spatial_vector]:
 
 @wp.kernel
 def build_actuator_dof_mapping_slice_kernel(
-    actuator_output_indices: wp.array(dtype=wp.uint32),
+    actuator_input_indices: wp.array(dtype=wp.uint32),
     actuators_per_world: int,
     global_slice_start: int,
     global_slice_stop: int,
@@ -191,13 +191,13 @@ def build_actuator_dof_mapping_slice_kernel(
     """Build DOF-to-actuator mapping for slice-based view selection.
 
     Iterates over first world's actuators only, replicates pattern to all worlds.
-    output_indices[0:actuators_per_world] contains global DOFs for world 0.
+    input_indices[0:actuators_per_world] contains global DOFs for world 0.
     global_slice_start/stop are global DOF indices (offset + local slice).
     """
     local_idx = wp.tid()  # 0 to actuators_per_world-1
 
     # Get global DOF from first world's actuator entry
-    global_dof = int(actuator_output_indices[local_idx])
+    global_dof = int(actuator_input_indices[local_idx])
 
     if global_dof >= global_slice_start and global_dof < global_slice_stop:
         view_local_pos = global_dof - global_slice_start
@@ -211,7 +211,7 @@ def build_actuator_dof_mapping_slice_kernel(
 
 @wp.kernel
 def build_actuator_dof_mapping_indices_kernel(
-    actuator_output_indices: wp.array(dtype=wp.uint32),
+    actuator_input_indices: wp.array(dtype=wp.uint32),
     view_dof_indices: wp.array(dtype=int),
     dof_offset: int,
     actuators_per_world: int,
@@ -226,7 +226,7 @@ def build_actuator_dof_mapping_indices_kernel(
     """
     local_idx = wp.tid()  # 0 to actuators_per_world-1
 
-    global_dof = int(actuator_output_indices[local_idx])
+    global_dof = int(actuator_input_indices[local_idx])
 
     for i in range(dofs_per_world):
         # view_dof_indices[i] is local, add offset to get global
@@ -1316,11 +1316,16 @@ class ArticulationView:
         """
         Build mapping from view DOF positions to actuator parameter indices.
 
+        Note:
+            For selection we assume that input_indices is 1D (one input per actuator),
+            not the general 2D case (multiple inputs per actuator) which is supported
+            by the library.
+
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
-        num_actuators = actuator.output_indices.shape[0]
+        num_actuators = actuator.input_indices.shape[0]
         actuators_per_world = num_actuators // self.world_count
 
         dof_layout = self.frequency_layouts[AttributeFrequency.JOINT_DOF]
@@ -1338,7 +1343,7 @@ class ArticulationView:
                 build_actuator_dof_mapping_slice_kernel,
                 dim=actuators_per_world,
                 inputs=[
-                    actuator.output_indices,
+                    actuator.input_indices,
                     actuators_per_world,
                     global_slice_start,
                     global_slice_stop,
@@ -1353,7 +1358,7 @@ class ArticulationView:
                 build_actuator_dof_mapping_indices_kernel,
                 dim=actuators_per_world,
                 inputs=[
-                    actuator.output_indices,
+                    actuator.input_indices,
                     dof_layout.indices,
                     dof_layout.offset,
                     actuators_per_world,
@@ -1392,7 +1397,7 @@ class ArticulationView:
         Get actuator parameter values for actuators corresponding to this view's DOFs.
 
         Args:
-            actuator: An actuator instance with output_indices and parameter arrays.
+            actuator: An actuator instance with input_indices and parameter arrays.
             name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
 
         Returns:
@@ -1407,7 +1412,7 @@ class ArticulationView:
         Set actuator parameter values for actuators corresponding to this view's DOFs.
 
         Args:
-            actuator: An actuator instance with output_indices and parameter arrays.
+            actuator: An actuator instance with input_indices and parameter arrays.
             name (str): Parameter name (e.g., 'kp', 'kd', 'max_force', 'gear', 'constant_force').
             values: New parameter values shaped (world_count, dofs_per_world). Non-actuated DOFs are ignored.
             mask (array, optional): Per-world mask (world_count,). Only masked worlds are updated.
