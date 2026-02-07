@@ -130,6 +130,9 @@ class Example:
 
         self.viewer.update_shape_colors({cube: (0.1, 0.1, 0.1) for i, cube in enumerate(self.visual_fillers)})
 
+        # Warm up: run one simulate() step before graph capture to ensure the collision
+        # pipeline (and any D2H copies it needs) is initialized outside of capture.
+        self.simulate()
         self.capture()
 
     def capture(self):

@@ -96,8 +96,8 @@ class Example:
             particle_self_contact_margin=0.35,
         )
 
-        # Use unified collision pipeline for particle-shape contacts
-        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        # Use collision pipeline for particle-shape contacts
+        self.collision_pipeline = newton.CollisionPipeline.from_model(
             self.model,
             broad_phase_mode=newton.BroadPhaseMode.NXN,
             soft_contact_margin=0.1,

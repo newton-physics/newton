@@ -193,7 +193,7 @@ class Example:
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
+        # Create collision pipeline (default)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
         self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
         self.shape_flags = self.model.shape_flags.numpy()

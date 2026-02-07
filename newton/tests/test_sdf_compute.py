@@ -1210,7 +1210,7 @@ def test_brick_pyramid_stability(test, device):
     initial_top_pos = initial_state.body_q.numpy()[top_brick_body][:3].copy()
 
     # Create collision pipeline and solver
-    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+    collision_pipeline = newton.CollisionPipeline.from_model(
         model,
         broad_phase_mode=newton.BroadPhaseMode.NXN,
     )

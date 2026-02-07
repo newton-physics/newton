@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import warp as wp
@@ -409,7 +410,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 num_contacts = 1
 
             # =====================================================================
-            # Write all contacts (unified write block for 0, 1, or 2 contacts)
+            # Write all contacts (single write block for 0, 1, or 2 contacts)
             # =====================================================================
             if num_contacts > 0:
                 # Prepare contact data (shared fields for both contacts)
@@ -1133,9 +1134,18 @@ class NarrowPhase:
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
 
+        # Warn when running on CPU with meshes: mesh-mesh SDF contacts require CUDA
+        is_gpu_device = wp.get_device(device).is_cuda
+        if has_meshes and not is_gpu_device:
+            warnings.warn(
+                "NarrowPhase running on CPU: mesh-mesh contacts will be skipped "
+                "(SDF-based mesh-mesh collision requires CUDA). "
+                "Use a CUDA device for full mesh-mesh contact support.",
+                stacklevel=2,
+            )
+
         # Create contact reduction functions only when reduce_contacts is enabled, running on GPU, and has meshes
         # Contact reduction requires GPU for shared memory operations and is only used for mesh contacts
-        is_gpu_device = wp.get_device(device).is_cuda
         if reduce_contacts and is_gpu_device and has_meshes:
             self.contact_reduction_funcs = ContactReductionFunctions()
             self.num_reduction_slots = self.contact_reduction_funcs.num_reduction_slots
@@ -1183,10 +1193,14 @@ class NarrowPhase:
                 writer_func,
                 contact_reduction_funcs=self.contact_reduction_funcs,
             )
-            self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                writer_func,
-                contact_reduction_funcs=self.contact_reduction_funcs,
-            )
+            # Only create mesh-mesh SDF kernel on CUDA (uses __shared__ memory via func_native)
+            if is_gpu_device:
+                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    writer_func,
+                    contact_reduction_funcs=self.contact_reduction_funcs,
+                )
+            else:
+                self.mesh_mesh_contacts_kernel = None
         else:
             self.mesh_triangle_contacts_kernel = None
             self.mesh_plane_contacts_kernel = None
@@ -1528,9 +1542,10 @@ class NarrowPhase:
                     block_dim=self.block_dim,
                 )
 
-            # Launch mesh-mesh contact processing kernel (only if SDF data is available)
-            # SDF-based mesh-mesh collision requires GPU (wp.Volume only supports CUDA)
-            if shape_sdf_data.shape[0] > 0:
+            # Launch mesh-mesh contact processing kernel (only on CUDA with SDF data)
+            # SDF-based mesh-mesh collision requires GPU: uses shared memory (launch_tiled)
+            # and wp.Volume which only supports CUDA
+            if shape_sdf_data.shape[0] > 0 and wp.get_device(device).is_cuda:
                 wp.launch_tiled(
                     kernel=self.mesh_mesh_contacts_kernel,
                     dim=(self.num_tile_blocks,),

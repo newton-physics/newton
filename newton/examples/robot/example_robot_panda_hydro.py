@@ -232,7 +232,7 @@ class Example:
         sdf_hydroelastic_config = SDFHydroelasticConfig(
             output_contact_surface=hasattr(viewer, "renderer"),  # Compile in if viewer supports it
         )
-        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        self.collision_pipeline = newton.CollisionPipeline.from_model(
             self.model,
             reduce_contacts=True,
             broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,

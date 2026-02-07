@@ -75,6 +75,47 @@ def _hashtable_hash(key: wp.uint64, capacity_mask: int) -> int:
 
 
 @wp.func
+def hashtable_find(
+    key: wp.uint64,
+    keys: wp.array(dtype=wp.uint64),
+) -> int:
+    """Find a key and return its entry index (read-only lookup).
+
+    This function locates an existing entry without inserting. Use this for
+    read-only lookups in second-pass kernels where entries should already exist.
+
+    Args:
+        key: The uint64 key to find
+        keys: The hash table keys array (length must be power of two)
+
+    Returns:
+        Entry index (>= 0) if found, -1 if not found
+    """
+    capacity = keys.shape[0]
+    capacity_mask = capacity - 1
+    idx = _hashtable_hash(key, capacity_mask)
+
+    # Linear probing with a maximum of 'capacity' attempts
+    for _i in range(capacity):
+        # Read to check if key exists
+        stored_key = keys[idx]
+
+        if stored_key == key:
+            # Key found - return its index
+            return idx
+
+        if stored_key == HASHTABLE_EMPTY_KEY:
+            # Hit an empty slot - key doesn't exist
+            return -1
+
+        # Collision with different key - linear probe to next slot
+        idx = (idx + 1) & capacity_mask
+
+    # Searched entire table without finding key
+    return -1
+
+
+@wp.func
 def hashtable_find_or_insert(
     key: wp.uint64,
     keys: wp.array(dtype=wp.uint64),
