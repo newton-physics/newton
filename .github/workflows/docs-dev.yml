@@ -45,8 +45,9 @@ jobs:
           git config user.email "actions@github.com"
           git config user.name "GitHub Actions"
 
-          # Save built docs outside the repo
+          # Save built docs and 404 template outside the repo before switching branches
           mv docs/_build/html /tmp/docs-latest
+          cp docs/_static/gh-pages-404.html /tmp/gh-pages-404.html
 
           # Switch to gh-pages branch (check existence first to avoid masking other fetch errors)
           if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
@@ -62,6 +63,9 @@ jobs:
           rm -rf latest
           mv /tmp/docs-latest latest
 
+          # Deploy custom 404 page for redirecting old non-versioned URLs
+          cp /tmp/gh-pages-404.html 404.html
+
           # Ensure .nojekyll exists
           touch .nojekyll
 
@@ -75,6 +79,6 @@ jobs:
 
           # Stage only the files we want deployed (avoid committing build artifacts
           # like .venv/ that persist after switching branches)
-          git add latest .nojekyll
+          git add latest 404.html .nojekyll
           git diff --cached --quiet || git commit -m "Update dev docs from main@${GITHUB_SHA::8}"
           git push origin gh-pages

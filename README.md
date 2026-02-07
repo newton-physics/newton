@@ -18,7 +18,7 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 ## Quickstart
 
-During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager. You may find uv installation instructions in the [Newton Installation Guide](https://newton-physics.github.io/newton/guide/installation.html#method-1-using-uv-recommended).
+During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager. You may find uv installation instructions in the [Newton Installation Guide](https://newton-physics.github.io/newton/latest/guide/installation.html#method-1-using-uv-recommended).
 
 Once uv is installed, running Newton examples is straightforward:
 
@@ -34,7 +34,7 @@ uv sync --extra examples
 uv run -m newton.examples basic_pendulum
 ```
 
-See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for detailed instructions that include steps for setting up a Python environment for use with Newton.
+See the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html) for detailed instructions that include steps for setting up a Python environment for use with Newton.
 
 ## Examples
 
@@ -534,11 +534,11 @@ uv run -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 
 ## Contributing and Development
 
-See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/guide/development.html) for instructions on how to contribute to Newton.
+See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for instructions on how to contribute to Newton.
 
 ## Support and Community Discussion
 
-For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
+For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/latest/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
 
 ## Code of Conduct
 
