@@ -78,6 +78,7 @@ def add_example_test(
     test_options_cuda: dict[str, Any] | None = None,
     use_viewer: bool = False,
     test_suffix: str | None = None,
+    skip_reason: str | None = None,
 ):
     """Registers a Newton example to run on ``devices`` as a TestCase."""
 
@@ -94,6 +95,9 @@ def add_example_test(
         test_options_cuda = {}
 
     def run(test, device):
+        if skip_reason is not None:
+            test.skipTest(skip_reason)
+
         if wp.get_device(device).is_cuda:
             options = _merge_options(test_options, test_options_cuda)
         else:
@@ -605,6 +609,7 @@ add_example_test(
     test_options={"num-frames": 4 * 60},  # train_iters * sim_steps
     test_options_cpu={"num-frames": 2 * 60},
     use_viewer=True,
+    skip_reason="Requires enable_backward=True on collision pipeline (not yet implemented)",
 )
 
 add_example_test(

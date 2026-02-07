@@ -60,6 +60,50 @@ def binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: in
 
 
 @wp.func
+def _vec2i_less(p: wp.vec2i, q: wp.vec2i) -> bool:
+    """Lexicographic less-than for vec2i: (a,b) < (c,d) iff a < c or (a == c and b < d)."""
+    if p[0] < q[0]:
+        return True
+    if p[0] > q[0]:
+        return False
+    return p[1] < q[1]
+
+
+@wp.func
+def _vec2i_equal(p: wp.vec2i, q: wp.vec2i) -> bool:
+    """Equality for vec2i."""
+    return p[0] == q[0] and p[1] == q[1]
+
+
+@wp.func
+def is_pair_excluded(
+    pair: wp.vec2i,
+    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),
+    num_filter_pairs: int,
+) -> bool:
+    """Return True if pair is in the sorted filter_pairs array (binary search).
+
+    filter_pairs must be sorted lexicographically (by .x then .y). Each entry
+    should be canonical (min, max). When num_filter_pairs is 0, returns False
+    without accessing the array.
+    """
+    if num_filter_pairs <= 0:
+        return False
+    low = int(0)
+    high = num_filter_pairs - 1
+    while low <= high:
+        mid = (low + high) >> 1
+        m = filter_pairs[mid]
+        if _vec2i_equal(pair, m):
+            return True
+        if _vec2i_less(pair, m):
+            high = mid - 1
+        else:
+            low = mid + 1
+    return False
+
+
+@wp.func
 def write_pair(
     pair: wp.vec2i,
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),

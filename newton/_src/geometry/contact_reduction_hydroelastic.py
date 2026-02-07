@@ -47,7 +47,7 @@ from typing import Any
 
 import warp as wp
 
-from newton._src.geometry.hashtable import hashtable_find_or_insert
+from newton._src.geometry.hashtable import hashtable_find, hashtable_find_or_insert
 
 from .contact_data import ContactData
 from .contact_reduction import (
@@ -289,8 +289,9 @@ def reduce_hydroelastic_moment_kernel(
         bin_id = get_slot(normal)
 
         # Find the hashtable entry for this (shape_pair, normal_bin)
+        # Use read-only lookup since entries should already exist from Pass 1
         key = make_contact_key(shape_a, shape_b, bin_id)
-        entry_idx = hashtable_find_or_insert(key, reducer_data.ht_keys, reducer_data.ht_active_slots)
+        entry_idx = hashtable_find(key, reducer_data.ht_keys)
 
         if entry_idx < 0:
             continue
