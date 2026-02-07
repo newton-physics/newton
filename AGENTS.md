@@ -39,6 +39,7 @@
 We standardize on `uv` for local workflows when available. If `uv` is not installed, fall back to a virtual environment created with `venv` or `conda`.
 
 - **Use `uv run python -c` for inline Python**: When running one-off Python commands, use `uv run python -c "..."` instead of `python3 -c "..."`.
+- **Use `uv run --no-project`** to run standalone Python scripts without a `pyproject.toml` (e.g., in CI after switching to a branch with no project files). Combine with `--with` for one-off tool usage: `uv run --no-project --with yamllint yamllint <file>`.
 
 Example commands using `uv` (from `docs/guide/development.rst`):
 
