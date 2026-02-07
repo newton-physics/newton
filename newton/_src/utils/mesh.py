@@ -60,7 +60,7 @@ def compute_vertex_normals(
     indices: wp.array | np.ndarray,
     normals: wp.array | None = None,
     *,
-    device: wp.context.Device | str | None = None,
+    device: wp.DeviceLike = None,
     normalize: bool = True,
 ) -> wp.array: ...
 
@@ -71,7 +71,7 @@ def compute_vertex_normals(
     indices: np.ndarray,
     normals: np.ndarray | None = None,
     *,
-    device: wp.context.Device | str | None = None,
+    device: wp.DeviceLike = None,
     normalize: bool = True,
 ) -> np.ndarray: ...
 
@@ -81,7 +81,7 @@ def compute_vertex_normals(
     indices: wp.array | np.ndarray,
     normals: wp.array | np.ndarray | None = None,
     *,
-    device: wp.context.Device | str | None = None,
+    device: wp.DeviceLike = None,
     normalize: bool = True,
 ) -> wp.array | np.ndarray:
     """Compute per-vertex normals from triangle indices.

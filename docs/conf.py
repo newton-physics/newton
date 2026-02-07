@@ -386,5 +386,11 @@ def _on_builder_inited(_app: Any) -> None:
 
 
 def setup(app: Any) -> None:
+    # Clean stale autosummary stubs to prevent warnings from renamed/removed symbols.
+    # The _generated/ directory is gitignored and will be re-populated by autosummary.
+    generated_dir = Path(__file__).parent / "api" / "_generated"
+    if generated_dir.is_dir():
+        shutil.rmtree(generated_dir)
+
     # Copy on build init so `_static/viser/index.html` is always present in the built site.
     app.connect("builder-inited", _on_builder_inited)
