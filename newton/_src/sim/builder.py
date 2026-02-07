@@ -1194,6 +1194,11 @@ class ModelBuilder:
                 return
 
             value_sanitized = value
+            if isinstance(value_sanitized, np.ndarray):
+                if value_sanitized.ndim == 0:
+                    value_sanitized = value_sanitized.item()
+                else:
+                    value_sanitized = value_sanitized.tolist()
             if not isinstance(value_sanitized, (list, tuple)):
                 # Broadcast a single scalar value to all DOFs/coords of the joint.
                 value_sanitized = [value_sanitized] * index_count
