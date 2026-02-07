@@ -75,10 +75,9 @@ class Example:
             twisting_angle: Total twist in radians around capsule axis (0 = no twist).
 
         Returns:
-            Tuple of (points, edge_indices, quaternions):
-            - points: List of segment endpoints in world space (num_elements + 1).
-            - edge_indices: Flattened array of edge connectivity (2*num_elements). (Not used by `add_rod()`.)
-            - quaternions: List of capsule orientations using parallel transport (num_elements).
+            Tuple of (points, quaternions):
+            - points: List of polyline points in world space (num_elements + 1).
+            - quaternions: Per-segment orientations using parallel transport (num_elements).
         """
         if pos is None:
             pos = wp.vec3()
@@ -116,52 +115,8 @@ class Example:
             z = 0.0
             points.append(pos + wp.vec3(x, y, z))
 
-        # Create edge indices connecting consecutive points
-        edge_indices = []
-        for i in range(num_elements):
-            edge_indices.extend([i, i + 1])
-        edge_indices = np.array(edge_indices, dtype=np.int32)
-
-        # Create quaternions using parallel transport with cumulative twist distribution
-        edge_q = []
-        if num_elements > 0:
-            # Capsule internal axis is +Z
-            local_axis = wp.vec3(0.0, 0.0, 1.0)
-
-            # Parallel transport: maintain smooth rotational continuity
-            from_direction = local_axis
-
-            # Distribute total twist incrementally along the cable
-            angle_step = twisting_angle / num_elements if num_elements > 0 else 0.0
-
-            for i in range(num_elements):
-                p0 = points[i]
-                p1 = points[i + 1]
-
-                # Current segment direction
-                to_direction = wp.normalize(p1 - p0)
-
-                # Directional transport
-                dq_dir = wp.quat_between_vectors(from_direction, to_direction)
-
-                if i == 0:
-                    base_quaternion = dq_dir
-                else:
-                    base_quaternion = wp.mul(dq_dir, edge_q[i - 1])
-
-                # Apply incremental twist around the current segment direction
-                if twisting_angle != 0.0:
-                    twist_rot = wp.quat_from_axis_angle(to_direction, angle_step)
-                    final_quaternion = wp.mul(twist_rot, base_quaternion)
-                else:
-                    final_quaternion = base_quaternion
-
-                edge_q.append(final_quaternion)
-
-                # Update transport direction
-                from_direction = to_direction
-
-        return points, edge_indices, edge_q
+        edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=float(twisting_angle))
+        return points, edge_q
 
     def __init__(self, viewer, args=None):
         # Store viewer and arguments
@@ -213,7 +168,7 @@ class Example:
             # Cables start at ground level (z=0) to lay flat on ground
             start_pos = wp.vec3(-self.cable_length * 0.25, y_pos, cable_radius)
 
-            cable_points, _, cable_edge_q = self.create_cable_geometry_with_turns(
+            cable_points, cable_edge_q = self.create_cable_geometry_with_turns(
                 pos=start_pos,
                 num_elements=self.num_elements,
                 length=self.cable_length,

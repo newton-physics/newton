@@ -19,6 +19,50 @@ from .types import Axis, AxisType
 
 
 @wp.func
+def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float = 1.0e-8) -> wp.quat:
+    """Robustly compute the quaternion that rotates ``from_vec`` to ``to_vec``.
+
+    This is a safer version of :func:`warp.quat_between_vectors` that handles the
+    anti-parallel (180-degree) singularity by selecting a deterministic axis
+    orthogonal to ``from_vec``.
+
+    Args:
+        from_vec: Source vector (assumed normalized).
+        to_vec: Target vector (assumed normalized).
+        eps: Tolerance for parallel/anti-parallel checks.
+
+    Returns:
+        wp.quat: Rotation quaternion q such that q * from_vec = to_vec.
+    """
+    d = wp.dot(from_vec, to_vec)
+
+    if d >= 1.0 - eps:
+        return wp.quat_identity()
+
+    if d <= -1.0 + eps:
+        # Deterministic axis orthogonal to from_vec.
+        # Prefer cross with X, fallback to Y if nearly parallel.
+        helper = wp.vec3(1.0, 0.0, 0.0)
+        if wp.abs(from_vec[0]) >= 0.9:
+            helper = wp.vec3(0.0, 1.0, 0.0)
+
+        axis = wp.cross(from_vec, helper)
+        axis_len = wp.length(axis)
+        if axis_len <= eps:
+            axis = wp.cross(from_vec, wp.vec3(0.0, 0.0, 1.0))
+            axis_len = wp.length(axis)
+
+        # Final fallback: if axis is still degenerate, pick an arbitrary axis.
+        if axis_len <= eps:
+            return wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi)
+
+        axis = axis / axis_len
+        return wp.quat_from_axis_angle(axis, wp.pi)
+
+    return wp.quat_between_vectors(from_vec, to_vec)
+
+
+@wp.func
 def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3):
     """
     Return the velocity of a point relative to the frame that owns the
@@ -360,6 +404,7 @@ def quat_between_axes(*axes: AxisType) -> wp.quat:
 
 __all__ = [
     "quat_between_axes",
+    "quat_between_vectors_robust",
     "quat_decompose",
     "quat_from_euler",
     "quat_to_euler",

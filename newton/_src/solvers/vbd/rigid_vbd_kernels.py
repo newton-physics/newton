@@ -747,8 +747,8 @@ def evaluate_body_particle_contact(
         body_contact_force = n * body_contact_force_norm
         body_contact_hessian = body_particle_contact_ke * wp.outer(n, n)
 
-        # Use the larger of body-particle friction and shape material friction
-        mu = wp.max(friction_mu, shape_material_mu[shape_index])
+        # Combine body-particle friction and shape material friction using geometric mean.
+        mu = wp.sqrt(friction_mu * shape_material_mu[shape_index])
 
         dx = particle_pos - particle_prev_pos
 

@@ -273,6 +273,14 @@ add_example_test(
     test_options={"num-frames": 20},
 )
 
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_y_junction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+
 
 class TestClothExamples(unittest.TestCase):
     pass
