@@ -988,7 +988,7 @@ class SolverMuJoCo(SolverBase):
             try:
                 dof_index = dof_names.index(target_path)
             except ValueError as e:
-                raise ValueError(f"Unable to resolve joint dof {target_path} for MjcActuator {prim.GetPath()}") from e
+                raise ValueError(f"Unable to resolve actuator target {target_path} for MjcActuator {prim.GetPath()}. Currently only joint dofs (not tendons) are supported.") from e
             return wp.vec2i(wp.int32(dof_index), wp.int32(0))  # second entry is unused for joint transmission
 
         builder.add_custom_attribute(
