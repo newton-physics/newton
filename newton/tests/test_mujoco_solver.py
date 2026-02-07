@@ -5847,6 +5847,120 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             "pair_solref should have changed after update!",
         )
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_dof_name_resolution_all_joint_types(self):
+        """Test that mujoco:dof_name resolves correctly for fixed, revolute, spherical, and D6 joints."""
+        from pxr import Usd  # noqa: PLC0415
+
+        usd_content = """#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+def PhysicsScene "physicsScene" {}
+def Xform "R" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
+{
+    def Xform "Base" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        float physics:mass = 1000
+    }
+    def Xform "B1" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        float physics:mass = 1
+    }
+    def Xform "B2" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        float physics:mass = 1
+    }
+    def Xform "B3" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        float physics:mass = 1
+    }
+    def Xform "B4" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        float physics:mass = 1
+    }
+
+    def PhysicsFixedJoint "FixRoot"
+    {
+        rel physics:body0 = None
+        rel physics:body1 = </R/Base>
+    }
+
+    def PhysicsFixedJoint "Fixed"
+    {
+        rel physics:body0 = </R/Base>
+        rel physics:body1 = </R/B1>
+    }
+
+    def PhysicsRevoluteJoint "Rev"
+    {
+        uniform token physics:axis = "X"
+        rel physics:body0 = </R/Base>
+        rel physics:body1 = </R/B2>
+        float physics:lowerLimit = -90
+        float physics:upperLimit = 90
+    }
+
+    def PhysicsSphericalJoint "Sph"
+    {
+        rel physics:body0 = </R/Base>
+        rel physics:body1 = </R/B3>
+    }
+
+    def PhysicsJoint "D6" (
+        prepend apiSchemas = ["PhysicsLimitAPI:rotX", "PhysicsLimitAPI:rotY", "PhysicsLimitAPI:rotZ",
+                              "PhysicsLimitAPI:transX", "PhysicsLimitAPI:transY", "PhysicsLimitAPI:transZ"])
+    {
+        rel physics:body0 = </R/Base>
+        rel physics:body1 = </R/B4>
+        float limit:transX:physics:low = -1
+        float limit:transX:physics:high = 1
+        float limit:transY:physics:low = 1
+        float limit:transY:physics:high = -1
+        float limit:transZ:physics:low = 1
+        float limit:transZ:physics:high = -1
+        float limit:rotX:physics:low = -45
+        float limit:rotX:physics:high = 45
+        float limit:rotY:physics:low = -30
+        float limit:rotY:physics:high = 30
+        float limit:rotZ:physics:low = 1
+        float limit:rotZ:physics:high = -1
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+
+        # fixed=0 + fixed=0 + revolute=1 + spherical=3 + D6(transX,rotX,rotY)=3 → 7 DOFs
+        self.assertEqual(builder.joint_dof_count, 7)
+
+        dof_names = set(builder.custom_attributes["mujoco:dof_name"].values.values())
+        self.assertEqual(len(dof_names), 7)
+        for expected in [
+            "/R/Rev",
+            "/R/Sph:rotX",
+            "/R/Sph:rotY",
+            "/R/Sph:rotZ",
+            "/R/D6:transX",
+            "/R/D6:rotX",
+            "/R/D6:rotY",
+        ]:
+            self.assertIn(expected, dof_names)
+
+        # Fixed joint with 0 DOFs: JOINT_DOF attribute on it should be silently skipped
+        builder2 = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder2)
+        body = builder2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        body2 = builder2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
+        builder2.add_joint_fixed(parent=-1, child=body)
+        builder2.add_joint_fixed(parent=body, child=body2, custom_attributes={"mujoco:dof_name": "ignored"})
+        self.assertEqual(len(builder2.custom_attributes["mujoco:dof_name"].values), 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

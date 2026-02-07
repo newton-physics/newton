@@ -1757,7 +1757,8 @@ def parse_usd(
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {key: idx for idx, key in enumerate(builder.joint_key)}
 
-    return {
+    # Build result dict early so we can pass it as context to custom frequency prim finders
+    result = {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
         "up_axis": stage_up_axis,
@@ -1776,6 +1777,41 @@ def parse_usd(
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
     }
+
+    # Process custom frequencies with USD prim filters
+    # Collect frequencies with filters and their attributes, then traverse stage once
+    frequencies_with_filters = []
+    for freq_key, freq_obj in builder.custom_frequencies.items():
+        if freq_obj.usd_prim_filter is None:
+            continue
+        freq_attrs = [attr for attr in builder.custom_attributes.values() if attr.frequency == freq_key]
+        if not freq_attrs:
+            continue
+        frequencies_with_filters.append((freq_key, freq_obj, freq_attrs))
+
+    # Traverse stage once and check all filters for each prim
+    # Use TraverseInstanceProxies to include prims under instanceable prims
+    if frequencies_with_filters:
+        for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
+            for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
+                if not freq_obj.usd_prim_filter(prim, result):
+                    continue
+
+                prim_custom_attrs = usd.get_custom_attribute_values(prim, freq_attrs)
+
+                # Build a complete values dict for all attributes in this frequency
+                # Use None for missing values so add_custom_values can apply defaults
+                values_dict = {}
+                for attr in freq_attrs:
+                    # Use authored value if present, otherwise None (defaults applied at finalize)
+                    values_dict[attr.key] = prim_custom_attrs.get(attr.key, None)
+
+                # Always add values for this prim to increment the frequency count,
+                # even if all values are None (defaults will be applied during finalization)
+                builder.add_custom_values(**values_dict)
+                if verbose:
+                    print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+    return result
 
 
 def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export_usda: bool = False) -> str:

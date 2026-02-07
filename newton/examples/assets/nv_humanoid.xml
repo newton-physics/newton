@@ -7,7 +7,7 @@
   <default>
     <motor ctrlrange="-1 1" ctrllimited="true"/>
     <default class="body">
-      <geom  type="capsule" condim="1" friction="1.0 0.05 0.05" solimp=".9 .99 .003" solref=".015 1" material="self"/>
+      <geom  type="capsule" condim="1" friction="1.0 0.05 0.05" solimp=".9 .99 .003" solref=".015 1"/>
       <joint limited="true" type="hinge" damping="0.1" stiffness="5" armature=".007" solimplimit="0 .99 .01"/>
       <site size=".04" group="3"/>
       <default class="force-torque">
@@ -20,7 +20,7 @@
   </default>
 
   <worldbody>
-    <geom name="floor" type="plane" conaffinity="1" size="100 100 .2" material="grid"/>
+    <geom name="floor" type="plane" conaffinity="1" size="100 100 .2"/>
     <body name="torso" pos="0 0 0" childclass="body">
       <light name="top" pos="0 0 2" mode="trackcom"/>
       <camera name="back" pos="-3 0 1" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
