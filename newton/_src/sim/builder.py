@@ -401,7 +401,7 @@ class ModelBuilder:
 
         Built-in entity types (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``,
-              ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
+              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
             - ``"world"``: Values are replaced with ``current_world`` (not offset)
@@ -785,6 +785,15 @@ class ModelBuilder:
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
         self.equality_constraint_world = []
+
+        # mimic constraints
+        self.constraint_mimic_joint0 = []
+        self.constraint_mimic_joint1 = []
+        self.constraint_mimic_coef0 = []
+        self.constraint_mimic_coef1 = []
+        self.constraint_mimic_enabled = []
+        self.constraint_mimic_key = []
+        self.constraint_mimic_world = []
 
         # per-world entity start indices
         self.particle_world_start = []
@@ -1935,6 +1944,7 @@ class ModelBuilder:
         start_joint_constraint_idx = self.joint_constraint_count
         start_articulation_idx = self.articulation_count
         start_equality_constraint_idx = len(self.equality_constraint_type)
+        start_constraint_mimic_idx = len(self.constraint_mimic_joint0)
         start_edge_idx = self.edge_count
         start_triangle_idx = self.tri_count
         start_tetrahedron_idx = self.tet_count
@@ -2084,6 +2094,23 @@ class ModelBuilder:
             self.equality_constraint_key.extend(builder.equality_constraint_key)
             self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
 
+        # For mimic constraints
+        if len(builder.constraint_mimic_joint0) > 0:
+            constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
+            self.constraint_mimic_world.extend(constraint_worlds)
+
+            # Remap joint indices in mimic constraints
+            self.constraint_mimic_joint0.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint0]
+            )
+            self.constraint_mimic_joint1.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint1]
+            )
+            self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
+            self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
+            self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
+            self.constraint_mimic_key.extend(builder.constraint_mimic_key)
+
         more_builder_attrs = [
             "articulation_key",
             "body_inertia",
@@ -2176,6 +2203,7 @@ class ModelBuilder:
             "joint_constraint": start_joint_constraint_idx,
             "articulation": start_articulation_idx,
             "equality_constraint": start_equality_constraint_idx,
+            "constraint_mimic": start_constraint_mimic_idx,
             "particle": start_particle_idx,
             "edge": start_edge_idx,
             "triangle": start_triangle_idx,
@@ -3359,6 +3387,55 @@ class ModelBuilder:
             enabled=enabled,
         )
 
+    def add_constraint_mimic(
+        self,
+        joint0: int,
+        joint1: int,
+        coef0: float = 0.0,
+        coef1: float = 1.0,
+        enabled: bool = True,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a mimic constraint to the model.
+
+        A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
+        following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
+        multi-DOF joints are supported. For multi-DOF joints, the mimic behavior is
+        applied equally to all degrees of freedom.
+
+        Args:
+            joint0: Index of the follower joint (the one being constrained)
+            joint1: Index of the leader joint (the one being mimicked)
+            coef0: Offset added after scaling
+            coef1: Scale factor applied to joint1's position/angle
+            enabled: Whether constraint is active
+            key: Optional constraint name
+            custom_attributes: Custom attributes to set on the constraint
+
+        Returns:
+            Constraint index
+        """
+        self.constraint_mimic_joint0.append(joint0)
+        self.constraint_mimic_joint1.append(joint1)
+        self.constraint_mimic_coef0.append(coef0)
+        self.constraint_mimic_coef1.append(coef1)
+        self.constraint_mimic_enabled.append(enabled)
+        self.constraint_mimic_key.append(key)
+        self.constraint_mimic_world.append(self.current_world)
+
+        constraint_idx = len(self.constraint_mimic_joint0) - 1
+
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=constraint_idx,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.CONSTRAINT_MIMIC,
+            )
+
+        return constraint_idx
+
     # endregion
 
     def plot_articulation(
@@ -3892,6 +3969,25 @@ class ModelBuilder:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
                 self.equality_constraint_enabled[i] = False
+
+        # Remap mimic constraint joint indices
+        for i in range(len(self.constraint_mimic_joint0)):
+            old_joint0 = self.constraint_mimic_joint0[i]
+            old_joint1 = self.constraint_mimic_joint1[i]
+
+            if old_joint0 in joint_remap:
+                self.constraint_mimic_joint0[i] = joint_remap[old_joint0]
+            elif old_joint0 != -1:
+                if verbose:
+                    print(f"Warning: Mimic constraint references removed joint {old_joint0}, disabling constraint")
+                self.constraint_mimic_enabled[i] = False
+
+            if old_joint1 in joint_remap:
+                self.constraint_mimic_joint1[i] = joint_remap[old_joint1]
+            elif old_joint1 != -1:
+                if verbose:
+                    print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
+                self.constraint_mimic_enabled[i] = False
 
         return {
             "body_remap": body_remap,
@@ -7812,6 +7908,15 @@ class ModelBuilder:
             m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
             m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
 
+            # mimic constraints
+            m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
+            m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
+            m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
+            m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
+            m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
+            m.constraint_mimic_key = self.constraint_mimic_key
+            m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)
+
             # ---------------------
             # per-world start indices
             m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
@@ -7840,6 +7945,7 @@ class ModelBuilder:
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
             m.equality_constraint_count = len(self.equality_constraint_type)
+            m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             self.find_shape_contact_pairs(m)
             m.rigid_contact_max = m._count_rigid_contact_points()
@@ -7933,6 +8039,8 @@ class ModelBuilder:
                     count = m.num_worlds
                 elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
+                elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
+                    count = m.constraint_mimic_count
                 elif freq_key == Model.AttributeFrequency.PARTICLE:
                     count = m.particle_count
                 elif freq_key == Model.AttributeFrequency.EDGE:

@@ -479,8 +479,8 @@ def parse_urdf(
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
-            joint_data["mimic_multiplier"] = float(el_mimic.get("multiplier", 1))
-            joint_data["mimic_offset"] = float(el_mimic.get("offset", 0))
+            joint_data["mimic_coef0"] = float(el_mimic.get("offset", 0))
+            joint_data["mimic_coef1"] = float(el_mimic.get("multiplier", 1))
 
         parent_child_joint[(parent, child)] = joint_data
         joints.append(joint_data)
@@ -737,6 +737,40 @@ def parse_urdf(
             )
         else:
             raise Exception("Unsupported joint type: " + joint["type"])
+
+    # Create a mapping from joint name to joint index
+    joint_name_to_idx = {}
+    for joint, joint_idx in zip(sorted_joints, joint_indices[1:], strict=False):  # Skip base joint
+        joint_name_to_idx[joint["name"]] = joint_idx
+
+    # Create mimic constraints
+    for joint in sorted_joints:
+        if "mimic_joint" in joint:
+            mimic_target_name = joint["mimic_joint"]
+            if mimic_target_name not in joint_name_to_idx:
+                warnings.warn(
+                    f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            follower_idx = joint_name_to_idx.get(joint["name"])
+            leader_idx = joint_name_to_idx.get(mimic_target_name)
+
+            if follower_idx is None:
+                warnings.warn(
+                    f"Mimic joint '{joint['name']}' was not created, skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            builder.add_constraint_mimic(
+                joint0=follower_idx,
+                joint1=leader_idx,
+                coef0=joint.get("mimic_coef0", 0.0),
+                coef1=joint.get("mimic_coef1", 1.0),
+                key=f"mimic_{joint['name']}",
+            )
 
     # Create articulation from all collected joints
     if joint_indices:
