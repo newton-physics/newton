@@ -176,3 +176,14 @@ from ._src.utils.import_utils import string_to_warp  # noqa: E402
 __all__ += [
     "string_to_warp",
 ]
+
+# ==================================================================================
+# texture utils
+# ==================================================================================
+
+from ._src.utils.texture import load_texture, normalize_texture  # noqa: E402
+
+__all__ += [
+    "load_texture",
+    "normalize_texture",
+]

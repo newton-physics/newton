@@ -1,0 +1,84 @@
+name: Deploy dev documentation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Ensure only one deployment runs at a time
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          fetch-depth: 0  # Need full history for gh-pages branch
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867  # v7.1.6
+        with:
+          version: "0.9.0"
+
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548  # v6.1.0
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install pandoc
+        uses: pandoc/actions/setup@86321b6dd4675f5014c611e05088e10d4939e09e  # v1.1.1
+
+      - name: Build Sphinx documentation
+        run: uv run --extra docs --extra sim sphinx-build -b html docs docs/_build/html
+
+      - name: Deploy to gh-pages /latest/
+        run: |
+          set -e  # Exit on any error
+
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+
+          # Save built docs and 404 template outside the repo before switching branches
+          mv docs/_build/html /tmp/docs-latest
+          cp docs/_static/gh-pages-404.html /tmp/gh-pages-404.html
+
+          # Switch to gh-pages branch (check existence first to avoid masking other fetch errors)
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
+            git fetch origin gh-pages:gh-pages
+            git checkout gh-pages
+          else
+            echo "Creating new gh-pages branch"
+            git checkout --orphan gh-pages
+            git rm -rf . || true
+          fi
+
+          # Remove old /latest/ and replace with new build
+          rm -rf latest
+          mv /tmp/docs-latest latest
+
+          # Deploy custom 404 page for redirecting old non-versioned URLs
+          cp /tmp/gh-pages-404.html 404.html
+
+          # Ensure .nojekyll exists
+          touch .nojekyll
+
+          # Check gh-pages size (warn if approaching GitHub Pages 1GB limit)
+          SIZE_KB=$(du -sk --exclude=.git . | cut -f1)
+          SIZE_MB=$((SIZE_KB / 1024))
+          echo "Current gh-pages size: ${SIZE_MB}MB"
+          if [ "$SIZE_MB" -gt 800 ]; then
+            echo "::warning::gh-pages branch is ${SIZE_MB}MB, approaching GitHub Pages 1GB limit. Consider pruning old versions."
+          fi
+
+          # Stage only the files we want deployed (avoid committing build artifacts
+          # like .venv/ that persist after switching branches)
+          git add latest 404.html .nojekyll
+          git diff --cached --quiet || git commit -m "Update dev docs from main@${GITHUB_SHA::8}"
+          git push origin gh-pages

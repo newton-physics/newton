@@ -125,7 +125,7 @@ class ViewerBase:
         """
         return False
 
-    def set_model(self, model, max_worlds: int | None = None):
+    def set_model(self, model: newton.Model, max_worlds: int | None = None):
         """
         Set the model to be visualized.
 
@@ -586,24 +586,26 @@ class ViewerBase:
             if arr is None:
                 return wp.array([default] * num_instances, dtype=wp.vec3, device=self.device)
             if len(arr) == 1 and num_instances > 1:
-                return wp.array([arr[0]] * num_instances, dtype=wp.vec3, device=self.device)
+                val = wp.vec3(*arr.numpy()[0])
+                return wp.array([val] * num_instances, dtype=wp.vec3, device=self.device)
             return arr
 
         def _ensure_vec4_array(arr, default):
             if arr is None:
                 return wp.array([default] * num_instances, dtype=wp.vec4, device=self.device)
             if len(arr) == 1 and num_instances > 1:
-                return wp.array([arr[0]] * num_instances, dtype=wp.vec4, device=self.device)
+                val = wp.vec4(*arr.numpy()[0])
+                return wp.array([val] * num_instances, dtype=wp.vec4, device=self.device)
             return arr
 
         # defaults
         default_color = wp.vec3(0.3, 0.8, 0.9)
-        default_material = wp.vec4(0.0, 0.7, 0.0, 0.0)
+        default_material = wp.vec4(0.5, 0.0, 0.0, 0.0)
 
         # planes default to checkerboard and mid-gray if not overridden
         if geo_type == newton.GeoType.PLANE:
             default_color = wp.vec3(0.125, 0.125, 0.25)
-            default_material = wp.vec4(0.5, 0.7, 1.0, 0.0)
+            # default_material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
         colors = _ensure_vec3_array(colors, default_color)
         materials = _ensure_vec4_array(materials, default_material)
@@ -644,6 +646,7 @@ class ViewerBase:
             indices = wp.array(indices, dtype=wp.int32, device=self.device)
             normals = None
             uvs = None
+            texture = None
 
             if geo_src._normals is not None:
                 normals = wp.array(geo_src._normals, dtype=wp.vec3, device=self.device)
@@ -651,7 +654,18 @@ class ViewerBase:
             if geo_src._uvs is not None:
                 uvs = wp.array(geo_src._uvs, dtype=wp.vec2, device=self.device)
 
-            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+            if hasattr(geo_src, "texture"):
+                texture = geo_src.texture
+
+            self.log_mesh(
+                name,
+                points,
+                indices,
+                normals,
+                uvs,
+                hidden=hidden,
+                texture=texture,
+            )
             return
 
         # Generate vertices/indices for supported primitive types
@@ -699,7 +713,7 @@ class ViewerBase:
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
         indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
-        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden, texture=None)
 
     def log_gizmo(
         self,
@@ -717,6 +731,7 @@ class ViewerBase:
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture: np.ndarray | str | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -1004,18 +1019,26 @@ class ViewerBase:
                 # Use shape index for color to ensure each collision shape has a different color
                 color = wp.vec3(self._shape_color_map(s))
 
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
-                if geo_src._color is not None:
-                    color = wp.vec3(geo_src._color[0:3])
+                if geo_src.color is not None:
+                    color = wp.vec3(geo_src.color[0:3])
+                if getattr(geo_src, "roughness", None) is not None:
+                    material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
+                if getattr(geo_src, "metallic", None) is not None:
+                    material = wp.vec4(material.x, float(geo_src.metallic), material.z, material.w)
+                if geo_src is not None and geo_src._uvs is not None:
+                    has_texture = getattr(geo_src, "texture", None) is not None
+                    if has_texture:
+                        material = wp.vec4(material.x, material.y, material.z, 1.0)
 
             # plane appearance: checkerboard + gray
             if geo_type == newton.GeoType.PLANE:
                 color = wp.vec3(0.125, 0.125, 0.15)
-                material = wp.vec4(0.5, 0.5, 1.0, 0.0)
+                material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
             # add render instance
             batch.add(
