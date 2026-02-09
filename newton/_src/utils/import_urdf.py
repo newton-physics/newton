@@ -27,7 +27,7 @@ import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
 from ..core.types import Transform
-from ..geometry import MESH_MAXHULLVERT
+from ..geometry import Mesh
 from ..sim import ModelBuilder
 from ..sim.joints import ActuatorMode
 from ..sim.model import Model
@@ -117,7 +117,7 @@ def parse_urdf(
             (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
     """
     if mesh_maxhullvert is None:
-        mesh_maxhullvert = MESH_MAXHULLVERT
+        mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     if xform is None:
         xform = axis_xform

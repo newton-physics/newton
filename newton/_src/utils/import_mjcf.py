@@ -27,7 +27,7 @@ import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
-from ..geometry import MESH_MAXHULLVERT, ShapeFlags
+from ..geometry import Mesh, ShapeFlags
 from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
@@ -204,7 +204,7 @@ def parse_mjcf(
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
     if mesh_maxhullvert is None:
-        mesh_maxhullvert = MESH_MAXHULLVERT
+        mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
     if xform is None:
         xform = wp.transform_identity()
     else:

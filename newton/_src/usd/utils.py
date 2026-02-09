@@ -24,7 +24,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, AxisType, nparray
-from ..geometry import MESH_MAXHULLVERT, Mesh
+from ..geometry import Mesh
 from ..sim.model import Model
 
 AttributeAssignment = Model.AttributeAssignment
@@ -847,7 +847,7 @@ def get_mesh(
         ``return_uv_indices`` is True.
     """
     if maxhullvert is None:
-        maxhullvert = MESH_MAXHULLVERT
+        maxhullvert = Mesh.MAX_HULL_VERTICES
 
     mesh = UsdGeom.Mesh(prim)
 

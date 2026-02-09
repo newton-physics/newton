@@ -28,7 +28,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
+from ..geometry import Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import ActuatorMode
 from ..sim.model import Model
@@ -148,7 +148,7 @@ def parse_usd(
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
     if mesh_maxhullvert is None:
-        mesh_maxhullvert = MESH_MAXHULLVERT
+        mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
     if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
