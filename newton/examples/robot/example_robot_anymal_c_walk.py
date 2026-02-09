@@ -161,7 +161,8 @@ class Example:
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=args.use_mujoco_contacts if args else True, # TODO: Change to CollisionPipelineUnified when more stable
+            # TODO: Change to CollisionPipelineUnified when more stable
+            use_mujoco_contacts=args.use_mujoco_contacts if args else True,
             solver="newton",
             ls_parallel=True,
             ls_iterations=50,  # Increased from default 10 for determinism
