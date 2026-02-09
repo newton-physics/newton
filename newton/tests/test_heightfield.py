@@ -80,7 +80,6 @@ class TestHeightfield(unittest.TestCase):
         )
 
         shape_id = builder.add_shape_heightfield(
-            body=-1,
             heightfield=hfield,
         )
 
@@ -231,7 +230,6 @@ class TestHeightfield(unittest.TestCase):
 
         # Add heightfield to world
         builder.add_shape_heightfield(
-            body=-1,
             heightfield=hfield,
         )
 
@@ -274,7 +272,7 @@ class TestHeightfield(unittest.TestCase):
             ncol=ncol,
             size=(5.0, 5.0, 1.0, 0.01),
         )
-        builder.add_shape_heightfield(body=-1, heightfield=hfield)
+        builder.add_shape_heightfield(heightfield=hfield)
 
         # Sphere starting above the heightfield
         sphere_radius = 0.1
@@ -309,36 +307,20 @@ class TestHeightfield(unittest.TestCase):
             f"Sphere fell through heightfield: z={final_z:.4f}",
         )
 
-    def test_heightfield_inertia(self):
-        """Test heightfield inertia computation."""
+    def test_heightfield_always_static(self):
+        """Test that heightfields are always static (zero mass, zero inertia)."""
         nrow, ncol = 10, 10
         elevation_data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32)
 
-        # Create heightfield with inertia computation
-        hfield_with_inertia = Heightfield(
+        hfield = Heightfield(
             data=elevation_data,
             nrow=nrow,
             ncol=ncol,
             size=(5.0, 5.0, 1.0, 0.0),
-            compute_inertia=True,
         )
 
-        # Should have non-zero mass and inertia
-        self.assertGreater(hfield_with_inertia.mass, 0.0)
-        self.assertTrue(hfield_with_inertia.has_inertia)
-
-        # Create heightfield without inertia (default, for static terrain)
-        hfield_static = Heightfield(
-            data=elevation_data,
-            nrow=nrow,
-            ncol=ncol,
-            size=(5.0, 5.0, 1.0, 0.0),
-            compute_inertia=False,
-        )
-
-        # Should have zero mass (static)
-        self.assertEqual(hfield_static.mass, 0.0)
-        self.assertFalse(hfield_static.has_inertia)
+        self.assertEqual(hfield.mass, 0.0)
+        self.assertFalse(hfield.has_inertia)
 
     def test_heightfield_radius_computation(self):
         """Test bounding sphere radius computation for heightfield."""

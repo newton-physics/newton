@@ -694,10 +694,12 @@ def parse_mjcf(
                     size=hfield_size,
                 )
 
+                # Heightfields are always static — don't pass body from shape_kwargs
+                hfield_kwargs = {k: v for k, v in shape_kwargs.items() if k != "body"}
                 s = builder.add_shape_heightfield(
                     xform=tf,
                     heightfield=heightfield,
-                    **shape_kwargs,
+                    **hfield_kwargs,
                 )
                 shapes.append(s)
 

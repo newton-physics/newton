@@ -442,11 +442,11 @@ class Heightfield:
         nrow: int,
         ncol: int,
         size: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 0.0),
-        compute_inertia: bool = False,
-        is_solid: bool = True,
     ):
         """
         Construct a Heightfield object from a 2D elevation grid.
+
+        Heightfields are always static (zero mass, zero inertia).
 
         Args:
             data: 2D array of elevation values, shape (nrow, ncol).
@@ -458,36 +458,20 @@ class Heightfield:
                 - size_z: Vertical extent / max height range (meters)
                 - size_base: Base height offset (ground level)
                 Defaults to (1.0, 1.0, 1.0, 0.0).
-            compute_inertia: If True, compute mass and inertia (default: False).
-                Heightfields are typically static, so this is usually False.
-            is_solid: If True, heightfield is assumed solid for inertia computation (default: True).
         """
         self._data = np.array(data, dtype=np.float32).reshape(nrow, ncol)
         self.nrow = nrow
         self.ncol = ncol
         self.size = size  # (size_x, size_y, size_z, size_base)
-        self.is_solid = is_solid
-        self.has_inertia = compute_inertia
+        self.is_solid = True
+        self.has_inertia = False
         self.warp_array = None  # Will be set by finalize()
         self._cached_hash = None
 
-        if compute_inertia:
-            # Approximate heightfield inertia as a box with average height
-            from .inertia import compute_box_inertia  # noqa: PLC0415
-
-            size_x, size_y, size_z, size_base = size
-            avg_height = float(np.mean(self._data)) * size_z + size_base
-            # size_x, size_y are half-extents; compute_box_inertia expects full widths
-            self.mass, self.com, self.I = compute_box_inertia(
-                1.0,
-                size_x * 2.0,
-                size_y * 2.0,
-                max(avg_height, 1e-6),
-            )
-        else:
-            self.I = wp.mat33()
-            self.mass = 0.0  # Static by default
-            self.com = wp.vec3()
+        # Heightfields are always static
+        self.I = wp.mat33()
+        self.mass = 0.0
+        self.com = wp.vec3()
 
     @property
     def data(self):
