@@ -31,7 +31,7 @@ class TestSensorFrameTransform(unittest.TestCase):
     def test_sensor_creation(self):
         """Test basic sensor creation."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         site1 = builder.add_site(body, key="site1")
         site2 = builder.add_site(body, key="site2")
@@ -56,7 +56,7 @@ class TestSensorFrameTransform(unittest.TestCase):
     def test_sensor_single_reference_for_multiple_shapes(self):
         """Test single reference site for multiple shapes."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         site1 = builder.add_site(body, key="site1")
         site2 = builder.add_site(body, key="site2")
@@ -78,7 +78,7 @@ class TestSensorFrameTransform(unittest.TestCase):
     def test_sensor_validation_empty_shapes(self):
         """Test error when shapes is empty."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
@@ -88,7 +88,7 @@ class TestSensorFrameTransform(unittest.TestCase):
     def test_sensor_validation_empty_references(self):
         """Test error when reference_sites is empty."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
@@ -98,7 +98,7 @@ class TestSensorFrameTransform(unittest.TestCase):
     def test_sensor_validation_invalid_shape_index(self):
         """Test error when shape index is out of bounds."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
@@ -108,7 +108,7 @@ class TestSensorFrameTransform(unittest.TestCase):
     def test_sensor_validation_invalid_reference_index(self):
         """Test error when reference index is out of bounds."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         model = builder.finalize()
 
@@ -118,7 +118,7 @@ class TestSensorFrameTransform(unittest.TestCase):
     def test_sensor_validation_reference_not_site(self):
         """Test error when reference index is not a site."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site = builder.add_site(body)
         shape = builder.add_shape_sphere(body, radius=0.1)  # Regular shape, not a site
         model = builder.finalize()
@@ -129,7 +129,7 @@ class TestSensorFrameTransform(unittest.TestCase):
     def test_sensor_validation_mismatched_lengths(self):
         """Test error when reference indices don't match shape indices."""
         builder = newton.ModelBuilder()
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site1 = builder.add_site(body)
         site2 = builder.add_site(body)
         site3 = builder.add_site(body)
@@ -146,7 +146,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         # Body rotated 45° around Z
         body = builder.add_body(
             mass=1.0,
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
             xform=wp.transform(wp.vec3(5, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 4)),
         )
 
@@ -196,7 +196,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         # Reference body at origin, rotated 45° around Z
         body1 = builder.add_body(
             mass=1.0,
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
             xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 4)),
         )
         # Reference site offset by (0.2, 0.1, 0), rotated 30° around X
@@ -209,7 +209,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         # Target body at (1, 2, 3), rotated 60° around Y
         body2 = builder.add_body(
             mass=1.0,
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
             xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_from_axis_angle(wp.vec3(0, 1, 0), np.pi / 3)),
         )
         # Target site offset by (0.3, 0, 0.2), rotated 90° around Z
@@ -266,12 +266,12 @@ class TestSensorFrameTransform(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         body1 = builder.add_body(
-            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity())
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity())
         )
         ref_site = builder.add_site(body1, key="ref")
 
         body2 = builder.add_body(
-            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
         )
         geom = builder.add_shape_sphere(body2, radius=0.1, xform=wp.transform(wp.vec3(0.5, 0, 0), wp.quat_identity()))
 
@@ -293,7 +293,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         body = builder.add_body(
-            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity())
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity())
         )
         ref_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="ref")
 
@@ -335,7 +335,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Moving site
         body = builder.add_body(
-            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_identity())
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_identity())
         )
         moving_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="moving")
 
@@ -360,14 +360,14 @@ class TestSensorFrameTransform(unittest.TestCase):
         # Reference frame rotated 90 degrees around Z
         body1 = builder.add_body(
             mass=1.0,
-            I_m=wp.mat33(np.eye(3)),
+            inertia=wp.mat33(np.eye(3)),
             xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
         )
         ref_site = builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="ref")
 
         # Target at (1, 0, 0) in world frame
         body2 = builder.add_body(
-            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
         )
         target_site = builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="target")
 
@@ -389,7 +389,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         """Test sensor with sites that have non-identity rotations."""
         builder = newton.ModelBuilder()
 
-        body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         # Reference site rotated 45° around Z
         ref_site = builder.add_site(
@@ -427,11 +427,11 @@ class TestSensorFrameTransform(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Root body at origin
-        root = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         ref_site = builder.add_site(root, key="ref")
 
         # Link 1: connected by revolute joint, extends 1m in +X from joint
-        link1 = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        link1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site1 = builder.add_site(link1, key="site1")
         joint1 = builder.add_joint_revolute(
             parent=root,
@@ -441,7 +441,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         )
 
         # Link 2: connected to link1, extends another 1m in +X
-        link2 = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        link2 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         site2 = builder.add_site(link2, key="site2")
         joint2 = builder.add_joint_revolute(
             parent=link1,
@@ -492,7 +492,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Create reference site
-        base = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        base = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         ref_site = builder.add_site(base, key="ref")
 
         # Create multiple bodies with multiple sites to get many shapes
@@ -500,7 +500,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Body 1 with 3 sites at different positions
         body1 = builder.add_body(
-            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
         )
         all_sites.append(builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b1_s0"))
         all_sites.append(
@@ -512,7 +512,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Body 2 with 3 sites at different positions
         body2 = builder.add_body(
-            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity())
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity())
         )
         all_sites.append(builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b2_s0"))
         all_sites.append(
@@ -524,7 +524,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Body 3 with 3 sites at different positions
         body3 = builder.add_body(
-            mass=1.0, I_m=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity())
+            mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity())
         )
         all_sites.append(builder.add_site(body3, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b3_s0"))
         all_sites.append(

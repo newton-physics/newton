@@ -102,7 +102,7 @@ class SDF:
     def __init__(
         self,
         volume: wp.Volume | None = None,
-        I: Mat33 | None = None,
+        inertia: Mat33 | None = None,
         mass: float = 1.0,
         com: Vec3 | None = None,
     ):
@@ -111,12 +111,12 @@ class SDF:
 
         Args:
             volume: The Warp volume object representing the SDF.
-            I: 3x3 inertia matrix. Defaults to identity.
+            inertia: 3x3 inertia matrix. Defaults to identity.
             mass: Total mass. Defaults to 1.0.
             com: Center of mass. Defaults to zero vector.
         """
         self.volume = volume
-        self.I = I if I is not None else wp.mat33(np.eye(3))
+        self.I = inertia if inertia is not None else wp.mat33(np.eye(3))
         self.mass = mass
         self.com = com if com is not None else wp.vec3()
 

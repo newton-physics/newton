@@ -21,6 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
+from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -28,6 +29,7 @@ from typing import Any, Literal
 import numpy as np
 import warp as wp
 
+from ..core.spatial import quat_between_vectors_robust
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -59,7 +61,13 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
-from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
+from .graph_coloring import (
+    ColoringAlgorithm,
+    color_graph,
+    color_rigid_bodies,
+    combine_independent_particle_coloring,
+    construct_particle_graph,
+)
 from .joints import (
     ActuatorMode,
     EqType,
@@ -2318,7 +2326,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         armature: float | None = None,
         com: Vec3 | None = None,
-        I_m: Mat33 | None = None,
+        inertia: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
@@ -2336,7 +2344,7 @@ class ModelBuilder:
             xform: The location of the body in the world frame.
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body (optional).
             custom_attributes: Dictionary of custom attribute names to values.
@@ -2360,17 +2368,17 @@ class ModelBuilder:
             com = wp.vec3()
         else:
             com = wp.vec3(*com)
-        if I_m is None:
-            I_m = wp.mat33()
+        if inertia is None:
+            inertia = wp.mat33()
         else:
-            I_m = self._coerce_mat33(I_m)
+            inertia = self._coerce_mat33(inertia)
 
         body_id = len(self.body_mass)
 
         # body data
         if armature is None:
             armature = self.default_body_armature
-        inertia = I_m + wp.mat33(np.eye(3, dtype=np.float32)) * armature
+        inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
@@ -2407,7 +2415,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         armature: float | None = None,
         com: Vec3 | None = None,
-        I_m: Mat33 | None = None,
+        inertia: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
@@ -2429,7 +2437,7 @@ class ModelBuilder:
             xform: The location of the body in the world frame.
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body. When provided, the auto-created free joint and articulation
                 are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
@@ -2450,7 +2458,7 @@ class ModelBuilder:
             xform=xform,
             armature=armature,
             com=com,
-            I_m=I_m,
+            inertia=inertia,
             mass=mass,
             key=key,
             custom_attributes=custom_attributes,
@@ -4909,7 +4917,7 @@ class ModelBuilder:
     def add_rod(
         self,
         positions: list[Vec3],
-        quaternions: list[Quat],
+        quaternions: list[Quat] | None = None,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -4930,9 +4938,11 @@ class ModelBuilder:
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
                 tip/end points of the capsules, with one extra point so that for ``N`` segments there
-                are ``N+1`` positions. Must have ``len(quaternions) + 1`` elements.
-            quaternions: Per-segment (per-edge) orientations in world space. Each quaternion should
-                align the capsule's local +Z with the segment direction ``positions[i+1] - positions[i]``.
+                are ``N+1`` positions.
+            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
+                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
+                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
+                orientations are computed automatically to align +Z with each segment direction.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Stretch stiffness for the cable joints. For rods, this is treated as a
@@ -4986,6 +4996,7 @@ class ModelBuilder:
         # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
         stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
+
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
         bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
         bend_damping = 0.0 if bend_damping is None else bend_damping
@@ -4994,14 +5005,20 @@ class ModelBuilder:
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
 
-        # Guard against near-zero lengths: segment length is used to normalize stiffness later (EA/L, EI/L).
-        min_segment_length = 1.0e-9
-        num_segments = len(quaternions)
-        if len(positions) != num_segments + 1:
+        num_segments = len(positions) - 1
+        if num_segments < 1:
+            raise ValueError("add_rod: positions must contain at least 2 points")
+
+        # Coerce all input positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
+        # always operate on Warp vector types even if the caller passed tuples/lists.
+        positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in positions]
+
+        if quaternions is not None and len(quaternions) != num_segments:
             raise ValueError(
-                f"add_rod: positions must have {num_segments + 1} elements for {num_segments} segments, "
-                f"got {len(positions)} positions"
+                f"add_rod: quaternions must have {num_segments} elements for {num_segments} segments, "
+                f"got {len(quaternions)} quaternions"
             )
+
         if num_segments < 2:
             # A "rod" in this API is defined as multiple capsules coupled by cable joints.
             # If you want a single capsule, create a body + capsule shape directly.
@@ -5010,125 +5027,460 @@ class ModelBuilder:
                 "for a single capsule, create a body and add a capsule shape instead."
             )
 
-        link_bodies = []
-        link_joints = []
-        segment_lengths: list[float] = []
+        # Build linear graph edges: (0, 1), (1, 2), ..., (N-1, N)
+        # Note: positions has N+1 elements for N segments.
+        edges = [(i, i + 1) for i in range(num_segments)]
 
-        # Create all bodies first
-        for i in range(num_segments):
-            p0 = positions[i]
-            p1 = positions[i + 1]
-            q = quaternions[i]
+        # Delegate to add_rod_graph to create bodies and internal joints.
+        # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
+        # - open chains are wrapped into a single articulation (tree), and
+        # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
+        link_bodies, link_joints = self.add_rod_graph(
+            node_positions=positions_wp,
+            edges=edges,
+            radius=radius,
+            cfg=cfg,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            key=key,
+            wrap_in_articulation=False,
+            quaternions=quaternions,
+        )
 
-            # Calculate segment properties
-            segment_length = wp.length(p1 - p0)
-            if segment_length <= min_segment_length:
+        # Wrap all joints into an articulation if requested.
+        if wrap_in_articulation and link_joints:
+            rod_art_key = f"{key}_articulation" if key else None
+            self.add_articulation(link_joints, key=rod_art_key)
+
+        # For closed loops, add one extra loop-closing cable joint that is intentionally
+        # *not* part of an articulation (articulations must be trees/forests).
+        if closed:
+            if not wrap_in_articulation:
+                warnings.warn(
+                    "add_rod: wrap_in_articulation=False requires the caller to wrap joints via add_articulation() "
+                    "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
+                    "articulation.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+            if link_bodies:
+                first_body = link_bodies[0]
+                last_body = link_bodies[-1]
+
+                # Connect the end of the last segment to the start of the first segment.
+                L_last = float(wp.length(positions_wp[-1] - positions_wp[-2]))
+                min_segment_length = 1.0e-9
+                if L_last <= min_segment_length:
+                    L_last = min_segment_length
+
+                parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
+                child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+                # Normalize stiffness by segment length, consistent with add_rod_graph().
+                stretch_ke_eff = stretch_stiffness / L_last
+                bend_ke_eff = bend_stiffness / L_last
+
+                loop_joint_key = f"{key}_cable_{len(link_joints) + 1}" if key else None
+                j_loop = self.add_joint_cable(
+                    parent=last_body,
+                    child=first_body,
+                    parent_xform=parent_xform,
+                    child_xform=child_xform,
+                    bend_stiffness=bend_ke_eff,
+                    bend_damping=bend_damping,
+                    stretch_stiffness=stretch_ke_eff,
+                    stretch_damping=stretch_damping,
+                    key=loop_joint_key,
+                    collision_filter_parent=True,
+                    enabled=True,
+                )
+                link_joints.append(j_loop)
+
+        return link_bodies, link_joints
+
+    def add_rod_graph(
+        self,
+        node_positions: list[Vec3],
+        edges: list[tuple[int, int]],
+        radius: float = 0.1,
+        cfg: ShapeConfig | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        key: str | None = None,
+        wrap_in_articulation: bool = True,
+        quaternions: list[Quat] | None = None,
+        junction_collision_filter: bool = True,
+    ) -> tuple[list[int], list[int]]:
+        """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
+
+        This is a generalization of :meth:`add_rod` to support branching/junction topologies.
+
+        Representation:
+
+        - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
+          ``node_positions[v]`` (body frame is placed at the start node ``u`` and local +Z points
+          toward ``v``).
+        - Cable joints are created between edge-bodies that share a node, using a spanning-tree
+          traversal so that each body has a single parent when wrapped into an articulation.
+
+        Notes:
+
+        - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
+          articulation per connected component). This keeps the joint graph articulation-safe
+          (tree/forest), avoiding cycles at junctions.
+        - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
+          ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
+          you need closed loops, build them explicitly without articulation wrapping.
+        - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
+          all incident edges. This can preserve rings/loops, but does not produce an articulation
+          tree (edges may effectively have multiple "parents" in the joint graph).
+
+        Args:
+            node_positions: Junction node positions in world space.
+            edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
+                capsule body oriented so its local +Z points from node ``u`` to node ``v``.
+            radius: Capsule radius.
+            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
+            stretch_stiffness: Material-like axial stiffness (EA) [N], normalized by edge length
+                into an effective joint stiffness [N/m]. Defaults to 1.0e9.
+            stretch_damping: Stretch damping (per joint). Defaults to 0.0.
+            bend_stiffness: Material-like bend/twist stiffness (EI) [N*m^2], normalized by edge
+                length into an effective joint stiffness [N*m]. Defaults to 0.0.
+            bend_damping: Bend/twist damping (per joint). Defaults to 0.0.
+            key: Optional key prefix for bodies, shapes, joints, and articulations.
+            wrap_in_articulation: If True, wraps the generated joint forest into one articulation
+                per connected component.
+            quaternions: Optional per-edge orientations in world space. If provided, must have
+                ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
+                the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
+                None, orientations are computed automatically to align +Z with each edge direction.
+            junction_collision_filter: If True, adds collision filters between *non-jointed* segment
+                bodies that are incident to a junction node (degree >= 3). This prevents immediate
+                self-collision impulses at welded junctions, even though the joint set is a spanning
+                tree (so not all incident body pairs are directly jointed).
+
+        Returns:
+            tuple[list[int], list[int]]: (body_indices, joint_indices) where bodies correspond to
+            edges in the same order as ``edges``.
+        """
+        if cfg is None:
+            cfg = self.default_shape_cfg
+
+        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
+        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        stretch_damping = 0.0 if stretch_damping is None else stretch_damping
+
+        # Bend defaults: 0.0 (users must explicitly set for bending resistance)
+        bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
+        bend_damping = 0.0 if bend_damping is None else bend_damping
+
+        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
+            raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
+        if len(node_positions) < 2:
+            raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
+        if len(edges) < 1:
+            raise ValueError("add_rod_graph: edges must contain at least 1 edge")
+
+        num_nodes = len(node_positions)
+        num_edges = len(edges)
+        if quaternions is not None and len(quaternions) != num_edges:
+            raise ValueError(
+                f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"got {len(quaternions)} quaternions"
+            )
+
+        # Guard against near-zero lengths: edge length is used to normalize stiffness (EA/L, EI/L).
+        min_segment_length = 1.0e-9
+
+        # Coerce all input node positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
+        # always operate on Warp vector types even if the caller passed tuples/lists.
+        node_positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in node_positions]
+
+        # Build per-node incidence for spanning-tree traversal.
+        node_incidence: list[list[int]] = [[] for _ in range(num_nodes)]
+
+        # Per-edge data
+        edge_u: list[int] = []
+        edge_v: list[int] = []
+        edge_len: list[float] = []
+        edge_bodies: list[int] = []
+
+        # Create all edge bodies first.
+        for e_idx, (u, v) in enumerate(edges):
+            if u < 0 or u >= num_nodes or v < 0 or v >= num_nodes:
                 raise ValueError(
-                    f"add_rod: segment {i} has a too-small length (length={float(segment_length):.3e}); "
+                    f"add_rod_graph: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes"
+                )
+            if u == v:
+                raise ValueError(f"add_rod_graph: edge {e_idx} connects a node to itself ({u} -> {v})")
+
+            p0 = node_positions_wp[u]
+            p1 = node_positions_wp[v]
+            seg_vec = p1 - p0
+            seg_length = float(wp.length(seg_vec))
+            if seg_length <= min_segment_length:
+                raise ValueError(
+                    f"add_rod_graph: edge {e_idx} has a too-small length (length={seg_length:.3e}); "
                     f"segment length must be > {min_segment_length:.1e}"
                 )
-            segment_lengths.append(float(segment_length))
-            half_height = 0.5 * segment_length
 
-            # Sanity check: ensure the capsule orientation aligns its local +Z axis with
-            # the segment direction between positions[i] and positions[i+1]. This enforces
-            # the contract that ``quaternions[i]`` is a world-space rotation taking local +Z
-            # into ``positions[i+1] - positions[i]``; otherwise the capsules will not form
-            # a proper rod.
-            seg_dir = wp.normalize(p1 - p0)
-            local_z_world = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-            alignment = wp.dot(seg_dir, local_z_world)
-            if alignment < 0.999:
-                raise ValueError(
-                    "add_rod: quaternion at index "
-                    f"{i} does not align capsule +Z with segment (positions[i+1] - positions[i]); "
-                    "quaternions must be world-space and constructed so that local +Z maps to the "
-                    "segment direction positions[i+1] - positions[i]."
-                )
+            if quaternions is None:
+                seg_dir = wp.normalize(seg_vec)
+                q = quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), seg_dir)
+            else:
+                q = quaternions[e_idx]
 
-            # Position body at start point, with COM offset to segment center
+                # Local +Z must align with the segment direction.
+                seg_dir = wp.normalize(seg_vec)
+                local_z_world = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
+                alignment = wp.dot(seg_dir, local_z_world)
+                if alignment < 0.999:
+                    raise ValueError(
+                        "add_rod_graph: quaternion at edge index "
+                        f"{e_idx} does not align capsule +Z with edge direction (node_positions[v] - node_positions[u]); "
+                        "quaternions must be world-space and constructed so that local +Z maps to the "
+                        "edge direction node_positions[v] - node_positions[u]."
+                    )
+            half_height = 0.5 * seg_length
+
+            # Position body at start node, with COM offset to segment center
             body_q = wp.transform(p0, q)
-
-            # COM offset in local coordinates: from start point to center
             com_offset = wp.vec3(0.0, 0.0, half_height)
 
-            # Generate unique keys for each entity type to avoid conflicts
-            body_key = f"{key}_body_{i}" if key else None
-            shape_key = f"{key}_capsule_{i}" if key else None
+            body_key = f"{key}_edge_body_{e_idx}" if key else None
+            shape_key = f"{key}_edge_capsule_{e_idx}" if key else None
 
-            child_body = self.add_link(xform=body_q, com=com_offset, key=body_key)
+            body_id = self.add_link(xform=body_q, com=com_offset, key=body_key)
 
             # Place capsule so it spans from start to end along +Z
             capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
+
             self.add_shape_capsule(
-                child_body,
+                body_id,
                 xform=capsule_xform,
                 radius=radius,
                 half_height=half_height,
                 cfg=cfg,
                 key=shape_key,
             )
-            link_bodies.append(child_body)
 
-        # Create joints connecting consecutive segments
-        # For open chains: num_segments - 1 joints
-        # For closed loops: num_segments joints (including closing joint)
-        num_joints = num_segments if closed else num_segments - 1
-        for i in range(num_joints):
-            parent_idx = i
-            child_idx = (i + 1) % num_segments  # Wraps around for closing joint when closed
+            edge_u.append(u)
+            edge_v.append(v)
+            edge_len.append(seg_length)
+            edge_bodies.append(body_id)
 
-            parent_body = link_bodies[parent_idx]
-            child_body = link_bodies[child_idx]
-            if parent_body == child_body:
-                raise ValueError(
-                    "add_rod: invalid rod topology; attempted to create a joint connecting a body to itself. "
-                    "This should be unreachable (add_rod requires >=2 segments)."
-                )
+            node_incidence[u].append(e_idx)
+            node_incidence[v].append(e_idx)
 
-            # Parent anchor at segment end
-            parent_xform = wp.transform(wp.vec3(0.0, 0.0, segment_lengths[parent_idx]), wp.quat_identity())
+        def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
+            # Body frame is at start node u; end node v is at local z = edge_len.
+            if node_idx == edge_u[e_idx]:
+                z = 0.0
+            elif node_idx == edge_v[e_idx]:
+                z = edge_len[e_idx]
+            else:
+                raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
+            return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())
 
-            # Child anchor at segment start
-            child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        joint_counter = 0
+        jointed_body_pairs: set[tuple[int, int]] = set()
 
-            # Joint key: numbered 1 through num_joints
-            joint_key = f"{key}_cable_{i + 1}" if key else None
+        def _remember_jointed_pair(parent_body: int, child_body: int) -> None:
+            # Canonical order so lookups are symmetric.
+            if parent_body <= child_body:
+                jointed_body_pairs.add((parent_body, child_body))
+            else:
+                jointed_body_pairs.add((child_body, parent_body))
 
-            # Pre-scale rod stiffnesses here so solver kernels do not need per-segment length normalization.
-            # Use the parent segment length L.
-            #
-            # - Stretch: treat the user input as a material-like axial/shear stiffness (commonly EA) [N]
-            #   and store an effective per-joint (point-to-point) spring stiffness k_eff = EA / L [N/m].
-            # - Bend/twist: treat the user input as a material-like bending/twist stiffness (commonly EI) [N*m^2]
-            #   and store an effective per-joint angular stiffness k_eff = EI / L [N*m].
-            seg_len = segment_lengths[parent_idx]
-            stretch_ke_eff = stretch_stiffness / seg_len
-            bend_ke_eff = bend_stiffness / seg_len
+        def _build_joints_star() -> list[int]:
+            """Builds joints by connecting incident edges directly at each node."""
+            nonlocal joint_counter
+            all_joints: list[int] = []
 
-            joint = self.add_joint_cable(
-                parent=parent_body,
-                child=child_body,
-                parent_xform=parent_xform,
-                child_xform=child_xform,
-                bend_stiffness=bend_ke_eff,
-                bend_damping=bend_damping,
-                stretch_stiffness=stretch_ke_eff,
-                stretch_damping=stretch_damping,
-                key=joint_key,
-                collision_filter_parent=True,
-                enabled=True,
-            )
-            link_joints.append(joint)
+            # No articulation constraints: connect incident edges directly at each node.
+            # This preserves cycles (rings/loops) but can create multi-parent relationships, which is
+            # fine when not wrapping into an articulation.
+            for node_idx in range(num_nodes):
+                inc = node_incidence[node_idx]
+                if len(inc) < 2:
+                    continue
 
-        # Optionally (by default) wrap all rod joints into a single articulation.
-        if wrap_in_articulation and link_joints:
-            # Derive a default articulation key if none is provided.
-            rod_art_key = f"{key}_articulation" if key else None
+                # Deterministic parent choice: use the first edge in incidence list.
+                # Since node_incidence is built by iterating edges in order (0, 1, 2...),
+                # this implicitly picks the edge with the lowest index as the parent.
+                parent_edge = inc[0]
+                parent_body = edge_bodies[parent_edge]
+                parent_xform = _edge_anchor_xform(parent_edge, node_idx)
 
-            self.add_articulation(link_joints, key=rod_art_key)
+                for child_edge in inc[1:]:
+                    child_body = edge_bodies[child_edge]
+                    if parent_body == child_body:
+                        raise RuntimeError("add_rod_graph: internal error (self-connection)")
 
-        return link_bodies, link_joints
+                    child_xform = _edge_anchor_xform(child_edge, node_idx)
+
+                    # Normalize stiffness by segment length, consistent with add_rod().
+                    # Use a symmetric length so stiffness is traversal/order invariant.
+                    L_parent = edge_len[parent_edge]
+                    L_child = edge_len[child_edge]
+                    L_sym = 0.5 * (L_parent + L_child)
+                    stretch_ke_eff = stretch_stiffness / L_sym
+                    bend_ke_eff = bend_stiffness / L_sym
+
+                    joint_counter += 1
+                    joint_key = f"{key}_cable_{joint_counter}" if key else None
+
+                    j = self.add_joint_cable(
+                        parent=parent_body,
+                        child=child_body,
+                        parent_xform=parent_xform,
+                        child_xform=child_xform,
+                        bend_stiffness=bend_ke_eff,
+                        bend_damping=bend_damping,
+                        stretch_stiffness=stretch_ke_eff,
+                        stretch_damping=stretch_damping,
+                        key=joint_key,
+                        collision_filter_parent=True,
+                        enabled=True,
+                    )
+                    all_joints.append(j)
+                    _remember_jointed_pair(parent_body, child_body)
+            return all_joints
+
+        def _build_joints_forest() -> list[int]:
+            """Builds joints using a spanning-forest traversal to ensure articulation-safe (tree) topology."""
+            nonlocal joint_counter
+            all_joints: list[int] = []
+            visited = [False] * num_edges
+            component_index = 0
+
+            for start_edge in range(num_edges):
+                if visited[start_edge]:
+                    continue
+
+                # BFS over edges
+                queue: deque[int] = deque([start_edge])
+                visited[start_edge] = True
+                component_joints: list[int] = []
+                component_edges: list[int] = []
+
+                while queue:
+                    parent_edge = queue.popleft()
+                    component_edges.append(parent_edge)
+                    parent_body = edge_bodies[parent_edge]
+
+                    for shared_node in (edge_u[parent_edge], edge_v[parent_edge]):
+                        for child_edge in node_incidence[shared_node]:
+                            if child_edge == parent_edge or visited[child_edge]:
+                                continue
+
+                            child_body = edge_bodies[child_edge]
+                            if parent_body == child_body:
+                                raise RuntimeError("add_rod_graph: internal error (self-connection)")
+
+                            # Anchors at the shared node on each edge body
+                            parent_xform = _edge_anchor_xform(parent_edge, shared_node)
+                            child_xform = _edge_anchor_xform(child_edge, shared_node)
+
+                            # Normalize stiffness by segment length, consistent with add_rod().
+                            # Use a symmetric length so stiffness is traversal/order invariant.
+                            L_parent = edge_len[parent_edge]
+                            L_child = edge_len[child_edge]
+                            L_sym = 0.5 * (L_parent + L_child)
+                            stretch_ke_eff = stretch_stiffness / L_sym
+                            bend_ke_eff = bend_stiffness / L_sym
+
+                            joint_counter += 1
+                            joint_key = f"{key}_cable_{joint_counter}" if key else None
+
+                            j = self.add_joint_cable(
+                                parent=parent_body,
+                                child=child_body,
+                                parent_xform=parent_xform,
+                                child_xform=child_xform,
+                                bend_stiffness=bend_ke_eff,
+                                bend_damping=bend_damping,
+                                stretch_stiffness=stretch_ke_eff,
+                                stretch_damping=stretch_damping,
+                                key=joint_key,
+                                collision_filter_parent=True,
+                                enabled=True,
+                            )
+
+                            component_joints.append(j)
+                            all_joints.append(j)
+                            _remember_jointed_pair(parent_body, child_body)
+                            visited[child_edge] = True
+                            queue.append(child_edge)
+
+                # If the original node-edge graph contains a cycle, we cannot "close" it with extra
+                # joints while keeping an articulation tree. Warn so callers don't assume rings/loops
+                # are preserved under `wrap_in_articulation=True`.
+                if component_edges:
+                    component_nodes: set[int] = set()
+                    for e_idx in component_edges:
+                        component_nodes.add(edge_u[e_idx])
+                        component_nodes.add(edge_v[e_idx])
+
+                    # Undirected graph cycle condition: E > V - 1 (for any connected component).
+                    if len(component_edges) > max(0, len(component_nodes) - 1):
+                        warnings.warn(
+                            "add_rod_graph: detected a cycle (closed loop) in the edge graph. "
+                            "With wrap_in_articulation=True, joints are built as a tree/forest, so "
+                            "cycles are not closed. Use wrap_in_articulation=False and add explicit "
+                            "closure constraints if you need a ring/loop.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+
+                # Wrap the connected component into an articulation.
+                if component_joints:
+                    if key:
+                        art_key = (
+                            f"{key}_articulation_{component_index}" if component_index > 0 else f"{key}_articulation"
+                        )
+                    else:
+                        art_key = None
+                    self.add_articulation(component_joints, key=art_key)
+
+                component_index += 1
+
+            return all_joints
+
+        if not wrap_in_articulation:
+            all_joints = _build_joints_star()
+        else:
+            all_joints = _build_joints_forest()
+
+        if junction_collision_filter:
+            # Filter collisions among *non-jointed* sibling bodies incident to each junction node
+            # (degree >= 3). Jointed parent/child pairs are already filtered by
+            # add_joint_cable(collision_filter_parent=True).
+            for inc in node_incidence:
+                if len(inc) < 3:
+                    continue
+                bodies_set = {edge_bodies[e_idx] for e_idx in inc}
+                if len(bodies_set) < 2:
+                    continue
+                bodies = sorted(bodies_set)
+
+                for i in range(len(bodies)):
+                    for j in range(i + 1, len(bodies)):
+                        bi = bodies[i]
+                        bj = bodies[j]
+                        if (bi, bj) in jointed_body_pairs:
+                            # Already filtered by add_joint_cable(collision_filter_parent=True).
+                            continue
+                        for si in self.body_shapes.get(bi, []):
+                            for sj in self.body_shapes.get(bj, []):
+                                self.add_shape_collision_filter_pair(int(si), int(sj))
+
+        return edge_bodies, all_joints
 
     # endregion
 
@@ -6078,11 +6430,15 @@ class ModelBuilder:
         fix_right: bool = False,
         fix_top: bool = False,
         fix_bottom: bool = False,
-        tri_ke: float | None = None,
-        tri_ka: float | None = None,
-        tri_kd: float | None = None,
-        tri_drag: float | None = None,
-        tri_lift: float | None = None,
+        tri_ke: float = 0.0,
+        tri_ka: float = 0.0,
+        tri_kd: float = 0.0,
+        tri_drag: float = 0.0,
+        tri_lift: float = 0.0,
+        add_surface_mesh_edges: bool = True,
+        edge_ke: float = 0.0,
+        edge_kd: float = 0.0,
+        particle_radius: float | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -6108,13 +6464,23 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
-        """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+            tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
+            tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
+            tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
+            add_surface_mesh_edges: Whether to create zero-stiffness bending edges on the
+                generated surface mesh. These edges improve collision robustness for VBD solver. Defaults to True.
+            edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
 
+        Note:
+            The generated surface triangles and optional edges are for collision purposes.
+            Their stiffness and damping values default to zero so they do not introduce additional
+            elastic forces. Set the triangle stiffness parameters above to non-zero values if you
+            want the surface to behave like a thin skin.
+        """
         start_vertex = len(self.particle_q)
 
         mass = cell_x * cell_y * cell_z * density
@@ -6139,7 +6505,7 @@ class ModelBuilder:
 
                     p = wp.quat_rotate(rot, v) + pos
 
-                    self.add_particle(p, vel, m)
+                    self.add_particle(p, vel, m, particle_radius)
 
         # dict of open faces
         faces = {}
@@ -6189,9 +6555,24 @@ class ModelBuilder:
                         add_tet(v6, v5, v2, v7)
                         add_tet(v5, v2, v7, v0)
 
-        # add triangles
+        # add surface triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
             self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        end_tri = len(self.tri_indices)
+
+        if add_surface_mesh_edges:
+            # add surface mesh edges (for collision)
+            if end_tri > start_tri:
+                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
+                edge_indices = np.fromiter(
+                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                    int,
+                ).reshape(-1, 4)
+                if len(edge_indices) > 0:
+                    # Add edges with specified stiffness/damping (for collision)
+                    for o1, o2, v1, v2 in edge_indices:
+                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     def add_soft_mesh(
         self,
@@ -6205,11 +6586,15 @@ class ModelBuilder:
         k_mu: float,
         k_lambda: float,
         k_damp: float,
-        tri_ke: float | None = None,
-        tri_ka: float | None = None,
-        tri_kd: float | None = None,
-        tri_drag: float | None = None,
-        tri_lift: float | None = None,
+        tri_ke: float = 0.0,
+        tri_ka: float = 0.0,
+        tri_kd: float = 0.0,
+        tri_drag: float = 0.0,
+        tri_lift: float = 0.0,
+        add_surface_mesh_edges: bool = True,
+        edge_ke: float = 0.0,
+        edge_kd: float = 0.0,
+        particle_radius: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
 
@@ -6223,13 +6608,23 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
-        """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+            tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
+            tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
+            tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
+            add_surface_mesh_edges: Whether to create zero-stiffness bending edges on the
+                generated surface mesh. These edges improve collision robustness for VBD solver. Defaults to True.
+            edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
 
+        Note:
+            The generated surface triangles and optional edges are for collision purposes.
+            Their stiffness and damping values default to zero so they do not introduce additional
+            elastic forces. Set the stiffness parameters above to non-zero values if you
+            want the surface to behave like a thin skin.
+        """
         num_tets = int(len(indices) / 4)
 
         start_vertex = len(self.particle_q)
@@ -6250,7 +6645,7 @@ class ModelBuilder:
         for v in vertices:
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
 
-            self.add_particle(p, vel, 0.0)
+            self.add_particle(p, vel, 0.0, particle_radius)
 
         # add tetrahedra
         for t in range(num_tets):
@@ -6274,12 +6669,24 @@ class ModelBuilder:
                 add_face(v0, v1, v3)
                 add_face(v0, v3, v2)
 
-        # add triangles
+        # add surface triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
-            try:
-                self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
-            except np.linalg.LinAlgError:
-                continue
+            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        end_tri = len(self.tri_indices)
+
+        if add_surface_mesh_edges:
+            # add surface mesh edges (for collision)
+            if end_tri > start_tri:
+                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
+                edge_indices = np.fromiter(
+                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                    int,
+                ).reshape(-1, 4)
+                if len(edge_indices) > 0:
+                    # Add edges with specified stiffness/damping (for collision)
+                    for o1, o2, v1, v2 in edge_indices:
+                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
@@ -6397,8 +6804,11 @@ class ModelBuilder:
         :class:`newton.solvers.SolverVBD`; :meth:`finalize` does not implicitly color the model.
 
         Args:
-            include_bending_energy: Whether to consider bending energy for trimeshes in the coloring process. If set to `True`, the generated
-                graph will contain all the edges connecting o1 and o2; otherwise, the graph will be equivalent to the trimesh.
+            include_bending: Whether to include bending edges in the coloring graph. Set to `True` if your
+                model contains bending edges (added via :meth:`add_edge`) that participate in bending constraints.
+                When enabled, the coloring graph includes connections between opposite vertices of each edge (o1-o2),
+                ensuring proper dependency handling for parallel bending computations. Leave as `False` if your model
+                has no bending edges or if bending edges should not affect the coloring.
             balance_colors: Whether to apply the color balancing algorithm to balance the size of each color
             target_max_min_color_ratio: the color balancing algorithm will stop when the ratio between the largest color and
                 the smallest color reaches this value
@@ -6417,23 +6827,43 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
-        # Color particles only if we have edges (cloth/soft bodies)
-        if len(self.edge_indices) > 0:
-            edge_indices = np.array(self.edge_indices)
-            self.particle_color_groups = color_trimesh(
-                len(self.particle_q),
-                edge_indices,
-                include_bending,
-                algorithm=coloring_algorithm,
-                balance_colors=balance_colors,
-                target_max_min_color_ratio=target_max_min_color_ratio,
+        if self.particle_count != 0:
+            tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
+            tri_materials = np.array(self.tri_materials)
+            tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
+            tet_materials = np.array(self.tet_materials)
+
+            bending_edge_indices = None
+            bending_edge_active_mask = None
+            if include_bending and self.edge_indices:
+                bending_edge_indices = np.array(self.edge_indices, dtype=np.int32)
+                bending_edge_props = np.array(self.edge_bending_properties)
+                # Active if either stiffness or damping is non-zero
+                bending_edge_active_mask = (bending_edge_props[:, 0] != 0.0) | (bending_edge_props[:, 1] != 0.0)
+
+            graph_edge_indices = construct_particle_graph(
+                tri_indices,
+                tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
+                bending_edge_indices,
+                bending_edge_active_mask,
+                tet_indices,
+                tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
             )
-        else:
-            # No edges to color - assign all particles to single color group
-            if len(self.particle_q) > 0:
-                self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
+
+            if len(graph_edge_indices) > 0:
+                self.particle_color_groups = color_graph(
+                    self.particle_count,
+                    graph_edge_indices,
+                    balance_colors,
+                    target_max_min_color_ratio,
+                    coloring_algorithm,
+                )
             else:
-                self.particle_color_groups = []
+                # No edges to color - assign all particles to single color group
+                if len(self.particle_q) > 0:
+                    self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
+                else:
+                    self.particle_color_groups = []
 
         # Also color rigid bodies based on joint connectivity
         self.body_color_groups = color_rigid_bodies(
@@ -6563,7 +6993,9 @@ class ModelBuilder:
             articulated_bodies.add(-1)  # World is always reachable
             for i, art in enumerate(self.joint_articulation):
                 if art >= 0:  # Joint is in an articulation
+                    parent = self.joint_parent[i]
                     child = self.joint_child[i]
+                    articulated_bodies.add(parent)
                     articulated_bodies.add(child)
 
             # Now check for true orphan joints: non-articulated joints whose child
@@ -7546,38 +7978,43 @@ class ModelBuilder:
             # ---------------------
             # springs
 
-            m.spring_indices = wp.array(self.spring_indices, dtype=wp.int32)
-            m.spring_rest_length = wp.array(self.spring_rest_length, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_stiffness = wp.array(self.spring_stiffness, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_damping = wp.array(self.spring_damping, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_control = wp.array(self.spring_control, dtype=wp.float32, requires_grad=requires_grad)
+            def _to_wp_array(data, dtype, requires_grad):
+                if len(data) == 0:
+                    return None
+                return wp.array(data, dtype=dtype, requires_grad=requires_grad)
+
+            m.spring_indices = _to_wp_array(self.spring_indices, wp.int32, requires_grad=False)
+            m.spring_rest_length = _to_wp_array(self.spring_rest_length, wp.float32, requires_grad=requires_grad)
+            m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
+            m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
+            m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # triangles
 
-            m.tri_indices = wp.array(self.tri_indices, dtype=wp.int32)
-            m.tri_poses = wp.array(self.tri_poses, dtype=wp.mat22, requires_grad=requires_grad)
-            m.tri_activations = wp.array(self.tri_activations, dtype=wp.float32, requires_grad=requires_grad)
-            m.tri_materials = wp.array(self.tri_materials, dtype=wp.float32, requires_grad=requires_grad)
-            m.tri_areas = wp.array(self.tri_areas, dtype=wp.float32, requires_grad=requires_grad)
+            m.tri_indices = _to_wp_array(self.tri_indices, wp.int32, requires_grad=False)
+            m.tri_poses = _to_wp_array(self.tri_poses, wp.mat22, requires_grad=requires_grad)
+            m.tri_activations = _to_wp_array(self.tri_activations, wp.float32, requires_grad=requires_grad)
+            m.tri_materials = _to_wp_array(self.tri_materials, wp.float32, requires_grad=requires_grad)
+            m.tri_areas = _to_wp_array(self.tri_areas, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # edges
 
-            m.edge_indices = wp.array(self.edge_indices, dtype=wp.int32)
-            m.edge_rest_angle = wp.array(self.edge_rest_angle, dtype=wp.float32, requires_grad=requires_grad)
-            m.edge_rest_length = wp.array(self.edge_rest_length, dtype=wp.float32, requires_grad=requires_grad)
-            m.edge_bending_properties = wp.array(
-                self.edge_bending_properties, dtype=wp.float32, requires_grad=requires_grad
+            m.edge_indices = _to_wp_array(self.edge_indices, wp.int32, requires_grad=False)
+            m.edge_rest_angle = _to_wp_array(self.edge_rest_angle, wp.float32, requires_grad=requires_grad)
+            m.edge_rest_length = _to_wp_array(self.edge_rest_length, wp.float32, requires_grad=requires_grad)
+            m.edge_bending_properties = _to_wp_array(
+                self.edge_bending_properties, wp.float32, requires_grad=requires_grad
             )
 
             # ---------------------
             # tetrahedra
 
-            m.tet_indices = wp.array(self.tet_indices, dtype=wp.int32)
-            m.tet_poses = wp.array(self.tet_poses, dtype=wp.mat33, requires_grad=requires_grad)
-            m.tet_activations = wp.array(self.tet_activations, dtype=wp.float32, requires_grad=requires_grad)
-            m.tet_materials = wp.array(self.tet_materials, dtype=wp.float32, requires_grad=requires_grad)
+            m.tet_indices = _to_wp_array(self.tet_indices, wp.int32, requires_grad=False)
+            m.tet_poses = _to_wp_array(self.tet_poses, wp.mat33, requires_grad=requires_grad)
+            m.tet_activations = _to_wp_array(self.tet_activations, wp.float32, requires_grad=requires_grad)
+            m.tet_materials = _to_wp_array(self.tet_materials, wp.float32, requires_grad=requires_grad)
 
             # -----------------------
             # muscles

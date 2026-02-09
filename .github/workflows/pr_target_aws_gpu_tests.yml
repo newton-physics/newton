@@ -46,6 +46,25 @@ jobs:
             echo "" >&2
             echo "After updating your visibility, push a new commit to this PR to re-run the check." >&2
             echo "--------------------------------------------------------------------------------" >&2
+
+            # Surface warnings as visible annotations (yellow banners in job view)
+            echo "::warning::This PR requires manual approval before GPU tests can run (author is not a recognized org member)."
+            echo "::warning::If you are a newton-physics org member with private membership, make it public at https://github.com/orgs/newton-physics/people"
+
+            # Write to job summary (appears in Summary tab)
+            cat >> "$GITHUB_STEP_SUMMARY" << 'EOF'
+          ## ⚠️ Manual Approval Required
+
+          This PR was authored by an external contributor. GPU tests require manual approval from a maintainer before they can run.
+
+          ### Are you a newton-physics org member?
+
+          If your membership is set to **Private**, the workflow cannot detect it. To fix:
+
+          1. Go to [newton-physics People](https://github.com/orgs/newton-physics/people)
+          2. Find your username and change visibility from **Private** to **Public**
+          3. Push a new commit to re-trigger the check
+          EOF
           fi
 
   require-approval:
