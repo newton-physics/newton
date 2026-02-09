@@ -464,10 +464,11 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     "actuator_velocity": 1e-4,
     "qfrc_bias": 1e-4,
     "cacc": 1e-4,
-    "qacc": 1e-4,
+    "qacc": 5e-2,  # Looser: trajectory divergence compounds over steps without state sync
     "cfrc_int": 1e-4,
-    "qfrc_actuator": 1e-4,
-    "actuator_force": 1e-4,
+    # Actuator forces: looser due to trajectory divergence over multiple steps
+    "qfrc_actuator": 2e-3,
+    "actuator_force": 2e-3,
 }
 
 # Default fields to compare in MjData (core physics + dynamics)
@@ -1567,7 +1568,7 @@ class TestMenagerieBase(unittest.TestCase):
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-        newton_solver = SolverMuJoCo(newton_model)
+        newton_solver = SolverMuJoCo(newton_model, update_data_interval=0)
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
