@@ -1302,7 +1302,7 @@ class TestMenagerieBase(unittest.TestCase):
 
     # Must be defined by subclasses
     robot_folder: str = ""
-    robot_xml: str = ""
+    robot_xml: str = "scene.xml"  # Default; most menagerie robots use scene.xml
     floating: bool = True
 
     # Configurable defaults
@@ -1783,6 +1783,9 @@ class TestMenagerieUSD(TestMenagerieBase):
     Newton loads the USD file. Native MuJoCo still loads the original MJCF.
     """
 
+    # All USD tests are skipped until the converter is ready
+    skip_reason: str | None = "USD converter not yet implemented"
+
     def _create_newton_model(self) -> newton.Model:
         """Create Newton model by converting MJCF to USD first."""
         return create_newton_model_from_usd(
@@ -1810,7 +1813,6 @@ class TestMenagerie_AgilexPiper(TestMenagerieMJCF):
     """AgileX PIPER bimanual arm."""
 
     robot_folder = "agilex_piper"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1819,16 +1821,13 @@ class TestMenagerie_AgilexPiper_USD(TestMenagerieUSD):
     """AgileX PIPER bimanual arm. (USD)."""
 
     robot_folder = "agilex_piper"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_ArxL5(TestMenagerieMJCF):
     """ARX L5 arm."""
 
     robot_folder = "arx_l5"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1837,16 +1836,13 @@ class TestMenagerie_ArxL5_USD(TestMenagerieUSD):
     """ARX L5 arm. (USD)."""
 
     robot_folder = "arx_l5"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_Dynamixel2r(TestMenagerieMJCF):
     """Dynamixel 2R simple arm."""
 
     robot_folder = "dynamixel_2r"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1855,16 +1851,13 @@ class TestMenagerie_Dynamixel2r_USD(TestMenagerieUSD):
     """Dynamixel 2R simple arm. (USD)."""
 
     robot_folder = "dynamixel_2r"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1873,16 +1866,13 @@ class TestMenagerie_FrankaEmikaPanda_USD(TestMenagerieUSD):
     """Franka Emika Panda arm. (USD)."""
 
     robot_folder = "franka_emika_panda"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
     """Franka FR3 arm."""
 
     robot_folder = "franka_fr3"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1891,16 +1881,13 @@ class TestMenagerie_FrankaFr3_USD(TestMenagerieUSD):
     """Franka FR3 arm. (USD)."""
 
     robot_folder = "franka_fr3"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1909,16 +1896,13 @@ class TestMenagerie_FrankaFr3V2_USD(TestMenagerieUSD):
     """Franka FR3 v2 arm. (USD)."""
 
     robot_folder = "franka_fr3_v2"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
     """Kinova Gen3 arm."""
 
     robot_folder = "kinova_gen3"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1927,16 +1911,13 @@ class TestMenagerie_KinovaGen3_USD(TestMenagerieUSD):
     """Kinova Gen3 arm. (USD)."""
 
     robot_folder = "kinova_gen3"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_KukaIiwa14(TestMenagerieMJCF):
     """KUKA iiwa 14 arm."""
 
     robot_folder = "kuka_iiwa_14"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1945,16 +1926,13 @@ class TestMenagerie_KukaIiwa14_USD(TestMenagerieUSD):
     """KUKA iiwa 14 arm. (USD)."""
 
     robot_folder = "kuka_iiwa_14"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_LowCostRobotArm(TestMenagerieMJCF):
     """Low-cost robot arm."""
 
     robot_folder = "low_cost_robot_arm"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1963,16 +1941,13 @@ class TestMenagerie_LowCostRobotArm_USD(TestMenagerieUSD):
     """Low-cost robot arm. (USD)."""
 
     robot_folder = "low_cost_robot_arm"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_RethinkSawyer(TestMenagerieMJCF):
     """Rethink Robotics Sawyer arm."""
 
     robot_folder = "rethink_robotics_sawyer"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1981,16 +1956,13 @@ class TestMenagerie_RethinkSawyer_USD(TestMenagerieUSD):
     """Rethink Robotics Sawyer arm. (USD)."""
 
     robot_folder = "rethink_robotics_sawyer"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_TrossenVx300s(TestMenagerieMJCF):
     """Trossen Robotics ViperX 300 S arm."""
 
     robot_folder = "trossen_vx300s"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -1999,16 +1971,13 @@ class TestMenagerie_TrossenVx300s_USD(TestMenagerieUSD):
     """Trossen Robotics ViperX 300 S arm. (USD)."""
 
     robot_folder = "trossen_vx300s"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_TrossenWx250s(TestMenagerieMJCF):
     """Trossen Robotics WidowX 250 S arm."""
 
     robot_folder = "trossen_wx250s"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2017,16 +1986,13 @@ class TestMenagerie_TrossenWx250s_USD(TestMenagerieUSD):
     """Trossen Robotics WidowX 250 S arm. (USD)."""
 
     robot_folder = "trossen_wx250s"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_TrossenWxai(TestMenagerieMJCF):
     """Trossen Robotics WidowX AI arm."""
 
     robot_folder = "trossen_wxai"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2035,16 +2001,13 @@ class TestMenagerie_TrossenWxai_USD(TestMenagerieUSD):
     """Trossen Robotics WidowX AI arm. (USD)."""
 
     robot_folder = "trossen_wxai"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_TrsSoArm100(TestMenagerieMJCF):
     """TRS SO-ARM100 arm."""
 
     robot_folder = "trs_so_arm100"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2053,16 +2016,13 @@ class TestMenagerie_TrsSoArm100_USD(TestMenagerieUSD):
     """TRS SO-ARM100 arm. (USD)."""
 
     robot_folder = "trs_so_arm100"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UfactoryLite6(TestMenagerieMJCF):
     """UFACTORY Lite 6 arm."""
 
     robot_folder = "ufactory_lite6"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2071,16 +2031,13 @@ class TestMenagerie_UfactoryLite6_USD(TestMenagerieUSD):
     """UFACTORY Lite 6 arm. (USD)."""
 
     robot_folder = "ufactory_lite6"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UfactoryXarm7(TestMenagerieMJCF):
     """UFACTORY xArm 7 arm."""
 
     robot_folder = "ufactory_xarm7"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2089,16 +2046,13 @@ class TestMenagerie_UfactoryXarm7_USD(TestMenagerieUSD):
     """UFACTORY xArm 7 arm. (USD)."""
 
     robot_folder = "ufactory_xarm7"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     """Universal Robots UR5e arm."""
 
     robot_folder = "universal_robots_ur5e"
-    robot_xml = "scene.xml"
     floating = False
     control_strategy = StructuredControlStrategy(amplitude_scale=0.5, frequency_range=(0.5, 1.5))
     num_worlds = 32
@@ -2118,16 +2072,13 @@ class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
     """Universal Robots UR5e arm (USD)."""
 
     robot_folder = "universal_robots_ur5e"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2136,9 +2087,7 @@ class TestMenagerie_UniversalRobotsUr10e_USD(TestMenagerieUSD):
     """Universal Robots UR10e arm. (USD)."""
 
     robot_folder = "universal_robots_ur10e"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2150,7 +2099,6 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
     """LEAP Hand."""
 
     robot_folder = "leap_hand"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2159,16 +2107,13 @@ class TestMenagerie_LeapHand_USD(TestMenagerieUSD):
     """LEAP Hand. (USD)."""
 
     robot_folder = "leap_hand"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper."""
 
     robot_folder = "robotiq_2f85"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2177,16 +2122,13 @@ class TestMenagerie_Robotiq2f85_USD(TestMenagerieUSD):
     """Robotiq 2F-85 gripper. (USD)."""
 
     robot_folder = "robotiq_2f85"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_Robotiq2f85V4(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper v4."""
 
     robot_folder = "robotiq_2f85_v4"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -2195,16 +2137,13 @@ class TestMenagerie_Robotiq2f85V4_USD(TestMenagerieUSD):
     """Robotiq 2F-85 gripper v4. (USD)."""
 
     robot_folder = "robotiq_2f85_v4"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_ShadowDexee(TestMenagerieMJCF):
     """Shadow DEX-EE hand."""
 
     robot_folder = "shadow_dexee"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2213,16 +2152,13 @@ class TestMenagerie_ShadowDexee_USD(TestMenagerieUSD):
     """Shadow DEX-EE hand. (USD)."""
 
     robot_folder = "shadow_dexee"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     """Shadow Hand."""
 
     robot_folder = "shadow_hand"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -2231,16 +2167,13 @@ class TestMenagerie_ShadowHand_USD(TestMenagerieUSD):
     """Shadow Hand. (USD)."""
 
     robot_folder = "shadow_hand"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieMJCF):
     """Tetheria Aero Hand (open)."""
 
     robot_folder = "tetheria_aero_hand_open"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2249,16 +2182,13 @@ class TestMenagerie_TetheriaAeroHandOpen_USD(TestMenagerieUSD):
     """Tetheria Aero Hand (open). (USD)."""
 
     robot_folder = "tetheria_aero_hand_open"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UmiGripper(TestMenagerieMJCF):
     """UMI Gripper."""
 
     robot_folder = "umi_gripper"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2267,16 +2197,13 @@ class TestMenagerie_UmiGripper_USD(TestMenagerieUSD):
     """UMI Gripper. (USD)."""
 
     robot_folder = "umi_gripper"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     """Wonik Allegro Hand."""
 
     robot_folder = "wonik_allegro"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -2285,16 +2212,13 @@ class TestMenagerie_WonikAllegro_USD(TestMenagerieUSD):
     """Wonik Allegro Hand. (USD)."""
 
     robot_folder = "wonik_allegro"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
     """IIT Softfoot biomechanical gripper."""
 
     robot_folder = "iit_softfoot"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2303,9 +2227,7 @@ class TestMenagerie_IitSoftfoot_USD(TestMenagerieUSD):
     """IIT Softfoot biomechanical gripper. (USD)."""
 
     robot_folder = "iit_softfoot"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2317,7 +2239,6 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2326,16 +2247,13 @@ class TestMenagerie_Aloha_USD(TestMenagerieUSD):
     """ALOHA bimanual system. (USD)."""
 
     robot_folder = "aloha"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
     """Google Robot (bimanual)."""
 
     robot_folder = "google_robot"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2344,9 +2262,7 @@ class TestMenagerie_GoogleRobot_USD(TestMenagerieUSD):
     """Google Robot (bimanual). (USD)."""
 
     robot_folder = "google_robot"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2358,7 +2274,6 @@ class TestMenagerie_HelloRobotStretch(TestMenagerieMJCF):
     """Hello Robot Stretch."""
 
     robot_folder = "hello_robot_stretch"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2367,16 +2282,13 @@ class TestMenagerie_HelloRobotStretch_USD(TestMenagerieUSD):
     """Hello Robot Stretch. (USD)."""
 
     robot_folder = "hello_robot_stretch"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_HelloRobotStretch3(TestMenagerieMJCF):
     """Hello Robot Stretch 3."""
 
     robot_folder = "hello_robot_stretch_3"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2385,16 +2297,13 @@ class TestMenagerie_HelloRobotStretch3_USD(TestMenagerieUSD):
     """Hello Robot Stretch 3. (USD)."""
 
     robot_folder = "hello_robot_stretch_3"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_PalTiago(TestMenagerieMJCF):
     """PAL Robotics TIAGo."""
 
     robot_folder = "pal_tiago"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2403,16 +2312,13 @@ class TestMenagerie_PalTiago_USD(TestMenagerieUSD):
     """PAL Robotics TIAGo. (USD)."""
 
     robot_folder = "pal_tiago"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_PalTiagoDual(TestMenagerieMJCF):
     """PAL Robotics TIAGo Dual."""
 
     robot_folder = "pal_tiago_dual"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2421,16 +2327,13 @@ class TestMenagerie_PalTiagoDual_USD(TestMenagerieUSD):
     """PAL Robotics TIAGo Dual. (USD)."""
 
     robot_folder = "pal_tiago_dual"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_StanfordTidybot(TestMenagerieMJCF):
     """Stanford Tidybot mobile manipulator."""
 
     robot_folder = "stanford_tidybot"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2439,9 +2342,7 @@ class TestMenagerie_StanfordTidybot_USD(TestMenagerieUSD):
     """Stanford Tidybot mobile manipulator. (USD)."""
 
     robot_folder = "stanford_tidybot"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2453,7 +2354,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -2462,16 +2362,13 @@ class TestMenagerie_ApptronikApollo_USD(TestMenagerieUSD):
     """Apptronik Apollo humanoid. (USD)."""
 
     robot_folder = "apptronik_apollo"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_BerkeleyHumanoid(TestMenagerieMJCF):
     """Berkeley Humanoid."""
 
     robot_folder = "berkeley_humanoid"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2480,16 +2377,13 @@ class TestMenagerie_BerkeleyHumanoid_USD(TestMenagerieUSD):
     """Berkeley Humanoid. (USD)."""
 
     robot_folder = "berkeley_humanoid"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -2498,16 +2392,13 @@ class TestMenagerie_BoosterT1_USD(TestMenagerieUSD):
     """Booster Robotics T1 humanoid. (USD)."""
 
     robot_folder = "booster_t1"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
     """Fourier N1 humanoid."""
 
     robot_folder = "fourier_n1"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2516,16 +2407,13 @@ class TestMenagerie_FourierN1_USD(TestMenagerieUSD):
     """Fourier N1 humanoid. (USD)."""
 
     robot_folder = "fourier_n1"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_PalTalos(TestMenagerieMJCF):
     """PAL Robotics TALOS humanoid."""
 
     robot_folder = "pal_talos"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2534,16 +2422,13 @@ class TestMenagerie_PalTalos_USD(TestMenagerieUSD):
     """PAL Robotics TALOS humanoid. (USD)."""
 
     robot_folder = "pal_talos"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_PndboticsAdamLite(TestMenagerieMJCF):
     """PNDbotics Adam Lite humanoid."""
 
     robot_folder = "pndbotics_adam_lite"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2552,16 +2437,13 @@ class TestMenagerie_PndboticsAdamLite_USD(TestMenagerieUSD):
     """PNDbotics Adam Lite humanoid. (USD)."""
 
     robot_folder = "pndbotics_adam_lite"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_RobotisOp3(TestMenagerieMJCF):
     """Robotis OP3 humanoid."""
 
     robot_folder = "robotis_op3"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2570,16 +2452,13 @@ class TestMenagerie_RobotisOp3_USD(TestMenagerieUSD):
     """Robotis OP3 humanoid. (USD)."""
 
     robot_folder = "robotis_op3"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_ToddlerBot2xc(TestMenagerieMJCF):
     """ToddlerBot 2XC humanoid."""
 
     robot_folder = "toddlerbot_2xc"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2588,16 +2467,13 @@ class TestMenagerie_ToddlerBot2xc_USD(TestMenagerieUSD):
     """ToddlerBot 2XC humanoid. (USD)."""
 
     robot_folder = "toddlerbot_2xc"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_ToddlerBot2xm(TestMenagerieMJCF):
     """ToddlerBot 2XM humanoid."""
 
     robot_folder = "toddlerbot_2xm"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2606,16 +2482,13 @@ class TestMenagerie_ToddlerBot2xm_USD(TestMenagerieUSD):
     """ToddlerBot 2XM humanoid. (USD)."""
 
     robot_folder = "toddlerbot_2xm"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -2624,16 +2497,13 @@ class TestMenagerie_UnitreeG1_USD(TestMenagerieUSD):
     """Unitree G1 humanoid. (USD)."""
 
     robot_folder = "unitree_g1"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
@@ -2642,9 +2512,7 @@ class TestMenagerie_UnitreeH1_USD(TestMenagerieUSD):
     """Unitree H1 humanoid. (USD)."""
 
     robot_folder = "unitree_h1"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2656,7 +2524,6 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2665,9 +2532,7 @@ class TestMenagerie_AgilityCassie_USD(TestMenagerieUSD):
     """Agility Robotics Cassie biped. (USD)."""
 
     robot_folder = "agility_cassie"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2679,7 +2544,6 @@ class TestMenagerie_AnyboticsAnymalB(TestMenagerieMJCF):
     """ANYbotics ANYmal B quadruped."""
 
     robot_folder = "anybotics_anymal_b"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2688,16 +2552,13 @@ class TestMenagerie_AnyboticsAnymalB_USD(TestMenagerieUSD):
     """ANYbotics ANYmal B quadruped. (USD)."""
 
     robot_folder = "anybotics_anymal_b"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2706,16 +2567,13 @@ class TestMenagerie_AnyboticsAnymalC_USD(TestMenagerieUSD):
     """ANYbotics ANYmal C quadruped. (USD)."""
 
     robot_folder = "anybotics_anymal_c"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2724,16 +2582,13 @@ class TestMenagerie_BostonDynamicsSpot_USD(TestMenagerieUSD):
     """Boston Dynamics Spot quadruped. (USD)."""
 
     robot_folder = "boston_dynamics_spot"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
     """Google Barkour v0 quadruped."""
 
     robot_folder = "google_barkour_v0"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2742,16 +2597,13 @@ class TestMenagerie_GoogleBarkourV0_USD(TestMenagerieUSD):
     """Google Barkour v0 quadruped. (USD)."""
 
     robot_folder = "google_barkour_v0"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_GoogleBarkourVb(TestMenagerieMJCF):
     """Google Barkour vB quadruped."""
 
     robot_folder = "google_barkour_vb"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2760,16 +2612,13 @@ class TestMenagerie_GoogleBarkourVb_USD(TestMenagerieUSD):
     """Google Barkour vB quadruped. (USD)."""
 
     robot_folder = "google_barkour_vb"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UnitreeA1(TestMenagerieMJCF):
     """Unitree A1 quadruped."""
 
     robot_folder = "unitree_a1"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2778,16 +2627,13 @@ class TestMenagerie_UnitreeA1_USD(TestMenagerieUSD):
     """Unitree A1 quadruped. (USD)."""
 
     robot_folder = "unitree_a1"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UnitreeGo1(TestMenagerieMJCF):
     """Unitree Go1 quadruped."""
 
     robot_folder = "unitree_go1"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2796,16 +2642,13 @@ class TestMenagerie_UnitreeGo1_USD(TestMenagerieUSD):
     """Unitree Go1 quadruped. (USD)."""
 
     robot_folder = "unitree_go1"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2814,9 +2657,7 @@ class TestMenagerie_UnitreeGo2_USD(TestMenagerieUSD):
     """Unitree Go2 quadruped. (USD)."""
 
     robot_folder = "unitree_go2"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2828,7 +2669,6 @@ class TestMenagerie_UnitreeZ1(TestMenagerieMJCF):
     """Unitree Z1 arm."""
 
     robot_folder = "unitree_z1"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2837,9 +2677,7 @@ class TestMenagerie_UnitreeZ1_USD(TestMenagerieUSD):
     """Unitree Z1 arm. (USD)."""
 
     robot_folder = "unitree_z1"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2851,7 +2689,6 @@ class TestMenagerie_BitcrazeCrazyflie2(TestMenagerieMJCF):
     """Bitcraze Crazyflie 2 quadrotor."""
 
     robot_folder = "bitcraze_crazyflie_2"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2860,16 +2697,13 @@ class TestMenagerie_BitcrazeCrazyflie2_USD(TestMenagerieUSD):
     """Bitcraze Crazyflie 2 quadrotor. (USD)."""
 
     robot_folder = "bitcraze_crazyflie_2"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_SkydioX2(TestMenagerieMJCF):
     """Skydio X2 drone."""
 
     robot_folder = "skydio_x2"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2878,9 +2712,7 @@ class TestMenagerie_SkydioX2_USD(TestMenagerieUSD):
     """Skydio X2 drone. (USD)."""
 
     robot_folder = "skydio_x2"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2892,7 +2724,6 @@ class TestMenagerie_RobotSoccerKit(TestMenagerieMJCF):
     """Robot Soccer Kit omniwheel base."""
 
     robot_folder = "robot_soccer_kit"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2901,16 +2732,13 @@ class TestMenagerie_RobotSoccerKit_USD(TestMenagerieUSD):
     """Robot Soccer Kit omniwheel base. (USD)."""
 
     robot_folder = "robot_soccer_kit"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2919,9 +2747,7 @@ class TestMenagerie_RobotstudioSo101_USD(TestMenagerieUSD):
     """RobotStudio SO-101. (USD)."""
 
     robot_folder = "robotstudio_so101"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2933,7 +2759,6 @@ class TestMenagerie_Flybody(TestMenagerieMJCF):
     """Flybody fruit fly model."""
 
     robot_folder = "flybody"
-    robot_xml = "scene.xml"
     floating = True
     skip_reason = "Not yet implemented"
 
@@ -2942,9 +2767,7 @@ class TestMenagerie_Flybody_USD(TestMenagerieUSD):
     """Flybody fruit fly model. (USD)."""
 
     robot_folder = "flybody"
-    robot_xml = "scene.xml"
     floating = True
-    skip_reason = "USD converter not yet implemented"
 
 
 # -----------------------------------------------------------------------------
@@ -2956,7 +2779,6 @@ class TestMenagerie_I2rtYam(TestMenagerieMJCF):
     """i2rt YAM (Yet Another Manipulator)."""
 
     robot_folder = "i2rt_yam"
-    robot_xml = "scene.xml"
     floating = False
     skip_reason = "Not yet implemented"
 
@@ -2965,9 +2787,7 @@ class TestMenagerie_I2rtYam_USD(TestMenagerieUSD):
     """i2rt YAM (Yet Another Manipulator). (USD)."""
 
     robot_folder = "i2rt_yam"
-    robot_xml = "scene.xml"
     floating = False
-    skip_reason = "USD converter not yet implemented"
 
 
 # =============================================================================
