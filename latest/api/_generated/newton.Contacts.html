@@ -59,7 +59,7 @@
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="newton.Control" href="newton.Control.html" />
-    <link rel="prev" title="newton.CollisionPipelineUnified" href="newton.CollisionPipelineUnified.html" />
+    <link rel="prev" title="newton.CollisionPipeline" href="newton.CollisionPipeline.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -844,7 +844,11 @@ optionally require gradients for differentiable simulation.</p>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>rigid_contact_max</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Maximum number of rigid contacts</p></li>
 <li><p><strong>soft_contact_max</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Maximum number of soft contacts</p></li>
-<li><p><strong>requires_grad</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether contact arrays require gradients for differentiable simulation</p></li>
+<li><p><strong>requires_grad</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether <strong>soft</strong> contact arrays require gradients for differentiable
+simulation.  Rigid contact arrays are always allocated without gradients because
+the narrow phase kernels do not support backward passes.  Soft contact arrays
+(body_pos, body_vel, normal) are allocated with <code class="docutils literal notranslate"><span class="pre">requires_grad</span></code> so that
+gradient-based optimisation can flow through particle-shape contacts.</p></li>
 <li><p><strong>device</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.Device.html#warp.Device" title="(in Warp v1.11.1)"><em>Device</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Device to allocate buffers on</p></li>
 <li><p><strong>per_contact_shape_properties</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Enable per-contact stiffness/damping/friction arrays</p></li>
 <li><p><strong>clear_buffers</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, clear() will zero all contact buffers (slower but conservative).

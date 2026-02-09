@@ -805,23 +805,17 @@
 <span id="id1"></span><h1>Collisions<a class="headerlink" href="#collisions" title="Link to this heading">#</a></h1>
 <p>Newton provides a flexible collision detection system for rigid-rigid and soft-rigid contacts. The pipeline handles broad phase culling, narrow phase contact generation, and filtering.</p>
 <p>Newton’s collision system is also compatible with MuJoCo-imported models via MJWarp, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes. See <code class="docutils literal notranslate"><span class="pre">examples/mjwarp/</span></code> for usage.</p>
-<section id="collision-pipelines">
-<span id="collision-pipelines-overview"></span><h2>Collision Pipelines<a class="headerlink" href="#collision-pipelines" title="Link to this heading">#</a></h2>
-<p>Newton provides two collision pipeline implementations:</p>
-<dl class="simple">
-<dt><strong>CollisionPipeline</strong> (Standard)</dt><dd><p>Uses precomputed shape pairs determined during model finalization. Efficient when the number of potentially colliding pairs is limited (NxN minus filtering rules). For scenes with many shapes where most pairs are filtered out, this avoids runtime broad phase overhead.</p>
-</dd>
-<dt><strong>CollisionPipelineUnified</strong></dt><dd><p>Supports multiple broad phase algorithms. Use this when the number of potential collision pairs would be large (e.g., hundreds of shapes that could all collide). Also required for advanced contact models like SDF-based and hydroelastic contacts. See <a class="reference internal" href="#unified-pipeline"><span class="std std-ref">Unified Pipeline</span></a> for details.</p>
-</dd>
-</dl>
+<section id="collision-pipeline">
+<span id="id2"></span><h2>Collision Pipeline<a class="headerlink" href="#collision-pipeline" title="Link to this heading">#</a></h2>
+<p>Newton’s collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See <a class="reference internal" href="#collision-pipeline-details"><span class="std std-ref">Broad Phase and Shape Compatibility</span></a> for details.</p>
 <p>Basic usage:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Default: uses CollisionPipeline with precomputed pairs</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Default: creates CollisionPipeline with EXPLICIT broad phase (precomputed pairs)</span>
 <span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
 
-<span class="c1"># Or explicitly create a pipeline</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipelineUnified</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+<span class="c1"># Or create a pipeline explicitly to choose broad phase mode</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
 
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipelineUnified</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span>
     <span class="n">model</span><span class="p">,</span>
     <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">,</span>
 <span class="p">)</span>
@@ -830,7 +824,7 @@
 </div>
 </section>
 <section id="supported-shape-types">
-<span id="id2"></span><h2>Supported Shape Types<a class="headerlink" href="#supported-shape-types" title="Link to this heading">#</a></h2>
+<span id="id3"></span><h2>Supported Shape Types<a class="headerlink" href="#supported-shape-types" title="Link to this heading">#</a></h2>
 <p>Newton supports the following geometry types via <a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType" title="newton.GeoType"><code class="xref py py-class docutils literal notranslate"><span class="pre">GeoType</span></code></a>:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
@@ -904,8 +898,8 @@ based on efficiency.</p>
 <p>Contacts are generated between shapes, not bodies. Depending on the type of solver, the motion of the bodies is affected by forces or constraints that resolve the penetrations between their attached shapes.</p>
 </section>
 <section id="collision-filtering">
-<span id="id3"></span><h2>Collision Filtering<a class="headerlink" href="#collision-filtering" title="Link to this heading">#</a></h2>
-<p>Both pipelines use the same filtering rules based on world indices and collision groups.</p>
+<span id="id4"></span><h2>Collision Filtering<a class="headerlink" href="#collision-filtering" title="Link to this heading">#</a></h2>
+<p>The collision pipeline uses filtering rules based on world indices and collision groups.</p>
 <section id="world-indices">
 <span id="world-ids"></span><h3>World Indices<a class="headerlink" href="#world-indices" title="Link to this heading">#</a></h3>
 <p>World indices enable multi-world simulations, primarily for reinforcement learning, where objects belonging to different worlds coexist but do not interact through contacts:</p>
@@ -940,7 +934,7 @@ based on efficiency.</p>
 <p>World indices are stored in <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_world</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.body_world</span></code>, etc.</p>
 </section>
 <section id="collision-groups">
-<span id="id4"></span><h3>Collision Groups<a class="headerlink" href="#collision-groups" title="Link to this heading">#</a></h3>
+<span id="id5"></span><h3>Collision Groups<a class="headerlink" href="#collision-groups" title="Link to this heading">#</a></h3>
 <p>Collision groups control which shapes collide within the same world:</p>
 <ul class="simple">
 <li><p><strong>Group 0</strong>: Collisions disabled</p></li>
@@ -1115,169 +1109,9 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 </div>
 </section>
 </section>
-<section id="standard-pipeline">
-<span id="id5"></span><h2>Standard Pipeline<a class="headerlink" href="#standard-pipeline" title="Link to this heading">#</a></h2>
-<p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> is the default implementation. Shape pairs are precomputed during <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a> based on filtering rules.</p>
-<p><strong>When to use:</strong></p>
-<ul class="simple">
-<li><p>Limited number of potential collision pairs (filtering rules eliminate most NxN combinations)</p></li>
-<li><p>Static collision topology (pairs don’t change at runtime)</p></li>
-<li><p>Scenes with &lt;100 potentially colliding shapes</p></li>
-</ul>
-<p><strong>Limitations:</strong></p>
-<ul class="simple">
-<li><p>Does not support advanced contact models (SDF-based, hydroelastic, cylinder, cone primitives)</p></li>
-<li><p>Pairs fixed at finalization - inefficient if NxN minus filtering is still large</p></li>
-</ul>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>Development is focused on <code class="docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code>, which will replace the standard
-<code class="docutils literal notranslate"><span class="pre">CollisionPipeline</span></code> in the future once feature and performance parity is achieved.
-New contact models (SDF, hydroelastic, cylinder/cone primitives) are only being added to
-the unified pipeline. Consider using <code class="docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code> with
-<code class="docutils literal notranslate"><span class="pre">BroadPhaseMode.EXPLICIT</span></code> if you need static pairs with advanced contact models.</p>
-</div>
-<section id="standard-pipeline-shape-compatibility">
-<h3>Standard Pipeline Shape Compatibility<a class="headerlink" href="#standard-pipeline-shape-compatibility" title="Link to this heading">#</a></h3>
-<div class="pst-scrollable-table-container"><table class="table">
-<colgroup>
-<col style="width: 12.9%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-<col style="width: 9.7%" />
-</colgroup>
-<thead>
-<tr class="row-odd"><th class="head"></th>
-<th class="head"><p>Plane</p></th>
-<th class="head"><p>Sphere</p></th>
-<th class="head"><p>Capsule</p></th>
-<th class="head"><p>Box</p></th>
-<th class="head"><p>Cylinder</p></th>
-<th class="head"><p>Cone</p></th>
-<th class="head"><p>Mesh</p></th>
-<th class="head"><p>SDF</p></th>
-<th class="head"><p>Particle</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><strong>Plane</strong></p></td>
-<td></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-<td></td>
-<td><p>✅</p></td>
-<td></td>
-<td><p>✅</p></td>
-</tr>
-<tr class="row-odd"><td><p><strong>Sphere</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-<td></td>
-<td><p>✅</p></td>
-<td></td>
-<td><p>✅</p></td>
-</tr>
-<tr class="row-even"><td><p><strong>Capsule</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-<td></td>
-<td><p>✅</p></td>
-<td></td>
-<td><p>✅</p></td>
-</tr>
-<tr class="row-odd"><td><p><strong>Box</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-<td></td>
-<td><p>✅</p></td>
-<td></td>
-<td><p>✅</p></td>
-</tr>
-<tr class="row-even"><td><p><strong>Cylinder</strong></p></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td><p>✅</p></td>
-</tr>
-<tr class="row-odd"><td><p><strong>Cone</strong></p></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td><p>✅</p></td>
-</tr>
-<tr class="row-even"><td><p><strong>Mesh</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td></td>
-<td></td>
-<td><p>✅</p></td>
-<td></td>
-<td><p>✅</p></td>
-</tr>
-<tr class="row-odd"><td><p><strong>SDF</strong></p></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td></td>
-<td><p>✅</p></td>
-</tr>
-<tr class="row-even"><td><p><strong>Particle</strong></p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-<td><p>✅</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>Empty cells indicate unsupported pairs. Use <a class="reference internal" href="../api/_generated/newton.CollisionPipelineUnified.html#newton.CollisionPipelineUnified" title="newton.CollisionPipelineUnified"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code></a> for cylinder, cone, SDF, and hydroelastic contact generation.</p>
-<p>The pipeline is created automatically when calling <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> without arguments:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>  <span class="c1"># Uses CollisionPipeline internally</span>
-</pre></div>
-</div>
-</section>
-</section>
-<section id="unified-pipeline">
-<span id="id6"></span><h2>Unified Pipeline<a class="headerlink" href="#unified-pipeline" title="Link to this heading">#</a></h2>
-<p><a class="reference internal" href="../api/_generated/newton.CollisionPipelineUnified.html#newton.CollisionPipelineUnified" title="newton.CollisionPipelineUnified"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code></a> provides configurable broad phase algorithms:</p>
+<section id="broad-phase-and-shape-compatibility">
+<span id="collision-pipeline-details"></span><h2>Broad Phase and Shape Compatibility<a class="headerlink" href="#broad-phase-and-shape-compatibility" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> provides configurable broad phase algorithms:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 15.0%" />
@@ -1296,25 +1130,28 @@ the unified pipeline. Consider using <code class="docutils literal notranslate">
 <td><p>Sweep-and-prune AABB broad phase. O(N log N), better for larger scenes with spatial coherence.</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>EXPLICIT</strong></p></td>
-<td><p>Uses precomputed shape pairs like standard pipeline, but with unified pipeline’s contact algorithms. Combines static pair efficiency with advanced contact models.</p></td>
+<td><p>Uses precomputed shape pairs (default). Combines static pair efficiency with advanced contact algorithms.</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipelineUnified</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+
+<span class="c1"># Default: EXPLICIT (precomputed pairs)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 
 <span class="c1"># NxN for small scenes</span>
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipelineUnified</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">NXN</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">NXN</span><span class="p">)</span>
 
 <span class="c1"># SAP for larger scenes</span>
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipelineUnified</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">)</span>
 
 <span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
 </pre></div>
 </div>
-<section id="unified-pipeline-shape-compatibility">
-<span id="shape-compatibility"></span><h3>Unified Pipeline Shape Compatibility<a class="headerlink" href="#unified-pipeline-shape-compatibility" title="Link to this heading">#</a></h3>
-<p>The unified pipeline supports collision detection between all shape type combinations:</p>
+<section id="shape-compatibility">
+<span id="id6"></span><h3>Shape Compatibility<a class="headerlink" href="#shape-compatibility" title="Link to this heading">#</a></h3>
+<p>The collision pipeline supports collision detection between all shape type combinations:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 12.9%" />
@@ -1452,7 +1289,7 @@ the unified pipeline. Consider using <code class="docutils literal notranslate">
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><code class="docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code> does not currently support particle (soft body) collisions. Use the standard pipeline for particle-shape contacts. The unified pipeline is under active development.</p>
+<p>Particle (soft body) collision support is available; see cloth and cable examples that use the collision pipeline for particle-shape contacts.</p>
 </div>
 </section>
 </section>
@@ -1462,7 +1299,7 @@ the unified pipeline. Consider using <code class="docutils literal notranslate">
 <p><strong>MPR (Minkowski Portal Refinement)</strong></p>
 <p>The primary algorithm for convex shape pairs. Uses support mapping functions to find the closest points between shapes via Minkowski difference sampling. Works with all convex primitives (sphere, box, capsule, cylinder, cone, ellipsoid) and convex meshes.</p>
 <p><strong>Multi-contact Generation</strong></p>
-<p>For shape pairs, multiple contact points are generated for stable stacking and resting contacts. For the standard collision pipeline, the maximum contacts per shape pair is controlled by <code class="docutils literal notranslate"><span class="pre">rigid_contact_max_per_pair</span></code> in <code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.collide()</span></code>. The unified collision pipeline automatically estimates buffer sizes based on the model.</p>
+<p>For shape pairs, multiple contact points are generated for stable stacking and resting contacts. The collision pipeline estimates buffer sizes based on the model; you can override with <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> when creating the pipeline via <code class="xref py py-meth docutils literal notranslate"><span class="pre">CollisionPipeline.from_model()</span></code>.</p>
 <section id="mesh-collision-handling">
 <span id="mesh-collisions"></span><h3>Mesh Collision Handling<a class="headerlink" href="#mesh-collision-handling" title="Link to this heading">#</a></h3>
 <p>Mesh collisions use different strategies depending on the pair type:</p>
@@ -1513,7 +1350,7 @@ via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolut
     <span class="n">moment_matching</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>          <span class="c1"># Match friction moments (experimental)</span>
 <span class="p">)</span>
 
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipelineUnified</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sdf_hydroelastic_config</span><span class="o">=</span><span class="n">config</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sdf_hydroelastic_config</span><span class="o">=</span><span class="n">config</span><span class="p">)</span>
 </pre></div>
 </div>
 <p><strong>Understanding betas:</strong></p>
@@ -1527,7 +1364,7 @@ This weighs spatial distribution more heavily for shallow contacts.</p></li>
 another prioritizes spatial coverage. More betas = more contacts retained but better coverage.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>The beta scoring behavior is subject to refinement. The unified collision pipeline
+<p>The beta scoring behavior is subject to refinement. The collision pipeline
 is under active development and these parameters may change in future releases.</p>
 </div>
 <p><strong>Other reduction options:</strong></p>
@@ -1825,22 +1662,7 @@ contact information. See <code class="xref py py-class docutils literal notransl
 <td><p>Current simulation state (required).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collision_pipeline</span></code></p></td>
-<td><p>Optional custom collision pipeline. If None, creates/reuses default.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rigid_contact_max_per_pair</span></code></p></td>
-<td><p>Maximum contacts per shape pair. None = no limit.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_max</span></code></p></td>
-<td><p>Maximum soft contacts to allocate.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">soft_contact_margin</span></code></p></td>
-<td><p>Margin for soft contact generation. Default: 0.01.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">edge_sdf_iter</span></code></p></td>
-<td><p>Iterations for edge-SDF contact search. Default: 10.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">requires_grad</span></code></p></td>
-<td><p>Enable gradient computation. Default: model.requires_grad.</p></td>
+<td><p>Optional <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a>. If None, creates/reuses a default pipeline (EXPLICIT broad phase). For options like <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code>, <code class="docutils literal notranslate"><span class="pre">soft_contact_margin</span></code>, <code class="docutils literal notranslate"><span class="pre">requires_grad</span></code>, create the pipeline via <code class="xref py py-meth docutils literal notranslate"><span class="pre">CollisionPipeline.from_model()</span></code> and pass it here.</p></td>
 </tr>
 </tbody>
 </table>
@@ -1991,14 +1813,14 @@ contact information. See <code class="xref py py-class docutils literal notransl
 <section id="performance">
 <span id="id11"></span><h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Use <strong>EXPLICIT</strong> or standard pipeline when collision pairs are limited (&lt;100 shapes with most pairs filtered)</p></li>
+<li><p>Use <strong>EXPLICIT</strong> (default) when collision pairs are limited (&lt;100 shapes with most pairs filtered)</p></li>
 <li><p>Use <strong>SAP</strong> for &gt;100 shapes with spatial coherence</p></li>
 <li><p>Use <strong>NxN</strong> for small scenes (&lt;100 shapes) or uniform spatial distribution</p></li>
 <li><p>Minimize global entities (world=-1) as they interact with all worlds</p></li>
 <li><p>Use positive collision groups to reduce candidate pairs</p></li>
 <li><p>Use world indices for parallel simulations (essential for RL with many environments)</p></li>
 <li><p>Contact reduction is enabled by default for mesh-heavy scenes</p></li>
-<li><p>Adjust <code class="docutils literal notranslate"><span class="pre">rigid_contact_max_per_pair</span></code> to limit memory usage in complex scenes</p></li>
+<li><p>Pass <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> to <code class="xref py py-meth docutils literal notranslate"><span class="pre">CollisionPipeline.from_model()</span></code> to limit memory in complex scenes</p></li>
 </ul>
 </section>
 <section id="see-also">
@@ -2007,7 +1829,6 @@ contact information. See <code class="xref py py-class docutils literal notransl
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">CollisionPipeline</span><span class="p">,</span>
-    <span class="n">CollisionPipelineUnified</span><span class="p">,</span>
     <span class="n">BroadPhaseMode</span><span class="p">,</span>
     <span class="n">Contacts</span><span class="p">,</span>
     <span class="n">GeoType</span><span class="p">,</span>
@@ -2017,8 +1838,7 @@ contact information. See <code class="xref py py-class docutils literal notransl
 </div>
 <p><strong>API Reference:</strong></p>
 <ul class="simple">
-<li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> - Standard collision pipeline</p></li>
-<li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipelineUnified.html#newton.CollisionPipelineUnified" title="newton.CollisionPipelineUnified"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipelineUnified</span></code></a> - Unified pipeline with broad phase options</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> - Collision pipeline with configurable broad phase</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.BroadPhaseMode.html#newton.BroadPhaseMode" title="newton.BroadPhaseMode"><code class="xref py py-class docutils literal notranslate"><span class="pre">BroadPhaseMode</span></code></a> - Broad phase algorithm selection</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> - Contact data container</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType" title="newton.GeoType"><code class="xref py py-class docutils literal notranslate"><span class="pre">GeoType</span></code></a> - Shape geometry types</p></li>
@@ -2065,7 +1885,7 @@ contact information. See <code class="xref py py-class docutils literal notransl
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-pipelines">Collision Pipelines</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-pipeline">Collision Pipeline</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-shape-types">Supported Shape Types</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shapes-and-rigid-bodies">Shapes and Rigid Bodies</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collision-filtering">Collision Filtering</a><ul class="visible nav section-nav flex-column">
@@ -2075,12 +1895,8 @@ contact information. See <code class="xref py py-class docutils literal notransl
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shape-collision-filter-pairs">Shape Collision Filter Pairs</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#standard-pipeline">Standard Pipeline</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#standard-pipeline-shape-compatibility">Standard Pipeline Shape Compatibility</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#unified-pipeline">Unified Pipeline</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unified-pipeline-shape-compatibility">Unified Pipeline Shape Compatibility</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#broad-phase-and-shape-compatibility">Broad Phase and Shape Compatibility</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#shape-compatibility">Shape Compatibility</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#narrow-phase-algorithms">Narrow Phase Algorithms</a><ul class="visible nav section-nav flex-column">
