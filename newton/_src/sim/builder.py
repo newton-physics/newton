@@ -7598,13 +7598,16 @@ class ModelBuilder:
 
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
-            finalized_meshes = {}  # do not duplicate meshes
+            finalized_geos = {}  # do not duplicate geometry
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if geo:
-                    if geo_hash not in finalized_meshes:
-                        finalized_meshes[geo_hash] = geo.finalize(device=device)
-                    geo_sources.append(finalized_meshes[geo_hash])
+                    if geo_hash not in finalized_geos:
+                        if isinstance(geo, Mesh):
+                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                        else:
+                            finalized_geos[geo_hash] = geo.finalize()
+                    geo_sources.append(finalized_geos[geo_hash])
                 else:
                     # add null pointer
                     geo_sources.append(0)
