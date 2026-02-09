@@ -808,11 +808,11 @@ def run_native_step1(
     """Run mujoco_warp step1: kinematics + collision (but NOT constraint/solve/integrate).
 
     After this, native_data.contact contains the collision results.
+    Note: Does NOT call wp.synchronize() - caller should sync if needed.
     """
     from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
 
     mjw_forward.step1(native_model, native_data)
-    wp.synchronize()
 
 
 def run_native_step2(
@@ -822,11 +822,11 @@ def run_native_step2(
     """Run mujoco_warp step2: actuation + acceleration + solve + integrate.
 
     Uses the correct integrator based on model.opt.integrator.
+    Note: Does NOT call wp.synchronize() - caller should sync if needed.
     """
     from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
 
     mjw_forward.step2(native_model, native_data)
-    wp.synchronize()
 
 
 def inject_contacts(src_data: Any, dst_data: Any) -> None:
@@ -1626,7 +1626,12 @@ class TestMenagerieBase(unittest.TestCase):
                 newton_solver.step(newton_state, newton_state, newton_control, None, dt)
 
         # Helper: step with contact injection (split pipeline mode)
-        def step_with_contact_injection(step_num: int):
+        def step_with_contact_injection(
+            step_num: int,
+            newton_graph: Any = None,
+            step1_graph: Any = None,
+            step2_graph: Any = None,
+        ):
             """
             Split pipeline that injects Newton's contacts into native to bypass non-determinism.
 
@@ -1644,12 +1649,18 @@ class TestMenagerieBase(unittest.TestCase):
             newton_control.mujoco.ctrl.assign(ctrl.flatten())
             native_mjw_data.ctrl.assign(ctrl)
 
-            # 1. Newton full step
-            newton_solver.step(newton_state, newton_state, newton_control, None, dt)
-            wp.synchronize()
+            # 1. Newton full step + 2. Native step1 (kinematics + collision)
+            # Launch both in parallel, then sync
+            if newton_graph:
+                wp.capture_launch(newton_graph)
+            else:
+                newton_solver.step(newton_state, newton_state, newton_control, None, dt)
 
-            # 2. Native: step1 (kinematics + collision)
-            run_native_step1(native_mjw_model, native_mjw_data)
+            if step1_graph:
+                wp.capture_launch(step1_graph)
+            else:
+                run_native_step1(native_mjw_model, native_mjw_data)
+            wp.synchronize()
 
             # 3. Verify contacts match (sorted comparison)
             contacts_match, contact_msg = compare_contacts_sorted(newton_solver.mjw_data, native_mjw_data, tol=1e-5)
@@ -1660,7 +1671,11 @@ class TestMenagerieBase(unittest.TestCase):
             inject_contacts(newton_solver.mjw_data, native_mjw_data)
 
             # 5. Native: step2 (actuation + acceleration + solve + integrate)
-            run_native_step2(native_mjw_model, native_mjw_data)
+            if step2_graph:
+                wp.capture_launch(step2_graph)
+            else:
+                run_native_step2(native_mjw_model, native_mjw_data)
+            wp.synchronize()
 
         # Helper: compare at step (for non-visual mode)
         def compare_at_step(step_num: int):
@@ -1677,6 +1692,8 @@ class TestMenagerieBase(unittest.TestCase):
         use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         newton_graph = None
         native_graph = None
+        step1_graph = None
+        step2_graph = None
 
         # Compare/print initial state
         if self.debug_visual:
@@ -1688,17 +1705,45 @@ class TestMenagerieBase(unittest.TestCase):
         # Main simulation loop
         max_steps = 500 if self.debug_visual else self.num_steps
 
-        # Contact injection mode doesn't use CUDA graphs (split pipeline)
-        use_graphs = use_cuda_graph and not self.use_contact_injection
-
         for step in range(max_steps):
             if viewer and not viewer.is_running():
                 break
 
             if self.use_contact_injection:
-                # Split pipeline: Newton full step, then native with injected contacts
-                step_with_contact_injection(step)
-            elif step == 0 and use_graphs:
+                # Contact injection: capture graphs on step 0, use thereafter
+                if step == 0 and use_cuda_graph:
+                    ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
+                    newton_control.mujoco.ctrl.assign(ctrl.flatten())
+                    native_mjw_data.ctrl.assign(ctrl)
+
+                    # Capture Newton step
+                    with wp.ScopedCapture() as capture:
+                        newton_solver.step(newton_state, newton_state, newton_control, None, dt)
+                    newton_graph = capture.graph
+
+                    # Capture native step1 (kinematics + collision)
+                    with wp.ScopedCapture() as capture:
+                        run_native_step1(native_mjw_model, native_mjw_data)
+                    step1_graph = capture.graph
+                    wp.synchronize()
+
+                    # Compare and inject contacts (not in graph - data-dependent)
+                    contacts_match, contact_msg = compare_contacts_sorted(
+                        newton_solver.mjw_data, native_mjw_data, tol=1e-5
+                    )
+                    if not contacts_match:
+                        raise AssertionError(f"Step {step}: Contact mismatch - {contact_msg}")
+                    inject_contacts(newton_solver.mjw_data, native_mjw_data)
+
+                    # Capture native step2 (actuation + solve + integrate)
+                    with wp.ScopedCapture() as capture:
+                        run_native_step2(native_mjw_model, native_mjw_data)
+                    step2_graph = capture.graph
+                    wp.synchronize()
+                else:
+                    # Use captured graphs (or fallback if not available)
+                    step_with_contact_injection(step, newton_graph, step1_graph, step2_graph)
+            elif step == 0 and use_cuda_graph:
                 # Step 0: capture CUDA graphs if available (full pipeline mode only)
                 ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
                 newton_control.mujoco.ctrl.assign(ctrl.flatten())
