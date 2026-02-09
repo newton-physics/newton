@@ -1340,7 +1340,7 @@ class TestMenagerieBase(unittest.TestCase):
     floating: bool = True
 
     # Configurable defaults
-    num_worlds: int = 16
+    num_worlds: int = 34
     num_steps: int = 100
     dt: float = 0.002  # Fallback; actual dt extracted from native model in test
 
@@ -1544,11 +1544,6 @@ class TestMenagerieBase(unittest.TestCase):
         # Newton is the reference - only expand fields that Newton has expanded
         expand_mjw_model_to_match(native_mjw_model, newton_solver.mjw_model)
 
-        # Optional: backfill computed fields from native to Newton to eliminate
-        # numerical differences from model compilation (enables tighter tolerances)
-        if self.backfill_model:
-            backfill_model_from_native(newton_solver.mjw_model, native_mjw_model, self.backfill_fields)
-
         # Extract timestep from native model (Newton doesn't parse <option timestep="..."/> yet)
         # TODO: Remove this workaround once Newton's MJCF parser supports timestep extraction
         dt = float(mj_model.opt.timestep)
@@ -1581,6 +1576,12 @@ class TestMenagerieBase(unittest.TestCase):
 
         # Compare geom sizes with type-specific semantics
         compare_geom_sizes(newton_solver.mjw_model, native_mjw_model)
+
+        # Optional: backfill computed fields from native to Newton to eliminate
+        # numerical differences from model compilation (enables tighter tolerances for dynamics)
+        # Must happen AFTER all model comparisons
+        if self.backfill_model:
+            backfill_model_from_native(newton_solver.mjw_model, native_mjw_model, self.backfill_fields)
 
         # Get number of actuators from native model (for control generation)
         num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
