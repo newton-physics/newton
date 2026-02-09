@@ -213,6 +213,26 @@ html_theme_options = {
 
 html_sidebars = {"**": ["sidebar-nav-bs.html"], "index": ["sidebar-nav-bs.html"]}
 
+# Version switcher configuration for multi-version docs on GitHub Pages
+# See: https://pydata-sphinx-theme.readthedocs.io/en/stable/user_guide/version-dropdown.html
+
+# Determine if we're in a CI build and which version
+_is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+_is_release = os.environ.get("GITHUB_REF", "").startswith("refs/tags/v")
+
+# Configure version switcher
+html_theme_options["switcher"] = {
+    "json_url": "https://newton-physics.github.io/newton/switcher.json",
+    "version_match": release if _is_release else "dev",
+}
+
+# Add version switcher to navbar
+html_theme_options["navbar_end"] = ["theme-switcher", "version-switcher", "navbar-icon-links"]
+
+# Disable switcher JSON validation during local builds (file not accessible locally)
+if not _is_ci:
+    html_theme_options["check_switcher"] = False
+
 # -- Math configuration -------------------------------------------------------
 
 # MathJax configuration for proper LaTeX rendering

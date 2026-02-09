@@ -2260,7 +2260,7 @@ def init_triangle_collision_data_kernel(
     triangle_colliding_vertices_min_dist[tri_index] = query_radius
 
     if tri_index == 0:
-        for i in range(3):
+        for i in range(4):
             resize_flags[i] = 0
 
 

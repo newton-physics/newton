@@ -586,14 +586,16 @@ class ViewerBase:
             if arr is None:
                 return wp.array([default] * num_instances, dtype=wp.vec3, device=self.device)
             if len(arr) == 1 and num_instances > 1:
-                return wp.array([arr[0]] * num_instances, dtype=wp.vec3, device=self.device)
+                val = wp.vec3(*arr.numpy()[0])
+                return wp.array([val] * num_instances, dtype=wp.vec3, device=self.device)
             return arr
 
         def _ensure_vec4_array(arr, default):
             if arr is None:
                 return wp.array([default] * num_instances, dtype=wp.vec4, device=self.device)
             if len(arr) == 1 and num_instances > 1:
-                return wp.array([arr[0]] * num_instances, dtype=wp.vec4, device=self.device)
+                val = wp.vec4(*arr.numpy()[0])
+                return wp.array([val] * num_instances, dtype=wp.vec4, device=self.device)
             return arr
 
         # defaults
