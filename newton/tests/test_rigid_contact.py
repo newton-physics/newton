@@ -29,13 +29,11 @@ from newton.tests.unittest_utils import (
 )
 
 
-def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
-    if not isinstance(solver, newton.solvers.SolverMuJoCo):
-        contacts = model.collide(state_0)
-    else:
-        contacts = None
+def simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps):
     for _ in range(substeps):
         state_0.clear_forces()
+        if contacts is not None:
+            model.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
         state_0, state_1 = state_1, state_0
 
@@ -183,6 +181,7 @@ def test_shapes_on_plane(test, device, solver_fn):
         solver = temp_solver
     state_0, state_1 = model.state(), model.state()
     control = model.control()
+    contacts = model.contacts() if not isinstance(solver, newton.solvers.SolverMuJoCo) else None
 
     use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
     # Increased substeps for better stability (more substeps = smaller time steps = more stable)
@@ -192,16 +191,16 @@ def test_shapes_on_plane(test, device, solver_fn):
     if use_cuda_graph:
         # ensure data is allocated and modules are loaded before graph capture
         # in case of an earlier CUDA version
-        simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
+        simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps)
         with wp.ScopedCapture(device) as capture:
-            simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
+            simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps)
         graph = capture.graph
 
     for _ in range(250):
         if use_cuda_graph:
             wp.capture_launch(graph)
         else:
-            simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
+            simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps)
 
     # Check that objects have settled on the ground
     body_q = state_0.body_q.numpy()
@@ -449,7 +448,8 @@ def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
     for _frame in range(max_frames):
         for _ in range(substeps):
             state_0.clear_forces()
-            contacts = model.collide(state_0)
+            contacts = model.contacts(state_0)
+            model.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 
@@ -541,6 +541,7 @@ def test_mesh_box_on_ground(test, device):
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     # Initialize kinematics
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -553,7 +554,7 @@ def test_mesh_box_on_ground(test, device):
     for _ in range(max_frames):
         for _ in range(substeps):
             state_0.clear_forces()
-            contacts = model.collide(state_0)
+            model.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 
@@ -622,6 +623,7 @@ def test_mujoco_warp_newton_contacts(test, device):
     # Finalize model (shape pairs are built automatically)
     model = builder.finalize(device=device)
 
+    contacts = model.contacts()
     # Create MuJoCo Warp solver with Newton contacts
     solver = newton.solvers.SolverMuJoCo(
         model,
@@ -653,7 +655,7 @@ def test_mujoco_warp_newton_contacts(test, device):
         for _ in range(substeps):
             state_0.clear_forces()
 
-            contacts = model.collide(state_0)
+            model.collide(state_0, contacts)
 
             solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
@@ -787,13 +789,14 @@ def test_box_drop(test, device, solver_fn):
     max_frames = 60
     max_observed_vel = 0.0
 
+    generate_contacts = not isinstance(solver, newton.solvers.SolverMuJoCo)
+    contacts = model.contacts() if generate_contacts else None
+
     for _ in range(max_frames):
         for _ in range(substeps):
             state_0.clear_forces()
-            if not isinstance(solver, newton.solvers.SolverMuJoCo):
-                contacts = model.collide(state_0)
-            else:
-                contacts = None
+            if generate_contacts:
+                model.collide(state_0, contacts)
             solver.step(state_0, state_1, None, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 

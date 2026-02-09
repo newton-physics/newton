@@ -280,7 +280,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.contacts()
 
         # Set model in viewer
         self.viewer.set_model(self.model)
@@ -325,8 +325,6 @@ class Example:
 
     def simulate(self):
         """Simulate performs one frame's worth of updates."""
-        self.contacts = self.model.collide(self.state_0)
-
         need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
 
         for i in range(self.sim_substeps):
@@ -335,6 +333,7 @@ class Example:
             # Apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
 
+            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # Swap states - handle CUDA graph case specially

@@ -116,7 +116,6 @@ class Example:
             soft_contact_margin=0.001,
             requires_grad=True,
         )
-        self.contacts = self.model.collide(self.states[0], collision_pipeline=self.collision_pipeline)
 
         # Initialize material parameters to be optimized from model
         if self.material_behavior == "anisotropic":
@@ -280,8 +279,10 @@ class Example:
         for i in range(self.sim_substeps):
             t = sim_step * self.sim_substeps + i
             self.states[t].clear_forces()
-            self.contacts = self.model.collide(self.states[t], collision_pipeline=self.collision_pipeline)
-            self.solver.step(self.states[t], self.states[t + 1], self.control, self.contacts, self.sim_dt)
+            # Allocate fresh contacts each substep for gradient tracking
+            contacts = self.collision_pipeline.contacts()
+            self.collision_pipeline.collide(self.states[t], contacts)
+            self.solver.step(self.states[t], self.states[t + 1], self.control, contacts, self.sim_dt)
 
     def step(self):
         if self.graph:

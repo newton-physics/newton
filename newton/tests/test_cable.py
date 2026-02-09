@@ -519,6 +519,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
 
     state0, state1 = model.state(), model.state()
     control = model.control()
+    contacts = model.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
     frame_dt = 1.0 / 60.0
@@ -530,7 +531,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -572,6 +573,7 @@ def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     """Cable VBD: pinned chain should sag under gravity while remaining numerically stable."""
     segment_length = 0.2
     model, state0, state1, control, _rod_bodies = _build_cable_chain(device, num_links=6, segment_length=segment_length)
+    contacts = model.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=10)
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -585,7 +587,7 @@ def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -656,6 +658,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -691,7 +694,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -862,6 +865,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     solver = newton.solvers.SolverVBD(model, iterations=10, friction_epsilon=0.1)
     frame_dt = 1.0 / 60.0
@@ -873,7 +877,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -1006,6 +1010,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     solver = newton.solvers.SolverVBD(
         model,
@@ -1031,7 +1036,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
                 device=device,
             )
 
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, dt=sim_dt)
             state0, state1 = state1, state0
 
@@ -1132,6 +1137,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     # Stiffen both linear and angular caps for non-cable joints so FIXED behaves near-hard.
     solver = newton.solvers.SolverVBD(
@@ -1165,7 +1171,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
                 device=device,
             )
 
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, dt=sim_dt)
             state0, state1 = state1, state0
 
@@ -1284,6 +1290,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     solver = newton.solvers.SolverVBD(
         model,
@@ -1337,7 +1344,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
             device=device,
         )
 
-        contacts = model.collide(state0)
+        model.collide(state0, contacts)
         solver.step(state0, state1, control, contacts, sim_dt)
         state0, state1 = state1, state0
 

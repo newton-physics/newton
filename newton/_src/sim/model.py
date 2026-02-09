@@ -622,6 +622,8 @@ class Model:
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=Model.AttributeAssignment.MODEL)."""
 
         self._requested_state_attributes: set[str] = set()
+        self._collision_pipeline: CollisionPipeline | CollisionPipelineUnified | None = None
+        # cached collision pipeline
         self._requested_contact_attributes: set[str] = set()
 
         # attributes per body
@@ -813,48 +815,66 @@ class Model:
                 raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
             self.gravity.assign(gravity_np)
 
-    def collide(
+    def _init_collision_pipeline(self):
+        """
+        Initialize a :class:`CollisionPipeline` for this model.
+
+        This method creates a default collision pipeline for the model. The pipeline is cached on
+        the model for subsequent use by :meth:`collide`.
+
+        """
+        from .collide import BroadPhaseMode, CollisionPipeline  # noqa: PLC0415
+
+        self._collision_pipeline = CollisionPipeline(self, broad_phase_mode=BroadPhaseMode.EXPLICIT)
+
+    def contacts(
         self: Model,
-        state: State,
-        collision_pipeline=None,  # CollisionPipeline | None
     ) -> Contacts:
         """
-        Generate contact points for the particles and rigid bodies in the model.
+        Create and return a :class:`Contacts` object for this model.
 
-        This method produces a :class:`Contacts` object containing collision/contact information
-        for use in contact-dynamics kernels.
-
-        Args:
-            state (State): The current state of the model.
-            collision_pipeline (CollisionPipeline, optional): Collision pipeline to use for contact generation.
-                If not provided, a default :class:`CollisionPipeline` is created automatically
-                (and cached for subsequent calls). For more control, create one explicitly via
-                :meth:`CollisionPipeline.from_model`.
-
-        Returns:
-            Contacts: The contact object containing collision information.
+        This method initializes a collision pipeline with default arguments (when not already
+        cached) and allocates a contacts buffer suitable for storing collision detection results.
+        Call :meth:`collide` to run the collision detection and populate the contacts object.
 
         Note:
             Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`, which is populated
             from ``ShapeConfig.contact_margin`` during model building. If a shape doesn't specify a contact margin,
             it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
             :meth:`ModelBuilder.finalize`.
-        """
-        if collision_pipeline is not None:
-            self._collision_pipeline = collision_pipeline
-        elif not hasattr(self, "_collision_pipeline"):
-            from .collide import BroadPhaseMode, CollisionPipeline  # noqa: PLC0415
 
-            self._collision_pipeline = CollisionPipeline.from_model(
-                model=self, broad_phase_mode=BroadPhaseMode.EXPLICIT
+        Returns:
+            Contacts: The contact object containing collision information.
+        """
+        if self._collision_pipeline is None:
+            self._init_collision_pipeline()
+
+        contacts = self._collision_pipeline.contacts()
+        # attach custom attributes with assignment==CONTACT
+        self._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
+        return contacts
+
+    def collide(
+        self,
+        state: State,
+        contacts: Contacts,
+    ):
+        """
+        Generate contact points for the particles and rigid bodies in the model using the default collision
+        pipeline.
+
+        Args:
+            state (State): The current simulation state.
+            contacts (Contacts): The contacts buffer to populate (will be cleared first).
+        """
+
+        if self._collision_pipeline is None:
+            raise ValueError(
+                "Model does not have a collision pipeline. Call model.contacts() "
+                "or use a your collision pipeline directly: CollisionPipeline.collide(contacts)."
             )
 
-        contacts = self._collision_pipeline.collide(self, state)
-        # attach custom attributes with assignment==CONTACT
-        self._add_custom_attributes(
-            contacts, Model.AttributeAssignment.CONTACT, requires_grad=self._collision_pipeline.requires_grad
-        )
-        return contacts
+        self._collision_pipeline.collide(state, contacts)
 
     def request_state_attributes(self, *attributes: str) -> None:
         """

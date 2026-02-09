@@ -98,11 +98,11 @@ class CollisionSetup:
         self.control = self.model.control()
 
         # Create collision pipeline with the requested broad phase mode
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase_mode=broad_phase_mode,
         )
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.solver = solver_fn(self.model)
 
@@ -154,7 +154,7 @@ class CollisionSetup:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -511,7 +511,7 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         model = builder.finalize(device=device)
 
         # Create collision pipeline
-        collision_pipeline = newton.CollisionPipeline.from_model(
+        collision_pipeline = newton.CollisionPipeline(
             model,
             broad_phase_mode=newton.BroadPhaseMode.NXN,
             soft_contact_margin=soft_contact_margin,
@@ -520,7 +520,8 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         state = model.state()
 
         # Run collision detection
-        contacts = collision_pipeline.collide(model, state)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
 
         # Verify soft contacts were generated
         soft_count = contacts.soft_contact_count.numpy()[0]

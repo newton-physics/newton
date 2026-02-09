@@ -413,7 +413,7 @@ def create_collision_pipeline(model, args=None, broad_phase_mode=None):
             "explicit": newton.BroadPhaseMode.EXPLICIT,
         }
         mode = broad_phase_map.get(str(broad_phase_mode).lower(), newton.BroadPhaseMode.EXPLICIT)
-    return newton.CollisionPipeline.from_model(model, broad_phase_mode=mode)
+    return newton.CollisionPipeline(model, broad_phase_mode=mode)
 
 
 def main():
