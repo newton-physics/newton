@@ -140,7 +140,7 @@ def add_example_test(
             command = [sys.executable]
 
         # Append Warp commands
-        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test"])
+        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
 
         if not use_viewer:
             stage_path = (
