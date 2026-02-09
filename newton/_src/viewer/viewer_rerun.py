@@ -328,6 +328,7 @@ class ViewerRerun(ViewerBase):
         if hidden:
             if name in self._instances:
                 rr.log(name, rr.Clear(recursive=False))
+                self._instances.pop(name, None)
             return
 
         # Check that mesh exists
