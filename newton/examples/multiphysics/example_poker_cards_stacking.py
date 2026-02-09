@@ -216,7 +216,7 @@ class Example:
         self.sphere_current_x = self.sphere_start_x
 
         # Create collision pipeline for ground and cube contact
-        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        self.collision_pipeline = newton.CollisionPipeline.from_model(
             self.model,
             broad_phase_mode=newton.BroadPhaseMode.NXN,
             soft_contact_margin=0.005,  # m (0.5 cm)
