@@ -767,27 +767,88 @@ def compare_geom_sizes(
 # =============================================================================
 
 
-def run_native_step1(
+def run_native_step1_rest(
     native_model: Any,
     native_data: Any,
 ) -> None:
-    """Run mujoco_warp step1: kinematics + collision (but NOT constraint/solve/integrate).
+    """Run rest of step1 after fwd_position: sensors + fwd_velocity.
 
-    After this, native_data.contact contains the collision results.
-    Note: Does NOT call wp.synchronize() - caller should sync if needed.
+    Call this after run_native_fwd_position_post_constraint().
     """
     from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
+    from mujoco_warp._src import sensor  # noqa: PLC0415
+    from mujoco_warp._src.types import EnableBit  # noqa: PLC0415
 
-    mjw_forward.step1(native_model, native_data)
+    m, d = native_model, native_data
+    energy = m.opt.enableflags & EnableBit.ENERGY
+
+    d.sensordata.zero_()
+    sensor.sensor_pos(m, d)
+
+    if energy:
+        if m.sensor_e_potential == 0:
+            sensor.energy_pos(m, d)
+    else:
+        d.energy.zero_()
+
+    mjw_forward.fwd_velocity(m, d)
+    sensor.sensor_vel(m, d)
+
+    if energy:
+        if m.sensor_e_kinetic == 0:
+            sensor.energy_vel(m, d)
+
+
+def run_native_fwd_position_pre_constraint(
+    native_model: Any,
+    native_data: Any,
+) -> None:
+    """Run mujoco_warp fwd_position up to and including collision detection.
+
+    This runs: kinematics, com_pos, camlight, flex, tendon, crb, tendon_armature,
+    factor_m, and collision. Does NOT run make_constraint or transmission.
+    """
+    from mujoco_warp._src import (  # noqa: PLC0415
+        collision_driver,
+        smooth,
+    )
+
+    m, d = native_model, native_data
+    smooth.kinematics(m, d)
+    smooth.com_pos(m, d)
+    smooth.camlight(m, d)
+    smooth.flex(m, d)
+    smooth.tendon(m, d)
+    smooth.crb(m, d)
+    smooth.tendon_armature(m, d)
+    smooth.factor_m(m, d)
+    if m.opt.run_collision_detection:
+        collision_driver.collision(m, d)
+
+
+def run_native_fwd_position_post_constraint(
+    native_model: Any,
+    native_data: Any,
+) -> None:
+    """Run mujoco_warp fwd_position after contact injection: make_constraint + transmission."""
+    from mujoco_warp._src import (  # noqa: PLC0415
+        constraint,
+        smooth,
+    )
+
+    m, d = native_model, native_data
+    constraint.make_constraint(m, d)
+    smooth.transmission(m, d)
 
 
 def run_native_step2(
     native_model: Any,
     native_data: Any,
 ) -> None:
-    """Run mujoco_warp step2: actuation + acceleration + solve + integrate.
+    """Run mujoco_warp step2: fwd_actuation + fwd_acceleration + solve + integrate.
 
     Uses the correct integrator based on model.opt.integrator.
+    Note: fwd_acceleration does NOT re-run collision detection.
     Note: Does NOT call wp.synchronize() - caller should sync if needed.
     """
     from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
@@ -1107,6 +1168,10 @@ def backfill_model_from_native(newton_mjw: Any, native_mjw: Any, fields: list[st
     differing from MuJoCo's mj_setConst(). Useful for isolating simulation
     differences from model compilation differences during testing.
 
+    Note: This only copies fields with matching shapes. For multi-world scenarios
+    where Newton has shape (N, ...) and native has (1, ...), the fields won't be
+    copied. This is a known limitation when testing with num_worlds > 1.
+
     Args:
         newton_mjw: Newton's MjWarpModel to update
         native_mjw: Native MuJoCo's MjWarpModel to copy from
@@ -1124,7 +1189,7 @@ def backfill_model_from_native(newton_mjw: Any, native_mjw: Any, fields: list[st
         if not hasattr(native_arr, "numpy") or not hasattr(newton_arr, "numpy"):
             continue
 
-        # Only copy if shapes match
+        # Only copy if shapes match exactly
         if native_arr.shape == newton_arr.shape:
             newton_arr.assign(native_arr)
 
@@ -1596,18 +1661,17 @@ class TestMenagerieBase(unittest.TestCase):
         def step_with_contact_injection(
             step_num: int,
             newton_graph: Any = None,
-            step1_graph: Any = None,
-            step2_graph: Any = None,
+            pre_constraint_graph: Any = None,
+            post_constraint_graph: Any = None,
         ):
             """
             Split pipeline that injects Newton's contacts into native to bypass non-determinism.
 
             Flow:
             1. Newton: full step (forward + integrate)
-            2. Native: step1 (kinematics + collision)
-            3. Verify contacts match (sorted)
-            4. Inject Newton's contacts into native
-            5. Native: step2 (actuation + acceleration + solve + integrate)
+            2. Native: fwd_position_pre_constraint (kinematics through collision)
+            3. Sync, verify contacts match (sorted), inject Newton's contacts
+            4. Native: fwd_position_post_constraint + step1_rest + step2
             """
             t = step_num * dt
             ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)  # type: ignore[union-attr]
@@ -1616,17 +1680,17 @@ class TestMenagerieBase(unittest.TestCase):
             newton_control.mujoco.ctrl.assign(ctrl.flatten())
             native_mjw_data.ctrl.assign(ctrl)
 
-            # 1. Newton full step + 2. Native step1 (kinematics + collision)
-            # Launch both in parallel, then sync
+            # 1. Newton full step
             if newton_graph:
                 wp.capture_launch(newton_graph)
             else:
                 newton_solver.step(newton_state, newton_state, newton_control, None, dt)
 
-            if step1_graph:
-                wp.capture_launch(step1_graph)
+            # 2. Native: fwd_position_pre_constraint (kinematics through collision)
+            if pre_constraint_graph:
+                wp.capture_launch(pre_constraint_graph)
             else:
-                run_native_step1(native_mjw_model, native_mjw_data)
+                run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
             wp.synchronize()
 
             # 3. Verify contacts match (sorted comparison)
@@ -1637,10 +1701,12 @@ class TestMenagerieBase(unittest.TestCase):
             # 4. Inject Newton's contacts into native
             inject_contacts(newton_solver.mjw_data, native_mjw_data)
 
-            # 5. Native: step2 (actuation + acceleration + solve + integrate)
-            if step2_graph:
-                wp.capture_launch(step2_graph)
+            # 5. Native: fwd_position_post_constraint + step1_rest + step2
+            if post_constraint_graph:
+                wp.capture_launch(post_constraint_graph)
             else:
+                run_native_fwd_position_post_constraint(native_mjw_model, native_mjw_data)
+                run_native_step1_rest(native_mjw_model, native_mjw_data)
                 run_native_step2(native_mjw_model, native_mjw_data)
             wp.synchronize()
 
@@ -1659,8 +1725,9 @@ class TestMenagerieBase(unittest.TestCase):
         use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         newton_graph = None
         native_graph = None
-        step1_graph = None
-        step2_graph = None
+        # For contact injection mode:
+        pre_constraint_graph = None
+        post_constraint_graph = None
 
         # Compare/print initial state
         if self.debug_visual:
@@ -1688,10 +1755,10 @@ class TestMenagerieBase(unittest.TestCase):
                         newton_solver.step(newton_state, newton_state, newton_control, None, dt)
                     newton_graph = capture.graph
 
-                    # Capture native step1 (kinematics + collision)
+                    # Capture native fwd_position_pre_constraint (kinematics through collision)
                     with wp.ScopedCapture() as capture:
-                        run_native_step1(native_mjw_model, native_mjw_data)
-                    step1_graph = capture.graph
+                        run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
+                    pre_constraint_graph = capture.graph
                     wp.synchronize()
 
                     # Compare and inject contacts (not in graph - data-dependent)
@@ -1702,14 +1769,16 @@ class TestMenagerieBase(unittest.TestCase):
                         raise AssertionError(f"Step {step}: Contact mismatch - {contact_msg}")
                     inject_contacts(newton_solver.mjw_data, native_mjw_data)
 
-                    # Capture native step2 (actuation + solve + integrate)
+                    # Capture native post-constraint + step1_rest + step2
                     with wp.ScopedCapture() as capture:
+                        run_native_fwd_position_post_constraint(native_mjw_model, native_mjw_data)
+                        run_native_step1_rest(native_mjw_model, native_mjw_data)
                         run_native_step2(native_mjw_model, native_mjw_data)
-                    step2_graph = capture.graph
+                    post_constraint_graph = capture.graph
                     wp.synchronize()
                 else:
                     # Use captured graphs (or fallback if not available)
-                    step_with_contact_injection(step, newton_graph, step1_graph, step2_graph)
+                    step_with_contact_injection(step, newton_graph, pre_constraint_graph, post_constraint_graph)
             elif step == 0 and use_cuda_graph:
                 # Step 0: capture CUDA graphs if available (full pipeline mode only)
                 ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
