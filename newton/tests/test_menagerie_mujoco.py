@@ -361,7 +361,9 @@ class StructuredControlStrategy(ControlStrategy):
         self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float32)
 
     def get_control(self, t, step, num_worlds, num_actuators):
-        if self._frequencies is None or self._phases is None or self._ctrl is None:
+        expected_size = num_worlds * num_actuators
+        # Re-initialize if size changed or not yet initialized
+        if self._ctrl is None or self._ctrl.size != expected_size:
             self._init_for_model(num_worlds, num_actuators)
 
         assert self._frequencies is not None
