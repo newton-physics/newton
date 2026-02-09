@@ -27,34 +27,6 @@ class ColoringAlgorithm(Enum):
 
 
 @wp.kernel
-def construct_trimesh_graph_edges_kernel(
-    trimesh_edge_indices: wp.array(dtype=int, ndim=2),
-    add_bending: bool,
-    graph_edge_indices: wp.array(dtype=int, ndim=2),
-    graph_num_edges: wp.array(dtype=int),
-):
-    num_diagonal_edges = wp.int32(0)
-    num_non_diagonal_edges = trimesh_edge_indices.shape[0]
-    for e_idx in range(trimesh_edge_indices.shape[0]):
-        v1 = trimesh_edge_indices[e_idx, 2]
-        v2 = trimesh_edge_indices[e_idx, 3]
-
-        graph_edge_indices[e_idx, 0] = v1
-        graph_edge_indices[e_idx, 1] = v2
-
-        o1 = trimesh_edge_indices[e_idx, 0]
-        o2 = trimesh_edge_indices[e_idx, 1]
-
-        if o1 != -1 and o2 != -1 and add_bending:
-            graph_edge_indices[num_non_diagonal_edges + num_diagonal_edges, 0] = o1
-            graph_edge_indices[num_non_diagonal_edges + num_diagonal_edges, 1] = o2
-
-            num_diagonal_edges = num_diagonal_edges + 1
-
-    graph_num_edges[0] = num_diagonal_edges + num_non_diagonal_edges
-
-
-@wp.kernel
 def validate_graph_coloring(edge_indices: wp.array(dtype=int, ndim=2), colors: wp.array(dtype=int)):
     edge_idx = wp.tid()
     e_v_1 = edge_indices[edge_idx, 0]
@@ -126,41 +98,66 @@ def convert_to_color_groups(num_colors, particle_colors, return_wp_array=False, 
     return color_groups
 
 
-def construct_trimesh_graph_edges(trimesh_edge_indices, return_wp_array=False):
-    if isinstance(trimesh_edge_indices, np.ndarray):
-        trimesh_edge_indices = wp.array(trimesh_edge_indices, dtype=int, device="cpu")
-
-    # preallocate maximum amount of memory, which is model.edge_count * 2
-    graph_edge_indices = wp.empty(shape=(trimesh_edge_indices.shape[0] * 2, 2), dtype=int, device="cpu")
-    graph_num_edges = wp.zeros(shape=(1,), dtype=int, device="cpu")
-
-    wp.launch(
-        kernel=construct_trimesh_graph_edges_kernel,
-        inputs=[
-            trimesh_edge_indices.to("cpu"),
-            True,
-        ],
-        outputs=[graph_edge_indices, graph_num_edges],
-        dim=1,
-        device="cpu",
-    )
-
-    num_edges = graph_num_edges.numpy()[0]
-    graph_edge_indices_true_size = graph_edge_indices.numpy()[:num_edges, :]
-
-    if return_wp_array:
-        graph_edge_indices_true_size = wp.array(graph_edge_indices_true_size, dtype=int, device="cpu")
-
-    return graph_edge_indices_true_size
+def _canonicalize_edges_np(edges_np: np.ndarray) -> np.ndarray:
+    """Sort edge endpoints and drop duplicate edges."""
+    if edges_np.size == 0:
+        return np.empty((0, 2), dtype=np.int32)
+    edges_sorted = np.sort(edges_np, axis=1)
+    edges_unique = np.unique(edges_sorted, axis=0)
+    return edges_unique.astype(np.int32)
 
 
-def color_trimesh(
-    num_nodes,
-    trimesh_edge_indices,
-    include_bending_energy,
-    balance_colors=True,
-    target_max_min_color_ratio=1.1,
-    algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
+def construct_tetmesh_graph_edges(tet_indices: np.array, tet_active_mask):
+    """
+    Convert tet connectivity (n_tets x 4) into unique graph edges (u, v).
+    """
+    if tet_indices is None:
+        edges_np = np.empty((0, 2), dtype=np.int32)
+    else:
+        if isinstance(tet_indices, wp.array):
+            tet_np = tet_indices.numpy()
+        else:
+            tet_np = np.asarray(tet_indices, dtype=np.int32)
+
+        if tet_active_mask is not None:
+            mask_arr = np.asarray(tet_active_mask, dtype=bool)
+            # Handle scalar mask (True means all active, False means none active)
+            if mask_arr.ndim == 0:
+                if not mask_arr:
+                    tet_np = tet_np[:0]  # Empty array
+                # else: all active, no filtering needed
+            else:
+                tet_np = tet_np[mask_arr]
+
+        if tet_np.size == 0:
+            edges_np = np.empty((0, 2), dtype=np.int32)
+        else:
+            v0 = tet_np[:, 0]
+            v1 = tet_np[:, 1]
+            v2 = tet_np[:, 2]
+            v3 = tet_np[:, 3]
+            edges_np = np.stack(
+                [
+                    np.stack([v0, v1], axis=1),
+                    np.stack([v0, v2], axis=1),
+                    np.stack([v0, v3], axis=1),
+                    np.stack([v1, v2], axis=1),
+                    np.stack([v1, v3], axis=1),
+                    np.stack([v2, v3], axis=1),
+                ],
+                axis=0,
+            ).reshape(-1, 2)
+    edges_np = _canonicalize_edges_np(edges_np)
+
+    return edges_np
+
+
+def construct_trimesh_graph_edges(
+    tri_indices,
+    tri_active_mask=None,
+    bending_edge_indices=None,
+    bending_edge_active_mask=None,
+    return_wp_array=True,
 ):
     """
     A function that generates vertex coloring for a trimesh, which is represented by the number of vertices and edges of the mesh.
@@ -173,18 +170,130 @@ def color_trimesh(
         trimesh_edge_indices: A `wp.array` with of shape (number_edges, 4), each row is (o1, o2, v1, v2), see `sim.Model`'s definition of `edge_indices`.
         include_bending_energy: whether to consider bending energy in the coloring process. If set to `True`, the generated
             graph will contain all the edges connecting o1 and o2; otherwise, the graph will be equivalent to the trimesh.
-        balance_colors: the parameter passed to `color_graph`, see `color_graph`'s document
-        target_max_min_color_ratio: the parameter passed to `color_graph`, see `color_graph`'s document
-        algorithm: the parameter passed to `color_graph`, see `color_graph`'s document
-
     """
-    if include_bending_energy:
-        graph_edge_indices = construct_trimesh_graph_edges(trimesh_edge_indices, return_wp_array=True)
-    else:
-        graph_edge_indices = wp.array(trimesh_edge_indices[:, 2:], dtype=int, device="cpu")
+    edges_np_list = []
 
-    color_groups = color_graph(num_nodes, graph_edge_indices, balance_colors, target_max_min_color_ratio, algorithm)
-    return color_groups
+    # Primary triangle edges
+    if tri_indices is not None:
+        if isinstance(tri_indices, wp.array):
+            tri_indices = tri_indices.numpy()
+
+        if tri_indices.size > 0:
+            if tri_active_mask is not None:
+                mask_arr = np.asarray(tri_active_mask, dtype=bool)
+                # Handle scalar mask (True means all active, False means none active)
+                if mask_arr.ndim == 0:
+                    if not mask_arr:
+                        tri_indices = tri_indices[:0]  # Empty array
+                    # else: all active, no filtering needed
+                else:
+                    tri_indices = tri_indices[mask_arr]
+            if tri_indices.size > 0:
+                v0 = tri_indices[:, 0]
+                v1 = tri_indices[:, 1]
+                v2 = tri_indices[:, 2]
+                tri_edges = np.stack(
+                    [
+                        np.stack([v0, v1], axis=1),
+                        np.stack([v0, v2], axis=1),
+                        np.stack([v1, v2], axis=1),
+                    ],
+                    axis=0,
+                ).reshape(-1, 2)
+                edges_np_list.append(tri_edges)
+
+    # Optional bending edges (hinges). Each row has four vertices; include all 2-combinations
+    # of the active hinge vertices, skipping any vertex indices that are negative.
+    if bending_edge_indices is not None:
+        bend_np = np.asarray(bending_edge_indices, dtype=np.int32)
+        if bend_np.size > 0:
+            if bending_edge_active_mask is not None:
+                mask_arr = np.asarray(bending_edge_active_mask, dtype=bool)
+                # Handle scalar mask (True means all active, False means none active)
+                if mask_arr.ndim == 0:
+                    if not mask_arr:
+                        bend_np = bend_np[:0]  # Empty array
+                    # else: all active, no filtering needed
+                else:
+                    bend_np = bend_np[mask_arr]
+            if bend_np.size > 0:
+                v0 = bend_np[:, 0:1]
+                v1 = bend_np[:, 1:2]
+                v2 = bend_np[:, 2:3]
+                v3 = bend_np[:, 3:4]
+
+                pairs = np.concatenate(
+                    [
+                        np.concatenate([v0, v1], axis=1),
+                        np.concatenate([v0, v2], axis=1),
+                        np.concatenate([v0, v3], axis=1),
+                        np.concatenate([v1, v2], axis=1),
+                        np.concatenate([v1, v3], axis=1),
+                        np.concatenate([v2, v3], axis=1),
+                    ],
+                    axis=0,
+                )
+
+                valid = np.all(pairs >= 0, axis=1)
+                pairs = pairs[valid]
+
+                if pairs.size > 0:
+                    edges_np_list.append(pairs)
+
+    if edges_np_list:
+        edges_np = np.concatenate(edges_np_list, axis=0)
+    else:
+        edges_np = np.empty((0, 2), dtype=np.int32)
+
+    edges = _canonicalize_edges_np(edges_np)
+
+    if return_wp_array:
+        edges = wp.array(edges, dtype=int, device="cpu")
+
+    return edges
+
+
+def construct_particle_graph(
+    tri_graph_edges: np.array,
+    tri_active_mask: np.array,
+    bending_edge_indices: np.array,
+    bending_edge_active_mask: np.array,
+    tet_graph_edges_np: np.array,
+    tet_active_mask: np.array,
+):
+    """Construct unified particle graph edges from triangular and tetrahedral meshes.
+
+    Combines triangle mesh edges (including optional bending edges) with tetrahedral
+    mesh edges into a single unified graph for particle coloring. The resulting graph
+    represents all constraints between particles that must be considered during
+    parallel Gauss-Seidel iteration.
+
+    Args:
+        tri_graph_edges: Triangle mesh indices (N_tris x 3) or None.
+        tri_active_mask: Boolean mask indicating which triangles are active, or None.
+        bending_edge_indices: Bending edge indices (N_edges x 4) with structure [o1, o2, v1, v2] per row,
+                              where o1, o2 are opposite vertices and v1, v2 are hinge edge vertices, or None.
+        bending_edge_active_mask: Boolean mask indicating which bending edges are active, or None.
+        tet_graph_edges_np: Tetrahedral mesh indices (N_tets x 4) or None.
+        tet_active_mask: Boolean mask indicating which tetrahedra are active, or None.
+
+    Returns:
+        wp.array: Canonicalized graph edges (N_edges x 2) as a warp array on CPU,
+                  where each row [i, j] represents an edge with i < j.
+    """
+    tri_graph_edges = construct_trimesh_graph_edges(
+        tri_graph_edges,
+        tri_active_mask,
+        bending_edge_indices,
+        bending_edge_active_mask,
+        return_wp_array=False,
+    )
+    tet_graph_edges = construct_tetmesh_graph_edges(tet_graph_edges_np, tet_active_mask)
+
+    merged_edges = _canonicalize_edges_np(np.vstack([tri_graph_edges, tet_graph_edges]).astype(np.int32))
+    graph_edge_indices = wp.array(merged_edges, dtype=int, device="cpu")
+
+    return graph_edge_indices
 
 
 def color_graph(
@@ -247,7 +356,7 @@ def color_graph(
             particle_colors.__ctype__(),
         )
 
-        if max_min_ratio > target_max_min_color_ratio:
+        if max_min_ratio > target_max_min_color_ratio and wp.config.verbose:
             warnings.warn(
                 f"Color balancing terminated early: max/min ratio {max_min_ratio:.3f} "
                 f"exceeds target {target_max_min_color_ratio:.3f}. "
