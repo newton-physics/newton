@@ -464,11 +464,10 @@ DEFAULT_TOLERANCES: dict[str, float] = {
     "actuator_velocity": 1e-4,
     "qfrc_bias": 1e-4,
     "cacc": 1e-4,
-    "qacc": 5e-2,  # Looser: trajectory divergence compounds over steps without state sync
+    "qacc": 1e-4,
     "cfrc_int": 1e-4,
-    # Actuator forces: looser due to trajectory divergence over multiple steps
-    "qfrc_actuator": 2e-3,
-    "actuator_force": 2e-3,
+    "qfrc_actuator": 1e-4,
+    "actuator_force": 1e-4,
 }
 
 # Default fields to compare in MjData (core physics + dynamics)
@@ -1381,7 +1380,15 @@ class TestMenagerieBase(unittest.TestCase):
 
     # Data comparison: explicit list of fields TO compare
     compare_fields: ClassVar[list[str]] = DEFAULT_COMPARE_FIELDS
-    tolerances: ClassVar[dict[str, float]] = DEFAULT_TOLERANCES
+
+    # Tolerances: override specific fields per-test, merged with defaults
+    # Example: tolerance_overrides = {"qacc": 0.1, "qfrc_actuator": 0.01}
+    tolerance_overrides: ClassVar[dict[str, float]] = {}
+
+    @property
+    def tolerances(self) -> dict[str, float]:
+        """Get tolerances with per-test overrides merged in."""
+        return {**DEFAULT_TOLERANCES, **self.tolerance_overrides}
 
     # Model comparison: fields to SKIP (substrings to match)
     # Override in subclass with: model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {"extra", "fields"}
@@ -2125,9 +2132,10 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     robot_folder = "universal_robots_ur5e"
     floating = False
     control_strategy = StructuredControlStrategy(amplitude_scale=0.5, frequency_range=(0.5, 1.5))
-    num_worlds = 32
+    num_worlds = 34
     debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
+    num_steps = 100
 
     # Enable model backfill to eliminate numerical differences from model compilation.
     # With backfill, simulation should match exactly for same control inputs.
@@ -2136,6 +2144,15 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     # Enable contact injection to bypass mujoco_warp non-determinism with >8 worlds.
     # This ensures both Newton and native use identical contact data for solving.
     use_contact_injection = True
+
+    # Tolerance overrides for trajectory-dependent fields (divergence compounds over steps)
+    tolerance_overrides: ClassVar[dict[str, float]] = {
+        "qacc": 0.1,
+        "qfrc_actuator": 0.01,
+        "actuator_force": 0.01,
+        "cfrc_int": 1e-3,
+        "qM": 5e-6,
+    }
 
 
 class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
