@@ -163,7 +163,6 @@ class Example:
             use_mujoco_contacts = True
 
         # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
-        # Can override with: --collision-pipeline unified --broad-phase-mode nxn|sap|explicit
         if not use_mujoco_contacts:
             self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
 

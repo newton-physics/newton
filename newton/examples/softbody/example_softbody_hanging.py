@@ -95,7 +95,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
+        # Create collision pipeline
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
         self.contacts = self.collision_pipeline.contacts()
 
