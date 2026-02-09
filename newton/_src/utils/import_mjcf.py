@@ -158,7 +158,7 @@ def parse_mjcf(
     verbose: bool = False,
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
-    mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    mesh_maxhullvert: int | None = None,
     ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
 ):
@@ -203,6 +203,8 @@ def parse_mjcf(
             from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
+    if mesh_maxhullvert is None:
+        mesh_maxhullvert = MESH_MAXHULLVERT
     if xform is None:
         xform = wp.transform_identity()
     else:

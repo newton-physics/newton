@@ -747,7 +747,7 @@ def get_mesh(
     prim: Usd.Prim,
     load_normals: bool = False,
     load_uvs: bool = False,
-    maxhullvert: int = MESH_MAXHULLVERT,
+    maxhullvert: int | None = None,
     face_varying_normal_conversion: Literal[
         "vertex_averaging", "angle_weighted", "vertex_splitting"
     ] = "vertex_splitting",
@@ -762,7 +762,7 @@ def get_mesh(
     prim: Usd.Prim,
     load_normals: bool = False,
     load_uvs: bool = False,
-    maxhullvert: int = MESH_MAXHULLVERT,
+    maxhullvert: int | None = None,
     face_varying_normal_conversion: Literal[
         "vertex_averaging", "angle_weighted", "vertex_splitting"
     ] = "vertex_splitting",
@@ -776,7 +776,7 @@ def get_mesh(
     prim: Usd.Prim,
     load_normals: bool = False,
     load_uvs: bool = False,
-    maxhullvert: int = MESH_MAXHULLVERT,
+    maxhullvert: int | None = None,
     face_varying_normal_conversion: Literal[
         "vertex_averaging", "angle_weighted", "vertex_splitting"
     ] = "vertex_splitting",
@@ -846,6 +846,8 @@ def get_mesh(
         newton.Mesh: The loaded mesh, or ``(mesh, uv_indices)`` if
         ``return_uv_indices`` is True.
     """
+    if maxhullvert is None:
+        maxhullvert = MESH_MAXHULLVERT
 
     mesh = UsdGeom.Mesh(prim)
 

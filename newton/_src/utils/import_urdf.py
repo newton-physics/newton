@@ -84,7 +84,7 @@ def parse_urdf(
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
     collapse_fixed_joints: bool = False,
-    mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
 ):
     """
@@ -116,6 +116,8 @@ def parse_urdf(
             damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
     """
+    if mesh_maxhullvert is None:
+        mesh_maxhullvert = MESH_MAXHULLVERT
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     if xform is None:
         xform = axis_xform
