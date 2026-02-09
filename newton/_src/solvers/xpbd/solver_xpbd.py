@@ -221,6 +221,7 @@ class SolverXPBD(SolverBase):
 
         body_q = None
         body_qd = None
+        body_qd_init = None
         body_deltas = None
 
         rigid_contact_inv_weight = None
@@ -613,6 +614,7 @@ class SolverXPBD(SolverBase):
                             model.particle_flags,
                             body_q,
                             body_qd,
+                            body_qd_init,
                             model.body_com,
                             model.body_inv_mass,
                             model.body_inv_inertia,
