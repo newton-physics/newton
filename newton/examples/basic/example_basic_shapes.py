@@ -120,7 +120,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
         self.collision_pipeline = newton.examples.create_collision_pipeline(
             self.model,
             args,
