@@ -969,7 +969,7 @@ Added 4 bodies with collision shapes
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.geometry.inertia 8e8f74f load on device &#39;cpu&#39; took 2578.84 ms  (compiled)
+Module newton._src.geometry.inertia 8e8f74f load on device &#39;cpu&#39; took 2454.51 ms  (compiled)
 Added mesh body with 6102 vertices
 </pre></div></div>
 </div>
@@ -1002,7 +1002,7 @@ Added mesh body with 6102 vertices
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module validate_and_correct_inertia_kernel_1911a1c2 f78b133 load on device &#39;cpu&#39; took 2066.64 ms  (compiled)
+Module validate_and_correct_inertia_kernel_1911a1c2 f78b133 load on device &#39;cpu&#39; took 2065.79 ms  (compiled)
 Model finalized for device cpu:
   Bodies: 5
   Shapes: 7
@@ -1044,7 +1044,7 @@ Model finalized for device cpu:
 </div>
 <div class="output_area stderr docutils container">
 <div class="highlight"><pre>
-/home/runner/work/newton/newton/newton/_src/sim/collide.py:455: UserWarning: NarrowPhase running on CPU: mesh-mesh contacts will be skipped (SDF-based mesh-mesh collision requires CUDA). Use a CUDA device for full mesh-mesh contact support.
+/home/runner/work/newton/newton/newton/_src/sim/collide.py:461: UserWarning: NarrowPhase running on CPU: mesh-mesh contacts will be skipped (SDF-based mesh-mesh collision requires CUDA). Use a CUDA device for full mesh-mesh contact support.
   self.narrow_phase = NarrowPhase(
 </pre></div></div>
 </div>
@@ -1053,12 +1053,12 @@ Model finalized for device cpu:
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.sim.collide 5ade590 load on device &#39;cpu&#39; took 3127.77 ms  (compiled)
-Module newton._src.geometry.broad_phase_nxn fc4f8c9 load on device &#39;cpu&#39; took 2286.64 ms  (compiled)
-Module newton._src.geometry.narrow_phase 4616d06 load on device &#39;cpu&#39; took 3209.71 ms  (compiled)
-Module newton._src.geometry.narrow_phase c2abaa2 load on device &#39;cpu&#39; took 5641.13 ms  (compiled)
-Module newton._src.geometry.narrow_phase 98788b6 load on device &#39;cpu&#39; took 5394.47 ms  (compiled)
-Module newton._src.geometry.narrow_phase 36a79f8 load on device &#39;cpu&#39; took 7362.83 ms  (compiled)
+Module newton._src.sim.collide 5ade590 load on device &#39;cpu&#39; took 3038.52 ms  (compiled)
+Module newton._src.geometry.broad_phase_nxn e7bae85 load on device &#39;cpu&#39; took 2309.68 ms  (compiled)
+Module newton._src.geometry.narrow_phase 4616d06 load on device &#39;cpu&#39; took 3138.69 ms  (compiled)
+Module newton._src.geometry.narrow_phase c2abaa2 load on device &#39;cpu&#39; took 5325.96 ms  (compiled)
+Module newton._src.geometry.narrow_phase 98788b6 load on device &#39;cpu&#39; took 5068.00 ms  (compiled)
+Module newton._src.geometry.narrow_phase 36a79f8 load on device &#39;cpu&#39; took 6793.14 ms  (compiled)
 State and control objects created
 </pre></div></div>
 </div>
@@ -1222,7 +1222,7 @@ Running on CPU (no CUDA graph)
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.viewer.kernels 5d36fe6 load on device &#39;cpu&#39; took 3239.54 ms  (compiled)
+Module newton._src.viewer.kernels 5d36fe6 load on device &#39;cpu&#39; took 3083.47 ms  (compiled)
 </pre></div></div>
 </div>
 </section>
@@ -1265,8 +1265,8 @@ Module newton._src.viewer.kernels 5d36fe6 load on device &#39;cpu&#39; took 3239
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.solvers.xpbd.kernels bff295d load on device &#39;cpu&#39; took 12955.64 ms  (compiled)
-Module newton._src.solvers.solver dc85a44 load on device &#39;cpu&#39; took 2523.82 ms  (compiled)
+Module newton._src.solvers.xpbd.kernels bff295d load on device &#39;cpu&#39; took 11499.58 ms  (compiled)
+Module newton._src.solvers.solver dc85a44 load on device &#39;cpu&#39; took 2433.41 ms  (compiled)
 
 Simulation complete! Total time: 8.33 seconds
 </pre></div></div>
