@@ -46,7 +46,7 @@ except ImportError:
 
 
 def _download_file(dst, url: str) -> None:
-    import requests  # noqa: PLC0415
+    import requests
 
     with requests.get(url, stream=True, timeout=10) as response:
         response.raise_for_status()

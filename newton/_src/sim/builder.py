@@ -3407,8 +3407,8 @@ class ModelBuilder:
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
-        import matplotlib.pyplot as plt  # noqa: PLC0415
-        import networkx as nx  # noqa: PLC0415
+        import matplotlib.pyplot as plt
+        import networkx as nx
 
         def joint_type_str(type):
             if type == JointType.FREE:
@@ -4760,10 +4760,10 @@ class ModelBuilder:
             try:
                 if method == "coacd":
                     # convex decomposition using CoACD
-                    import coacd  # noqa: PLC0415
+                    import coacd
                 else:
                     # convex decomposition using V-HACD
-                    import trimesh  # noqa: PLC0415
+                    import trimesh
 
                 decompositions = {}
 
