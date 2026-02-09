@@ -60,7 +60,7 @@ def parse_usd(
     load_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
     parse_mujoco_options: bool = True,
-    mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
 ) -> dict[str, Any]:
@@ -147,6 +147,8 @@ def parse_usd(
             * - ``"path_original_body_map"``
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
+    if mesh_maxhullvert is None:
+        mesh_maxhullvert = MESH_MAXHULLVERT
     if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0

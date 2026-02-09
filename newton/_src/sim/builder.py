@@ -46,7 +46,6 @@ from ..core.types import (
     nparray,
 )
 from ..geometry import (
-    MESH_MAXHULLVERT,
     SDF,
     GeoType,
     Mesh,
@@ -1444,7 +1443,7 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
     ):
         """
@@ -1520,7 +1519,7 @@ class ModelBuilder:
         load_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
         parse_mujoco_options: bool = True,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
     ) -> dict[str, Any]:
@@ -1663,7 +1662,7 @@ class ModelBuilder:
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_3d_hinge_to_ball_joints: bool = False,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
     ):
