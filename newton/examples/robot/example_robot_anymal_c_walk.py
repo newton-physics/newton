@@ -159,7 +159,7 @@ class Example:
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
         if not use_mujoco_contacts:
             # Temporarily fix: override to use mujoco contact
-            print("WARNING: use_mujoco_contact is ignored, switch to use MjWarp collision pipeline")
+            print("WARNING: use_mujoco_contacts is ignored, switch to use MjWarp collision pipeline")
             use_mujoco_contacts = True
 
         # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
