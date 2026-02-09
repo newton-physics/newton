@@ -709,7 +709,8 @@ class ModelBuilder:
 
         # rigid joints
         self.joint_parent = []  # index of the parent body                      (constant)
-        self.joint_parents = {}  # mapping from joint to parent bodies
+        self.joint_parents = {}  # mapping from child body to parent bodies
+        self.joint_children = {}  # mapping from parent body to child bodies
         self.joint_child = []  # index of the child body                       (constant)
         self.joint_axis = []  # joint axis in joint parent anchor frame        (constant)
         self.joint_X_p = []  # frame of joint in parent                      (constant)
@@ -2008,8 +2009,24 @@ class ModelBuilder:
 
             # offset the indices
             self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
-            self.joint_parent.extend([p + self.body_count if p != -1 else -1 for p in builder.joint_parent])
-            self.joint_child.extend([c + self.body_count for c in builder.joint_child])
+
+            new_parents = [p + start_body_idx if p != -1 else -1 for p in builder.joint_parent]
+            new_children = [c + start_body_idx for c in builder.joint_child]
+
+            self.joint_parent.extend(new_parents)
+            self.joint_child.extend(new_children)
+
+            # Update parent/child lookups
+            for p, c in zip(new_parents, new_children, strict=True):
+                if c not in self.joint_parents:
+                    self.joint_parents[c] = [p]
+                else:
+                    self.joint_parents[c].append(p)
+
+                if p not in self.joint_children:
+                    self.joint_children[p] = [c]
+                elif c not in self.joint_children[p]:
+                    self.joint_children[p].append(c)
 
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
@@ -2554,6 +2571,10 @@ class ModelBuilder:
             self.joint_parents[child] = [parent]
         else:
             self.joint_parents[child].append(parent)
+        if parent not in self.joint_children:
+            self.joint_children[parent] = [child]
+        elif child not in self.joint_children[parent]:
+            self.joint_children[parent].append(child)
         self.joint_child.append(child)
         self.joint_X_p.append(wp.transform(parent_xform))
         self.joint_X_c.append(wp.transform(child_xform))
@@ -3895,6 +3916,20 @@ class ModelBuilder:
                     print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
                 self.equality_constraint_enabled[i] = False
 
+        # Rebuild parent/child lookups
+        self.joint_parents.clear()
+        self.joint_children.clear()
+        for p, c in zip(self.joint_parent, self.joint_child, strict=True):
+            if c not in self.joint_parents:
+                self.joint_parents[c] = [p]
+            else:
+                self.joint_parents[c].append(p)
+
+            if p not in self.joint_children:
+                self.joint_children[p] = [c]
+            elif c not in self.joint_children[p]:
+                self.joint_children[p].append(c)
+
         return {
             "body_remap": body_remap,
             "joint_remap": joint_remap,
@@ -4056,6 +4091,11 @@ class ModelBuilder:
                     for parent_shape in self.body_shapes[parent_body]:
                         self.add_shape_collision_filter_pair(parent_shape, shape)
 
+        if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_children:
+            for child_body in self.joint_children[body]:
+                for child_shape in self.body_shapes[child_body]:
+                    self.add_shape_collision_filter_pair(shape, child_shape)
+
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
             com_body = wp.transform_point(xform, c)
@@ -4214,7 +4254,7 @@ class ModelBuilder:
         `a`, `b`, `c` along the local X, Y, Z axes respectively.
 
         Note:
-            Ellipsoid collision is handled by the unified GJK/MPR collision pipeline,
+            Ellipsoid collision is handled by the GJK/MPR collision pipeline,
             which provides accurate collision detection for all convex shape pairs.
 
         Args:
@@ -7691,7 +7731,7 @@ class ModelBuilder:
                 margin = self.shape_contact_margin[shape_idx] + self.shape_thickness[shape_idx]
 
                 # Create cache key based on shape type and parameters
-                if shape_type == GeoType.MESH and shape_src is not None:
+                if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
                     cache_key = (shape_type, id(shape_src), tuple(shape_scale), margin)
                 else:
                     cache_key = (shape_type, tuple(shape_scale), margin)
@@ -7715,6 +7755,29 @@ class ModelBuilder:
                         aabb_lower = aabb_lower - margin
                         aabb_upper = aabb_upper + margin
 
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
+                        # Compute local AABB from convex mesh vertices (similar to MESH)
+                        vertices = shape_src.vertices
+                        aabb_lower = vertices.min(axis=0)
+                        aabb_upper = vertices.max(axis=0)
+
+                        # Apply scale to get the actual local-space bounds
+                        aabb_lower = aabb_lower * np.array(shape_scale)
+                        aabb_upper = aabb_upper * np.array(shape_scale)
+
+                        # Expand by margin
+                        aabb_lower = aabb_lower - margin
+                        aabb_upper = aabb_upper + margin
+
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.ELLIPSOID:
+                        # Ellipsoid: shape_scale = (semi_axis_x, semi_axis_y, semi_axis_z)
+                        sx, sy, sz = shape_scale
+                        aabb_lower = np.array([-sx - margin, -sy - margin, -sz - margin])
+                        aabb_upper = np.array([sx + margin, sy + margin, sz + margin])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.BOX:
@@ -8197,7 +8260,6 @@ class ModelBuilder:
             m.equality_constraint_count = len(self.equality_constraint_type)
 
             self.find_shape_contact_pairs(m)
-            m.rigid_contact_max = m._count_rigid_contact_points()
 
             # enable ground plane
             m.up_axis = self.up_axis
