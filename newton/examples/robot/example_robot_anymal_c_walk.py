@@ -156,7 +156,7 @@ class Example:
         self.model = builder.finalize()
 
         # TODO: Change to CollisionPipelineUnified when more stable
-        if args.use_mujoco_contacts == False:
+        if not args.use_mujoco_contacts:
             # Temporarily fix: override to use mujoco contact
             print("WARNING: use_mujoco_contact is ignored, switch to use MjWarp collision pipeline")
             args.use_mujoco_contacts = True
@@ -168,7 +168,7 @@ class Example:
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=args.use_mujoco_contacts if args else True,
+            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
             solver="newton",
             ls_parallel=True,
             ls_iterations=50,  # Increased from default 10 for determinism
