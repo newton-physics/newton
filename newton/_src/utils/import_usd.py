@@ -1415,8 +1415,7 @@ def parse_usd(
     # Parse orphan joints: joints that exist in the USD but were not included in any articulation.
     # This can happen when:
     # 1. No articulations are defined in the USD (no_articulations == True)
-    # 2. A joint references bodies that are not in the articulation's articulatedBodies
-    #    (e.g., bodies with rigidBodyEnabled = 0)
+    # 2. A joint connects bodies that are not under any PhysicsArticulationRootAPI
     orphan_joints = []
     for joint_key, joint_desc in joint_descriptions.items():
         # Skip joints that were already processed as part of an articulation
@@ -1460,8 +1459,7 @@ def parse_usd(
                 f"[{', '.join(orphan_joints)}]. "
             )
             warn_str += (
-                "This can happen when a joint references bodies that are not part of the articulation "
-                "(e.g., bodies with physics:rigidBodyEnabled set to False).\n"
+                "This can happen when a joint connects bodies that are not under any PhysicsArticulationRootAPI.\n"
             )
         warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=True) "
         warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."

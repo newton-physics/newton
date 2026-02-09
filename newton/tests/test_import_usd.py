@@ -143,21 +143,14 @@ def Xform "Root" (
         self.assertEqual(set(builder.joint_articulation), {0, 1})
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_import_revolute_joint_with_disabled_rigid_body(self):
-        """Test PhysicsRevoluteJoint parsing when a body has rigidBodyEnabled disabled.
+    def test_import_orphan_joints_with_articulation_present(self):
+        """Joints outside any articulation must not be silently dropped.
 
-        Sets up a USD stage with an articulation containing two bodies and a
-        PhysicsRevoluteJoint.  Body0 has ``physics:rigidBodyEnabled = 0``
-        (disabled for physics simulation), while Body1 is a normal rigid body.
-        The joint, defined inside the disabled body, should still be parsed as
-        REVOLUTE (not FREE), verifying that the importer handles disabled rigid
-        bodies without demoting the joint type.
-
-        Args:
-            None.
-
-        Returns:
-            None.
+        Regression test: orphan-joint processing previously only ran when no
+        articulations existed in the USD.  When an articulation was present,
+        joints not belonging to it were silently discarded.  This test creates
+        a stage with an articulation and a separate revolute joint outside it,
+        and verifies that both are parsed correctly.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
@@ -165,37 +158,74 @@ def Xform "Root" (
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        # Create an articulation root - this is key to reproducing the bug!
-        # When an articulation exists, orphan joints were previously not processed.
-        world = UsdGeom.Xform.Define(stage, "/World")
-        UsdPhysics.ArticulationRootAPI.Apply(world.GetPrim())
+        # Articulation: two bodies connected by a fixed joint and a revolute joint
+        arm = UsdGeom.Xform.Define(stage, "/World/Arm")
+        UsdPhysics.ArticulationRootAPI.Apply(arm.GetPrim())
 
-        # Create body0 with rigidBodyEnabled = False (this is the key part of the bug)
-        body0_xform = UsdGeom.Xform.Define(stage, "/World/Body0")
-        body0_rb = UsdPhysics.RigidBodyAPI.Apply(body0_xform.GetPrim())
-        body0_rb.CreateRigidBodyEnabledAttr().Set(False)
+        body_a = UsdGeom.Xform.Define(stage, "/World/Arm/BodyA")
+        UsdPhysics.RigidBodyAPI.Apply(body_a.GetPrim())
+        body_a.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+        col_a = UsdGeom.Cube.Define(stage, "/World/Arm/BodyA/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_a.GetPrim())
 
-        # Create body1 as a normal rigid body
-        body1_xform = UsdGeom.Xform.Define(stage, "/World/Body1")
-        UsdPhysics.RigidBodyAPI.Apply(body1_xform.GetPrim())
+        body_b = UsdGeom.Xform.Define(stage, "/World/Arm/BodyB")
+        UsdPhysics.RigidBodyAPI.Apply(body_b.GetPrim())
+        body_b.AddTranslateOp().Set(Gf.Vec3d(1, 0, 0))
+        col_b = UsdGeom.Cube.Define(stage, "/World/Arm/BodyB/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_b.GetPrim())
 
-        # Create a revolute joint connecting them (nested inside body0, as in the issue)
-        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Body0/RevoluteJoint")
-        joint.CreateBody0Rel().SetTargets([body0_xform.GetPath()])
-        joint.CreateBody1Rel().SetTargets([body1_xform.GetPath()])
-        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
-        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
-        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-        joint.CreateAxisAttr().Set("Z")
+        fixed_joint = UsdPhysics.FixedJoint.Define(stage, "/World/Arm/FixedJoint")
+        fixed_joint.CreateBody1Rel().SetTargets([body_a.GetPath()])
+        fixed_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0))
+        fixed_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+        fixed_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        fixed_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        rev_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Arm/RevoluteJoint")
+        rev_joint.CreateBody0Rel().SetTargets([body_a.GetPath()])
+        rev_joint.CreateBody1Rel().SetTargets([body_b.GetPath()])
+        rev_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev_joint.CreateAxisAttr().Set("Z")
+
+        # Separate bodies connected by a revolute joint, outside any articulation
+        body_c = UsdGeom.Xform.Define(stage, "/World/BodyC")
+        UsdPhysics.RigidBodyAPI.Apply(body_c.GetPrim())
+        body_c.AddTranslateOp().Set(Gf.Vec3d(5, 0, 0))
+        col_c = UsdGeom.Cube.Define(stage, "/World/BodyC/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_c.GetPrim())
+
+        body_d = UsdGeom.Xform.Define(stage, "/World/BodyD")
+        UsdPhysics.RigidBodyAPI.Apply(body_d.GetPrim())
+        body_d.AddTranslateOp().Set(Gf.Vec3d(6, 0, 0))
+        col_d = UsdGeom.Cube.Define(stage, "/World/BodyD/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_d.GetPrim())
+
+        orphan_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/OrphanJoint")
+        orphan_joint.CreateBody0Rel().SetTargets([body_c.GetPath()])
+        orphan_joint.CreateBody1Rel().SetTargets([body_d.GetPath()])
+        orphan_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        orphan_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        orphan_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        orphan_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        orphan_joint.CreateAxisAttr().Set("Z")
 
         builder = newton.ModelBuilder()
         with self.assertWarns(UserWarning) as cm:
             builder.add_usd(stage)
-        self.assertIn("joints were", str(cm.warning).lower())
-        revolute_count = builder.joint_type.count(newton.JointType.REVOLUTE)
-        self.assertGreaterEqual(revolute_count, 1, "Expected at least one REVOLUTE joint")
-        self.assertEqual(builder.body_count, 2)
+        self.assertIn("not included in any articulation", str(cm.warning).lower())
+
+        self.assertIn("/World/Arm/RevoluteJoint", builder.joint_key)
+        self.assertIn("/World/OrphanJoint", builder.joint_key)
+
+        art_idx = builder.joint_key.index("/World/Arm/RevoluteJoint")
+        orphan_idx = builder.joint_key.index("/World/OrphanJoint")
+        self.assertEqual(builder.joint_type[art_idx], newton.JointType.REVOLUTE)
+        self.assertEqual(builder.joint_type[orphan_idx], newton.JointType.REVOLUTE)
+
+        self.assertEqual(builder.body_count, 4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
