@@ -203,8 +203,8 @@ class TestModel(unittest.TestCase):
         base_com = wp.vec3(0.1, 0.2, 0.3)
         base_inertia = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
 
-        locked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=True)
-        unlocked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=False)
+        locked_body = builder.add_link(mass=2.0, com=base_com, inertia=base_inertia, lock_inertia=True)
+        unlocked_body = builder.add_link(mass=2.0, com=base_com, inertia=base_inertia, lock_inertia=False)
 
         locked_mass = builder.body_mass[locked_body]
         locked_com = builder.body_com[locked_body]

@@ -154,7 +154,7 @@ class Example:
         self.soft_contact_kd = 2e-3
 
         self.robot_friction = 1.0
-        self.table_friction = 0.5
+        self.table_friction = 1.0
         self.self_contact_friction = 0.25
 
         #   elasticity
@@ -228,15 +228,20 @@ class Example:
 
         shape_ke = self.model.shape_material_ke.numpy()
         shape_kd = self.model.shape_material_kd.numpy()
+        shape_mu = self.model.shape_material_mu.numpy()
 
         shape_ke[...] = self.soft_contact_ke
         shape_kd[...] = self.soft_contact_kd
+        shape_mu[...] = 1.0
 
         self.model.shape_material_ke = wp.array(
             shape_ke, dtype=self.model.shape_material_ke.dtype, device=self.model.shape_material_ke.device
         )
         self.model.shape_material_kd = wp.array(
             shape_kd, dtype=self.model.shape_material_kd.dtype, device=self.model.shape_material_kd.device
+        )
+        self.model.shape_material_mu = wp.array(
+            shape_mu, dtype=self.model.shape_material_mu.dtype, device=self.model.shape_material_mu.device
         )
 
         self.state_0 = self.model.state()
