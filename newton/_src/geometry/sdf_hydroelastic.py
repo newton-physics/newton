@@ -384,7 +384,7 @@ class SDFHydroelastic:
         Note: This is a no-op. When `output_contact_surface=True` in the config,
         the kernel always writes surface data. Display is controlled by the
         viewer's `show_hydro_contact_surface` flag. This method exists for API
-        compatibility with ``CollisionPipelineUnified``.
+        compatibility with ``CollisionPipeline``.
         """
         pass
 

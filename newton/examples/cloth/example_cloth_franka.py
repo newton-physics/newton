@@ -250,7 +250,7 @@ class Example:
 
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
+        # Create collision pipeline (default)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
@@ -549,11 +549,7 @@ class Example:
             # cloth sim
             if self.collision_pipeline is not None:
                 self.collision_pipeline.soft_contact_margin = self.cloth_body_contact_margin
-            self.contacts = self.model.collide(
-                self.state_0,
-                collision_pipeline=self.collision_pipeline,
-                soft_contact_margin=self.cloth_body_contact_margin,
-            )
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
             if self.add_cloth:
                 self.cloth_solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)

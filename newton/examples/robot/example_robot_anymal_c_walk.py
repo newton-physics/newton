@@ -155,14 +155,14 @@ class Example:
 
         self.model = builder.finalize()
 
-        # TODO: Change to CollisionPipelineUnified when more stable
+        # TODO: Change to Newton Collision Pipeline when more stable
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
         if not use_mujoco_contacts:
             # Temporarily fix: override to use mujoco contact
             print("WARNING: use_mujoco_contacts is ignored, switch to use MjWarp collision pipeline")
             use_mujoco_contacts = True
 
-        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
         # Can override with: --collision-pipeline unified --broad-phase-mode nxn|sap|explicit
         if not use_mujoco_contacts:
             self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
