@@ -174,7 +174,6 @@ class Example:
                 nconmax=num_per_world,
                 iterations=15,
                 ls_iterations=100,
-                ls_parallel=False,
                 impratio=1.0,
             )
         else:
