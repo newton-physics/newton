@@ -155,14 +155,23 @@ class Example:
 
         self.model = builder.finalize()
 
+        # TODO: Change to CollisionPipelineUnified when more stable
+        use_mujoco_contacts = args.use_mujoco_contacts if args else False
+        if not use_mujoco_contacts:
+            # Temporarily fix: override to use mujoco contact
+            print("WARNING: use_mujoco_contacts is ignored, switch to use MjWarp collision pipeline")
+            use_mujoco_contacts = True
+
         # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
         # Can override with: --collision-pipeline unified --broad-phase-mode nxn|sap|explicit
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        if not use_mujoco_contacts:
+            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
-            ls_parallel=True,
+            use_mujoco_contacts=use_mujoco_contacts,
+            solver="newton",
+            ls_parallel=False,
             ls_iterations=50,  # Increased from default 10 for determinism
             njmax=50,
             nconmax=100,  # Increased from 75 to handle peak contact count of ~77
@@ -189,7 +198,10 @@ class Example:
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         # Initialize contacts using collision pipeline
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        if use_mujoco_contacts:
+            self.contacts = None
+        else:
+            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
@@ -230,7 +242,8 @@ class Example:
             self.viewer.apply_forces(self.state_0)
 
             # Compute contacts using collision pipeline for terrain mesh
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            if self.contacts is not None:
+                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

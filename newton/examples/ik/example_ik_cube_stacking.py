@@ -238,7 +238,6 @@ class Example:
             solver="newton",
             integrator="implicitfast",
             iterations=20,
-            ls_parallel=True,
             ls_iterations=100,
             nconmax=1000,
             njmax=2000,

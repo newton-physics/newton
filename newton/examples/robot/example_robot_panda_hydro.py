@@ -251,7 +251,6 @@ class Example:
             nconmax=500,
             iterations=15,
             ls_iterations=100,
-            ls_parallel=True,
             impratio=1000.0,
         )
 

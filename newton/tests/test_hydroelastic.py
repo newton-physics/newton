@@ -62,7 +62,6 @@ solvers = {
         njmax=500,
         nconmax=200,
         solver="newton",
-        ls_parallel=True,
         ls_iterations=100,
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
@@ -322,7 +321,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         nconmax=2000,
         iterations=20,
         ls_iterations=100,
-        ls_parallel=True,
         impratio=1000.0,
     )
 

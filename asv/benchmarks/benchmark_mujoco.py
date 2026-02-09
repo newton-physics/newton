@@ -40,7 +40,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 80,
         "nconmax": 25,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "g1": {
@@ -48,7 +48,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 210,
         "nconmax": 35,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "h1": {
@@ -56,7 +56,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 65,
         "nconmax": 15,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "cartpole": {
@@ -64,7 +64,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 5,
         "nconmax": 0,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "ant": {
@@ -72,7 +72,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 38,
         "nconmax": 15,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "quadruped": {
@@ -80,7 +80,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 75,
         "nconmax": 50,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "allegro": {
@@ -88,7 +88,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 60,
         "nconmax": 40,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "elliptic",
     },
     "kitchen": {
