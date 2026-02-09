@@ -2422,6 +2422,49 @@ class TestMenagerie_I2rtYam(TestMenagerieMJCF):
 
 
 # =============================================================================
+# USD Test Variants (Auto-generated)
+# =============================================================================
+# For each MJCF robot test, we generate a USD variant that:
+# - Inherits from TestMenagerieUSD (loads MJCF → USD → Newton)
+# - Copies robot_folder, robot_xml, floating from the MJCF test
+# - Is skipped until USD converter is ready
+#
+# To enable a USD test, implement create_newton_model_from_usd() and remove
+# the skip_reason from that test's class definition.
+
+
+def _create_usd_test_class(mjcf_class: type) -> type:
+    """Create a USD test variant from an MJCF test class."""
+
+    class USDTest(TestMenagerieUSD):
+        robot_folder = mjcf_class.robot_folder
+        robot_xml = mjcf_class.robot_xml
+        floating = mjcf_class.floating
+        skip_reason = "USD converter not yet implemented"
+
+    # Copy docstring and set names
+    USDTest.__doc__ = f"{mjcf_class.__doc__} (USD path)"
+    USDTest.__name__ = f"{mjcf_class.__name__}_USD"
+    USDTest.__qualname__ = f"{mjcf_class.__name__}_USD"
+    return USDTest
+
+
+# Generate USD variants for all MJCF robot tests
+_mjcf_test_classes = [
+    cls
+    for name, cls in list(globals().items())
+    if name.startswith("TestMenagerie_") and issubclass(cls, TestMenagerieMJCF)
+]
+
+for _mjcf_cls in _mjcf_test_classes:
+    _usd_cls = _create_usd_test_class(_mjcf_cls)
+    globals()[_usd_cls.__name__] = _usd_cls
+
+# Cleanup temporary variables
+del _mjcf_test_classes, _mjcf_cls, _usd_cls
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
