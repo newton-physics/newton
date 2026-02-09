@@ -153,7 +153,7 @@ class Example:
             "LF_HFE": 0.4,
             "LF_KFE": -0.8,
         }
-        # Set initial joint positions (skip first 6 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
+        # Set initial joint positions (skip first 7 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
         for key, value in initial_q.items():
             builder.joint_q[builder.joint_key.index(key) + 6] = value
 
