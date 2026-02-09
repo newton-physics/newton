@@ -102,7 +102,6 @@ import re
 import time
 import unittest
 from abc import abstractmethod
-from enum import Enum, auto
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -158,13 +157,6 @@ def download_menagerie_asset(
 # =============================================================================
 # Model Source Factory
 # =============================================================================
-
-
-class ModelSourceType(Enum):
-    """Type of model source for Newton model creation."""
-
-    MJCF = auto()  # Load directly from MJCF
-    USD = auto()  # Convert MJCF to USD, then load (future)
 
 
 def create_newton_model_from_mjcf(
@@ -244,30 +236,6 @@ def create_newton_model_from_usd(
     raise NotImplementedError(
         "USD conversion path not yet implemented. Waiting for MuJoCo USD converter to be finalized."
     )
-
-
-def create_newton_model(
-    mjcf_path: Path,
-    source_type: ModelSourceType = ModelSourceType.MJCF,
-    **kwargs,
-) -> newton.Model:
-    """
-    Factory function to create Newton model from various sources.
-
-    Args:
-        mjcf_path: Path to the source MJCF file
-        source_type: How to create the model (MJCF direct or via USD)
-        **kwargs: Passed to the specific creation function
-
-    Returns:
-        Finalized Newton Model
-    """
-    if source_type == ModelSourceType.MJCF:
-        return create_newton_model_from_mjcf(mjcf_path, **kwargs)
-    elif source_type == ModelSourceType.USD:
-        return create_newton_model_from_usd(mjcf_path, **kwargs)
-    else:
-        raise ValueError(f"Unknown model source type: {source_type}")
 
 
 # =============================================================================
@@ -1355,9 +1323,6 @@ class TestMenagerieBase(unittest.TestCase):
 
     # Skip reason (set to a string to skip test, leave unset or None to run)
     skip_reason: str | None = None
-
-    # Model source type (for parametrized testing)
-    model_source_type: ModelSourceType = ModelSourceType.MJCF
 
     # Debug mode: opens viewer for visual debugging
     debug_visual: bool = False
