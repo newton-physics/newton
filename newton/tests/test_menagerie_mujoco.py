@@ -1841,7 +1841,7 @@ class TestMenagerieUSD(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_AgilexPiper(TestMenagerieBase):
+class TestMenagerie_AgilexPiper(TestMenagerieMJCF):
     """AgileX PIPER bimanual arm."""
 
     robot_folder = "agilex_piper"
@@ -1850,7 +1850,7 @@ class TestMenagerie_AgilexPiper(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_ArxL5(TestMenagerieBase):
+class TestMenagerie_ArxL5(TestMenagerieMJCF):
     """ARX L5 arm."""
 
     robot_folder = "arx_l5"
@@ -1859,7 +1859,7 @@ class TestMenagerie_ArxL5(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_Dynamixel2r(TestMenagerieBase):
+class TestMenagerie_Dynamixel2r(TestMenagerieMJCF):
     """Dynamixel 2R simple arm."""
 
     robot_folder = "dynamixel_2r"
@@ -1868,7 +1868,7 @@ class TestMenagerie_Dynamixel2r(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_FrankaEmikaPanda(TestMenagerieBase):
+class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
@@ -1877,7 +1877,7 @@ class TestMenagerie_FrankaEmikaPanda(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_FrankaFr3(TestMenagerieBase):
+class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
     """Franka FR3 arm."""
 
     robot_folder = "franka_fr3"
@@ -1886,7 +1886,7 @@ class TestMenagerie_FrankaFr3(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_FrankaFr3V2(TestMenagerieBase):
+class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
@@ -1895,7 +1895,7 @@ class TestMenagerie_FrankaFr3V2(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_KinovaGen3(TestMenagerieBase):
+class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
     """Kinova Gen3 arm."""
 
     robot_folder = "kinova_gen3"
@@ -1904,7 +1904,7 @@ class TestMenagerie_KinovaGen3(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_KukaIiwa14(TestMenagerieBase):
+class TestMenagerie_KukaIiwa14(TestMenagerieMJCF):
     """KUKA iiwa 14 arm."""
 
     robot_folder = "kuka_iiwa_14"
@@ -1913,7 +1913,7 @@ class TestMenagerie_KukaIiwa14(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_LowCostRobotArm(TestMenagerieBase):
+class TestMenagerie_LowCostRobotArm(TestMenagerieMJCF):
     """Low-cost robot arm."""
 
     robot_folder = "low_cost_robot_arm"
@@ -1922,7 +1922,7 @@ class TestMenagerie_LowCostRobotArm(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_RethinkSawyer(TestMenagerieBase):
+class TestMenagerie_RethinkSawyer(TestMenagerieMJCF):
     """Rethink Robotics Sawyer arm."""
 
     robot_folder = "rethink_robotics_sawyer"
@@ -1931,7 +1931,7 @@ class TestMenagerie_RethinkSawyer(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_TrossenVx300s(TestMenagerieBase):
+class TestMenagerie_TrossenVx300s(TestMenagerieMJCF):
     """Trossen Robotics ViperX 300 S arm."""
 
     robot_folder = "trossen_vx300s"
@@ -1940,7 +1940,7 @@ class TestMenagerie_TrossenVx300s(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_TrossenWx250s(TestMenagerieBase):
+class TestMenagerie_TrossenWx250s(TestMenagerieMJCF):
     """Trossen Robotics WidowX 250 S arm."""
 
     robot_folder = "trossen_wx250s"
@@ -1949,7 +1949,7 @@ class TestMenagerie_TrossenWx250s(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_TrossenWxai(TestMenagerieBase):
+class TestMenagerie_TrossenWxai(TestMenagerieMJCF):
     """Trossen Robotics WidowX AI arm."""
 
     robot_folder = "trossen_wxai"
@@ -1958,7 +1958,7 @@ class TestMenagerie_TrossenWxai(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_TrsSoArm100(TestMenagerieBase):
+class TestMenagerie_TrsSoArm100(TestMenagerieMJCF):
     """TRS SO-ARM100 arm."""
 
     robot_folder = "trs_so_arm100"
@@ -1967,7 +1967,7 @@ class TestMenagerie_TrsSoArm100(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UfactoryLite6(TestMenagerieBase):
+class TestMenagerie_UfactoryLite6(TestMenagerieMJCF):
     """UFACTORY Lite 6 arm."""
 
     robot_folder = "ufactory_lite6"
@@ -1976,7 +1976,7 @@ class TestMenagerie_UfactoryLite6(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UfactoryXarm7(TestMenagerieBase):
+class TestMenagerie_UfactoryXarm7(TestMenagerieMJCF):
     """UFACTORY xArm 7 arm."""
 
     robot_folder = "ufactory_xarm7"
@@ -1985,7 +1985,7 @@ class TestMenagerie_UfactoryXarm7(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
+class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     """Universal Robots UR5e arm."""
 
     robot_folder = "universal_robots_ur5e"
@@ -2005,7 +2005,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     use_contact_injection = True
 
 
-class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
+class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
@@ -2019,7 +2019,7 @@ class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_LeapHand(TestMenagerieBase):
+class TestMenagerie_LeapHand(TestMenagerieMJCF):
     """LEAP Hand."""
 
     robot_folder = "leap_hand"
@@ -2028,7 +2028,7 @@ class TestMenagerie_LeapHand(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_Robotiq2f85(TestMenagerieBase):
+class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper."""
 
     robot_folder = "robotiq_2f85"
@@ -2037,7 +2037,7 @@ class TestMenagerie_Robotiq2f85(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_Robotiq2f85V4(TestMenagerieBase):
+class TestMenagerie_Robotiq2f85V4(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper v4."""
 
     robot_folder = "robotiq_2f85_v4"
@@ -2046,7 +2046,7 @@ class TestMenagerie_Robotiq2f85V4(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_ShadowDexee(TestMenagerieBase):
+class TestMenagerie_ShadowDexee(TestMenagerieMJCF):
     """Shadow DEX-EE hand."""
 
     robot_folder = "shadow_dexee"
@@ -2055,7 +2055,7 @@ class TestMenagerie_ShadowDexee(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_ShadowHand(TestMenagerieBase):
+class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     """Shadow Hand."""
 
     robot_folder = "shadow_hand"
@@ -2064,7 +2064,7 @@ class TestMenagerie_ShadowHand(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieBase):
+class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieMJCF):
     """Tetheria Aero Hand (open)."""
 
     robot_folder = "tetheria_aero_hand_open"
@@ -2073,7 +2073,7 @@ class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UmiGripper(TestMenagerieBase):
+class TestMenagerie_UmiGripper(TestMenagerieMJCF):
     """UMI Gripper."""
 
     robot_folder = "umi_gripper"
@@ -2082,7 +2082,7 @@ class TestMenagerie_UmiGripper(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_WonikAllegro(TestMenagerieBase):
+class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     """Wonik Allegro Hand."""
 
     robot_folder = "wonik_allegro"
@@ -2091,7 +2091,7 @@ class TestMenagerie_WonikAllegro(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_IitSoftfoot(TestMenagerieBase):
+class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
     """IIT Softfoot biomechanical gripper."""
 
     robot_folder = "iit_softfoot"
@@ -2105,7 +2105,7 @@ class TestMenagerie_IitSoftfoot(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_Aloha(TestMenagerieBase):
+class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
@@ -2114,7 +2114,7 @@ class TestMenagerie_Aloha(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_GoogleRobot(TestMenagerieBase):
+class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
     """Google Robot (bimanual)."""
 
     robot_folder = "google_robot"
@@ -2128,7 +2128,7 @@ class TestMenagerie_GoogleRobot(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_HelloRobotStretch(TestMenagerieBase):
+class TestMenagerie_HelloRobotStretch(TestMenagerieMJCF):
     """Hello Robot Stretch."""
 
     robot_folder = "hello_robot_stretch"
@@ -2137,7 +2137,7 @@ class TestMenagerie_HelloRobotStretch(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_HelloRobotStretch3(TestMenagerieBase):
+class TestMenagerie_HelloRobotStretch3(TestMenagerieMJCF):
     """Hello Robot Stretch 3."""
 
     robot_folder = "hello_robot_stretch_3"
@@ -2146,7 +2146,7 @@ class TestMenagerie_HelloRobotStretch3(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_PalTiago(TestMenagerieBase):
+class TestMenagerie_PalTiago(TestMenagerieMJCF):
     """PAL Robotics TIAGo."""
 
     robot_folder = "pal_tiago"
@@ -2155,7 +2155,7 @@ class TestMenagerie_PalTiago(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_PalTiagoDual(TestMenagerieBase):
+class TestMenagerie_PalTiagoDual(TestMenagerieMJCF):
     """PAL Robotics TIAGo Dual."""
 
     robot_folder = "pal_tiago_dual"
@@ -2164,7 +2164,7 @@ class TestMenagerie_PalTiagoDual(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_StanfordTidybot(TestMenagerieBase):
+class TestMenagerie_StanfordTidybot(TestMenagerieMJCF):
     """Stanford Tidybot mobile manipulator."""
 
     robot_folder = "stanford_tidybot"
@@ -2178,7 +2178,7 @@ class TestMenagerie_StanfordTidybot(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_ApptronikApollo(TestMenagerieBase):
+class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
@@ -2187,7 +2187,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_BerkeleyHumanoid(TestMenagerieBase):
+class TestMenagerie_BerkeleyHumanoid(TestMenagerieMJCF):
     """Berkeley Humanoid."""
 
     robot_folder = "berkeley_humanoid"
@@ -2196,7 +2196,7 @@ class TestMenagerie_BerkeleyHumanoid(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_BoosterT1(TestMenagerieBase):
+class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
@@ -2205,7 +2205,7 @@ class TestMenagerie_BoosterT1(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_FourierN1(TestMenagerieBase):
+class TestMenagerie_FourierN1(TestMenagerieMJCF):
     """Fourier N1 humanoid."""
 
     robot_folder = "fourier_n1"
@@ -2214,7 +2214,7 @@ class TestMenagerie_FourierN1(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_PalTalos(TestMenagerieBase):
+class TestMenagerie_PalTalos(TestMenagerieMJCF):
     """PAL Robotics TALOS humanoid."""
 
     robot_folder = "pal_talos"
@@ -2223,7 +2223,7 @@ class TestMenagerie_PalTalos(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_PndboticsAdamLite(TestMenagerieBase):
+class TestMenagerie_PndboticsAdamLite(TestMenagerieMJCF):
     """PNDbotics Adam Lite humanoid."""
 
     robot_folder = "pndbotics_adam_lite"
@@ -2232,7 +2232,7 @@ class TestMenagerie_PndboticsAdamLite(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_RobotisOp3(TestMenagerieBase):
+class TestMenagerie_RobotisOp3(TestMenagerieMJCF):
     """Robotis OP3 humanoid."""
 
     robot_folder = "robotis_op3"
@@ -2241,7 +2241,7 @@ class TestMenagerie_RobotisOp3(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_ToddlerBot2xc(TestMenagerieBase):
+class TestMenagerie_ToddlerBot2xc(TestMenagerieMJCF):
     """ToddlerBot 2XC humanoid."""
 
     robot_folder = "toddlerbot_2xc"
@@ -2250,7 +2250,7 @@ class TestMenagerie_ToddlerBot2xc(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_ToddlerBot2xm(TestMenagerieBase):
+class TestMenagerie_ToddlerBot2xm(TestMenagerieMJCF):
     """ToddlerBot 2XM humanoid."""
 
     robot_folder = "toddlerbot_2xm"
@@ -2259,7 +2259,7 @@ class TestMenagerie_ToddlerBot2xm(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UnitreeG1(TestMenagerieBase):
+class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
@@ -2268,7 +2268,7 @@ class TestMenagerie_UnitreeG1(TestMenagerieBase):
     skip_reason = "HIGH PRIORITY - Not yet implemented"
 
 
-class TestMenagerie_UnitreeH1(TestMenagerieBase):
+class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
@@ -2282,7 +2282,7 @@ class TestMenagerie_UnitreeH1(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_AgilityCassie(TestMenagerieBase):
+class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
@@ -2296,7 +2296,7 @@ class TestMenagerie_AgilityCassie(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_AnyboticsAnymalB(TestMenagerieBase):
+class TestMenagerie_AnyboticsAnymalB(TestMenagerieMJCF):
     """ANYbotics ANYmal B quadruped."""
 
     robot_folder = "anybotics_anymal_b"
@@ -2305,7 +2305,7 @@ class TestMenagerie_AnyboticsAnymalB(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_AnyboticsAnymalC(TestMenagerieBase):
+class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
@@ -2314,7 +2314,7 @@ class TestMenagerie_AnyboticsAnymalC(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_BostonDynamicsSpot(TestMenagerieBase):
+class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
@@ -2323,7 +2323,7 @@ class TestMenagerie_BostonDynamicsSpot(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_GoogleBarkourV0(TestMenagerieBase):
+class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
     """Google Barkour v0 quadruped."""
 
     robot_folder = "google_barkour_v0"
@@ -2332,7 +2332,7 @@ class TestMenagerie_GoogleBarkourV0(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_GoogleBarkourVb(TestMenagerieBase):
+class TestMenagerie_GoogleBarkourVb(TestMenagerieMJCF):
     """Google Barkour vB quadruped."""
 
     robot_folder = "google_barkour_vb"
@@ -2341,7 +2341,7 @@ class TestMenagerie_GoogleBarkourVb(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UnitreeA1(TestMenagerieBase):
+class TestMenagerie_UnitreeA1(TestMenagerieMJCF):
     """Unitree A1 quadruped."""
 
     robot_folder = "unitree_a1"
@@ -2350,7 +2350,7 @@ class TestMenagerie_UnitreeA1(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UnitreeGo1(TestMenagerieBase):
+class TestMenagerie_UnitreeGo1(TestMenagerieMJCF):
     """Unitree Go1 quadruped."""
 
     robot_folder = "unitree_go1"
@@ -2359,7 +2359,7 @@ class TestMenagerie_UnitreeGo1(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_UnitreeGo2(TestMenagerieBase):
+class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
@@ -2373,7 +2373,7 @@ class TestMenagerie_UnitreeGo2(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_UnitreeZ1(TestMenagerieBase):
+class TestMenagerie_UnitreeZ1(TestMenagerieMJCF):
     """Unitree Z1 arm."""
 
     robot_folder = "unitree_z1"
@@ -2387,7 +2387,7 @@ class TestMenagerie_UnitreeZ1(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_BitcrazeCrazyflie2(TestMenagerieBase):
+class TestMenagerie_BitcrazeCrazyflie2(TestMenagerieMJCF):
     """Bitcraze Crazyflie 2 quadrotor."""
 
     robot_folder = "bitcraze_crazyflie_2"
@@ -2396,7 +2396,7 @@ class TestMenagerie_BitcrazeCrazyflie2(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_SkydioX2(TestMenagerieBase):
+class TestMenagerie_SkydioX2(TestMenagerieMJCF):
     """Skydio X2 drone."""
 
     robot_folder = "skydio_x2"
@@ -2410,7 +2410,7 @@ class TestMenagerie_SkydioX2(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_RobotSoccerKit(TestMenagerieBase):
+class TestMenagerie_RobotSoccerKit(TestMenagerieMJCF):
     """Robot Soccer Kit omniwheel base."""
 
     robot_folder = "robot_soccer_kit"
@@ -2419,7 +2419,7 @@ class TestMenagerie_RobotSoccerKit(TestMenagerieBase):
     skip_reason = "Not yet implemented"
 
 
-class TestMenagerie_RobotstudioSo101(TestMenagerieBase):
+class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
@@ -2433,7 +2433,7 @@ class TestMenagerie_RobotstudioSo101(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_Flybody(TestMenagerieBase):
+class TestMenagerie_Flybody(TestMenagerieMJCF):
     """Flybody fruit fly model."""
 
     robot_folder = "flybody"
@@ -2447,7 +2447,7 @@ class TestMenagerie_Flybody(TestMenagerieBase):
 # -----------------------------------------------------------------------------
 
 
-class TestMenagerie_I2rtYam(TestMenagerieBase):
+class TestMenagerie_I2rtYam(TestMenagerieMJCF):
     """i2rt YAM (Yet Another Manipulator)."""
 
     robot_folder = "i2rt_yam"
