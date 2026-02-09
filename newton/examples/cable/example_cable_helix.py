@@ -56,10 +56,9 @@ class Example:
             twisting_angle: Total twist in radians around local tangent (distributed uniformly).
 
         Returns:
-            Tuple of (points, edge_indices, quaternions):
-            - points: List of capsule center positions (num_elements + 1).
-            - edge_indices: Flattened array of edge connectivity (2*num_elements).
-            - quaternions: List of capsule orientations using parallel transport (num_elements).
+            Tuple of (points, quaternions):
+            - points: List of polyline points (num_elements + 1).
+            - quaternions: Per-segment orientations using parallel transport (num_elements).
         """
         if pos is None:
             pos = wp.vec3()
@@ -79,43 +78,8 @@ class Example:
             z = i * z_step
             points.append(pos + wp.vec3(x, y, z))
 
-        # Edge indices for consecutive points
-        edge_indices = []
-        for i in range(num_elements):
-            edge_indices.extend([i, i + 1])
-        edge_indices = np.array(edge_indices, dtype=np.int32)
-
-        # Build quaternions using parallel transport and incremental twist
-        edge_q = []
-        if num_elements > 0:
-            # Capsule internal axis is +Z
-            local_axis = wp.vec3(0.0, 0.0, 1.0)
-            from_direction = local_axis
-
-            angle_step = twisting_angle / num_elements if num_elements > 0 else 0.0
-
-            for i in range(num_elements):
-                p0 = points[i]
-                p1 = points[i + 1]
-
-                to_direction = wp.normalize(p1 - p0)
-                dq_dir = wp.quat_between_vectors(from_direction, to_direction)
-
-                if i == 0:
-                    base_quaternion = dq_dir
-                else:
-                    base_quaternion = wp.mul(dq_dir, edge_q[i - 1])
-
-                if twisting_angle != 0.0:
-                    twist_rot = wp.quat_from_axis_angle(to_direction, angle_step)
-                    final_quaternion = wp.mul(twist_rot, base_quaternion)
-                else:
-                    final_quaternion = base_quaternion
-
-                edge_q.append(final_quaternion)
-                from_direction = to_direction
-
-        return points, edge_indices, edge_q
+        edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=float(twisting_angle))
+        return points, edge_q
 
     def __init__(self, viewer, args=None):
         # Store viewer and arguments
@@ -158,7 +122,7 @@ class Example:
             y_pos = (i - (num_cables - 1) / 2.0) * y_separation
             start_pos = wp.vec3(0.0, y_pos, 0.5)
 
-            points, _edges, quats = self.create_helix_geometry(
+            points, quats = self.create_helix_geometry(
                 pos=start_pos,
                 num_elements=self.num_elements,
                 radius=self.helix_radius,
@@ -202,7 +166,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
+        # Create collision pipeline (default)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
         self.viewer.set_model(self.model)

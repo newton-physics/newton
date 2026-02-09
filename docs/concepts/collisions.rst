@@ -7,30 +7,24 @@ Newton provides a flexible collision detection system for rigid-rigid and soft-r
 
 Newton's collision system is also compatible with MuJoCo-imported models via MJWarp, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes. See ``examples/mjwarp/`` for usage.
 
-.. _Collision Pipelines Overview:
+.. _Collision Pipeline:
 
-Collision Pipelines
--------------------
+Collision Pipeline
+------------------
 
-Newton provides two collision pipeline implementations:
-
-**CollisionPipeline** (Standard)
-  Uses precomputed shape pairs determined during model finalization. Efficient when the number of potentially colliding pairs is limited (NxN minus filtering rules). For scenes with many shapes where most pairs are filtered out, this avoids runtime broad phase overhead.
-
-**CollisionPipelineUnified**
-  Supports multiple broad phase algorithms. Use this when the number of potential collision pairs would be large (e.g., hundreds of shapes that could all collide). Also required for advanced contact models like SDF-based and hydroelastic contacts. See :ref:`Unified Pipeline` for details.
+Newton's collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See :ref:`Collision Pipeline Details` for details.
 
 Basic usage:
 
 .. code-block:: python
 
-    # Default: uses CollisionPipeline with precomputed pairs
+    # Default: creates CollisionPipeline with EXPLICIT broad phase (precomputed pairs)
     contacts = model.collide(state)
 
-    # Or explicitly create a pipeline
-    from newton import CollisionPipelineUnified, BroadPhaseMode
-    
-    pipeline = CollisionPipelineUnified.from_model(
+    # Or create a pipeline explicitly to choose broad phase mode
+    from newton import CollisionPipeline, BroadPhaseMode
+
+    pipeline = CollisionPipeline.from_model(
         model,
         broad_phase_mode=BroadPhaseMode.SAP,
     )
@@ -105,7 +99,7 @@ Contacts are generated between shapes, not bodies. Depending on the type of solv
 Collision Filtering
 -------------------
 
-Both pipelines use the same filtering rules based on world indices and collision groups.
+The collision pipeline uses filtering rules based on world indices and collision groups.
 
 .. _World IDs:
 
@@ -328,153 +322,12 @@ The resulting filter pairs are stored in :attr:`~newton.Model.shape_collision_fi
     
     model = builder.finalize()
 
-.. _Standard Pipeline:
+.. _Collision Pipeline Details:
 
-Standard Pipeline
------------------
+Broad Phase and Shape Compatibility
+-----------------------------------
 
-:class:`~newton.CollisionPipeline` is the default implementation. Shape pairs are precomputed during :meth:`~newton.ModelBuilder.finalize` based on filtering rules.
-
-**When to use:**
-
-- Limited number of potential collision pairs (filtering rules eliminate most NxN combinations)
-- Static collision topology (pairs don't change at runtime)
-- Scenes with <100 potentially colliding shapes
-
-**Limitations:**
-
-- Does not support advanced contact models (SDF-based, hydroelastic, cylinder, cone primitives)
-- Pairs fixed at finalization - inefficient if NxN minus filtering is still large
-
-.. note::
-   Development is focused on ``CollisionPipelineUnified``, which will replace the standard 
-   ``CollisionPipeline`` in the future once feature and performance parity is achieved. 
-   New contact models (SDF, hydroelastic, cylinder/cone primitives) are only being added to 
-   the unified pipeline. Consider using ``CollisionPipelineUnified`` with 
-   ``BroadPhaseMode.EXPLICIT`` if you need static pairs with advanced contact models.
-
-Standard Pipeline Shape Compatibility
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. list-table::
-   :header-rows: 1
-   :widths: 12 9 9 9 9 9 9 9 9 9
-
-   * - 
-     - Plane
-     - Sphere
-     - Capsule
-     - Box
-     - Cylinder
-     - Cone
-     - Mesh
-     - SDF
-     - Particle
-   * - **Plane**
-     - 
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **Sphere**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **Capsule**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **Box**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **Cylinder**
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - ✅
-   * - **Cone**
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - ✅
-   * - **Mesh**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - 
-     - 
-     - ✅
-     - 
-     - ✅
-   * - **SDF**
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - 
-     - ✅
-   * - **Particle**
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-     - ✅
-
-Empty cells indicate unsupported pairs. Use :class:`~newton.CollisionPipelineUnified` for cylinder, cone, SDF, and hydroelastic contact generation.
-
-The pipeline is created automatically when calling :meth:`~newton.Model.collide` without arguments:
-
-.. code-block:: python
-
-    contacts = model.collide(state)  # Uses CollisionPipeline internally
-
-.. _Unified Pipeline:
-
-Unified Pipeline
-----------------
-
-:class:`~newton.CollisionPipelineUnified` provides configurable broad phase algorithms:
+:class:`~newton.CollisionPipeline` provides configurable broad phase algorithms:
 
 .. list-table::
    :header-rows: 1
@@ -487,26 +340,29 @@ Unified Pipeline
    * - **SAP**
      - Sweep-and-prune AABB broad phase. O(N log N), better for larger scenes with spatial coherence.
    * - **EXPLICIT**
-     - Uses precomputed shape pairs like standard pipeline, but with unified pipeline's contact algorithms. Combines static pair efficiency with advanced contact models.
+     - Uses precomputed shape pairs (default). Combines static pair efficiency with advanced contact algorithms.
 
 .. code-block:: python
 
-    from newton import CollisionPipelineUnified, BroadPhaseMode
-    
+    from newton import CollisionPipeline, BroadPhaseMode
+
+    # Default: EXPLICIT (precomputed pairs)
+    pipeline = CollisionPipeline.from_model(model)
+
     # NxN for small scenes
-    pipeline = CollisionPipelineUnified.from_model(model, broad_phase_mode=BroadPhaseMode.NXN)
-    
+    pipeline = CollisionPipeline.from_model(model, broad_phase_mode=BroadPhaseMode.NXN)
+
     # SAP for larger scenes
-    pipeline = CollisionPipelineUnified.from_model(model, broad_phase_mode=BroadPhaseMode.SAP)
-    
+    pipeline = CollisionPipeline.from_model(model, broad_phase_mode=BroadPhaseMode.SAP)
+
     contacts = model.collide(state, collision_pipeline=pipeline)
 
 .. _Shape Compatibility:
 
-Unified Pipeline Shape Compatibility
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Shape Compatibility
+^^^^^^^^^^^^^^^^^^^
 
-The unified pipeline supports collision detection between all shape type combinations:
+The collision pipeline supports collision detection between all shape type combinations:
 
 .. list-table::
    :header-rows: 1
@@ -621,7 +477,7 @@ Ellipsoid and ConvexMesh are also fully supported. The only unsupported type is 
    **SDF** in this table refers to shapes with precomputed SDF data (via ``sdf_max_resolution`` or ``sdf_target_voxel_size``). SDFs are generated from a shape's primary geometry and provide O(1) distance queries.
 
 .. note::
-   ``CollisionPipelineUnified`` does not currently support particle (soft body) collisions. Use the standard pipeline for particle-shape contacts. The unified pipeline is under active development.
+   Particle (soft body) collision support is available; see cloth and cable examples that use the collision pipeline for particle-shape contacts.
 
 .. _Narrow Phase:
 
@@ -636,7 +492,7 @@ The primary algorithm for convex shape pairs. Uses support mapping functions to 
 
 **Multi-contact Generation**
 
-For shape pairs, multiple contact points are generated for stable stacking and resting contacts. For the standard collision pipeline, the maximum contacts per shape pair is controlled by ``rigid_contact_max_per_pair`` in :meth:`Model.collide`. The unified collision pipeline automatically estimates buffer sizes based on the model.
+For shape pairs, multiple contact points are generated for stable stacking and resting contacts. The collision pipeline estimates buffer sizes based on the model; you can override with ``rigid_contact_max`` when creating the pipeline via :meth:`CollisionPipeline.from_model`.
 
 .. _Mesh Collisions:
 
@@ -706,7 +562,7 @@ For hydroelastic and SDF-based contacts, use :class:`~newton.SDFHydroelasticConf
         moment_matching=False,          # Match friction moments (experimental)
     )
 
-    pipeline = CollisionPipelineUnified.from_model(model, sdf_hydroelastic_config=config)
+    pipeline = CollisionPipeline.from_model(model, sdf_hydroelastic_config=config)
 
 **Understanding betas:**
 
@@ -720,7 +576,7 @@ The default ``(10.0, -0.5)`` provides a balance: one set prioritizes penetration
 another prioritizes spatial coverage. More betas = more contacts retained but better coverage.
 
 .. note::
-   The beta scoring behavior is subject to refinement. The unified collision pipeline 
+   The beta scoring behavior is subject to refinement. The collision pipeline 
    is under active development and these parameters may change in future releases.
 
 **Other reduction options:**
@@ -975,17 +831,7 @@ The :meth:`Model.collide` method accepts the following parameters:
    * - ``state``
      - Current simulation state (required).
    * - ``collision_pipeline``
-     - Optional custom collision pipeline. If None, creates/reuses default.
-   * - ``rigid_contact_max_per_pair``
-     - Maximum contacts per shape pair. None = no limit.
-   * - ``soft_contact_max``
-     - Maximum soft contacts to allocate.
-   * - ``soft_contact_margin``
-     - Margin for soft contact generation. Default: 0.01.
-   * - ``edge_sdf_iter``
-     - Iterations for edge-SDF contact search. Default: 10.
-   * - ``requires_grad``
-     - Enable gradient computation. Default: model.requires_grad.
+     - Optional :class:`~newton.CollisionPipeline`. If None, creates/reuses a default pipeline (EXPLICIT broad phase). For options like ``rigid_contact_max``, ``soft_contact_margin``, ``requires_grad``, create the pipeline via :meth:`CollisionPipeline.from_model` and pass it here.
 
 .. _Hydroelastic Contacts:
 
@@ -1135,14 +981,14 @@ See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
 Performance
 -----------
 
-- Use **EXPLICIT** or standard pipeline when collision pairs are limited (<100 shapes with most pairs filtered)
+- Use **EXPLICIT** (default) when collision pairs are limited (<100 shapes with most pairs filtered)
 - Use **SAP** for >100 shapes with spatial coherence
 - Use **NxN** for small scenes (<100 shapes) or uniform spatial distribution
 - Minimize global entities (world=-1) as they interact with all worlds
 - Use positive collision groups to reduce candidate pairs
 - Use world indices for parallel simulations (essential for RL with many environments)
 - Contact reduction is enabled by default for mesh-heavy scenes
-- Adjust ``rigid_contact_max_per_pair`` to limit memory usage in complex scenes
+- Pass ``rigid_contact_max`` to :meth:`CollisionPipeline.from_model` to limit memory in complex scenes
 
 See Also
 --------
@@ -1154,7 +1000,6 @@ See Also
     import newton
     from newton import (
         CollisionPipeline,
-        CollisionPipelineUnified,
         BroadPhaseMode,
         Contacts,
         GeoType,
@@ -1163,8 +1008,7 @@ See Also
 
 **API Reference:**
 
-- :class:`~newton.CollisionPipeline` - Standard collision pipeline
-- :class:`~newton.CollisionPipelineUnified` - Unified pipeline with broad phase options
+- :class:`~newton.CollisionPipeline` - Collision pipeline with configurable broad phase
 - :class:`~newton.BroadPhaseMode` - Broad phase algorithm selection
 - :class:`~newton.Contacts` - Contact data container
 - :class:`~newton.GeoType` - Shape geometry types

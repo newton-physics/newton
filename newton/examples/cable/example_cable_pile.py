@@ -31,87 +31,6 @@ import warp as wp
 import newton
 import newton.examples
 
-# Global flag to enable/disable unified collision pipeline
-USE_UNIFIED_COLLISION = True
-
-
-def create_cable_geometry(
-    start_pos: wp.vec3,
-    num_elements: int,
-    length: float,
-    orientation: str = "x",
-    waviness: float = 0.0,
-    twist_total: float = 0.0,
-) -> tuple[list[wp.vec3], np.ndarray, list[wp.quat]]:
-    """Build a cable polyline with optional sinusoidal waviness and distributed twist.
-
-    Creates a cable along a specified axis with parallel-transported quaternions for
-    physically consistent orientation. Supports waviness (sinusoidal perturbations) and
-    twist (rotation along the cable axis).
-
-    Args:
-        start_pos: Starting position of the cable (will be centered).
-        num_elements: Number of cable segments (num_points = num_elements + 1).
-        length: Total cable length.
-        orientation: Cable direction ("x" for +X axis, "y" for +Y axis).
-        waviness: Amplitude scaling for sinusoidal waviness (0.0 = straight).
-        twist_total: Total twist in radians distributed uniformly along cable.
-
-    Returns:
-        Tuple of (points, edge_indices, quaternions):
-        - points: List of capsule center positions (num_elements + 1).
-        - edge_indices: Flattened array of edge connectivity (2*num_elements).
-        - quaternions: List of capsule orientations using parallel transport (num_elements).
-    """
-    num_points = num_elements + 1
-    if num_elements <= 0:
-        raise ValueError("num_elements must be positive")
-
-    points: list[wp.vec3] = []
-
-    dir_vec = wp.vec3(1.0, 0.0, 0.0) if orientation == "x" else wp.vec3(0.0, 1.0, 0.0)
-    ortho_vec = wp.vec3(0.0, 1.0, 0.0) if orientation == "x" else wp.vec3(1.0, 0.0, 0.0)
-
-    # Center the cable around start_pos to avoid initial overlaps with neighbors
-    start_center = start_pos - 0.5 * length * dir_vec
-    # Use a few sinusoidal cycles along the cable with a visible amplitude
-    cycles = 2.0
-    waviness_scale = 0.05  # amplitude fraction of length when waviness=1.0
-    for i in range(num_points):
-        t = i / num_elements
-        base = start_center + dir_vec * (length * t)
-        if waviness > 0.0:
-            phase = 2.0 * math.pi * cycles * t
-            amp = waviness * length * waviness_scale
-            base = base + ortho_vec * (amp * math.sin(phase))
-        points.append(base)
-
-    # Build edges
-    edge_indices: list[int] = []
-    for i in range(num_elements):
-        edge_indices.extend([i, i + 1])
-    edge_indices = np.array(edge_indices, dtype=np.int32)
-
-    # Parallel-transported quaternions; distribute twist_total uniformly
-    quats: list[wp.quat] = []
-    if num_elements > 0:
-        local_axis = wp.vec3(0.0, 0.0, 1.0)  # Capsule internal axis is +Z
-        from_direction = local_axis
-        twist_step = twist_total / num_elements if num_elements > 0 else 0.0
-        for i in range(num_elements):
-            p0 = points[i]
-            p1 = points[i + 1]
-            to_direction = wp.normalize(p1 - p0)
-            dq = wp.quat_between_vectors(from_direction, to_direction)
-            base_q = dq if i == 0 else wp.mul(dq, quats[i - 1])
-            if twist_total != 0.0:
-                twist_q = wp.quat_from_axis_angle(to_direction, twist_step)
-                base_q = wp.mul(twist_q, base_q)
-            quats.append(base_q)
-            from_direction = to_direction
-
-    return points, edge_indices, quats
-
 
 class Example:
     def __init__(
@@ -211,14 +130,31 @@ class Example:
                 # Regular waviness and no twist for repeatable layout across layers
                 wav = 0.5
                 twist = 0.0
-                pts, _edges, edge_q = create_cable_geometry(
-                    start_pos=start,
-                    num_elements=self.num_elements,
-                    length=self.cable_length,
-                    orientation=orient,
-                    waviness=wav,
-                    twist_total=twist,
+
+                dir_vec = wp.vec3(1.0, 0.0, 0.0) if orient == "x" else wp.vec3(0.0, 1.0, 0.0)
+                ortho_vec = wp.vec3(0.0, 1.0, 0.0) if orient == "x" else wp.vec3(1.0, 0.0, 0.0)
+
+                # Center the cable around start to avoid initial overlaps with neighbors.
+                cable_length = float(self.cable_length)
+                start0 = start - 0.5 * cable_length * dir_vec
+                pts = newton.utils.create_straight_cable_points(
+                    start=start0,
+                    direction=dir_vec,
+                    length=cable_length,
+                    num_segments=int(self.num_elements),
                 )
+
+                # Apply sinusoidal waviness along an orthogonal axis (optional).
+                cycles = 2.0
+                waviness_scale = 0.05  # amplitude fraction of length when wav=1.0
+                if wav > 0.0:
+                    for i in range(len(pts)):
+                        t = i / self.num_elements
+                        phase = 2.0 * math.pi * cycles * t
+                        amp = wav * cable_length * waviness_scale
+                        pts[i] = pts[i] + ortho_vec * (amp * math.sin(phase))
+
+                edge_q = newton.utils.create_parallel_transport_cable_quaternions(pts, twist_total=float(twist))
 
                 rod_bodies, _rod_joints = builder.add_rod(
                     positions=pts,
@@ -251,13 +187,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (unified if enabled, otherwise standard)
-        if USE_UNIFIED_COLLISION:
-            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-        else:
-            self.collision_pipeline = None
-            self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.collide(self.state_0)
         self.viewer.set_model(self.model)
 
         # Optional capture for CUDA
@@ -281,10 +211,7 @@ class Example:
             self.viewer.apply_forces(self.state_0)
 
             # Collide for contact detection
-            if USE_UNIFIED_COLLISION:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-            else:
-                self.contacts = self.model.collide(self.state_0)
+            self.contacts = self.model.collide(self.state_0)
 
             self.solver.step(
                 self.state_0,

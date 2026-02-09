@@ -38,95 +38,6 @@ import newton.examples
 
 
 class Example:
-    def create_cable_geometry(self, pos: wp.vec3 | None = None, num_elements=10, length=10.0, twisting_angle=0.0):
-        """Create a straight cable geometry with parallel-transported quaternions.
-
-        Uses proper parallel transport to maintain a consistent reference frame along the cable.
-        This ensures smooth rotational continuity and physically accurate twist distribution.
-
-        Args:
-            pos: Starting position of the cable (default: origin).
-            num_elements: Number of cable segments (num_points = num_elements + 1).
-            length: Total cable length.
-            twisting_angle: Total twist in radians distributed uniformly along the cable.
-
-        Returns:
-            Tuple of (points, edge_indices, quaternions):
-            - points: List of segment endpoints in world space (num_elements + 1).
-            - edge_indices: Flattened array of edge connectivity (2*num_elements). (Not used by `add_rod()`.)
-            - quaternions: List of capsule orientations using parallel transport (num_elements).
-        """
-        if num_elements <= 0:
-            raise ValueError("create_cable_geometry: num_elements must be positive")
-
-        if pos is None:
-            pos = wp.vec3()
-
-        # Create points along straight line in X direction
-        num_points = num_elements + 1
-        points = []
-
-        for i in range(num_points):
-            t = i / num_elements
-            x = length * t
-            y = 0.0
-            z = 0.0
-            points.append(pos + wp.vec3(x, y, z))
-
-        # Create edge indices connecting consecutive points
-        edge_indices = []
-        for i in range(num_elements):
-            vertex_0 = i  # First vertex of edge
-            vertex_1 = i + 1  # Second vertex of edge
-            edge_indices.extend([vertex_0, vertex_1])
-
-        edge_indices = np.array(edge_indices, dtype=np.int32)
-
-        # Create quaternions for each edge using parallel transport
-        edge_q = []
-        if num_elements > 0:
-            # Capsule internal axis is +Z
-            local_axis = wp.vec3(0.0, 0.0, 1.0)
-
-            # Parallel transport: maintain smooth rotational continuity along cable
-            from_direction = local_axis  # Start with local Z-axis
-
-            # The total twist will be distributed along the cable
-            angle_step = twisting_angle / num_elements if num_elements > 0 else 0.0
-
-            for i in range(num_elements):
-                p0 = points[i]
-                p1 = points[i + 1]
-
-                # Current segment direction
-                to_direction = wp.normalize(p1 - p0)
-
-                # Compute rotation from previous direction to current direction
-                # This maintains smooth rotational continuity (parallel transport)
-                dq = wp.quat_between_vectors(from_direction, to_direction)
-
-                if i == 0:
-                    # First segment: just the directional alignment
-                    base_quaternion = dq
-                else:
-                    # Subsequent segments: multiply with previous quaternion (parallel transport)
-                    base_quaternion = wp.mul(dq, edge_q[i - 1])
-
-                # Apply incremental twist around the current segment direction
-                if twisting_angle != 0.0:
-                    twist_increment = angle_step
-                    twist_rot = wp.quat_from_axis_angle(to_direction, twist_increment)
-                    final_quaternion = wp.mul(twist_rot, base_quaternion)
-                else:
-                    final_quaternion = base_quaternion
-
-                edge_q.append(final_quaternion)
-
-                # Update for next iteration (parallel transport)
-                from_direction = to_direction
-
-        return points, edge_indices, edge_q
-
     def __init__(self, viewer, args=None):
         # Setup simulation parameters first
         self.fps = 60
@@ -169,11 +80,12 @@ class Example:
             # Center cable in X direction: start at -half_length
             start_x = -self.cable_length / 2.0
 
-            cable_points, _, cable_edge_q = self.create_cable_geometry(
-                pos=wp.vec3(start_x, y_pos, 4.0),
-                num_elements=self.num_elements,
-                length=self.cable_length,
-                twisting_angle=0.0,
+            cable_points, cable_edge_q = newton.utils.create_straight_cable_points_and_quaternions(
+                start=wp.vec3(start_x, y_pos, 4.0),
+                direction=wp.vec3(1.0, 0.0, 0.0),
+                length=float(self.cable_length),
+                num_segments=int(self.num_elements),
+                twist_total=0.0,
             )
 
             rod_bodies, _rod_joints = builder.add_rod(
@@ -212,7 +124,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
+        # Create collision pipeline (default)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 

@@ -62,7 +62,6 @@ solvers = {
         njmax=500,
         nconmax=200,
         solver="newton",
-        ls_parallel=True,
         ls_iterations=100,
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
@@ -134,7 +133,7 @@ def build_stacked_cubes_scene(
     # Hydroelastic without contact reduction can generate many contacts
     rigid_contact_max = 6000 if not reduce_contacts else 100
 
-    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+    collision_pipeline = newton.CollisionPipeline.from_model(
         model,
         rigid_contact_max=rigid_contact_max,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
@@ -286,7 +285,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             xform=wp.transform(p=lower_pos, q=wp.quat_identity()),
             key=f"lower_{i}",
             mass=mass_lower,
-            I_m=I_m_lower,
+            inertia=I_m_lower,
         )
         shape_lower = builder.add_shape_box(
             body_lower, hx=box_half_lower, hy=box_half_lower, hz=box_half_lower, cfg=shape_cfg
@@ -302,7 +301,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
             xform=wp.transform(p=upper_pos, q=wp.quat_identity()),
             key=f"upper_{i}",
             mass=mass_upper,
-            I_m=I_m_upper,
+            inertia=I_m_upper,
         )
         shape_upper = builder.add_shape_box(body_upper, hx=upper_half, hy=upper_half, hz=upper_half, cfg=shape_cfg)
         upper_body_indices.append(body_upper)
@@ -322,7 +321,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         nconmax=2000,
         iterations=20,
         ls_iterations=100,
-        ls_parallel=True,
         impratio=1000.0,
     )
 
@@ -333,7 +331,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     sdf_config = SDFHydroelasticConfig(output_contact_surface=True)
-    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+    collision_pipeline = newton.CollisionPipeline.from_model(
         model,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
         sdf_hydroelastic_config=sdf_config,
