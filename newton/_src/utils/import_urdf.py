@@ -418,6 +418,16 @@ def parse_urdf(
             custom_attributes = parse_custom_attributes(geo.attrib, builder_custom_attr_shape, parsing_mode="urdf")
             shape_kwargs["custom_attributes"] = custom_attributes
 
+            # parse material color (if any)
+            geo_color = None
+            mat_el = geom_group.find("material")
+            if mat_el is not None:
+                color_el = mat_el.find("color")
+                if color_el is not None:
+                    rgba = color_el.get("rgba")
+                    if rgba:
+                        geo_color = [float(c) for c in rgba.split()[:3]]
+
             tf = parse_transform(geom_group)
             if incoming_xform is not None:
                 tf = incoming_xform * tf
