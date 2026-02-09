@@ -330,8 +330,8 @@ class CollisionPipeline:
         model: Model,
         *,
         reduce_contacts: bool = True,
-        shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
         rigid_contact_max: int | None = None,
+        shape_pairs_filtered: wp.array(dtype=wp.vec2i) | None = None,
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         requires_grad: bool | None = None,
@@ -345,8 +345,6 @@ class CollisionPipeline:
         Args:
             model (Model): The simulation model.
             reduce_contacts (bool, optional): Whether to reduce contacts for mesh-mesh collisions. Defaults to True.
-            shape_pairs_filtered (wp.array | None, optional): Precomputed shape pairs for EXPLICIT broad phase mode.
-                Required when broad_phase_mode is BroadPhaseMode.EXPLICIT, ignored otherwise.
             rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
                 If None, estimated based on broad phase mode:
                 - EXPLICIT: len(shape_pairs_filtered) * 10 contacts
@@ -368,11 +366,14 @@ class CollisionPipeline:
                 If None, uses default (SEGMENTED).
             sdf_hydroelastic_config (SDFHydroelasticConfig | None, optional): Configuration for SDF hydroelastic collision handling. Defaults to None.
         """
-        self.model = model
         shape_count = model.shape_count
         particle_count = model.particle_count
         device = model.device
 
+        # Estimate rigid_contact_max for collision pipeline (accounts for contact reduction)
+        if rigid_contact_max is None:
+            rigid_contact_max = _estimate_rigid_contact_max(model)
+        self.rigid_contact_max = rigid_contact_max
         if requires_grad is None:
             requires_grad = model.requires_grad
 
@@ -428,24 +429,6 @@ class CollisionPipeline:
             self.shape_pairs_filtered = shape_pairs_filtered
             self.shape_pairs_max = len(shape_pairs_filtered)
 
-        # Set rigid_contact_max
-        # For collision pipeline, we don't multiply by per-pair factors since broad phase
-        # discovers pairs dynamically. Users can provide rigid_contact_max explicitly,
-        # otherwise it is estimated from shape count and broad phase mode.
-        if rigid_contact_max is not None:
-            self.rigid_contact_max = rigid_contact_max
-        else:
-            # Estimate based on broad phase mode and available information
-            if self.broad_phase_mode == BroadPhaseMode.EXPLICIT and self.shape_pairs_filtered is not None:
-                # For EXPLICIT mode, we know the maximum possible pairs
-                # Estimate ~10 contacts per shape pair (conservative for mesh-mesh contacts)
-                self.rigid_contact_max = max(1000, len(self.shape_pairs_filtered) * 10)
-            else:
-                # For NXN/SAP dynamic broad phase, estimate based on shape count
-                # Assume each shape contacts ~20 others on average (conservative estimate)
-                # This scales much better than O(N²) while still being safe
-                self.rigid_contact_max = max(1000, shape_count * 20)
-
         # Allocate buffers
         with wp.ScopedDevice(device):
             self.broad_phase_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
@@ -479,7 +462,7 @@ class CollisionPipeline:
             soft_contact_max = shape_count * particle_count
         self.soft_contact_margin = soft_contact_margin
         self.soft_contact_max = soft_contact_max
-        self.requires_grad = requires_grad if requires_grad is not None else model.requires_grad
+        self.requires_grad = requires_grad
 
     def contacts(self) -> Contacts:
         """
@@ -493,6 +476,8 @@ class CollisionPipeline:
             self.soft_contact_max,
             requires_grad=self.requires_grad,
             device=self.model.device,
+            per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
+            requested_attributes=self.model.get_requested_contact_attributes(),
         )
 
     def collide(

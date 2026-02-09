@@ -284,7 +284,8 @@ def test_particle_shape_restitution_correct_particle(test, device):
     dt = 1.0 / 60.0
 
     # Run a single step — enough for the contact + restitution pass
-    contacts = model.collide(state0)
+    contacts = model.contacts()
+    model.collide(state0, contacts)
     control = model.control()
     solver.step(state0, state1, control, contacts, dt)
 

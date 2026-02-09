@@ -444,11 +444,11 @@ def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
     substeps = 10
     sim_dt = 1.0 / 60.0
     max_frames = 100
+    contacts = model.contacts()
 
     for _frame in range(max_frames):
         for _ in range(substeps):
             state_0.clear_forces()
-            contacts = model.contacts(state_0)
             model.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0

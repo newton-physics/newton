@@ -622,7 +622,7 @@ class Model:
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=Model.AttributeAssignment.MODEL)."""
 
         self._requested_state_attributes: set[str] = set()
-        self._collision_pipeline: CollisionPipeline | CollisionPipelineUnified | None = None
+        self._collision_pipeline: CollisionPipeline | None = None
         # cached collision pipeline
         self._requested_contact_attributes: set[str] = set()
 
@@ -871,7 +871,7 @@ class Model:
         if self._collision_pipeline is None:
             raise ValueError(
                 "Model does not have a collision pipeline. Call model.contacts() "
-                "or use a your collision pipeline directly: CollisionPipeline.collide(contacts)."
+                "or use your collision pipeline directly: CollisionPipeline.collide(contacts)."
             )
 
         self._collision_pipeline.collide(state, contacts)

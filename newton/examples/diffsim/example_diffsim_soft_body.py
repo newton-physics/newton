@@ -110,7 +110,7 @@ class Example:
         self.states = [self.model.state() for _ in range(self.sim_steps * self.sim_substeps + 1)]
         self.control = self.model.control()
         # Create collision pipeline with soft contact margin (requires_grad for differentiable simulation)
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
             soft_contact_margin=0.001,

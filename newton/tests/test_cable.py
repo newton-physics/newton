@@ -1473,10 +1473,11 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     sim_dt = frame_dt / sim_substeps
     num_steps = 20
 
+    contacts = model.contacts()
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
+            model.collide(state0, contacts)
             state0.clear_forces()
-            contacts = model.collide(state0)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -1555,10 +1556,11 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
     q_init = state0.body_q.numpy()
     z_init_min = float(np.min(q_init[rod_bodies, 2]))
 
+    contacts = model.contacts()
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
