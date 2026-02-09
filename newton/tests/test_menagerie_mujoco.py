@@ -85,11 +85,15 @@ These are changes/workarounds made to get tests passing that should be revisited
    - mujoco_warp shows non-deterministic behavior when using two separate data objects
      with the same model and >8 worlds (even with identical initial state and control)
    - This is NOT a Newton bug - it reproduces with pure mujoco_warp code
-   - Likely caused by shared solver context or non-deterministic memory ordering
+   - ROOT CAUSE: wp.atomic_add() in broadphase collision detection allocates contact
+     pair IDs non-deterministically. Same contacts get stored at different array indices.
+     Different index ordering → different floating-point accumulation order in solver
+     → divergent qfrc_constraint and qacc.
+   - Verified: 8 worlds = deterministic (0.00 diff), 9+ worlds = non-deterministic (~1e-2)
+   - Verified: Contact data (geom, pos, frame) matches when aligned by position
    - Verified: Same data object run twice is deterministic (diffs ~1e-8)
-   - Verified: Two different data objects diverge (~1e-2 to 1e-1 for 12-16 worlds)
    - Workaround: Accept looser tolerances (1e-4 to 1e-2) when constraints are active
-   - TODO: Report upstream to mujoco_warp team
+   - TODO: Report upstream to mujoco_warp team - need deterministic contact ordering
 
 --------------------------------------------------------------------------------
 """
@@ -792,6 +796,125 @@ def compare_geom_sizes(
                 )
 
 
+# =============================================================================
+# Contact Injection Helpers
+# =============================================================================
+
+
+def run_native_step1(
+    native_model: Any,
+    native_data: Any,
+) -> None:
+    """Run mujoco_warp step1: kinematics + collision (but NOT constraint/solve/integrate).
+
+    After this, native_data.contact contains the collision results.
+    """
+    from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
+
+    mjw_forward.step1(native_model, native_data)
+    wp.synchronize()
+
+
+def run_native_step2(
+    native_model: Any,
+    native_data: Any,
+) -> None:
+    """Run mujoco_warp step2: actuation + acceleration + solve + integrate.
+
+    Uses the correct integrator based on model.opt.integrator.
+    """
+    from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
+
+    mjw_forward.step2(native_model, native_data)
+    wp.synchronize()
+
+
+def inject_contacts(src_data: Any, dst_data: Any) -> None:
+    """Copy all contact arrays from src_data to dst_data.
+
+    This ensures both Newton and native use identical contact data for constraint solving,
+    bypassing the non-deterministic contact ordering issue in mujoco_warp.
+    """
+    dst_data.nacon.assign(src_data.nacon)
+    dst_data.contact.worldid.assign(src_data.contact.worldid)
+    dst_data.contact.geom.assign(src_data.contact.geom)
+    dst_data.contact.pos.assign(src_data.contact.pos)
+    dst_data.contact.dist.assign(src_data.contact.dist)
+    dst_data.contact.frame.assign(src_data.contact.frame)
+    dst_data.contact.includemargin.assign(src_data.contact.includemargin)
+    dst_data.contact.friction.assign(src_data.contact.friction)
+    dst_data.contact.solref.assign(src_data.contact.solref)
+    dst_data.contact.solreffriction.assign(src_data.contact.solreffriction)
+    dst_data.contact.solimp.assign(src_data.contact.solimp)
+    dst_data.contact.dim.assign(src_data.contact.dim)
+    dst_data.contact.efc_address.assign(src_data.contact.efc_address)
+    wp.synchronize()
+
+
+def compare_contacts_sorted(
+    newton_data: Any,
+    native_data: Any,
+    tol: float = 1e-6,
+) -> tuple[bool, str]:
+    """Compare contacts between Newton and native after sorting by (worldid, geom1, geom2, pos).
+
+    Returns:
+        (matches, message) - True if contacts match within tolerance, with diagnostic message.
+    """
+    wp.synchronize()
+
+    nacon_newton = int(newton_data.nacon.numpy()[0])
+    nacon_native = int(native_data.nacon.numpy()[0])
+
+    if nacon_newton == 0 and nacon_native == 0:
+        return True, "No contacts"
+
+    if nacon_newton != nacon_native:
+        return False, f"Contact count: {nacon_newton} vs {nacon_native}"
+
+    # Get contact data
+    def get_sorted_contacts(data: Any, nacon: int) -> dict[str, np.ndarray]:
+        worldid = data.contact.worldid.numpy()[:nacon]
+        geom = data.contact.geom.numpy()[:nacon]
+        pos = data.contact.pos.numpy()[:nacon]
+        dist = data.contact.dist.numpy()[:nacon]
+        frame = data.contact.frame.numpy()[:nacon]
+
+        # Sort by (worldid, geom1, geom2, pos_x, pos_y, pos_z)
+        sort_key = np.lexsort((pos[:, 2], pos[:, 1], pos[:, 0], geom[:, 1], geom[:, 0], worldid))
+
+        return {
+            "worldid": worldid[sort_key],
+            "geom": geom[sort_key],
+            "pos": pos[sort_key],
+            "dist": dist[sort_key],
+            "frame": frame[sort_key],
+        }
+
+    newton_contacts = get_sorted_contacts(newton_data, nacon_newton)
+    native_contacts = get_sorted_contacts(native_data, nacon_native)
+
+    # Check worldid and geom match exactly
+    if not np.array_equal(newton_contacts["worldid"], native_contacts["worldid"]):
+        return False, "worldid mismatch after sorting"
+    if not np.array_equal(newton_contacts["geom"], native_contacts["geom"]):
+        return False, "geom mismatch after sorting"
+
+    # Check numeric fields within tolerance
+    pos_diff = float(np.abs(newton_contacts["pos"] - native_contacts["pos"]).max())
+    dist_diff = float(np.abs(newton_contacts["dist"] - native_contacts["dist"]).max())
+    frame_diff = float(np.abs(newton_contacts["frame"] - native_contacts["frame"]).max())
+
+    if pos_diff > tol:
+        return False, f"pos diff: {pos_diff:.2e}"
+    if dist_diff > tol:
+        return False, f"dist diff: {dist_diff:.2e}"
+    if frame_diff > tol:
+        return False, f"frame diff: {frame_diff:.2e}"
+
+    return True, f"OK ({nacon_newton} contacts)"
+
+
 def compare_mjdata_field(
     newton_mjw_data: Any,
     native_mjw_data: Any,
@@ -1260,6 +1383,22 @@ class TestMenagerieBase(unittest.TestCase):
     backfill_model: bool = False
     backfill_fields: list[str] | None = None  # None = use MODEL_BACKFILL_FIELDS
 
+    # Contact injection mode: When True, uses a split pipeline for native mujoco_warp:
+    #   1. Newton runs full step (forward + euler)
+    #   2. Native runs kinematics + collision only
+    #   3. Verify contacts match (sorted comparison)
+    #   4. Inject Newton's contacts into native
+    #   5. Native runs constraint + solve + euler
+    #   6. Compare post-euler states
+    #
+    # This bypasses the mujoco_warp non-determinism issue with >8 worlds by ensuring
+    # both sides use identical contact data. Enables tight tolerances (1e-6) even with
+    # 32+ worlds and active constraints.
+    #
+    # When False (default), runs both full pipelines and compares (may need looser
+    # tolerances for >8 worlds with constraints).
+    use_contact_injection: bool = False
+
     @classmethod
     def setUpClass(cls):
         """Download assets once for all tests in this class."""
@@ -1469,8 +1608,8 @@ class TestMenagerieBase(unittest.TestCase):
             else:
                 _mujoco_warp.get_data_into(mj_data_native, mj_model, native_mjw_data)
 
-        # Helper: step both simulations
-        def step_both(step_num: int, newton_graph: Any = None, native_graph: Any = None):
+        # Helper: step both simulations (full pipeline mode)
+        def step_both_full(step_num: int, newton_graph: Any = None, native_graph: Any = None):
             t = step_num * dt
             ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)  # type: ignore[union-attr]
             # For Newton: assign to control.mujoco.ctrl (apply_mjc_control reads from there)
@@ -1485,6 +1624,43 @@ class TestMenagerieBase(unittest.TestCase):
             else:
                 _mujoco_warp.step(native_mjw_model, native_mjw_data)  # type: ignore[union-attr]
                 newton_solver.step(newton_state, newton_state, newton_control, None, dt)
+
+        # Helper: step with contact injection (split pipeline mode)
+        def step_with_contact_injection(step_num: int):
+            """
+            Split pipeline that injects Newton's contacts into native to bypass non-determinism.
+
+            Flow:
+            1. Newton: full step (forward + integrate)
+            2. Native: step1 (kinematics + collision)
+            3. Verify contacts match (sorted)
+            4. Inject Newton's contacts into native
+            5. Native: step2 (actuation + acceleration + solve + integrate)
+            """
+            t = step_num * dt
+            ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)  # type: ignore[union-attr]
+
+            # Assign control to both
+            newton_control.mujoco.ctrl.assign(ctrl.flatten())
+            native_mjw_data.ctrl.assign(ctrl)
+
+            # 1. Newton full step
+            newton_solver.step(newton_state, newton_state, newton_control, None, dt)
+            wp.synchronize()
+
+            # 2. Native: step1 (kinematics + collision)
+            run_native_step1(native_mjw_model, native_mjw_data)
+
+            # 3. Verify contacts match (sorted comparison)
+            contacts_match, contact_msg = compare_contacts_sorted(newton_solver.mjw_data, native_mjw_data, tol=1e-5)
+            if not contacts_match:
+                raise AssertionError(f"Step {step_num}: Contact mismatch - {contact_msg}")
+
+            # 4. Inject Newton's contacts into native
+            inject_contacts(newton_solver.mjw_data, native_mjw_data)
+
+            # 5. Native: step2 (actuation + acceleration + solve + integrate)
+            run_native_step2(native_mjw_model, native_mjw_data)
 
         # Helper: compare at step (for non-visual mode)
         def compare_at_step(step_num: int):
@@ -1512,12 +1688,18 @@ class TestMenagerieBase(unittest.TestCase):
         # Main simulation loop
         max_steps = 500 if self.debug_visual else self.num_steps
 
+        # Contact injection mode doesn't use CUDA graphs (split pipeline)
+        use_graphs = use_cuda_graph and not self.use_contact_injection
+
         for step in range(max_steps):
             if viewer and not viewer.is_running():
                 break
 
-            # Step 0: capture CUDA graphs if available
-            if step == 0 and use_cuda_graph:
+            if self.use_contact_injection:
+                # Split pipeline: Newton full step, then native with injected contacts
+                step_with_contact_injection(step)
+            elif step == 0 and use_graphs:
+                # Step 0: capture CUDA graphs if available (full pipeline mode only)
                 ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
                 newton_control.mujoco.ctrl.assign(ctrl.flatten())
                 native_mjw_data.ctrl.assign(ctrl)
@@ -1530,7 +1712,8 @@ class TestMenagerieBase(unittest.TestCase):
                     _mujoco_warp.step(native_mjw_model, native_mjw_data)
                 native_graph = capture.graph
             else:
-                step_both(step, newton_graph, native_graph)
+                # Full pipeline mode
+                step_both_full(step, newton_graph, native_graph)
 
             # Viewer sync
             if viewer:
@@ -1725,13 +1908,17 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieBase):
     robot_xml = "scene.xml"
     floating = False
     control_strategy = StructuredControlStrategy(amplitude_scale=0.5, frequency_range=(0.5, 1.5))
-    num_worlds = 16
+    num_worlds = 32
     debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
 
     # Enable model backfill to eliminate numerical differences from model compilation.
     # With backfill, simulation should match exactly for same control inputs.
     backfill_model = True
+
+    # Enable contact injection to bypass mujoco_warp non-determinism with >8 worlds.
+    # This ensures both Newton and native use identical contact data for solving.
+    use_contact_injection = True
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieBase):
