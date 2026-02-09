@@ -53,8 +53,8 @@ These are changes/workarounds made to get tests passing that should be revisited
    - TODO: Newton handles fixed base differently; align mocap body handling
 
 5. CONTROL STRATEGY
-   - Using ZeroControlStrategy for initial debugging
-   - TODO: Enable randomized/structured control for comprehensive testing
+   - Using StructuredControlStrategy (sinusoidal patterns with per-actuator frequencies)
+   - TODO: Add more control strategies for comprehensive testing (random, step inputs)
 
 6. MODEL COMPARISON SKIPS (DEFAULT_MODEL_SKIP_FIELDS)
    - qM_tiles, qLD_tiles, qLDiagInv_tiles: Matrix tile types not comparable
@@ -67,8 +67,6 @@ These are changes/workarounds made to get tests passing that should be revisited
    - body_inertia, body_iquat: Compared via compare_inertia_tensors()
    - jnt_actfrclimited, jnt_actfrcrange: Newton sets True with 1e6 range, MuJoCo defaults
      to False. No numerical effect when limit isn't hit.
-   - DONE: All opt.* fields now match (fixed ccd_iterations default 50->35)
-   - DONE: site_size uses MuJoCo defaults for unspecified components
 
 7. TIMESTEP FROM MODEL
    - Newton's MJCF parser doesn't extract timestep from <option> tag yet
@@ -1424,15 +1422,18 @@ class TestMenagerieBase(unittest.TestCase):
         if self.control_strategy is None:
             self.control_strategy = StructuredControlStrategy(seed=42)
 
+    @abstractmethod
     def _create_newton_model(self) -> newton.Model:
-        """Create Newton model using the factory."""
-        return create_newton_model(
-            self.mjcf_path,
-            source_type=self.model_source_type,
-            floating=self.floating,
-            num_worlds=self.num_worlds,
-            add_ground=False,  # scene.xml includes ground plane
-        )
+        """Create Newton model from the source (MJCF or USD).
+
+        Subclasses must implement this to define how Newton loads the model:
+        - TestMenagerieMJCF: Load directly from MJCF
+        - TestMenagerieUSD: Convert MJCF to USD, then load USD
+
+        Note: The native MuJoCo comparison always loads from MJCF (ground truth).
+        See _create_native_mujoco_warp() which is shared by all subclasses.
+        """
+        ...
 
     def _load_assets(self) -> dict[str, bytes]:
         """Load mesh/texture assets from the MJCF directory for from_xml_string."""
@@ -1788,6 +1789,43 @@ class TestMenagerieBase(unittest.TestCase):
                 time.sleep(0.1)
             viewer.close()
             self.skipTest("Visual debug mode completed")
+
+
+# =============================================================================
+# Model Source Base Classes
+# =============================================================================
+# These intermediate classes define HOW Newton loads the model.
+# The native MuJoCo comparison always loads from MJCF (ground truth).
+
+
+class TestMenagerieMJCF(TestMenagerieBase):
+    """Base class for MJCF-based tests: Newton loads directly from MJCF."""
+
+    def _create_newton_model(self) -> newton.Model:
+        """Create Newton model by loading MJCF directly."""
+        return create_newton_model_from_mjcf(
+            self.mjcf_path,
+            floating=self.floating,
+            num_worlds=self.num_worlds,
+            add_ground=False,  # scene.xml includes ground plane
+        )
+
+
+class TestMenagerieUSD(TestMenagerieBase):
+    """Base class for USD-based tests: Newton loads MJCF converted to USD.
+
+    The MJCF file is converted to USD using mujoco_usd_converter, then
+    Newton loads the USD file. Native MuJoCo still loads the original MJCF.
+    """
+
+    def _create_newton_model(self) -> newton.Model:
+        """Create Newton model by converting MJCF to USD first."""
+        return create_newton_model_from_usd(
+            self.mjcf_path,
+            floating=self.floating,
+            num_worlds=self.num_worlds,
+            add_ground=False,  # scene.xml includes ground plane
+        )
 
 
 # =============================================================================
