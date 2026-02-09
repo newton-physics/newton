@@ -81,6 +81,16 @@ These are changes/workarounds made to get tests passing that should be revisited
    - Verified: NO numerical impact when limit is never hit (forces << 1e6)
    - These fields are skipped in model comparison
 
+9. MUJOCO_WARP DETERMINISM LIMITATION (>8 worlds)
+   - mujoco_warp shows non-deterministic behavior when using two separate data objects
+     with the same model and >8 worlds (even with identical initial state and control)
+   - This is NOT a Newton bug - it reproduces with pure mujoco_warp code
+   - Likely caused by shared solver context or non-deterministic memory ordering
+   - Verified: Same data object run twice is deterministic (diffs ~1e-8)
+   - Verified: Two different data objects diverge (~1e-2 to 1e-1 for 12-16 worlds)
+   - Workaround: Accept looser tolerances (1e-4 to 1e-2) when constraints are active
+   - TODO: Report upstream to mujoco_warp team
+
 --------------------------------------------------------------------------------
 """
 
