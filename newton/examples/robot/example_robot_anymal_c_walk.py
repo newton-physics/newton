@@ -161,11 +161,12 @@ class Example:
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
+            use_mujoco_contacts=args.use_mujoco_contacts if args else True, # TODO: Change to CollisionPipelineUnified when more stable
+            solver="newton",
             ls_parallel=True,
             ls_iterations=50,  # Increased from default 10 for determinism
             njmax=50,
-            nconmax=100,  # Increased from 75 to handle peak contact count of ~77
+            nconmax=155,  # Increased from 75 to handle peak contact count of ~153
         )
 
         self.viewer.set_model(self.model)
