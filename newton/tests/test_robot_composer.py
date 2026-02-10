@@ -33,7 +33,7 @@ class RobotComposerSim:
     multiple importers (URDF, MJCF, USD).
     """
 
-    def __init__(self, device, do_rendering=True, num_frames=50, num_worlds=1):
+    def __init__(self, device, do_rendering=False, num_frames=50, num_worlds=1):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -505,13 +505,14 @@ class TestRobotComposer(unittest.TestCase):
     pass
 
 
-# add_function_test(
-#     TestRobotComposer,
-#     "test_robot_composer_model_builds",
-#     test_robot_composer_model_builds,
-#     devices=devices,
-#     check_output=False,
-# )
+add_function_test(
+    TestRobotComposer,
+    "test_robot_composer_model_builds",
+    test_robot_composer_model_builds,
+    devices=devices,
+    check_output=False,
+)
+
 add_function_test(
     TestRobotComposer,
     "test_robot_composer_simulation_stable",
@@ -519,13 +520,14 @@ add_function_test(
     devices=devices,
     check_output=False,
 )
-# add_function_test(
-#     TestRobotComposer,
-#     "test_robot_composer_simulation_moves",
-#     test_robot_composer_simulation_moves,
-#     devices=devices,
-#     check_output=False,
-# )
+
+add_function_test(
+    TestRobotComposer,
+    "test_robot_composer_simulation_moves",
+    test_robot_composer_simulation_moves,
+    devices=devices,
+    check_output=False,
+)
 
 
 if __name__ == "__main__":
