@@ -740,8 +740,10 @@ Soft contacts are generated automatically when particles are present. They use a
     # Add particles
     builder.add_particle(pos=wp.vec3(0, 0, 1), vel=wp.vec3(0, 0, 0), mass=1.0)
     
-    # Soft contact margin is set at collision time
-    pipeline.collide(state, contacts, soft_contact_margin=0.01)
+    # Set soft contact margin
+    pipeline = CollisionPipeline(model, soft_contact_margin=0.01)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
     
     # Access soft contact data
     n_soft = contacts.soft_contact_count.numpy()[0]

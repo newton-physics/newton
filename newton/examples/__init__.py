@@ -388,21 +388,23 @@ def init(parser=None):
     return viewer, args
 
 
-def create_collision_pipeline(model, args=None, broad_phase_mode=None):
+def create_collision_pipeline(model, args=None, **kwargs):
     """Create a collision pipeline, optionally using --broad-phase-mode from args.
 
     Args:
         model: The Newton model to create the pipeline for.
         args: Parsed arguments from create_parser() (optional).
-        broad_phase_mode: Override broad phase mode ("nxn", "sap", "explicit"). Default from args or "explicit".
+        **kwargs: Additional keyword arguments passed to CollisionPipeline.
 
     Returns:
         CollisionPipeline instance.
     """
     import newton  # noqa: PLC0415
 
-    if broad_phase_mode is None:
+    if "broad_phase_mode" not in kwargs:
         broad_phase_mode = getattr(args, "broad_phase_mode", "explicit") if args else "explicit"
+    else:
+        broad_phase_mode = kwargs.pop("broad_phase_mode")
     # Accept both string names and BroadPhaseMode enum values
     if isinstance(broad_phase_mode, newton.BroadPhaseMode):
         mode = broad_phase_mode
@@ -413,7 +415,7 @@ def create_collision_pipeline(model, args=None, broad_phase_mode=None):
             "explicit": newton.BroadPhaseMode.EXPLICIT,
         }
         mode = broad_phase_map.get(str(broad_phase_mode).lower(), newton.BroadPhaseMode.EXPLICIT)
-    return newton.CollisionPipeline(model, broad_phase_mode=mode)
+    return newton.CollisionPipeline(model, broad_phase_mode=mode, **kwargs)
 
 
 def main():
