@@ -31,7 +31,7 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
-from newton import State
+from newton import GeoType, State
 from newton.geometry import create_mesh_terrain
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
@@ -104,6 +104,14 @@ class Example:
             ignore_inertial_definitions=False,
         )
 
+        # Enlarge foot collision spheres to improve walking stability on uneven terrain.
+        # The URDF defines small spheres on the shank links; doubling their radius
+        # prevents the robot from stumbling on terrain features like waves and stairs.
+        for i in range(len(builder.shape_type)):
+            if builder.shape_type[i] == GeoType.SPHERE:
+                r = builder.shape_scale[i][0]
+                builder.shape_scale[i] = (r * 2.0, 0.0, 0.0)
+
         # Generate procedural terrain for visual demonstration (but not during unit tests)
         if not self.is_test:
             vertices, indices = create_mesh_terrain(
@@ -113,7 +121,7 @@ class Example:
                 terrain_params={
                     "pyramid_stairs": {"step_width": 0.3, "step_height": 0.02, "platform_width": 0.6},
                     "random_grid": {"grid_width": 0.3, "grid_height_range": (0, 0.02)},
-                    "wave": {"wave_amplitude": 0.15, "wave_frequency": 2.0},
+                    "wave": {"wave_amplitude": 0.1, "wave_frequency": 2.0},  # amplitude reduced from 0.15
                 },
                 seed=42,
             )
@@ -155,12 +163,7 @@ class Example:
 
         self.model = builder.finalize()
 
-        # TODO: Change to Newton Collision Pipeline when more stable
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
-        if not use_mujoco_contacts:
-            # Temporarily fix: override to use mujoco contact
-            print("WARNING: use_mujoco_contacts is ignored, switch to use MjWarp collision pipeline")
-            use_mujoco_contacts = True
 
         # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
         # Can override with: --collision-pipeline unified --broad-phase-mode nxn|sap|explicit
