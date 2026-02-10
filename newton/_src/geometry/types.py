@@ -86,10 +86,6 @@ class GeoType(enum.IntEnum):
     """No geometry (placeholder)."""
 
 
-# Default maximum vertices for convex hull approximation
-MESH_MAXHULLVERT = 64
-
-
 class SDF:
     """
     Represents a signed distance field (SDF) for simulation.
@@ -161,6 +157,7 @@ class Mesh:
             mesh = newton.Mesh(mesh_points, mesh_indices)
     """
 
+    MAX_HULL_VERTICES = 64
     _color: Vec3 | None = None
 
     def __init__(
@@ -171,7 +168,7 @@ class Mesh:
         uvs: Sequence[Vec2] | nparray | None = None,
         compute_inertia: bool = True,
         is_solid: bool = True,
-        maxhullvert: int = MESH_MAXHULLVERT,
+        maxhullvert: int | None = None,
         color: Vec3 | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
@@ -191,7 +188,7 @@ class Mesh:
             uvs: Optional per-vertex UVs, shape (N, 2).
             compute_inertia: If True, compute mass, inertia tensor, and center of mass (default: True).
             is_solid: If True, mesh is assumed solid for inertia computation (default: True).
-            maxhullvert: Max vertices for convex hull approximation (default: 64).
+            maxhullvert: Max vertices for convex hull approximation (default: :attr:`~newton.Mesh.MAX_HULL_VERTICES`).
             color: Optional per-mesh base color (values in [0, 1]).
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
@@ -211,6 +208,8 @@ class Mesh:
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
+        if maxhullvert is None:
+            maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._texture_hash = None

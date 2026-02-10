@@ -27,7 +27,7 @@ import warp as wp
 
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
-from ..geometry import MESH_MAXHULLVERT, ShapeFlags
+from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
 from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import Model
@@ -160,7 +160,7 @@ def parse_mjcf(
     verbose: bool = False,
     skip_equality_constraints: bool = False,
     convert_3d_hinge_to_ball_joints: bool = False,
-    mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    mesh_maxhullvert: int | None = None,
     ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
 ):
@@ -205,6 +205,8 @@ def parse_mjcf(
             from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
+    if mesh_maxhullvert is None:
+        mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
     if xform is None:
         xform = wp.transform_identity()
     else:

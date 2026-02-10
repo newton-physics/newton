@@ -46,7 +46,6 @@ from ..core.types import (
     nparray,
 )
 from ..geometry import (
-    MESH_MAXHULLVERT,
     SDF,
     GeoType,
     Mesh,
@@ -1445,7 +1444,7 @@ class ModelBuilder:
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
     ):
         """
@@ -1521,7 +1520,7 @@ class ModelBuilder:
         load_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
         parse_mujoco_options: bool = True,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
     ) -> dict[str, Any]:
@@ -1664,7 +1663,7 @@ class ModelBuilder:
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_3d_hinge_to_ball_joints: bool = False,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
     ):
@@ -7679,13 +7678,16 @@ class ModelBuilder:
 
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
-            finalized_meshes = {}  # do not duplicate meshes
+            finalized_geos = {}  # do not duplicate geometry
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if geo:
-                    if geo_hash not in finalized_meshes:
-                        finalized_meshes[geo_hash] = geo.finalize(device=device)
-                    geo_sources.append(finalized_meshes[geo_hash])
+                    if geo_hash not in finalized_geos:
+                        if isinstance(geo, Mesh):
+                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                        else:
+                            finalized_geos[geo_hash] = geo.finalize()
+                    geo_sources.append(finalized_geos[geo_hash])
                 else:
                     # add null pointer
                     geo_sources.append(0)
