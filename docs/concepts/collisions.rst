@@ -5,7 +5,7 @@ Collisions
 
 Newton provides a flexible collision detection system for rigid-rigid and soft-rigid contacts. The pipeline handles broad phase culling, narrow phase contact generation, and filtering.
 
-Newton's collision system can also be used with ``SolverMuJoCo``, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes.
+Newton's collision system is also compatible with MuJoCo-imported models via MJWarp, enabling advanced contact models (SDF, hydroelastic) for MuJoCo scenes. See ``examples/mjwarp/`` for usage.
 
 .. _Collision Pipeline:
 
@@ -22,13 +22,10 @@ Basic usage:
     contacts = model.contacts()
     model.collide(state, contacts)
 
-    # Or create a pipeline explicitly to choose broad phase mode
+    # Or create a pipeline explicitly for more control
     from newton import CollisionPipeline, BroadPhaseMode
 
-    pipeline = CollisionPipeline(
-        model,
-        broad_phase_mode=BroadPhaseMode.SAP,
-    )
+    pipeline = CollisionPipeline(model, broad_phase_mode=BroadPhaseMode.SAP)
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
 
@@ -759,10 +756,6 @@ Contact Data
 The :class:`~newton.Contacts` class stores the results from the collision detection step
 and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for contact handling.
 
-.. note::
-   Contact forces are not part of the :class:`~newton.Contacts` class - it only stores geometric 
-   contact information. See :class:`~newton.SensorContact` for computing contact forces.
-
 **Rigid contacts:**
 
 .. list-table::
@@ -803,6 +796,17 @@ and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for
    * - ``soft_contact_normal``
      - Contact normal.
 
+**Extended contact attributes** (see :ref:`extended_contact_attributes`)\ **:**
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 78
+
+   * - Attribute
+     - Description
+   * - :attr:`~newton.Contacts.force`
+     - Contact spatial forces (used by :class:`~newton.sensors.SensorContact`)
+
 Example usage:
 
 .. code-block:: python
@@ -819,30 +823,36 @@ Example usage:
     shape0 = contacts.rigid_contact_shape0.numpy()[:n]
     shape1 = contacts.rigid_contact_shape1.numpy()[:n]
 
-.. _Collide Method:
+.. _Creating Contacts:
 
-Model.contacts() Parameters
---------------------------
-The :meth:`Model.contacts` method accepts the following parameters:
+Creating and Populating Contacts
+--------------------------------
 
-# FIXME
-- Optional :class:`~newton.CollisionPipeline`. If None, creates/reuses a default pipeline (EXPLICIT broad phase). For options like ``rigid_contact_max``, ``soft_contact_margin``, ``requires_grad``, create the pipeline via :meth:`CollisionPipeline.from_model` and pass it here.
+:meth:`~newton.Model.contacts` creates a :class:`~newton.Contacts` buffer using a default
+:class:`~newton.CollisionPipeline` (EXPLICIT broad phase, cached on first call).
+:meth:`~newton.Model.collide` populates it:
 
-Model.collide() Parameters
---------------------------
+.. code-block:: python
 
-The :meth:`Model.collide` method accepts the following parameters:
+    contacts = model.contacts()
+    model.collide(state, contacts)
 
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
+The contacts buffer can be reused across steps — ``collide`` clears it each time.
 
-   * - Parameter
-     - Description
-   * - ``state``
-     - The current simulation state.
-   * - ``contacts``
-     - The contacts buffer to populate (will be cleared first).
+For control over broad phase mode, contact limits, or hydroelastic configuration, create a
+:class:`~newton.CollisionPipeline` directly:
+
+.. code-block:: python
+
+    from newton import CollisionPipeline, BroadPhaseMode
+
+    pipeline = CollisionPipeline(
+        model,
+        broad_phase_mode=BroadPhaseMode.SAP,
+        rigid_contact_max=50000,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Hydroelastic Contacts:
 
@@ -999,7 +1009,7 @@ Performance
 - Use positive collision groups to reduce candidate pairs
 - Use world indices for parallel simulations (essential for RL with many environments)
 - Contact reduction is enabled by default for mesh-heavy scenes
-- Pass ``rigid_contact_max`` to :meth:`CollisionPipeline.from_model` to limit memory in complex scenes
+- Pass ``rigid_contact_max`` to :class:`~newton.CollisionPipeline` to limit memory in complex scenes
 
 See Also
 --------
@@ -1019,12 +1029,14 @@ See Also
 
 **API Reference:**
 
+- :meth:`~newton.Model.contacts` - Create a contacts buffer (default pipeline)
+- :meth:`~newton.Model.collide` - Run collision detection (default pipeline)
 - :class:`~newton.CollisionPipeline` - Collision pipeline with configurable broad phase
+- :meth:`~newton.CollisionPipeline.contacts` - Allocate a contacts buffer for a custom pipeline
 - :class:`~newton.BroadPhaseMode` - Broad phase algorithm selection
 - :class:`~newton.Contacts` - Contact data container
 - :class:`~newton.GeoType` - Shape geometry types
 - :class:`~newton.ModelBuilder.ShapeConfig` - Shape configuration options
-- :meth:`~newton.Model.collide` - Collision detection method
 - :class:`~newton.geometry.SDFHydroelasticConfig` - Hydroelastic contact configuration
 
 **Model attributes:**
