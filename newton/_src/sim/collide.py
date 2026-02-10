@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from enum import IntEnum
 
+import numpy as np
 import warp as wp
 
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
@@ -400,6 +401,24 @@ class CollisionPipeline:
         self.reduce_contacts = reduce_contacts
         self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
 
+        # For NXN/SAP, build sorted exclusion array from model.shape_collision_filter_pairs
+        shape_pairs_excluded = None
+        if broad_phase_mode in (BroadPhaseMode.NXN, BroadPhaseMode.SAP) and hasattr(
+            model, "shape_collision_filter_pairs"
+        ):
+            filters = model.shape_collision_filter_pairs
+            if filters:
+                sorted_pairs = sorted(filters)  # lexicographic (already canonical min,max)
+                shape_pairs_excluded = wp.array(
+                    np.array(sorted_pairs),
+                    dtype=wp.vec2i,
+                    device=model.device,
+                )
+            # else: leave None
+
+        self.shape_pairs_excluded = shape_pairs_excluded
+        self.shape_pairs_excluded_count = shape_pairs_excluded.shape[0] if shape_pairs_excluded is not None else 0
+
         # Initialize broad phase
         if self.broad_phase_mode == BroadPhaseMode.NXN:
             if shape_world is None:
@@ -488,7 +507,7 @@ class CollisionPipeline:
         soft_contact_margin: float | None = None,
     ):
         """
-        Run collision detection and populate the contacts buffer.
+        Run the collision pipeline using NarrowPhase.
 
         Args:
             state: The current simulation state.
@@ -543,6 +562,8 @@ class CollisionPipeline:
                     self.broad_phase_shape_pairs,
                     self.broad_phase_pair_count,
                     device=self.device,
+                    filter_pairs=self.shape_pairs_excluded,
+                    num_filter_pairs=self.shape_pairs_excluded_count,
                 )
             elif self.broad_phase_mode == BroadPhaseMode.SAP:
                 self.sap_broadphase.launch(
@@ -555,6 +576,8 @@ class CollisionPipeline:
                     self.broad_phase_shape_pairs,
                     self.broad_phase_pair_count,
                     device=self.device,
+                    filter_pairs=self.shape_pairs_excluded,
+                    num_filter_pairs=self.shape_pairs_excluded_count,
                 )
             else:  # BroadPhaseMode.EXPLICIT
                 self.explicit_broadphase.launch(
