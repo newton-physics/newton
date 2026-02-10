@@ -1728,9 +1728,9 @@ def parse_usd(
                 continue
             rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
             mass, i_diag, com, principal_axes = rigid_body_api.ComputeMassProperties(_get_collision_mass_information)
-            if mass > 0.0:
-                builder.body_mass[body_id] = mass
-                builder.body_inv_mass[body_id] = 1.0 / mass
+            # MassAPI bodies should always override any previously accumulated shape mass.
+            builder.body_mass[body_id] = mass
+            builder.body_inv_mass[body_id] = 1.0 / mass if mass > 0.0 else 0.0
             builder.body_com[body_id] = wp.vec3(*com)
 
             i_diag_np = np.array(i_diag, dtype=np.float32)
