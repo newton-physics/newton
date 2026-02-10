@@ -215,7 +215,12 @@ def Xform "Root" (
         builder = newton.ModelBuilder()
         with self.assertWarns(UserWarning) as cm:
             builder.add_usd(stage)
-        self.assertIn("not included in any articulation", str(cm.warning).lower())
+        warn_msg = str(cm.warning)
+        # Verify the warning mentions orphan joints and the specific joint path
+        self.assertIn("not included in any articulation", warn_msg.lower())
+        self.assertIn("/World/OrphanJoint", warn_msg)
+        self.assertIn("PhysicsArticulationRootAPI", warn_msg)
+        self.assertIn("skip_validation_joints=True", warn_msg)
 
         self.assertIn("/World/Arm/RevoluteJoint", builder.joint_key)
         self.assertIn("/World/OrphanJoint", builder.joint_key)
@@ -225,7 +230,12 @@ def Xform "Root" (
         self.assertEqual(builder.joint_type[art_idx], newton.JointType.REVOLUTE)
         self.assertEqual(builder.joint_type[orphan_idx], newton.JointType.REVOLUTE)
 
-        self.assertEqual(builder.body_count, 4)
+        # orphan joint stays without an articulation
+        self.assertEqual(builder.joint_articulation[orphan_idx], -1)
+
+        # finalize requires skip_validation_joints=True for orphan joints
+        model = builder.finalize(skip_validation_joints=True)
+        self.assertEqual(model.body_count, 4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
