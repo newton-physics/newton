@@ -3700,6 +3700,136 @@ def Xform "Articulation" (
         self.assertAlmostEqual(rolling, 0.08, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_material_density_used_by_mass_properties(self):
+        """Test that physics material density contributes to imported body mass/inertia."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        # Ensure parse_usd enters the MassAPI override path.
+        UsdPhysics.MassAPI.Apply(body_prim)
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(2.0)  # side length = 2.0 -> volume = 8.0
+        collider_prim = collider.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+
+        density = 250.0
+        material = UsdShade.Material.Define(stage, "/World/Materials/Dense")
+        material_prim = material.GetPrim()
+        UsdPhysics.MaterialAPI.Apply(material_prim).CreateDensityAttr().Set(density)
+        UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        body_idx = result["path_body_map"]["/World/Body"]
+        expected_mass = density * 8.0
+        self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+
+        # For a solid cube with side length a: I = (1/6) * m * a^2 on each axis.
+        expected_diag = (1.0 / 6.0) * expected_mass * (2.0**2)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(np.diag(inertia), np.array([expected_diag, expected_diag, expected_diag]), rtol=1e-4)
+        np.testing.assert_allclose(
+            inertia - np.diag(np.diag(inertia)),
+            np.zeros((3, 3), dtype=np.float32),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_material_density_mass_properties_with_stage_linear_scale(self):
+        """Test mass/inertia parsing when stage metersPerUnit is not 1.0."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        UsdPhysics.MassAPI.Apply(body_prim)
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(2.0)  # side length in stage units
+        collider_prim = collider.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+
+        density = 250.0
+        material = UsdShade.Material.Define(stage, "/World/Materials/Dense")
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDensityAttr().Set(density)
+        UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        self.assertAlmostEqual(result["linear_unit"], 0.01, places=7)
+
+        body_idx = result["path_body_map"]["/World/Body"]
+        expected_mass = density * 8.0  # 2^3 stage units
+        self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+
+        # For a solid cube: I = (1/6) * m * a^2 on each axis.
+        expected_diag = (1.0 / 6.0) * expected_mass * (2.0**2)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(np.diag(inertia), np.array([expected_diag, expected_diag, expected_diag]), rtol=1e-4)
+        np.testing.assert_allclose(
+            inertia - np.diag(np.diag(inertia)),
+            np.zeros((3, 3), dtype=np.float32),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_material_density_without_massapi_uses_shape_material(self):
+        """Test that non-MassAPI bodies use collider material density for mass accumulation."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        # Intentionally do NOT apply MassAPI here.
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(2.0)  # side length = 2.0 -> volume = 8.0
+        collider_prim = collider.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+
+        density = 250.0
+        material = UsdShade.Material.Define(stage, "/World/Materials/Dense")
+        UsdPhysics.MaterialAPI.Apply(material.GetPrim()).CreateDensityAttr().Set(density)
+        UsdShade.MaterialBindingAPI.Apply(collider_prim).Bind(material, "physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        body_idx = result["path_body_map"]["/World/Body"]
+        expected_mass = density * 8.0
+        self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+
+        # For a solid cube with side length a: I = (1/6) * m * a^2 on each axis.
+        expected_diag = (1.0 / 6.0) * expected_mass * (2.0**2)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(np.diag(inertia), np.array([expected_diag, expected_diag, expected_diag]), rtol=1e-4)
+        np.testing.assert_allclose(
+            inertia - np.diag(np.diag(inertia)),
+            np.zeros((3, 3), dtype=np.float32),
+            atol=1e-6,
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_margin_parsing(self):
         """Test that contact_margin is parsed correctly from USD."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415

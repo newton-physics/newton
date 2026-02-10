@@ -28,7 +28,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import Mesh, ShapeFlags, compute_sphere_inertia
+from ..geometry import GeoType, Mesh, ShapeFlags, compute_shape_inertia, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import ActuatorMode
 from ..sim.model import Model
@@ -154,7 +154,7 @@ def parse_usd(
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 
@@ -1049,8 +1049,6 @@ def parse_usd(
     # (to avoid repeated regex evaluations)
     ignored_body_paths = set()
     material_specs = {}
-    # maps from rigid body path to density value if it has been defined
-    body_density = {}
     # maps from articulation_id to list of body_ids
     articulation_bodies = {}
 
@@ -1112,22 +1110,7 @@ def parse_usd(
                 ignored_body_paths.add(body_path)
                 continue
             body_specs[body_path] = rigid_body_desc
-            body_density[body_path] = default_shape_density
             prim = stage.GetPrimAtPath(prim_path)
-            # Marking for deprecation --->
-            if prim.HasRelationship("material:binding:physics"):
-                other_paths = prim.GetRelationship("material:binding:physics").GetTargets()
-                if len(other_paths) > 0:
-                    material = material_specs[str(other_paths[0])]
-                    if material.density > 0.0:
-                        body_density[body_path] = material.density
-
-            if prim.HasAPI(UsdPhysics.MassAPI):
-                if usd.has_attribute(prim, "physics:density"):
-                    d = usd.get_float(prim, "physics:density")
-                    density = d * mass_unit  # / (linear_unit**3)
-                    body_density[body_path] = density
-            # <--- Marking for deprecation
 
     # Collect joint descriptions regardless of whether articulations are authored.
     for key, value in ret_dict.items():
@@ -1440,6 +1423,7 @@ def parse_usd(
     path_collision_filters = set()
     no_collision_shapes = set()
     collision_group_ids = {}
+    rigid_body_mass_info_map = {}
     for key, value in ret_dict.items():
         if key in {
             UsdPhysics.ObjectType.CubeShape,
@@ -1476,7 +1460,8 @@ def parse_usd(
                         collision_group_ids[cgroup_name] = len(collision_group_ids) + 1
                     collision_group = collision_group_ids[cgroup_name]
                 material = material_specs[""]
-                if len(shape_spec.materials) >= 1:
+                has_shape_material = len(shape_spec.materials) >= 1
+                if has_shape_material:
                     if len(shape_spec.materials) > 1 and verbose:
                         print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
                     material = material_specs[str(shape_spec.materials[0])]
@@ -1486,6 +1471,13 @@ def parse_usd(
                         )
                 elif verbose:
                     print(f"No material found for shape at '{path}'.")
+
+                # Non-MassAPI body mass accumulation in ModelBuilder uses shape cfg density.
+                # Use per-shape physics material density when present; otherwise use default density.
+                if has_shape_material:
+                    shape_density = material.density
+                else:
+                    shape_density = default_shape_density
                 prim_and_scene = (prim, physics_scene_prim)
                 local_xform = wp.transform(shape_spec.localPos, usd.from_gfquat(shape_spec.localRot))
                 if body_id == -1:
@@ -1525,7 +1517,7 @@ def parse_usd(
                         restitution=material.restitution,
                         torsional_friction=material.torsionalFriction,
                         rolling_friction=material.rollingFriction,
-                        density=body_density.get(body_path, default_shape_density),
+                        density=shape_density,
                         collision_group=collision_group,
                         is_visible=not hide_collision_shapes,
                     ),
@@ -1634,6 +1626,48 @@ def parse_usd(
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
 
+                # Build collision mass information for UsdPhysics.RigidBodyAPI.ComputeMassProperties().
+                # The callback expects per-collider volume and inertia for unit density.
+                shape_geo_type = None
+                shape_scale_for_inertia = None
+                shape_src = None
+                if key == UsdPhysics.ObjectType.CubeShape:
+                    shape_geo_type = GeoType.BOX
+                    hx, hy, hz = shape_spec.halfExtents
+                    shape_scale_for_inertia = wp.vec3(hx, hy, hz)
+                elif key == UsdPhysics.ObjectType.SphereShape:
+                    shape_geo_type = GeoType.SPHERE
+                    shape_scale_for_inertia = wp.vec3(shape_spec.radius, 0.0, 0.0)
+                elif key == UsdPhysics.ObjectType.CapsuleShape:
+                    shape_geo_type = GeoType.CAPSULE
+                    shape_scale_for_inertia = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+                elif key == UsdPhysics.ObjectType.CylinderShape:
+                    shape_geo_type = GeoType.CYLINDER
+                    shape_scale_for_inertia = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+                elif key == UsdPhysics.ObjectType.ConeShape:
+                    shape_geo_type = GeoType.CONE
+                    shape_scale_for_inertia = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+                elif key == UsdPhysics.ObjectType.MeshShape:
+                    shape_geo_type = GeoType.MESH
+                    shape_scale_for_inertia = wp.vec3(*shape_spec.meshScale)
+                    shape_src = usd.get_mesh(prim)
+
+                if shape_geo_type is not None and shape_scale_for_inertia is not None:
+                    shape_mass, shape_com, shape_inertia = compute_shape_inertia(
+                        shape_geo_type,
+                        shape_scale_for_inertia,
+                        shape_src,
+                        density=1.0,
+                    )
+                    shape_inertia_np = np.array(shape_inertia, dtype=np.float32).reshape(3, 3)
+                    mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
+                    mass_info.volume = float(shape_mass)
+                    mass_info.centerOfMass = Gf.Vec3f(*shape_com)
+                    mass_info.localPos = Gf.Vec3f(*shape_spec.localPos)
+                    mass_info.localRot = shape_spec.localRot
+                    mass_info.inertia = Gf.Matrix3f(*shape_inertia_np.flatten().tolist())
+                    rigid_body_mass_info_map[path] = mass_info
+
                 if prim.HasRelationship("physics:filteredPairs"):
                     other_paths = prim.GetRelationship("physics:filteredPairs").GetTargets()
                     for other_path in other_paths:
@@ -1667,6 +1701,20 @@ def parse_usd(
                     for shape2 in builder.body_shapes[body2]:
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
+    def _zero_mass_information():
+        mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
+        mass_info.volume = 0.0
+        mass_info.centerOfMass = Gf.Vec3f(0.0)
+        mass_info.localPos = Gf.Vec3f(0.0)
+        mass_info.localRot = Gf.Quatf(1.0)
+        mass_info.inertia = Gf.Matrix3f(0.0)
+        return mass_info
+
+    zero_mass_information = _zero_mass_information()
+
+    def _get_collision_mass_information(collider_prim: Usd.Prim):
+        return rigid_body_mass_info_map.get(str(collider_prim.GetPath()), zero_mass_information)
+
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
@@ -1678,18 +1726,18 @@ def parse_usd(
             body_id = path_body_map.get(body_path, -1)
             if body_id == -1:
                 continue
-            mass = usd.get_float(prim, "physics:mass")
-            if mass is not None:
+            rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
+            mass, i_diag, com, principal_axes = rigid_body_api.ComputeMassProperties(_get_collision_mass_information)
+            if mass > 0.0:
                 builder.body_mass[body_id] = mass
                 builder.body_inv_mass[body_id] = 1.0 / mass
-            com = usd.get_vector(prim, "physics:centerOfMass")
-            if com is not None:
-                builder.body_com[body_id] = wp.vec3(*com)
-            i_diag = usd.get_vector(prim, "physics:diagonalInertia", np.zeros(3, dtype=np.float32))
-            i_rot = usd.get_quat(prim, "physics:principalAxes", wp.quat_identity())
-            if np.linalg.norm(i_diag) > 0.0:
+            builder.body_com[body_id] = wp.vec3(*com)
+
+            i_diag_np = np.array(i_diag, dtype=np.float32)
+            if np.linalg.norm(i_diag_np) > 0.0:
+                i_rot = usd.from_gfquat(principal_axes)
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
-                inertia = rot @ np.diag(i_diag) @ rot.T
+                inertia = rot @ np.diag(i_diag_np) @ rot.T
                 builder.body_inertia[body_id] = wp.mat33(inertia)
                 if inertia.any():
                     builder.body_inv_inertia[body_id] = wp.inverse(wp.mat33(*inertia))
