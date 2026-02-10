@@ -1562,5 +1562,17 @@ class TestModel(unittest.TestCase):
         self.assertIn("DFS topological order", str(cm.warning))
 
 
+    def test_control_clear(self):
+        """Test that Control.clear() works without errors."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+
+        model = builder.finalize()
+        control = model.control()
+        control.clear()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

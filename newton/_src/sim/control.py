@@ -83,10 +83,10 @@ class Control:
 
     def _clear_namespaced_arrays(self) -> None:
         """Clear all wp.array attributes in namespaced containers (e.g., control.mujoco.ctrl)."""
-        from .model import AttributeNamespace  # noqa: PLC0415
+        from .model import Model  # noqa: PLC0415
 
         for attr in self.__dict__.values():
-            if isinstance(attr, AttributeNamespace):
+            if isinstance(attr, Model.AttributeNamespace):
                 for value in attr.__dict__.values():
                     if isinstance(value, wp.array):
                         value.zero_()
