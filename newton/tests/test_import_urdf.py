@@ -1132,7 +1132,7 @@ class TestImportUrdf(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Create a standalone body (not in any articulation)
-        standalone_body = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+        standalone_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_shape_sphere(
             body=standalone_body,
             radius=0.1,
