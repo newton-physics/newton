@@ -871,7 +871,7 @@ class Model:
         if self._collision_pipeline is None:
             raise ValueError(
                 "Model does not have a collision pipeline. Call model.contacts() "
-                "or use your collision pipeline directly: CollisionPipeline.collide(contacts)."
+                "or use your collision pipeline directly: CollisionPipeline.collide(state, contacts)."
             )
 
         self._collision_pipeline.collide(state, contacts)
