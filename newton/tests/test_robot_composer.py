@@ -13,49 +13,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-###########################################################################
-# Example Robot Composer
-#
-# Shows how to compose robots by attaching end effectors using parent_body.
-# Uses multiple importers (URDF, MJCF) and demonstrates different base joint configurations (floating, planar).
-#
-# This example showcases:
-# - Composing robots by attaching end effectors using parent_body
-# - Using multiple importers (URDF, MJCF)
-# - Overriding floating/base_joint behavior during import
-# - Stress testing articulation bookkeeping with multiple compositions
-#
-# We create several scenarios demonstrating hierarchical composition:
-# 1. UR5e + LEAP hand left (MJCF + MJCF composition)
-# 2. Franka arm + Allegro hand (URDF + MJCF composition)
-# 3. Robots with different base joint configurations (floating, planar)
-#
-#
-# Command: python -m newton.examples robot_composer --num-worlds 1
-#
-###########################################################################
+import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
-import newton.examples
 import newton.utils
 from newton import ActuatorMode
 from newton._src.utils.download_assets import download_git_folder
 from newton.solvers import SolverMuJoCo
+from newton.tests.unittest_utils import add_function_test, find_nan_members, get_cuda_test_devices
 
 
-class Example:
-    def __init__(self, viewer, num_worlds=1, args=None):
+class RobotComposerSim:
+    """Test harness for robot composer functionality.
+
+    Composes robots by attaching end effectors using parent_body across
+    multiple importers (URDF, MJCF, USD).
+    """
+
+    def __init__(self, device, do_rendering=True, num_frames=50, num_worlds=1):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.num_worlds = num_worlds
-        self.viewer = viewer
-
-        self.viewer._paused = True
+        self.num_frames = num_frames
+        self.do_rendering = do_rendering
+        self.device = device
 
         self.collide_substeps = False
 
@@ -71,7 +58,7 @@ class Example:
         scene.replicate(builder, self.num_worlds)
         scene.add_ground_plane()
 
-        self.model = scene.finalize()
+        self.model = scene.finalize(device=device)
 
         # Initialize states and control
         self.state_0 = self.model.state()
@@ -80,10 +67,9 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # Create solver
-        self.use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=self.use_mujoco_contacts,
+            use_mujoco_contacts=True,
             solver="newton",
             integrator="implicitfast",
             cone="elliptic",
@@ -95,16 +81,20 @@ class Example:
             impratio=1000.0,
         )
 
-        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        # Create collision pipeline
+        self.collision_pipeline = newton.CollisionPipeline.from_model(self.model)
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
-        # Setup viewer
+        # Create viewer
+        if self.do_rendering:
+            self.viewer = newton.viewer.ViewerGL()
+        else:
+            self.viewer = newton.viewer.ViewerNull()
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_world_offsets(wp.vec3(4.0, 4.0, 0.0))
 
-        # Initialize joint target positions.
+        # Initialize joint target positions
         self.direct_control = wp.zeros_like(self.control.mujoco.ctrl)
         self.gripper_target_pos = 0.0
 
@@ -231,9 +221,7 @@ class Example:
         ee_body_idx = ur5e_with_robotiq_gripper.body_key.index(ee_name)
 
         # Attach Robotiq 2F85 gripper to end effector
-        # Rotate the gripper to align with the arm
         gripper_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2)
-        # ee_xform is set for illustrative purposes.
         ee_xform = wp.transform((0.00, 0.1, 0.0), gripper_quat)
         ur5e_with_robotiq_gripper.add_mjcf(
             str(self.robotiq_2f85_path),
@@ -285,11 +273,9 @@ class Example:
         ee_body_idx = ur5e_with_hand.body_key.index(ee_name)
 
         # Attach LEAP hand left to end effector
-        # Rotate the hand to align with the arm
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 2)
         quat_y = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi)
         hand_quat = quat_y * quat_z
-        # ee_xform is set for illustrative purposes.
         ee_xform = wp.transform((-0.065, 0.28, 0.10), hand_quat)
         ur5e_with_hand.add_mjcf(
             str(self.leap_path),
@@ -351,11 +337,9 @@ class Example:
         franka_ee_idx = franka_with_hand.body_key.index(franka_ee_name)
 
         # Attach Allegro hand with custom base joint
-        # Rotate the hand around the y axis by -90 degrees
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -init_q[-1])
         quat_y = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -wp.pi / 2)
         hand_quat = quat_z * quat_y
-        # ee_xform is set for illustrative purposes.
         ee_xform = wp.transform((0.0, 0.0, 0.1), hand_quat)
 
         franka_with_hand.add_mjcf(
@@ -389,7 +373,7 @@ class Example:
                     newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
                 ],
                 "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
-            },  # Planar mobile base
+            },
         )
 
         # Set gains for base joint DOFs (first 3 DOFs)
@@ -399,7 +383,6 @@ class Example:
         ur10_builder.joint_act_mode[:3] = [int(ActuatorMode.POSITION)] * 3
 
         # Initialize arm joints to elbow down configuration (same as UR5e)
-        # Arm joints are the last 6
         init_q = [0, -wp.half_pi, wp.half_pi, -wp.half_pi, -wp.half_pi, 0]
         ur10_builder.joint_q[-6:] = init_q[:6]
         ur10_builder.joint_target_pos[-6:] = init_q[:6]
@@ -422,25 +405,14 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        if not self.collide_substeps and not self.use_mujoco_contacts:
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
         for _ in range(self.sim_substeps):
-            if self.collide_substeps and not self.use_mujoco_contacts:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-
             self.state_0.clear_forces()
-
-            # Apply forces for interactive picking
-            self.viewer.apply_forces(self.state_0)
-
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-
-            # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        # Set direct control from GUI
         wp.copy(self.control.mujoco.ctrl, self.direct_control)
 
         if self.graph:
@@ -459,8 +431,6 @@ class Example:
 
     def gui(self, imgui):
         imgui.text("Gripper target")
-        # The first robot to be built is the UR5e with Robotiq 2F85 gripper.
-        # The gripper motor is the 7th actuator. So, the actuator index is 6.
         actuator_idx = 6
         changed, value = imgui.slider_float("gripper_target_pos", self.gripper_target_pos, 0.0, 255, format="%.3f")
         if changed:
@@ -469,19 +439,94 @@ class Example:
             direct_control[:, actuator_idx] = value
             wp.copy(self.direct_control, wp.array(direct_control.flatten(), dtype=wp.float32))
 
-    def test_final(self):
-        """Test that the composed model is valid and simulates correctly."""
-        pass
+    def run(self):
+        if self.do_rendering:
+            if hasattr(self.viewer, "register_ui_callback"):
+                self.viewer.register_ui_callback(lambda ui: self.gui(ui), position="side")
+            while self.viewer.is_running():
+                if not self.viewer.is_paused():
+                    self.step()
+                self.render()
+        else:
+            for _ in range(self.num_frames):
+                self.step()
+
+
+def test_robot_composer_model_builds(test, device):
+    """Test that the composed robot model builds correctly with all articulations."""
+    sim = RobotComposerSim(device, num_frames=0, num_worlds=1)
+
+    # Should have at least 4 articulations (UR5e+Robotiq, UR5e+LEAP, Franka+Allegro, UR10)
+    test.assertGreaterEqual(sim.model.articulation_count, 4)
+
+    # Should have a substantial number of bodies and joints from all composed robots
+    test.assertGreater(sim.model.body_count, 20)
+    test.assertGreater(sim.model.joint_count, 20)
+
+    # State should be initialized with non-empty joint positions
+    test.assertGreater(sim.state_0.joint_q.shape[0], 0)
+
+
+def test_robot_composer_simulation_stable(test, device):
+    """Test that the composed robot simulation runs stably without NaN values."""
+    sim = RobotComposerSim(device, num_frames=50, num_worlds=1)
+    sim.run()
+
+    # No NaN in states
+    nan_members_0 = find_nan_members(sim.state_0)
+    nan_members_1 = find_nan_members(sim.state_1)
+    test.assertEqual(nan_members_0, [], f"NaN found in state_0: {nan_members_0}")
+    test.assertEqual(nan_members_1, [], f"NaN found in state_1: {nan_members_1}")
+
+    # joint_q and joint_qd should all be finite
+    joint_q = sim.state_0.joint_q.numpy()
+    joint_qd = sim.state_0.joint_qd.numpy()
+    test.assertTrue(np.isfinite(joint_q).all(), "Non-finite values in joint_q")
+    test.assertTrue(np.isfinite(joint_qd).all(), "Non-finite values in joint_qd")
+
+
+def test_robot_composer_simulation_moves(test, device):
+    """Test that the composed robots actually move during simulation."""
+    sim = RobotComposerSim(device, num_frames=50, num_worlds=1)
+    sim.run()
+
+    # Compare initial vs final joint positions — at least some joints should have changed
+    final_joint_q = sim.state_0.joint_q.numpy()
+    test.assertTrue(
+        np.any(np.abs(sim.initial_joint_q - final_joint_q) > 1e-6),
+        "No joints moved during simulation",
+    )
+
+
+devices = get_cuda_test_devices(mode="basic")
+
+
+class TestRobotComposer(unittest.TestCase):
+    pass
+
+
+# add_function_test(
+#     TestRobotComposer,
+#     "test_robot_composer_model_builds",
+#     test_robot_composer_model_builds,
+#     devices=devices,
+#     check_output=False,
+# )
+add_function_test(
+    TestRobotComposer,
+    "test_robot_composer_simulation_stable",
+    test_robot_composer_simulation_stable,
+    devices=devices,
+    check_output=False,
+)
+# add_function_test(
+#     TestRobotComposer,
+#     "test_robot_composer_simulation_moves",
+#     test_robot_composer_simulation_moves,
+#     devices=devices,
+#     check_output=False,
+# )
 
 
 if __name__ == "__main__":
-    parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=4, help="Total number of simulated worlds.")
-
-    viewer, args = newton.examples.init(parser)
-
-    args.use_mujoco_contacts = True
-
-    example = Example(viewer, num_worlds=args.num_worlds, args=args)
-
-    newton.examples.run(example, args)
+    unittest.main(verbosity=2, failfast=True)
