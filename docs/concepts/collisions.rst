@@ -798,7 +798,7 @@ and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for
    * - ``soft_contact_normal``
      - Contact normal.
 
-**Extended contact attributes** (see :ref:`extended_contact_attributes`)\ **:**
+**Extended contact attributes** (see :ref:`extended_contact_attributes`):
 
 .. list-table::
    :header-rows: 1
