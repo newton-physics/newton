@@ -188,7 +188,7 @@ class Mesh:
             uvs: Optional per-vertex UVs, shape (N, 2).
             compute_inertia: If True, compute mass, inertia tensor, and center of mass (default: True).
             is_solid: If True, mesh is assumed solid for inertia computation (default: True).
-            maxhullvert: Max vertices for convex hull approximation (default: :attr:`MAX_HULL_VERTICES`).
+            maxhullvert: Max vertices for convex hull approximation (default: :attr:`~newton.Mesh.MAX_HULL_VERTICES`).
             color: Optional per-mesh base color (values in [0, 1]).
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
