@@ -163,7 +163,6 @@ class Example:
 
         self.model = builder.finalize()
 
-        # TODO: Change to Newton Collision Pipeline when more stable
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
 
         # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
