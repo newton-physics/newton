@@ -1706,7 +1706,7 @@ def parse_usd(
         mass_info.volume = 0.0
         mass_info.centerOfMass = Gf.Vec3f(0.0)
         mass_info.localPos = Gf.Vec3f(0.0)
-        mass_info.localRot = Gf.Quatf(1.0)
+        mass_info.localRot = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
         mass_info.inertia = Gf.Matrix3f(0.0)
         return mass_info
 
