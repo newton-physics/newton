@@ -29,19 +29,16 @@ from ...utils import (
 
 @wp.kernel
 def apply_particle_shape_restitution(
-    particle_x_new: wp.array(dtype=wp.vec3),
     particle_v_new: wp.array(dtype=wp.vec3),
     particle_x_old: wp.array(dtype=wp.vec3),
     particle_v_old: wp.array(dtype=wp.vec3),
-    particle_invmass: wp.array(dtype=float),
     particle_radius: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
     body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_qd_prev: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
-    body_m_inv: wp.array(dtype=float),
-    body_I_inv: wp.array(dtype=wp.mat33),
     shape_body: wp.array(dtype=int),
     particle_ka: float,
     restitution: float,
@@ -52,8 +49,6 @@ def apply_particle_shape_restitution(
     contact_body_vel: wp.array(dtype=wp.vec3),
     contact_normal: wp.array(dtype=wp.vec3),
     contact_max: int,
-    dt: float,
-    relaxation: float,
     particle_v_out: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -74,15 +69,16 @@ def apply_particle_shape_restitution(
     v_old = particle_v_old[particle_index]
 
     X_wb = wp.transform_identity()
+    X_wb_prev = wp.transform_identity()
     X_com = wp.vec3()
 
     if body_index >= 0:
         X_wb = body_q[body_index]
+        X_wb_prev = body_q_prev[body_index]
         X_com = body_com[body_index]
 
     # body position in world space
     bx = wp.transform_point(X_wb, contact_body_pos[tid])
-    r = bx - wp.transform_point(X_wb, X_com)
 
     n = contact_normal[tid]
     c = wp.dot(n, px - bx) - particle_radius[particle_index]
@@ -90,12 +86,17 @@ def apply_particle_shape_restitution(
     if c > particle_ka:
         return
 
+    # lever arm from previous pose (consistent with apply_rigid_restitution)
+    bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[tid])
+    r = bx_prev - wp.transform_point(X_wb_prev, X_com)
+
     # compute body velocity at the contact point
-    bv_old = wp.vec3()
-    bv_new = wp.vec3()
+    bv_contact = wp.transform_vector(X_wb_prev, contact_body_vel[tid])
+    bv_old = bv_contact
+    bv_new = bv_contact
     if body_index >= 0:
-        bv_old = velocity_at_point(body_qd_prev[body_index], r) + wp.transform_vector(X_wb, contact_body_vel[tid])
-        bv_new = velocity_at_point(body_qd[body_index], r) + wp.transform_vector(X_wb, contact_body_vel[tid])
+        bv_old = velocity_at_point(body_qd_prev[body_index], r) + bv_contact
+        bv_new = velocity_at_point(body_qd[body_index], r) + bv_contact
 
     rel_vel_old = wp.dot(n, v_old - bv_old)
     rel_vel_new = wp.dot(n, v_new - bv_new)
