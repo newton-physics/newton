@@ -111,6 +111,8 @@ class CollisionSetup:
 
         self.graph = None
         if wp.get_device(device).is_cuda:
+            # Warm-up: run once outside capture
+            self.simulate()
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
