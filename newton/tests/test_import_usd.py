@@ -145,11 +145,7 @@ def Xform "Root" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_orphan_joints_with_articulation_present(self):
         """Joints outside any articulation must not be silently dropped.
-
-        Regression test: orphan-joint processing previously only ran when no
-        articulations existed in the USD.  When an articulation was present,
-        joints not belonging to it were silently discarded.  This test creates
-        a stage with an articulation and a separate revolute joint outside it,
+        This test creates a stage with an articulation and a separate revolute joint outside it,
         and verifies that both are parsed correctly.
         """
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
