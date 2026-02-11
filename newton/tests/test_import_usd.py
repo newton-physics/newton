@@ -16,6 +16,7 @@
 import math
 import os
 import unittest
+from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -3732,6 +3733,8 @@ def Xform "Articulation" (
         body_idx = result["path_body_map"]["/World/Body"]
         expected_mass = density * 8.0
         self.assertAlmostEqual(builder.body_mass[body_idx], expected_mass, places=4)
+        body_com = np.array(builder.body_com[body_idx], dtype=np.float32)
+        np.testing.assert_allclose(body_com, np.zeros(3, dtype=np.float32), atol=1e-6, rtol=1e-6)
 
         # For a solid cube with side length a: I = (1/6) * m * a^2 on each axis.
         expected_diag = (1.0 / 6.0) * expected_mass * (2.0**2)
@@ -3946,6 +3949,72 @@ def Xform "Articulation" (
         # Cone COM should also rotate from local -Z to world -X.
         body_com = np.array(builder.body_com[body_idx], dtype=np.float32)
         np.testing.assert_allclose(body_com, np.array([-0.5, 0.0, 0.0], dtype=np.float32), atol=1e-5, rtol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_partial_body_mesh_uses_cached_mesh_loading(self):
+        """Mesh collider mass fallback should not reload the same USD mesh multiple times."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        # Partial body MassAPI -> triggers ComputeMassProperties callback path.
+        UsdPhysics.MassAPI.Apply(body_prim).CreateMassAttr().Set(1.0)
+
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Body/Collider")
+        mesh_prim = mesh.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(mesh_prim)
+
+        # Closed tetrahedron mesh so inertia/mass can be derived.
+        mesh.CreatePointsAttr().Set(
+            [
+                (-1.0, -1.0, -1.0),
+                (1.0, -1.0, 1.0),
+                (-1.0, 1.0, 1.0),
+                (1.0, 1.0, -1.0),
+            ]
+        )
+        mesh.CreateFaceVertexCountsAttr().Set([3, 3, 3, 3])
+        mesh.CreateFaceVertexIndicesAttr().Set(
+            [
+                0,
+                2,
+                1,
+                0,
+                1,
+                3,
+                0,
+                3,
+                2,
+                1,
+                2,
+                3,
+            ]
+        )
+
+        import newton._src.utils.import_usd as import_usd_module  # noqa: PLC0415
+
+        original_get_mesh = import_usd_module.usd.get_mesh
+        get_mesh_call_count = 0
+
+        def _counting_get_mesh(*args, **kwargs):
+            nonlocal get_mesh_call_count
+            get_mesh_call_count += 1
+            return original_get_mesh(*args, **kwargs)
+
+        with mock.patch(
+            "newton._src.utils.import_usd.usd.get_mesh",
+            side_effect=_counting_get_mesh,
+        ):
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+
+        self.assertEqual(get_mesh_call_count, 1)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_warns_and_skips_noncontributing_collider(self):
