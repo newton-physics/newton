@@ -4907,6 +4907,148 @@ f 4 1 5 8
             mesh = model.shape_source[0]
             self.assertEqual(len(mesh.vertices), 8)
 
+    def test_include_with_parent_body(self):
+        """Test that parent_body works correctly when the MJCF uses <include> tags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the included file with gripper bodies
+            gripper_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <geom type="box" size="0.025 0.025 0.01" mass="0.2"/>
+            <body name="finger_left" pos="0 0.025 0">
+                <joint type="slide" axis="0 1 0"/>
+                <geom type="box" size="0.01 0.01 0.02" mass="0.05"/>
+            </body>
+            <body name="finger_right" pos="0 -0.025 0">
+                <joint type="slide" axis="0 1 0"/>
+                <geom type="box" size="0.01 0.01 0.02" mass="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+            gripper_path = os.path.join(tmpdir, "gripper.xml")
+            with open(gripper_path, "w") as f:
+                f.write(gripper_content)
+
+            # Create the main file that includes the gripper
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper_with_include">
+    <include file="gripper.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # First, load a robot arm
+            robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot_arm">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(robot_mjcf, floating=False)
+
+            robot_body_count = builder.body_count
+            robot_joint_count = builder.joint_count
+
+            # Attach gripper (via <include>) to end effector
+            ee_body_idx = builder.body_key.index("end_effector")
+            builder.add_mjcf(main_path, parent_body=ee_body_idx)
+
+            model = builder.finalize()
+
+            # Verify included bodies were added (gripper_base + finger_left + finger_right)
+            self.assertEqual(model.body_count, robot_body_count + 3)
+
+            # Verify the gripper's base joint has the end effector as parent
+            gripper_joint_idx = robot_joint_count
+            self.assertEqual(model.joint_parent.numpy()[gripper_joint_idx], ee_body_idx)
+
+            # Verify all gripper bodies are reachable in the kinematic tree
+            body_names = ["gripper_base", "finger_left", "finger_right"]
+            for name in body_names:
+                self.assertIn(name, builder.body_key)
+
+    def test_include_with_freejoint_and_parent_body(self):
+        """Test that a freejoint in an <include>d file is replaced when using parent_body."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the included file with a freejoint on the root body
+            gripper_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.025 0.025 0.01" mass="0.2"/>
+            <body name="finger_left" pos="0 0.025 0">
+                <joint type="slide" axis="0 1 0"/>
+                <geom type="box" size="0.01 0.01 0.02" mass="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+            gripper_path = os.path.join(tmpdir, "gripper_free.xml")
+            with open(gripper_path, "w") as f:
+                f.write(gripper_content)
+
+            # Create the main file that includes the gripper
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper_free_include">
+    <include file="gripper_free.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Load a robot arm
+            robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot_arm">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(robot_mjcf, floating=False)
+
+            robot_joint_count = builder.joint_count
+
+            # Attach gripper (with freejoint via <include>) to end effector
+            ee_body_idx = builder.body_key.index("end_effector")
+            builder.add_mjcf(main_path, parent_body=ee_body_idx)
+
+            model = builder.finalize()
+
+            # Verify the freejoint was replaced: the gripper's base joint should be
+            # a fixed joint parented to end_effector, not a free joint
+            gripper_joint_idx = robot_joint_count
+            self.assertEqual(model.joint_parent.numpy()[gripper_joint_idx], ee_body_idx)
+
+            # If freejoint were kept: 7 (free) + 1 (slide) = 8 DOFs from gripper.
+            # With freejoint replaced by fixed: 0 + 1 (slide) = 1 DOF from gripper.
+            # Total = 1 (arm hinge) + 1 (gripper slide) = 2.
+            self.assertEqual(model.joint_dof_count, 2)
+
+            # Verify both gripper bodies are present
+            self.assertIn("gripper_base", builder.body_key)
+            self.assertIn("finger_left", builder.body_key)
+
+            # Verify all joints belong to the same articulation
+            joint_articulations = model.joint_articulation.numpy()
+            self.assertEqual(joint_articulations[0], joint_articulations[gripper_joint_idx])
+
 
 class TestMjcfIncludeNested(unittest.TestCase):
     """Tests for nested includes and cycle detection."""
