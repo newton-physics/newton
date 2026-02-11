@@ -1485,6 +1485,71 @@ class TestModel(unittest.TestCase):
 
         self.assertIn("DFS topological order", str(cm.warning))
 
+    def test_mimic_constraint_programmatic(self):
+        """Test programmatic creation of mimic constraints."""
+        builder = newton.ModelBuilder()
+
+        # Create two joints
+        b0 = builder.add_body()
+        b1 = builder.add_body()
+        b2 = builder.add_body()
+
+        j1 = builder.add_joint_revolute(
+            parent=-1,
+            child=b0,
+            axis=(0, 0, 1),
+            key="j1",
+        )
+        j2 = builder.add_joint_revolute(
+            parent=-1,
+            child=b1,
+            axis=(0, 0, 1),
+            key="j2",
+        )
+        j3 = builder.add_joint_revolute(
+            parent=-1,
+            child=b2,
+            axis=(0, 0, 1),
+            key="j3",
+        )
+
+        # Add mimic constraints
+        _c1 = builder.add_constraint_mimic(
+            joint0=j2,
+            joint1=j1,
+            coef0=-0.25,
+            coef1=1.5,
+            key="mimic1",
+        )
+        _c2 = builder.add_constraint_mimic(
+            joint0=j3,
+            joint1=j1,
+            coef0=0.0,
+            coef1=-1.0,
+            enabled=False,
+            key="mimic2",
+        )
+
+        model = builder.finalize()
+
+        self.assertEqual(model.constraint_mimic_count, 2)
+
+        # Check first constraint
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], j2)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
+        self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
+        self.assertEqual(model.constraint_mimic_key[0], "mimic1")
+
+        # Check second constraint
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
+        self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
+        self.assertEqual(model.constraint_mimic_key[1], "mimic2")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -761,70 +761,44 @@ class TestMimicConstraints(unittest.TestCase):
         self.assertAlmostEqual(coef0, 0.0, places=5)
         self.assertAlmostEqual(coef1, 1.0, places=5)
 
-    def test_mimic_constraint_programmatic(self):
-        """Test programmatic creation of mimic constraints."""
-        builder = newton.ModelBuilder()
+    def test_mimic_joint_skipped_child_does_not_mismatch(self):
+        """Regression test: skipped joints must not be included in name->index mapping."""
 
-        # Create two joints
-        b0 = builder.add_body()
-        b1 = builder.add_body()
-        b2 = builder.add_body()
+        class _SkippingLinkBuilder(newton.ModelBuilder):
+            def add_link(self, *args, key=None, **kwargs):
+                # Simulate a link filtered out by importer-side selection logic.
+                if key == "skipped_link":
+                    return -1
+                return super().add_link(*args, key=key, **kwargs)
 
-        j1 = builder.add_joint_revolute(
-            parent=-1,
-            child=b0,
-            axis=(0, 0, 1),
-            key="j1",
-        )
-        j2 = builder.add_joint_revolute(
-            parent=-1,
-            child=b1,
-            axis=(0, 0, 1),
-            key="j2",
-        )
-        j3 = builder.add_joint_revolute(
-            parent=-1,
-            child=b2,
-            axis=(0, 0, 1),
-            key="j3",
-        )
+        urdf = """
+        <robot name="mimic_skipped_child">
+            <link name="base"/>
+            <link name="leader_link"/>
+            <link name="skipped_link"/>
+            <link name="tail_link"/>
+            <joint name="leader_joint" type="revolute">
+                <parent link="base"/><child link="leader_link"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="skipped_joint" type="revolute">
+                <parent link="base"/><child link="skipped_link"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+                <mimic joint="leader_joint"/>
+            </joint>
+            <joint name="tail_joint" type="revolute">
+                <parent link="base"/><child link="tail_link"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+            </joint>
+        </robot>
+        """
 
-        # Add mimic constraints
-        _c1 = builder.add_constraint_mimic(
-            joint0=j2,
-            joint1=j1,
-            coef0=-0.25,
-            coef1=1.5,
-            key="mimic1",
-        )
-        _c2 = builder.add_constraint_mimic(
-            joint0=j3,
-            joint1=j1,
-            coef0=0.0,
-            coef1=-1.0,
-            enabled=False,
-            key="mimic2",
-        )
+        builder = _SkippingLinkBuilder()
+        with self.assertWarnsRegex(UserWarning, "was not created, skipping mimic constraint"):
+            builder.add_urdf(urdf, joint_ordering=None, ensure_nonstatic_links=False)
 
-        model = builder.finalize()
-
-        self.assertEqual(model.constraint_mimic_count, 2)
-
-        # Check first constraint
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], j2)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
-        self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
-        self.assertEqual(model.constraint_mimic_key[0], "mimic1")
-
-        # Check second constraint
-        self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
-        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
-        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
-        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
-        self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
-        self.assertEqual(model.constraint_mimic_key[1], "mimic2")
+        # No mimic constraint should be created because the follower joint was skipped.
+        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
 
 
 if __name__ == "__main__":

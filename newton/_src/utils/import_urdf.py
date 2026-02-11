@@ -567,6 +567,8 @@ def parse_urdf(
         joint_indices.append(builder.add_joint_fixed(-1, root, parent_xform=xform, key="fixed_base"))
 
     # add joints, in the desired order starting from root body
+    # Track only joints that are actually created (some may be skipped if their child body wasn't inserted).
+    joint_name_to_idx: dict[str, int] = {}
     for joint in sorted_joints:
         parent = link_index[joint["parent"]]
         child = link_index[joint["child"]]
@@ -592,32 +594,29 @@ def parse_urdf(
         # actuator mode. Default to POSITION.
         actuator_mode = ActuatorMode.POSITION_VELOCITY if force_position_velocity_actuation else ActuatorMode.POSITION
 
+        created_joint_idx: int
         if joint["type"] == "revolute" or joint["type"] == "continuous":
-            joint_indices.append(
-                builder.add_joint_revolute(
-                    axis=joint["axis"],
-                    target_kd=joint_damping,
-                    actuator_mode=actuator_mode,
-                    limit_lower=lower,
-                    limit_upper=upper,
-                    **joint_params,
-                )
+            created_joint_idx = builder.add_joint_revolute(
+                axis=joint["axis"],
+                target_kd=joint_damping,
+                actuator_mode=actuator_mode,
+                limit_lower=lower,
+                limit_upper=upper,
+                **joint_params,
             )
         elif joint["type"] == "prismatic":
-            joint_indices.append(
-                builder.add_joint_prismatic(
-                    axis=joint["axis"],
-                    target_kd=joint_damping,
-                    actuator_mode=actuator_mode,
-                    limit_lower=lower * scale,
-                    limit_upper=upper * scale,
-                    **joint_params,
-                )
+            created_joint_idx = builder.add_joint_prismatic(
+                axis=joint["axis"],
+                target_kd=joint_damping,
+                actuator_mode=actuator_mode,
+                limit_lower=lower * scale,
+                limit_upper=upper * scale,
+                **joint_params,
             )
         elif joint["type"] == "fixed":
-            joint_indices.append(builder.add_joint_fixed(**joint_params))
+            created_joint_idx = builder.add_joint_fixed(**joint_params)
         elif joint["type"] == "floating":
-            joint_indices.append(builder.add_joint_free(**joint_params))
+            created_joint_idx = builder.add_joint_free(**joint_params)
         elif joint["type"] == "planar":
             # find plane vectors perpendicular to axis
             axis = np.array(joint["axis"])
@@ -632,34 +631,30 @@ def parse_urdf(
             v = np.cross(axis, u)
             v /= np.linalg.norm(v)
 
-            joint_indices.append(
-                builder.add_joint_d6(
-                    linear_axes=[
-                        ModelBuilder.JointDofConfig(
-                            u,
-                            limit_lower=lower * scale,
-                            limit_upper=upper * scale,
-                            target_kd=joint_damping,
-                            actuator_mode=actuator_mode,
-                        ),
-                        ModelBuilder.JointDofConfig(
-                            v,
-                            limit_lower=lower * scale,
-                            limit_upper=upper * scale,
-                            target_kd=joint_damping,
-                            actuator_mode=actuator_mode,
-                        ),
-                    ],
-                    **joint_params,
-                )
+            created_joint_idx = builder.add_joint_d6(
+                linear_axes=[
+                    ModelBuilder.JointDofConfig(
+                        u,
+                        limit_lower=lower * scale,
+                        limit_upper=upper * scale,
+                        target_kd=joint_damping,
+                        actuator_mode=actuator_mode,
+                    ),
+                    ModelBuilder.JointDofConfig(
+                        v,
+                        limit_lower=lower * scale,
+                        limit_upper=upper * scale,
+                        target_kd=joint_damping,
+                        actuator_mode=actuator_mode,
+                    ),
+                ],
+                **joint_params,
             )
         else:
             raise Exception("Unsupported joint type: " + joint["type"])
 
-    # Create a mapping from joint name to joint index
-    joint_name_to_idx = {}
-    for joint, joint_idx in zip(sorted_joints, joint_indices[1:], strict=False):  # Skip base joint
-        joint_name_to_idx[joint["name"]] = joint_idx
+        joint_indices.append(created_joint_idx)
+        joint_name_to_idx[joint["name"]] = created_joint_idx
 
     # Create mimic constraints
     for joint in sorted_joints:
