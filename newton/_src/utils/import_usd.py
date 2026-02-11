@@ -1426,6 +1426,7 @@ def parse_usd(
         shape_geo_type: int,
         shape_scale: wp.vec3,
         shape_src: Mesh | None,
+        shape_axis=None,
     ):
         """Build unit-density collider mass information from authored collider MassAPI properties.
 
@@ -1492,9 +1493,34 @@ def parse_usd(
         mass_info.volume = float(shape_volume)
         mass_info.centerOfMass = center_of_mass
         mass_info.localPos = Gf.Vec3f(*local_pos)
-        mass_info.localRot = local_rot
+        mass_info.localRot = _resolve_mass_info_local_rotation(local_rot, shape_geo_type, shape_axis)
         mass_info.inertia = Gf.Matrix3f(*inertia_full_unit.flatten().tolist())
         return mass_info
+
+    def _resolve_mass_info_local_rotation(local_rot, shape_geo_type: int, shape_axis):
+        """Match collider mass frame rotation with shape axis correction used by shape insertion."""
+        if shape_geo_type not in {GeoType.CAPSULE, GeoType.CYLINDER, GeoType.CONE} or shape_axis is None:
+            return local_rot
+
+        axis = usd_axis_to_axis.get(shape_axis)
+        if axis is None:
+            axis_int_map = {
+                int(UsdPhysics.Axis.X): Axis.X,
+                int(UsdPhysics.Axis.Y): Axis.Y,
+                int(UsdPhysics.Axis.Z): Axis.Z,
+            }
+            axis = axis_int_map.get(int(shape_axis))
+        if axis is None or axis == Axis.Z:
+            return local_rot
+
+        local_rot_wp = usd.from_gfquat(local_rot)
+        corrected_rot = wp.mul(local_rot_wp, quat_between_axes(Axis.Z, axis))
+        return Gf.Quatf(
+            float(corrected_rot[3]),
+            float(corrected_rot[0]),
+            float(corrected_rot[1]),
+            float(corrected_rot[2]),
+        )
 
     def _build_mass_info_from_shape_geometry(
         prim: Usd.Prim,
@@ -1503,6 +1529,7 @@ def parse_usd(
         shape_geo_type: int,
         shape_scale: wp.vec3,
         shape_src: Mesh | None,
+        shape_axis=None,
     ):
         """Build unit-density collider mass information from geometric shape parameters.
 
@@ -1525,7 +1552,7 @@ def parse_usd(
         mass_info.volume = float(shape_mass)
         mass_info.centerOfMass = Gf.Vec3f(*shape_com)
         mass_info.localPos = Gf.Vec3f(*local_pos)
-        mass_info.localRot = local_rot
+        mass_info.localRot = _resolve_mass_info_local_rotation(local_rot, shape_geo_type, shape_axis)
         mass_info.inertia = Gf.Matrix3f(*shape_inertia_np.flatten().tolist())
         return mass_info
 
@@ -1764,6 +1791,7 @@ def parse_usd(
                     shape_src = usd.get_mesh(prim)
 
                 if shape_geo_type is not None:
+                    shape_axis = getattr(shape_spec, "axis", None)
                     mass_info = _build_mass_info_from_authored_properties(
                         prim,
                         shape_spec.localPos,
@@ -1771,6 +1799,7 @@ def parse_usd(
                         shape_geo_type,
                         shape_scale,
                         shape_src,
+                        shape_axis,
                     )
                     if mass_info is None:
                         mass_info = _build_mass_info_from_shape_geometry(
@@ -1780,6 +1809,7 @@ def parse_usd(
                             shape_geo_type,
                             shape_scale,
                             shape_src,
+                            shape_axis,
                         )
                     if mass_info is not None:
                         rigid_body_mass_info_map[path] = mass_info

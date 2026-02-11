@@ -3903,6 +3903,51 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_partial_body_applies_axis_rotation_in_compute_callback(self):
+        """Compute fallback must rotate cone/capsule/cylinder mass frame for non-Z axes."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        # Partial body MassAPI -> triggers ComputeMassProperties callback path.
+        UsdPhysics.MassAPI.Apply(body_prim).CreateMassAttr().Set(1.0)
+
+        # Cone inertia/computation is defined in the local +Z frame; use +X axis to require
+        # axis correction in the callback mass_info.localRot.
+        cone = UsdGeom.Cone.Define(stage, "/World/Body/Collider")
+        cone.CreateRadiusAttr().Set(0.5)
+        cone.CreateHeightAttr().Set(2.0)
+        cone.CreateAxisAttr().Set(UsdGeom.Tokens.x)
+        collider_prim = cone.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        body_idx = result["path_body_map"]["/World/Body"]
+
+        # For cone mass m=1, radius r=0.5, height h=2.0:
+        # Ia = Iyy = Izz = 3/20*m*r^2 + 3/80*m*h^2 = 0.1875 (about transverse axes)
+        # Ib = Ixx = 3/10*m*r^2 = 0.075 (about symmetry axis along +X)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        expected_diag = np.array([0.075, 0.1875, 0.1875], dtype=np.float32)
+        np.testing.assert_allclose(np.diag(inertia), expected_diag, atol=1e-5, rtol=1e-5)
+        np.testing.assert_allclose(
+            inertia - np.diag(np.diag(inertia)),
+            np.zeros((3, 3), dtype=np.float32),
+            atol=1e-6,
+        )
+
+        # Cone COM should also rotate from local -Z to world -X.
+        body_com = np.array(builder.body_com[body_idx], dtype=np.float32)
+        np.testing.assert_allclose(body_com, np.array([-0.5, 0.0, 0.0], dtype=np.float32), atol=1e-5, rtol=1e-5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_warns_and_skips_noncontributing_collider(self):
         """Fallback compute warns and skips colliders that cannot provide positive mass info."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
