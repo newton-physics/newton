@@ -27,13 +27,13 @@ from newton.tests.unittest_utils import add_function_test, find_nan_members, get
 
 
 class RobotComposerSim:
-    """Test harness for robot composer functionality.
+    """Test base_joint, and parent_body functionality to attach end effectors to a robot.
 
     Composes robots by attaching end effectors using parent_body across
     multiple importers (URDF, MJCF, USD).
     """
 
-    def __init__(self, device, do_rendering=False, num_frames=50, num_worlds=1):
+    def __init__(self, device, do_rendering=False, num_frames=50, num_worlds=2):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -45,6 +45,7 @@ class RobotComposerSim:
         self.device = device
 
         self.collide_substeps = False
+        self.gripper_target_pos = 0.0
 
         # Download required assets
         self._download_assets()
@@ -73,17 +74,17 @@ class RobotComposerSim:
             solver="newton",
             integrator="implicitfast",
             cone="elliptic",
-            njmax=10000,
-            nconmax=10000,
+            njmax=500,
+            nconmax=500,
             iterations=15,
             ls_iterations=100,
-            ls_parallel=True,
-            impratio=1000.0,
+            ls_parallel=False,
+            impratio=1.0,
         )
 
-        # Create collision pipeline
-        self.collision_pipeline = newton.CollisionPipeline.from_model(self.model)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        # MuJoCo solver handles contacts internally (use_mujoco_contacts=True),
+        # so no Newton collision pipeline is needed.
+        self.contacts = newton.Contacts(0, 0)
 
         # Create viewer
         if self.do_rendering:
@@ -95,8 +96,8 @@ class RobotComposerSim:
             self.viewer.set_world_offsets(wp.vec3(4.0, 4.0, 0.0))
 
         # Initialize joint target positions
-        self.direct_control = wp.zeros_like(self.control.mujoco.ctrl)
-        self.gripper_target_pos = 0.0
+        self.joint_target_pos = wp.zeros_like(self.control.joint_target_pos)
+        wp.copy(self.joint_target_pos, self.control.joint_target_pos)
 
         self.capture()
 
@@ -173,17 +174,17 @@ class RobotComposerSim:
 
     def _build_scene(self, builder):
         # Small vertical offset to avoid collision with the ground plane
-        z_offset = 0.01
+        z_offset = 0.05
 
-        self._build_ur5e_with_robotiq_gripper(builder, pos=wp.vec3(0.0, -2.0, z_offset))
+        self._build_ur5e_mjcf_with_base_joint_and_robotiq_gripper_mjcf(builder, pos=wp.vec3(0.0, -2.0, z_offset))
 
         self._build_ur5e_mjcf_with_base_joint_and_leap_hand_mjcf(builder, pos=wp.vec3(0.0, -1.0, z_offset))
 
-        self._build_franka_urdf_with_allegro_hand_mjcf(builder, pos=wp.vec3(0.0, 0.0, z_offset))
+        self._build_franka_urdf_with_base_joint_and_allegro_hand_mjcf(builder, pos=wp.vec3(0.0, 0.0, z_offset))
 
         self._build_ur10_usd_with_base_joint(builder, pos=wp.vec3(0.0, 1.0, z_offset))
 
-    def _build_ur5e_with_robotiq_gripper(self, builder, pos):
+    def _build_ur5e_mjcf_with_base_joint_and_robotiq_gripper_mjcf(self, builder, pos):
         ur5e_with_robotiq_gripper = newton.ModelBuilder()
 
         # Load UR5e with fixed base
@@ -200,6 +201,8 @@ class RobotComposerSim:
                 "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
             },
         )
+
+        self.robotiq_gripper_dof_offset = ur5e_with_robotiq_gripper.joint_dof_count
 
         # Base joints
         ur5e_with_robotiq_gripper.joint_target_pos[:3] = [0.0, 0.0, 0.0]
@@ -229,9 +232,23 @@ class RobotComposerSim:
             parent_body=ee_body_idx,
         )
 
-        # Set MuJoCo control source for the ur5e (first 6 actuators)
-        ur5e_ctrl_source = [SolverMuJoCo.CtrlSource.JOINT_TARGET] * 6
-        ur5e_with_robotiq_gripper.custom_attributes["mujoco:ctrl_source"].values[:6] = ur5e_ctrl_source
+        # Set MuJoCo control source for all actuators (6 UR5e + 1 gripper) to JOINT_TARGET.
+        # Setting the gripper's ctrl_source to JOINT_TARGET disables the MuJoCo actuator that causes instability.
+        # See discussion in https://github.com/google-deepmind/mujoco_warp/discussions/1112
+        ctrl_source = [SolverMuJoCo.CtrlSource.JOINT_TARGET] * 7
+        ur5e_with_robotiq_gripper.custom_attributes["mujoco:ctrl_source"].values[:7] = ctrl_source
+
+        # Instead, we can actuate the gripper with joint targets for the driver joints.
+        # Gripper actuated joints: right_driver_joint and left_driver_joint (dof indexes 0 and 4 within gripper)
+        self.robotiq_gripper_dofs = [0, 4]
+
+        # Set gripper joint gains
+        for i in self.robotiq_gripper_dofs:
+            idx = self.robotiq_gripper_dof_offset + i
+            ur5e_with_robotiq_gripper.joint_target_ke[idx] = 20.0
+            ur5e_with_robotiq_gripper.joint_target_kd[idx] = 1.0
+            ur5e_with_robotiq_gripper.joint_target_pos[idx] = self.gripper_target_pos
+            ur5e_with_robotiq_gripper.joint_act_mode[idx] = int(ActuatorMode.POSITION)
 
         builder.add_builder(ur5e_with_robotiq_gripper)
 
@@ -290,7 +307,7 @@ class RobotComposerSim:
 
         builder.add_builder(ur5e_with_hand)
 
-    def _build_franka_urdf_with_allegro_hand_mjcf(self, builder, pos):
+    def _build_franka_urdf_with_base_joint_and_allegro_hand_mjcf(self, builder, pos):
         franka_with_hand = newton.ModelBuilder()
 
         # Load Franka arm with base joint
@@ -405,15 +422,15 @@ class RobotComposerSim:
             self.graph = capture.graph
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
+            # apply forces to the model for picking, wind, etc
+            self.viewer.apply_forces(self.state_0)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        wp.copy(self.control.mujoco.ctrl, self.direct_control)
+        wp.copy(self.control.joint_target_pos, self.joint_target_pos)
 
         if self.graph:
             wp.capture_launch(self.graph)
@@ -430,14 +447,27 @@ class RobotComposerSim:
         self.viewer.end_frame()
 
     def gui(self, imgui):
-        imgui.text("Gripper target")
-        actuator_idx = 6
-        changed, value = imgui.slider_float("gripper_target_pos", self.gripper_target_pos, 0.0, 255, format="%.3f")
-        if changed:
+        imgui.text("Robotiq 2F85 gripper target")
+
+        def update_gripper_target_pos(value):
             self.gripper_target_pos = value
-            direct_control = self.direct_control.reshape((self.num_worlds, -1)).numpy()
-            direct_control[:, actuator_idx] = value
-            wp.copy(self.direct_control, wp.array(direct_control.flatten(), dtype=wp.float32))
+            # The actuated joints are right_driver_joint and left_driver_joint (dof indexes 0 and 4 within gripper).
+            # robotiq_gripper_dof_offset accounts for base_joint(3) + arm(6) DOFs.
+            joint_target_pos = self.joint_target_pos.reshape((self.num_worlds, -1)).numpy()
+            for i in self.robotiq_gripper_dofs:
+                joint_target_pos[:, self.robotiq_gripper_dof_offset + i] = value
+            wp.copy(self.joint_target_pos, wp.array(joint_target_pos.flatten(), dtype=wp.float32))
+
+        changed, value = imgui.slider_float(
+            "gripper_target_pos_slider", self.gripper_target_pos, 0.0, 0.8, format="%.3f"
+        )
+        if changed:
+            update_gripper_target_pos(value)
+
+        changed, value = imgui.input_float("gripper_target_pos", self.gripper_target_pos, format="%.3f")
+        if changed:
+            value = min(max(value, 0.0), 0.8)
+            update_gripper_target_pos(value)
 
     def run(self):
         if self.do_rendering:
@@ -452,48 +482,32 @@ class RobotComposerSim:
                 self.step()
 
 
-def test_robot_composer_model_builds(test, device):
-    """Test that the composed robot model builds correctly with all articulations."""
-    sim = RobotComposerSim(device, num_frames=0, num_worlds=1)
+def test_robot_composer(test, device):
+    """Test that composed robots build correctly, simulate stably, and move."""
+    sim = RobotComposerSim(device, num_frames=50, num_worlds=2)
 
-    # Should have at least 4 articulations (UR5e+Robotiq, UR5e+LEAP, Franka+Allegro, UR10)
+    # Model structure: at least 4 articulations (UR5e+Robotiq, UR5e+LEAP, Franka+Allegro, UR10)
     test.assertGreaterEqual(sim.model.articulation_count, 4)
-
-    # Should have a substantial number of bodies and joints from all composed robots
     test.assertGreater(sim.model.body_count, 20)
     test.assertGreater(sim.model.joint_count, 20)
-
-    # State should be initialized with non-empty joint positions
     test.assertGreater(sim.state_0.joint_q.shape[0], 0)
 
-
-def test_robot_composer_simulation_stable(test, device):
-    """Test that the composed robot simulation runs stably without NaN values."""
-    sim = RobotComposerSim(device, num_frames=50, num_worlds=1)
     sim.run()
 
-    # No NaN in states
+    # Stability: no NaN or non-finite values
     nan_members_0 = find_nan_members(sim.state_0)
     nan_members_1 = find_nan_members(sim.state_1)
     test.assertEqual(nan_members_0, [], f"NaN found in state_0: {nan_members_0}")
     test.assertEqual(nan_members_1, [], f"NaN found in state_1: {nan_members_1}")
 
-    # joint_q and joint_qd should all be finite
     joint_q = sim.state_0.joint_q.numpy()
     joint_qd = sim.state_0.joint_qd.numpy()
     test.assertTrue(np.isfinite(joint_q).all(), "Non-finite values in joint_q")
     test.assertTrue(np.isfinite(joint_qd).all(), "Non-finite values in joint_qd")
 
-
-def test_robot_composer_simulation_moves(test, device):
-    """Test that the composed robots actually move during simulation."""
-    sim = RobotComposerSim(device, num_frames=50, num_worlds=1)
-    sim.run()
-
-    # Compare initial vs final joint positions — at least some joints should have changed
-    final_joint_q = sim.state_0.joint_q.numpy()
+    # Movement: at least some joints should have changed
     test.assertTrue(
-        np.any(np.abs(sim.initial_joint_q - final_joint_q) > 1e-6),
+        np.any(np.abs(sim.initial_joint_q - joint_q) > 1e-6),
         "No joints moved during simulation",
     )
 
@@ -507,24 +521,8 @@ class TestRobotComposer(unittest.TestCase):
 
 add_function_test(
     TestRobotComposer,
-    "test_robot_composer_model_builds",
-    test_robot_composer_model_builds,
-    devices=devices,
-    check_output=False,
-)
-
-add_function_test(
-    TestRobotComposer,
-    "test_robot_composer_simulation_stable",
-    test_robot_composer_simulation_stable,
-    devices=devices,
-    check_output=False,
-)
-
-add_function_test(
-    TestRobotComposer,
-    "test_robot_composer_simulation_moves",
-    test_robot_composer_simulation_moves,
+    "test_robot_composer",
+    test_robot_composer,
     devices=devices,
     check_output=False,
 )
