@@ -3830,6 +3830,104 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_mass_and_inertia_short_circuits_compute(self):
+        """If body has authored mass+diagonalInertia, use them directly without compute fallback."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        body_mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+        body_mass_api.CreateMassAttr().Set(3.0)
+        body_mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(0.1, 0.2, 0.3))
+
+        # Add collider with conflicting authored mass props that would affect computed inertia.
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(2.0)
+        collider_prim = collider.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+        collider_mass_api = UsdPhysics.MassAPI.Apply(collider_prim)
+        collider_mass_api.CreateMassAttr().Set(20.0)
+        collider_mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(13.333334, 13.333334, 13.333334))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        body_idx = result["path_body_map"]["/World/Body"]
+
+        self.assertAlmostEqual(builder.body_mass[body_idx], 3.0, places=6)
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(np.diag(inertia), np.array([0.1, 0.2, 0.3]), atol=1e-6, rtol=1e-6)
+        np.testing.assert_allclose(inertia - np.diag(np.diag(inertia)), np.zeros((3, 3), dtype=np.float32), atol=1e-7)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_partial_body_falls_back_to_compute(self):
+        """If body MassAPI is partial (missing inertia), compute fallback should provide inertia."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        body_mass_api = UsdPhysics.MassAPI.Apply(body_prim)
+        body_mass_api.CreateMassAttr().Set(1.0)  # inertia intentionally omitted
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(2.0)
+        collider_prim = collider.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_prim)
+        collider_mass_api = UsdPhysics.MassAPI.Apply(collider_prim)
+        collider_mass_api.CreateMassAttr().Set(2.0)
+        # For side length 2 and mass 2: I_diag = (1/6) * m * a^2 = 4/3.
+        collider_mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(1.3333334, 1.3333334, 1.3333334))
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        body_idx = result["path_body_map"]["/World/Body"]
+
+        # Body mass is authored and should still be honored.
+        self.assertAlmostEqual(builder.body_mass[body_idx], 1.0, places=6)
+        # Fallback computation should use collider information to derive inertia.
+        expected_diag = (1.0 / 6.0) * 1.0 * (2.0**2)  # => 2/3
+        inertia = np.array(builder.body_inertia[body_idx]).reshape(3, 3)
+        np.testing.assert_allclose(
+            np.diag(inertia), np.array([expected_diag, expected_diag, expected_diag]), atol=1e-5, rtol=1e-5
+        )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_partial_body_warns_and_skips_noncontributing_collider(self):
+        """Fallback compute warns and skips colliders that cannot provide positive mass info."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        body = UsdGeom.Xform.Define(stage, "/World/Body")
+        body_prim = body.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        # Partial body MassAPI -> triggers compute fallback.
+        UsdPhysics.MassAPI.Apply(body_prim).CreateMassAttr().Set(1.0)
+
+        collider = UsdGeom.Cube.Define(stage, "/World/Body/Collider")
+        collider.CreateSizeAttr().Set(0.0)
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+        # Intentionally no MassAPI and zero geometric size -> non-contributing collider.
+
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, r"Skipping collider .* mass aggregation"):
+            builder.add_usd(stage)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_margin_parsing(self):
         """Test that contact_margin is parsed correctly from USD."""
         from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415

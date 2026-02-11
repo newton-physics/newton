@@ -1419,6 +1419,116 @@ def parse_usd(
             warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
             warnings.warn(warn_str, stacklevel=2)
 
+    def _build_mass_info_from_authored_properties(
+        prim: Usd.Prim,
+        local_pos,
+        local_rot,
+        shape_geo_type: int,
+        shape_scale: wp.vec3,
+        shape_src: Mesh | None,
+    ):
+        """Build unit-density collider mass information from authored collider MassAPI properties.
+
+        This helper is used for rigid-body fallback mass aggregation via
+        ``UsdPhysics.RigidBodyAPI.ComputeMassProperties``. When a collider prim has authored
+        ``MassAPI`` mass and diagonal inertia, we convert those values into a
+        ``RigidBodyAPI.MassInformation`` payload that represents unit-density collider properties.
+        """
+        if not prim.HasAPI(UsdPhysics.MassAPI):
+            return None
+
+        mass_api = UsdPhysics.MassAPI(prim)
+        mass_attr = mass_api.GetMassAttr()
+        diag_attr = mass_api.GetDiagonalInertiaAttr()
+        if not (mass_attr.HasAuthoredValue() and diag_attr.HasAuthoredValue()):
+            return None
+
+        mass = float(mass_attr.Get())
+        if mass <= 0.0:
+            warnings.warn(
+                f"Skipping collider {prim.GetPath()}: authored MassAPI mass must be > 0 to derive volume and density.",
+                stacklevel=2,
+            )
+            return None
+
+        shape_volume, _, _ = compute_shape_inertia(shape_geo_type, shape_scale, shape_src, density=1.0)
+        if shape_volume <= 0.0:
+            warnings.warn(
+                f"Skipping collider {prim.GetPath()}: unable to derive positive collider volume from authored shape parameters.",
+                stacklevel=2,
+            )
+            return None
+        density = mass / shape_volume
+        if density <= 0.0:
+            warnings.warn(
+                f"Skipping collider {prim.GetPath()}: derived density from authored mass is non-positive.",
+                stacklevel=2,
+            )
+            return None
+
+        diag = np.array(diag_attr.Get(), dtype=np.float32)
+        if np.any(diag < 0.0):
+            warnings.warn(
+                f"Skipping collider {prim.GetPath()}: authored diagonal inertia contains negative values.",
+                stacklevel=2,
+            )
+            return None
+        inertia_diag_unit = diag / density
+
+        if mass_api.GetPrincipalAxesAttr().HasAuthoredValue():
+            principal_axes = mass_api.GetPrincipalAxesAttr().Get()
+        else:
+            principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+        if mass_api.GetCenterOfMassAttr().HasAuthoredValue():
+            center_of_mass = mass_api.GetCenterOfMassAttr().Get()
+        else:
+            center_of_mass = Gf.Vec3f(0.0, 0.0, 0.0)
+
+        i_rot = usd.from_gfquat(principal_axes)
+        rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
+        inertia_full_unit = rot @ np.diag(inertia_diag_unit) @ rot.T
+
+        mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
+        mass_info.volume = float(shape_volume)
+        mass_info.centerOfMass = center_of_mass
+        mass_info.localPos = Gf.Vec3f(*local_pos)
+        mass_info.localRot = local_rot
+        mass_info.inertia = Gf.Matrix3f(*inertia_full_unit.flatten().tolist())
+        return mass_info
+
+    def _build_mass_info_from_shape_geometry(
+        prim: Usd.Prim,
+        local_pos,
+        local_rot,
+        shape_geo_type: int,
+        shape_scale: wp.vec3,
+        shape_src: Mesh | None,
+    ):
+        """Build unit-density collider mass information from geometric shape parameters.
+
+        This fallback path derives collider volume, center of mass, and inertia from shape
+        geometry (box/sphere/capsule/cylinder/cone/mesh) when collider-authored MassAPI mass
+        properties are not available.
+        """
+        shape_mass, shape_com, shape_inertia = compute_shape_inertia(
+            shape_geo_type, shape_scale, shape_src, density=1.0
+        )
+        if shape_mass <= 0.0:
+            warnings.warn(
+                f"Skipping collider {prim.GetPath()} in mass aggregation: unable to derive positive unit-density mass.",
+                stacklevel=2,
+            )
+            return None
+
+        shape_inertia_np = np.array(shape_inertia, dtype=np.float32).reshape(3, 3)
+        mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
+        mass_info.volume = float(shape_mass)
+        mass_info.centerOfMass = Gf.Vec3f(*shape_com)
+        mass_info.localPos = Gf.Vec3f(*local_pos)
+        mass_info.localRot = local_rot
+        mass_info.inertia = Gf.Matrix3f(*shape_inertia_np.flatten().tolist())
+        return mass_info
+
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()
     no_collision_shapes = set()
@@ -1626,47 +1736,53 @@ def parse_usd(
                 path_shape_map[path] = shape_id
                 path_shape_scale[path] = scale
 
-                # Build collision mass information for UsdPhysics.RigidBodyAPI.ComputeMassProperties().
-                # The callback expects per-collider volume and inertia for unit density.
+                # Prepare collider mass information for ComputeMassProperties fallback path.
+                # For strict behavior, only colliders with authored MassAPI mass+diagonalInertia
+                # are included in the aggregation callback.
                 shape_geo_type = None
-                shape_scale_for_inertia = None
+                shape_scale = wp.vec3(1.0, 1.0, 1.0)
                 shape_src = None
                 if key == UsdPhysics.ObjectType.CubeShape:
                     shape_geo_type = GeoType.BOX
                     hx, hy, hz = shape_spec.halfExtents
-                    shape_scale_for_inertia = wp.vec3(hx, hy, hz)
+                    shape_scale = wp.vec3(hx, hy, hz)
                 elif key == UsdPhysics.ObjectType.SphereShape:
                     shape_geo_type = GeoType.SPHERE
-                    shape_scale_for_inertia = wp.vec3(shape_spec.radius, 0.0, 0.0)
+                    shape_scale = wp.vec3(shape_spec.radius, 0.0, 0.0)
                 elif key == UsdPhysics.ObjectType.CapsuleShape:
                     shape_geo_type = GeoType.CAPSULE
-                    shape_scale_for_inertia = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+                    shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
                 elif key == UsdPhysics.ObjectType.CylinderShape:
                     shape_geo_type = GeoType.CYLINDER
-                    shape_scale_for_inertia = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+                    shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
                 elif key == UsdPhysics.ObjectType.ConeShape:
                     shape_geo_type = GeoType.CONE
-                    shape_scale_for_inertia = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
+                    shape_scale = wp.vec3(shape_spec.radius, shape_spec.halfHeight, 0.0)
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     shape_geo_type = GeoType.MESH
-                    shape_scale_for_inertia = wp.vec3(*shape_spec.meshScale)
+                    shape_scale = wp.vec3(*shape_spec.meshScale)
                     shape_src = usd.get_mesh(prim)
 
-                if shape_geo_type is not None and shape_scale_for_inertia is not None:
-                    shape_mass, shape_com, shape_inertia = compute_shape_inertia(
+                if shape_geo_type is not None:
+                    mass_info = _build_mass_info_from_authored_properties(
+                        prim,
+                        shape_spec.localPos,
+                        shape_spec.localRot,
                         shape_geo_type,
-                        shape_scale_for_inertia,
+                        shape_scale,
                         shape_src,
-                        density=1.0,
                     )
-                    shape_inertia_np = np.array(shape_inertia, dtype=np.float32).reshape(3, 3)
-                    mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
-                    mass_info.volume = float(shape_mass)
-                    mass_info.centerOfMass = Gf.Vec3f(*shape_com)
-                    mass_info.localPos = Gf.Vec3f(*shape_spec.localPos)
-                    mass_info.localRot = shape_spec.localRot
-                    mass_info.inertia = Gf.Matrix3f(*shape_inertia_np.flatten().tolist())
-                    rigid_body_mass_info_map[path] = mass_info
+                    if mass_info is None:
+                        mass_info = _build_mass_info_from_shape_geometry(
+                            prim,
+                            shape_spec.localPos,
+                            shape_spec.localRot,
+                            shape_geo_type,
+                            shape_scale,
+                            shape_src,
+                        )
+                    if mass_info is not None:
+                        rigid_body_mass_info_map[path] = mass_info
 
                 if prim.HasRelationship("physics:filteredPairs"):
                     other_paths = prim.GetRelationship("physics:filteredPairs").GetTargets()
@@ -1702,6 +1818,7 @@ def parse_usd(
                         builder.add_shape_collision_filter_pair(shape1, shape2)
 
     def _zero_mass_information():
+        """Create a reusable zero-contribution collider mass payload for callback fallback."""
         mass_info = UsdPhysics.RigidBodyAPI.MassInformation()
         mass_info.volume = 0.0
         mass_info.centerOfMass = Gf.Vec3f(0.0)
@@ -1711,9 +1828,18 @@ def parse_usd(
         return mass_info
 
     zero_mass_information = _zero_mass_information()
+    warned_missing_collider_mass_info: set[str] = set()
 
     def _get_collision_mass_information(collider_prim: Usd.Prim):
-        return rigid_body_mass_info_map.get(str(collider_prim.GetPath()), zero_mass_information)
+        """MassInformation callback for ``ComputeMassProperties`` with one-time warning on misses."""
+        collider_path = str(collider_prim.GetPath())
+        if collider_path not in rigid_body_mass_info_map and collider_path not in warned_missing_collider_mass_info:
+            warnings.warn(
+                f"Skipping collider {collider_path} in mass aggregation: missing usable collider mass information.",
+                stacklevel=2,
+            )
+            warned_missing_collider_mass_info.add(collider_path)
+        return rigid_body_mass_info_map.get(collider_path, zero_mass_information)
 
     # overwrite inertial properties of bodies that have PhysicsMassAPI schema applied
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
@@ -1726,8 +1852,26 @@ def parse_usd(
             body_id = path_body_map.get(body_path, -1)
             if body_id == -1:
                 continue
-            rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
-            mass, i_diag, com, principal_axes = rigid_body_api.ComputeMassProperties(_get_collision_mass_information)
+            mass_api = UsdPhysics.MassAPI(prim)
+            has_authored_mass = mass_api.GetMassAttr().HasAuthoredValue()
+            has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
+
+            if has_authored_mass and has_authored_inertia:
+                mass = float(mass_api.GetMassAttr().Get())
+                i_diag = mass_api.GetDiagonalInertiaAttr().Get()
+                if mass_api.GetCenterOfMassAttr().HasAuthoredValue():
+                    com = mass_api.GetCenterOfMassAttr().Get()
+                else:
+                    com = Gf.Vec3f(0.0, 0.0, 0.0)
+                if mass_api.GetPrincipalAxesAttr().HasAuthoredValue():
+                    principal_axes = mass_api.GetPrincipalAxesAttr().Get()
+                else:
+                    principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+            else:
+                rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
+                mass, i_diag, com, principal_axes = rigid_body_api.ComputeMassProperties(
+                    _get_collision_mass_information
+                )
             # MassAPI bodies should always override any previously accumulated shape mass.
             builder.body_mass[body_id] = mass
             builder.body_inv_mass[body_id] = 1.0 / mass if mass > 0.0 else 0.0
