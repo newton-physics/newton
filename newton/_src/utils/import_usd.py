@@ -1143,6 +1143,11 @@ def parse_usd(
             for path, joint_spec in zip(paths, joint_specs, strict=False):
                 joint_descriptions[str(path)] = joint_spec
 
+    # Track which joints have been processed during articulation parsing.
+    # This allows us to parse orphan joints (joints not included in any articulation)
+    # even when articulations are present in the USD.
+    processed_joints: set[str] = set()
+
     # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
 
@@ -1361,6 +1366,7 @@ def parse_usd(
                         )
                     if joint is not None:
                         articulation_joint_indices.append(joint)
+                        processed_joints.add(joint_names[i])
 
                 # insert loop joints
                 for joint_key in joint_excluded:
@@ -1368,6 +1374,8 @@ def parse_usd(
                         joint_descriptions[joint_key],
                         incoming_xform=articulation_incoming_xform,
                     )
+                    if joint is not None:
+                        processed_joints.add(joint_key)
 
             # Create the articulation from all collected joints
             if articulation_joint_indices:
@@ -1410,31 +1418,58 @@ def parse_usd(
             joint_id = builder.add_joint_free(child=body_id)
             builder.add_articulation([joint_id], key=key)
 
-    if no_articulations and has_joints:
-        # parse external joints that are not part of any articulation
-        orphan_joints = []
-        for joint_key, joint_desc in joint_descriptions.items():
-            if any(re.match(p, joint_key) for p in ignore_paths):
-                continue
-            if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
-                continue
-            try:
-                parse_joint(joint_desc, incoming_xform=incoming_world_xform)
-                orphan_joints.append(joint_key)
-            except ValueError as exc:
-                if verbose:
-                    print(f"Skipping joint {joint_key}: {exc}")
+    # Parse orphan joints: joints that exist in the USD but were not included in any articulation.
+    # This can happen when:
+    # 1. No articulations are defined in the USD (no_articulations == True)
+    # 2. A joint connects bodies that are not under any PhysicsArticulationRootAPI
+    orphan_joints = []
+    for joint_key, joint_desc in joint_descriptions.items():
+        # Skip joints that were already processed as part of an articulation
+        if joint_key in processed_joints:
+            continue
+        # Skip disabled joints if only_load_enabled_joints is True
+        if only_load_enabled_joints and not joint_desc.jointEnabled:
+            continue
+        if any(re.match(p, joint_key) for p in ignore_paths):
+            continue
+        if str(joint_desc.body0) in ignored_body_paths or str(joint_desc.body1) in ignored_body_paths:
+            continue
+        # Skip body-to-world joints (where one body is empty/world) only when
+        # FREE joints will be auto-inserted for remaining bodies.
+        # When no_articulations=True and has_joints=True, FREE joints are NOT
+        # auto-inserted, so we should parse body-to-world joints in that case.
+        body0_path = str(joint_desc.body0)
+        body1_path = str(joint_desc.body1)
+        is_body_to_world = body0_path in ("", "/") or body1_path in ("", "/")
+        free_joints_auto_inserted = not (no_articulations and has_joints)
+        if is_body_to_world and free_joints_auto_inserted:
+            continue
+        try:
+            parse_joint(joint_desc, incoming_xform=incoming_world_xform)
+            orphan_joints.append(joint_key)
+        except ValueError as exc:
+            if verbose:
+                print(f"Skipping joint {joint_key}: {exc}")
 
-        if len(orphan_joints) > 0:
+    if len(orphan_joints) > 0:
+        if no_articulations:
             warn_str = (
                 f"No articulation was found but {len(orphan_joints)} joints were parsed: [{', '.join(orphan_joints)}]. "
             )
             warn_str += (
                 "Make sure your USD asset includes an articulation root prim with the PhysicsArticulationRootAPI.\n"
             )
-            warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=True) "
-            warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
-            warnings.warn(warn_str, stacklevel=2)
+        else:
+            warn_str = (
+                f"{len(orphan_joints)} joints were not included in any articulation and were parsed as orphan joints: "
+                f"[{', '.join(orphan_joints)}]. "
+            )
+            warn_str += (
+                "This can happen when a joint connects bodies that are not under any PhysicsArticulationRootAPI.\n"
+            )
+        warn_str += "If you want to proceed with these orphan joints, make sure to call ModelBuilder.finalize(skip_validation_joints=True) "
+        warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
+        warnings.warn(warn_str, stacklevel=2)
 
     # parse shapes attached to the rigid bodies
     path_collision_filters = set()

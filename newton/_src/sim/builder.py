@@ -8223,13 +8223,19 @@ class ModelBuilder:
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
 
-            # Compute max joints per articulation for IK kernel launches
+            # Compute max joints and dofs per articulation for IK/Jacobian kernel launches
             max_joints_per_articulation = 0
+            max_dofs_per_articulation = 0
             for art_idx in range(len(self.articulation_start)):
                 joint_start = articulation_start[art_idx]
                 joint_end = articulation_start[art_idx + 1]
                 num_joints = joint_end - joint_start
                 max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
+                # Compute dofs for this articulation
+                dof_start = joint_qd_start[joint_start]
+                dof_end = joint_qd_start[joint_end]
+                num_dofs = dof_end - dof_start
+                max_dofs_per_articulation = max(max_dofs_per_articulation, num_dofs)
 
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
@@ -8237,6 +8243,7 @@ class ModelBuilder:
             m.articulation_key = self.articulation_key
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
+            m.max_dofs_per_articulation = max_dofs_per_articulation
 
             # ---------------------
             # equality constraints
