@@ -24,7 +24,7 @@ import warnings
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -73,6 +73,9 @@ from .joints import (
     JointType,
 )
 from .model import Model
+
+if TYPE_CHECKING:
+    from pxr import Usd
 
 
 class ModelBuilder:
@@ -387,9 +390,9 @@ class ModelBuilder:
         Can be either:
             - A :class:`Model.AttributeFrequency` enum value for built-in frequencies (BODY, SHAPE, JOINT, etc.)
               Uses dict-based storage where keys are entity indices, allowing sparse assignment.
-            - A string for custom frequencies (e.g., ``"mujoco:pair"``). Uses list-based storage for
-              sequential data appended via :meth:`add_custom_values`. All attributes sharing the same
-              custom frequency must have the same count, validated at finalize time."""
+            - A string for custom frequencies using the full frequency key (e.g., ``"mujoco:pair"``).
+              Uses list-based storage for sequential data appended via :meth:`add_custom_values`. All attributes
+              sharing the same custom frequency must have the same count, validated at finalize time."""
 
         assignment: Model.AttributeAssignment = Model.AttributeAssignment.MODEL
         """Assignment category (see :class:`Model.AttributeAssignment`), defaults to :attr:`Model.AttributeAssignment.MODEL`"""
@@ -425,7 +428,17 @@ class ModelBuilder:
         the CustomAttribute has been added through the :meth:`ModelBuilder.add_custom_attribute` method."""
 
         usd_attribute_name: str | None = None
-        """Name of the corresponding USD attribute. If None, the USD attribute name ``"newton:<namespace>:<name>"`` is used."""
+        """Name of the USD attribute to read values from during USD parsing.
+
+        - If ``None`` (default), the name is derived automatically as ``"newton:<key>"``
+          where ``<key>`` is ``"<namespace>:<name>"`` or just ``"<name>"`` if no namespace is set.
+        - If set to ``"*"``, the :attr:`usd_value_transformer` is called for every prim matching
+          the attribute's frequency, regardless of which USD attributes exist on the prim. The transformer
+          receives ``None`` as the value argument. This is useful for computing attribute values from
+          arbitrary prim data rather than reading a specific USD attribute.
+          A :attr:`usd_value_transformer` **must** be provided when using ``"*"``; otherwise,
+          :meth:`~newton.ModelBuilder.add_custom_attribute` raises a :class:`ValueError`.
+        """
 
         mjcf_attribute_name: str | None = None
         """Name of the attribute in the MJCF definition. If None, the attribute name is used."""
@@ -433,8 +446,10 @@ class ModelBuilder:
         urdf_attribute_name: str | None = None
         """Name of the attribute in the URDF definition. If None, the attribute name is used."""
 
-        usd_value_transformer: Callable[[Any, dict[str, Any] | None], Any] | None = None
-        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives an optional context dict with parsing-time information."""
+        usd_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = None
+        """Transformer function that converts a USD attribute value to a valid Warp dtype. If undefined, the generic converter from :func:`newton.usd.convert_warp_value` is used. Receives a context dict with the following keys:
+        - ``"prim"``: The USD prim to query.
+        - ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` object to get the value for."""
 
         mjcf_value_transformer: Callable[[str, dict[str, Any] | None], Any] | None = None
         """Transformer function that converts a MJCF attribute value string to a valid Warp dtype. If undefined, the generic converter from :func:`newton.utils.parse_warp_value_from_string` is used. Receives an optional context dict with parsing-time information (e.g., use_degrees, joint_type)."""
@@ -486,21 +501,6 @@ class ModelBuilder:
             return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
         @property
-        def frequency_key(self) -> Model.AttributeFrequency | str:
-            """Return the resolved frequency, with namespace prepended for custom string frequencies.
-
-            For string frequencies: returns "namespace:frequency" if namespace is set, otherwise just "frequency".
-            For enum frequencies: returns the enum value unchanged.
-            """
-            if isinstance(self.frequency, str):
-                return (
-                    f"{self.namespace}:{self.frequency}"
-                    if self.namespace and ":" not in self.frequency
-                    else self.frequency
-                )
-            return self.frequency
-
-        @property
         def is_custom_frequency(self) -> bool:
             """Check if this attribute uses a custom (string) frequency.
 
@@ -544,6 +544,62 @@ class ModelBuilder:
                 return arr
 
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
+
+    @dataclass
+    class CustomFrequency:
+        """
+        Represents a custom frequency definition for the ModelBuilder.
+
+        Custom frequencies allow defining entity types beyond the built-in ones (BODY, SHAPE, JOINT, etc.).
+        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before any custom attributes
+        using them can be added.
+
+        The optional ``usd_prim_filter`` callback enables automatic USD parsing for this frequency.
+        When provided, :meth:`ModelBuilder.add_usd` will call this function for each prim in the USD
+        stage to determine whether custom attribute values with this frequency should be extracted from it.
+
+        See :ref:`custom_attributes` for more information on custom frequencies.
+
+        Example:
+
+            .. code-block:: python
+
+                # Define a custom frequency for MuJoCo actuators with USD parsing support
+                def is_actuator_prim(prim: Usd.Prim, context: dict[str, Any]) -> bool:
+                    return prim.GetTypeName() == "MjcActuator"
+
+
+                builder.add_custom_frequency(
+                    ModelBuilder.CustomFrequency(
+                        name="actuator",
+                        namespace="mujoco",
+                        usd_prim_filter=is_actuator_prim,
+                    )
+                )
+        """
+
+        name: str
+        """The name of the custom frequency (e.g., ``"actuator"``, ``"pair"``)."""
+
+        namespace: str | None = None
+        """Namespace for the custom frequency. If provided, the frequency key becomes ``"namespace:name"``.
+        If None, the custom frequency is registered without a namespace."""
+
+        usd_prim_filter: Callable[[Usd.Prim, dict[str, Any]], bool] | None = None
+        """Optional callback to filter USD prims for this frequency during USD parsing.
+
+        The callback receives a USD Prim and a context dictionary containing parsing results.
+        The context dictionary matches the return value of :meth:`newton.ModelBuilder.add_usd` and includes
+        keys such as ``path_body_map``, ``path_joint_map``, ``path_shape_map``, ``linear_unit``,
+        ``mass_unit``, etc. Return ``True`` if the prim matches this custom frequency and its
+        custom attribute values should be extracted; return ``False`` to skip this prim.
+
+        If None, this frequency cannot be automatically parsed from USD files."""
+
+        @property
+        def key(self) -> str:
+            """The key of the custom frequency (e.g., ``"mujoco:actuator"`` or ``"pair"``)."""
+            return f"{self.namespace}:{self.name}" if self.namespace else self.name
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
         """
@@ -810,6 +866,8 @@ class ModelBuilder:
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
+        # Registered custom frequencies (must be registered before adding attributes with that frequency)
+        self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
 
@@ -827,8 +885,17 @@ class ModelBuilder:
         Define a custom per-entity attribute to be added to the Model.
         See :ref:`custom_attributes` for more information.
 
+        For attributes with custom string frequencies (not enum frequencies like BODY, SHAPE, etc.),
+        the frequency must be registered first via :meth:`add_custom_frequency`. This ensures
+        explicit declaration of custom entity types and enables USD parsing support.
+
         Args:
             attribute: The custom attribute to add.
+
+        Raises:
+            ValueError: If the attribute key already exists with incompatible specification,
+                if the attribute uses a custom string frequency that hasn't been registered,
+                or if ``usd_attribute_name`` is ``"*"`` without a ``usd_value_transformer``.
 
         Example:
 
@@ -868,19 +935,68 @@ class ModelBuilder:
                 raise ValueError(f"Custom attribute '{key}' already exists with incompatible spec")
             return
 
-        self.custom_attributes[key] = attribute
-        # Initialize frequency count for string frequencies
+        # Validate that custom frequencies are registered before use
         if attribute.is_custom_frequency:
-            freq_key = attribute.frequency_key
-            if freq_key not in self._custom_frequency_counts:
-                self._custom_frequency_counts[freq_key] = 0
+            freq_key = attribute.frequency
+            if freq_key not in self.custom_frequencies:
+                raise ValueError(
+                    f"Custom frequency '{freq_key}' is not registered. "
+                    f"Please register it first using add_custom_frequency() before adding attributes with this frequency."
+                )
+
+        # Validate that wildcard USD attributes have a transformer
+        if attribute.usd_attribute_name == "*" and attribute.usd_value_transformer is None:
+            raise ValueError(
+                f"Custom attribute '{key}' uses usd_attribute_name='*' but no usd_value_transformer is provided. "
+                f"A wildcard USD attribute requires a usd_value_transformer to compute values from prim data."
+            )
+
+        self.custom_attributes[key] = attribute
+
+    def add_custom_frequency(self, frequency: CustomFrequency) -> None:
+        """
+        Register a custom frequency for the builder.
+
+        Custom frequencies must be registered before adding any custom attributes that use them.
+        This enables explicit declaration of custom entity types and optionally provides USD
+        parsing support via the ``usd_prim_filter`` callback.
+
+        This method is idempotent: registering the same frequency multiple times is silently
+        ignored (useful when loading multiple files that all register the same frequencies).
+
+        Args:
+            frequency: A :class:`CustomFrequency` object with full configuration.
+
+        Example:
+
+            .. code-block:: python
+
+                # Full registration with USD parsing support
+                builder.add_custom_frequency(
+                    ModelBuilder.CustomFrequency(
+                        name="actuator",
+                        namespace="mujoco",
+                        usd_prim_filter=is_actuator_prim,
+                    )
+                )
+        """
+        freq_obj = frequency
+
+        freq_key = freq_obj.key
+        if freq_key in self.custom_frequencies:
+            # Already registered - silently skip (allows idempotent registration)
+            return
+
+        self.custom_frequencies[freq_key] = freq_obj
+        if freq_key not in self._custom_frequency_counts:
+            self._custom_frequency_counts[freq_key] = 0
 
     def has_custom_attribute(self, key: str) -> bool:
         """Check if a custom attribute is defined."""
         return key in self.custom_attributes
 
     def get_custom_attributes_by_frequency(
-        self, frequencies: Sequence[Model.AttributeFrequency]
+        self, frequencies: Sequence[Model.AttributeFrequency | str]
     ) -> list[CustomAttribute]:
         """
         Get custom attributes by frequency.
@@ -952,7 +1068,8 @@ class ModelBuilder:
             if attr.values is None:
                 attr.values = []
 
-            freq_key = attr.frequency_key
+            freq_key = attr.frequency
+            assert isinstance(freq_key, str), f"Custom frequency '{freq_key}' is not a string"
 
             # Determine index for this frequency (same index for all attrs with same frequency in this call)
             if freq_key not in frequency_indices:
@@ -1047,7 +1164,10 @@ class ModelBuilder:
         For DOF and COORD attributes, values can be:
         - A list with length matching the joint's DOF/coordinate count (all DOFs get values)
         - A dict mapping DOF/coord indices to values (only specified indices get values, rest use defaults)
-        - For single-DOF joints with JOINT_DOF frequency: a single Warp vector/matrix value
+        - A single scalar value, which is broadcast (replicated) to all DOFs/coordinates of the joint
+
+        For joints with zero DOFs (e.g., fixed joints), JOINT_DOF attributes are silently skipped
+        regardless of the value passed.
 
         When using dict format, unspecified indices will be filled with the attribute's default value during finalization.
 
@@ -1067,6 +1187,10 @@ class ModelBuilder:
             count_label: str,
             length_error_template: str,
         ) -> None:
+            # For joints with zero DOFs/coords (e.g., fixed joints), there is nothing to assign.
+            if index_count == 0:
+                return
+
             if isinstance(value, dict):
                 for offset, offset_value in value.items():
                     if not isinstance(offset, int):
@@ -1087,8 +1211,14 @@ class ModelBuilder:
                 return
 
             value_sanitized = value
-            if not isinstance(value_sanitized, (list, tuple)) and index_count == 1:
-                value_sanitized = [value_sanitized]
+            if isinstance(value_sanitized, np.ndarray):
+                if value_sanitized.ndim == 0:
+                    value_sanitized = value_sanitized.item()
+                else:
+                    value_sanitized = value_sanitized.tolist()
+            if not isinstance(value_sanitized, (list, tuple)):
+                # Broadcast a single scalar value to all DOFs/coords of the joint.
+                value_sanitized = [value_sanitized] * index_count
 
             actual = len(value_sanitized)
             if actual != index_count:
@@ -2236,13 +2366,13 @@ class ModelBuilder:
             if not attr.values:
                 # Still need to declare empty attribute on first merge
                 if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency_key
+                    freq_key = attr.frequency
                     mapped_values = [] if isinstance(freq_key, str) else {}
                     self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
             # Index offset based on frequency
-            freq_key = attr.frequency_key
+            freq_key = attr.frequency
             if isinstance(freq_key, str):
                 # Custom frequency: offset by pre-merge count
                 index_offset = custom_frequency_offsets.get(freq_key, 0)
@@ -2318,6 +2448,13 @@ class ModelBuilder:
                 # Enum frequency: update dict with remapped indices
                 new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
                 merged.values.update(new_indices)
+
+        # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
+        # This must happen before updating counts so that the destination builder has the full
+        # frequency metadata for USD parsing and future attribute additions.
+        for freq_key, freq_obj in builder.custom_frequencies.items():
+            if freq_key not in self.custom_frequencies:
+                self.custom_frequencies[freq_key] = freq_obj
 
         # Update custom frequency counts once per unique frequency (not per attribute)
         for freq_key, builder_count in builder._custom_frequency_counts.items():
@@ -2539,7 +2676,7 @@ class ModelBuilder:
                 If None, the identity transform is used.
             collision_filter_parent (bool): Whether to filter collisions between shapes of the parent and child bodies.
             enabled (bool): Whether the joint is enabled (not considered by :class:`SolverFeatherstone`).
-            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT_DOF` or :attr:`Model.AttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) scalar values for single-DOF/single-coordinate joints (automatically expanded to lists). Custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT` require a single value to be defined.
+            custom_attributes: Dictionary of custom attribute keys (see :attr:`CustomAttribute.key`) to values. Note that custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT_DOF` or :attr:`Model.AttributeFrequency.JOINT_COORD` can be provided as: (1) lists with length equal to the joint's DOF or coordinate count, (2) dicts mapping DOF/coordinate indices to values, or (3) a single scalar value that is broadcast to all DOFs/coordinates of the joint. For joints with zero DOFs (e.g., fixed joints), JOINT_DOF attributes are silently skipped. Custom attributes with frequency :attr:`Model.AttributeFrequency.JOINT` require a single value to be defined.
 
         Returns:
             The index of the added joint.
@@ -8396,7 +8533,7 @@ class ModelBuilder:
 
             # First pass: collect max len(values) per frequency as fallback
             for _full_key, custom_attr in self.custom_attributes.items():
-                freq_key = custom_attr.frequency_key
+                freq_key = custom_attr.frequency
                 if isinstance(freq_key, str):
                     attr_len = len(custom_attr.values) if custom_attr.values else 0
                     frequency_max_lens[freq_key] = max(frequency_max_lens.get(freq_key, 0), attr_len)
@@ -8412,7 +8549,7 @@ class ModelBuilder:
 
             # Relaxed validation: warn about attributes with fewer values than frequency count
             for full_key, custom_attr in self.custom_attributes.items():
-                freq_key = custom_attr.frequency_key
+                freq_key = custom_attr.frequency
                 if isinstance(freq_key, str):
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
@@ -8429,7 +8566,7 @@ class ModelBuilder:
 
             # Process custom attributes
             for _full_key, custom_attr in self.custom_attributes.items():
-                freq_key = custom_attr.frequency_key
+                freq_key = custom_attr.frequency
 
                 # determine count by frequency
                 if isinstance(freq_key, str):
