@@ -46,9 +46,14 @@ following precedence:
    If ``physics:principalAxes`` is missing, identity rotation is used.
 2. If either mass or diagonal inertia is missing, Newton falls back to
    ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
-   In this fallback path, collider contributions are included only when each collider has authored
-   ``UsdPhysics.MassAPI`` ``mass`` and ``diagonalInertia``.
-   Colliders without those authored mass properties are skipped and a warning is emitted.
+   In this fallback path, collider contributions use a two-level precedence:
+
+   a. If collider ``UsdPhysics.MassAPI`` has authored ``mass`` and ``diagonalInertia``, those
+      authored values are converted to unit-density collider mass information.
+   b. Otherwise, Newton derives unit-density collider mass information from collider geometry.
+
+   A collider is skipped (with warning) only if neither path provides usable collider mass
+   information.
 
 When a body mass value is resolved in either path, Newton always overwrites body mass and inverse
 mass for the imported body. If resolved mass is non-positive, inverse mass is set to ``0``.

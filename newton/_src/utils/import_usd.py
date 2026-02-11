@@ -1782,8 +1782,8 @@ def parse_usd(
                 path_shape_scale[path] = scale
 
                 # Prepare collider mass information for ComputeMassProperties fallback path.
-                # For strict behavior, only colliders with authored MassAPI mass+diagonalInertia
-                # are included in the aggregation callback.
+                # Prefer authored collider MassAPI mass+diagonalInertia; otherwise derive
+                # unit-density mass information from shape geometry.
                 shape_geo_type = None
                 shape_scale = wp.vec3(1.0, 1.0, 1.0)
                 shape_src = None
