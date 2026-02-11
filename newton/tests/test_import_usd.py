@@ -143,6 +143,70 @@ def Xform "Root" (
         self.assertEqual(set(builder.joint_articulation), {0, 1})
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collapse_fixed_joints_preserves_orphan_joints(self):
+        """collapse_fixed_joints must not drop orphan joints or their bodies.
+
+        Regression test: when no PhysicsArticulationRootAPI exists in the USD
+        and only body-to-body joints are present, collapse_fixed_joints would
+        drop all bodies and joints because the DFS only started from children
+        of world (-1), which was empty when free joints were not auto-inserted.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Three bodies connected by revolute joints, NO articulation root
+        body_a = UsdGeom.Xform.Define(stage, "/World/BodyA")
+        UsdPhysics.RigidBodyAPI.Apply(body_a.GetPrim())
+        body_a.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+        col_a = UsdGeom.Cube.Define(stage, "/World/BodyA/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_a.GetPrim())
+
+        body_b = UsdGeom.Xform.Define(stage, "/World/BodyB")
+        UsdPhysics.RigidBodyAPI.Apply(body_b.GetPrim())
+        body_b.AddTranslateOp().Set(Gf.Vec3d(1, 0, 0))
+        col_b = UsdGeom.Cube.Define(stage, "/World/BodyB/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_b.GetPrim())
+
+        body_c = UsdGeom.Xform.Define(stage, "/World/BodyC")
+        UsdPhysics.RigidBodyAPI.Apply(body_c.GetPrim())
+        body_c.AddTranslateOp().Set(Gf.Vec3d(2, 0, 0))
+        col_c = UsdGeom.Cube.Define(stage, "/World/BodyC/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_c.GetPrim())
+
+        # Revolute: BodyA -> BodyB (body-to-body, no world connection)
+        rev1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/RevJoint1")
+        rev1.CreateBody0Rel().SetTargets([body_a.GetPath()])
+        rev1.CreateBody1Rel().SetTargets([body_b.GetPath()])
+        rev1.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev1.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev1.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev1.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev1.CreateAxisAttr().Set("Z")
+
+        # Revolute: BodyB -> BodyC
+        rev2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/RevJoint2")
+        rev2.CreateBody0Rel().SetTargets([body_b.GetPath()])
+        rev2.CreateBody1Rel().SetTargets([body_c.GetPath()])
+        rev2.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev2.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev2.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev2.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev2.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarns(UserWarning):
+            builder.add_usd(stage, collapse_fixed_joints=True)
+
+        # All three bodies and both revolute joints must survive collapse
+        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.joint_count, 2)
+        self.assertIn("/World/RevJoint1", builder.joint_key)
+        self.assertIn("/World/RevJoint2", builder.joint_key)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
         from pxr import Usd  # noqa: PLC0415
 

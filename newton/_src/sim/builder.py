@@ -3718,6 +3718,36 @@ class ModelBuilder:
             if not visited[body]:
                 dfs(-1, body, wp.transform(), -1)
 
+        # Handle disconnected subtrees: bodies not reachable from world.
+        # This happens when joints only connect bodies to each other (no joint
+        # has parent == -1) and free joints to world were not auto-inserted
+        # (e.g. when no PhysicsArticulationRootAPI exists but joints are present).
+        processed_bodies = set(retained_bodies) | set(body_merged_parent.keys())
+
+        children_in_joints = set()
+        for parent_id, child_id in joint_data:
+            if parent_id >= 0:
+                children_in_joints.add(child_id)
+
+        for body_id in range(self.body_count):
+            if body_id in processed_bodies:
+                continue
+            if body_id in children_in_joints:
+                # Not a root — will be visited when its parent root is processed.
+                continue
+            # This body is a root of a disconnected subtree (or an isolated body).
+            new_id = len(retained_bodies)
+            body_data[body_id]["id"] = new_id
+            retained_bodies.append(body_id)
+            for shape in body_data[body_id]["shapes"]:
+                self.shape_body[shape] = new_id
+            visited[body_id] = True
+            for child in body_children[body_id]:
+                if child not in processed_bodies and not visited[child]:
+                    dfs(body_id, child, wp.transform(), body_id)
+            # Update processed set with bodies added by the DFS above
+            processed_bodies = set(retained_bodies) | set(body_merged_parent.keys())
+
         # repopulate the model
         # save original body groups before clearing
         original_body_group = self.body_world[:] if self.body_world else []
