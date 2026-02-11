@@ -2133,24 +2133,14 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     floating = False
     control_strategy = RandomControlStrategy(seed=42)
     num_worlds = 34
-    debug_visual = False  # Enable viewer
-    debug_view_newton = False  # False=Native, True=Newton
-    num_steps = 100
+    num_steps = 500
 
-    # Enable model backfill to eliminate numerical differences from model compilation.
-    # With backfill, simulation should match exactly for same control inputs.
-    backfill_model = True
-
-    # Enable contact injection to bypass mujoco_warp non-determinism with >8 worlds.
-    # This ensures both Newton and native use identical contact data for solving.
-    use_contact_injection = True
-
-    # Tolerance overrides for trajectory-dependent fields (divergence compounds over steps)
+    # Tolerance overrides for dynamics fields that diverge over time
     tolerance_overrides: ClassVar[dict[str, float]] = {
-        "qacc": 0.1,
-        "qfrc_actuator": 0.02,
-        "actuator_force": 0.02,
-        "cfrc_int": 1e-3,
+        "qacc": 0.05,
+        "qfrc_actuator": 0.01,
+        "actuator_force": 0.01,
+        "cfrc_int": 5e-4,
         "qM": 5e-6,
     }
 
