@@ -56,7 +56,6 @@ class RobotComposerSim:
         self.do_rendering = do_rendering
         self.device = device
 
-        self.collide_substeps = False
         self.gripper_target_pos = 0.0
 
         # Download required assets
@@ -82,21 +81,10 @@ class RobotComposerSim:
         # Create solver
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=True,
-            solver="newton",
-            integrator="implicitfast",
             cone="elliptic",
-            njmax=500,
-            nconmax=500,
             iterations=15,
             ls_iterations=100,
-            ls_parallel=False,
-            impratio=1.0,
         )
-
-        # MuJoCo solver handles contacts internally (use_mujoco_contacts=True),
-        # so no Newton collision pipeline is needed.
-        self.contacts = newton.Contacts(0, 0)
 
         # Create viewer
         if self.do_rendering:
@@ -438,7 +426,7 @@ class RobotComposerSim:
             self.state_0.clear_forces()
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -455,7 +443,6 @@ class RobotComposerSim:
         """Render the current state."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def gui(self, imgui):

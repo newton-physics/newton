@@ -216,6 +216,32 @@ def main(argv=None):
 
     print("Downloaded assets")
 
+    # Pre-download mujoco_menagerie folders used by test_robot_composer
+    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
+
+    menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
+    menagerie_folders = [
+        "universal_robots_ur5e",
+        "leap_hand",
+        "wonik_allegro",
+        "robotiq_2f85",
+    ]
+
+    futures = {}
+    with ThreadPoolExecutor(max_workers=max(1, min(args.maxjobs, len(menagerie_folders)))) as executor:
+        for folder in menagerie_folders:
+            futures[executor.submit(download_git_folder, git_url=menagerie_url, folder_path=folder)] = folder
+
+        for future in as_completed(futures):
+            folder = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Git folder download failed: {folder}: {e}", file=sys.stderr)
+                raise
+
+    print("Downloaded mujoco_menagerie folders")
+
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
         # Discover tests
