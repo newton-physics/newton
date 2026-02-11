@@ -1113,7 +1113,8 @@ def parse_usd(
                 default=builder.default_shape_cfg.rolling_friction,
                 verbose=verbose,
             ),
-            # TODO: if desc.density is 0, then we should look for mass somewhere
+            # Treat non-positive/unauthored material density as "use importer default".
+            # Authored collider/body MassAPI mass+inertia is handled later.
             density=desc.density if desc.density > 0.0 else default_shape_density,
         )
 
