@@ -1110,67 +1110,51 @@ class ModelBuilder:
                     expected_frequency=Model.AttributeFrequency.JOINT,
                 )
 
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_DOF:
-                # Values per DOF - can be list or dict
-                dof_start = self.joint_qd_start[joint_index]
-                if joint_index + 1 < len(self.joint_qd_start):
-                    dof_end = self.joint_qd_start[joint_index + 1]
-                else:
-                    dof_end = self.joint_dof_count
-
-                dof_count = dof_end - dof_start
-                apply_indexed_values(
-                    value=value,
-                    attr_key=attr_key,
-                    expected_frequency=Model.AttributeFrequency.JOINT_DOF,
-                    index_start=dof_start,
-                    index_count=dof_count,
-                    index_label="DOF",
-                    count_label="DOFs",
-                    length_error_template="JOINT_DOF '{attr_key}': got {actual}, expected {expected}",
-                )
-
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_COORD:
-                # Values per coordinate - can be list or dict
-                coord_start = self.joint_q_start[joint_index]
-                if joint_index + 1 < len(self.joint_q_start):
-                    coord_end = self.joint_q_start[joint_index + 1]
-                else:
-                    coord_end = self.joint_coord_count
-
-                coord_count = coord_end - coord_start
-                apply_indexed_values(
-                    value=value,
-                    attr_key=attr_key,
-                    expected_frequency=Model.AttributeFrequency.JOINT_COORD,
-                    index_start=coord_start,
-                    index_count=coord_count,
-                    index_label="coord",
-                    count_label="coordinates",
-                    length_error_template=(
-                        "JOINT_COORD attribute '{attr_key}' has {actual} values but joint has {expected} coordinates"
+            elif custom_attr.frequency in (
+                Model.AttributeFrequency.JOINT_DOF,
+                Model.AttributeFrequency.JOINT_COORD,
+                Model.AttributeFrequency.JOINT_CONSTRAINT,
+            ):
+                freq = custom_attr.frequency
+                freq_config = {
+                    Model.AttributeFrequency.JOINT_DOF: (
+                        self.joint_qd_start,
+                        self.joint_dof_count,
+                        "DOF",
+                        "DOFs",
                     ),
-                )
+                    Model.AttributeFrequency.JOINT_COORD: (
+                        self.joint_q_start,
+                        self.joint_coord_count,
+                        "coord",
+                        "coordinates",
+                    ),
+                    Model.AttributeFrequency.JOINT_CONSTRAINT: (
+                        self.joint_cts_start,
+                        self.joint_constraint_count,
+                        "constraint",
+                        "constraints",
+                    ),
+                }
+                start_array, total_count, index_label, count_label = freq_config[freq]
 
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_CONSTRAINT:
-                # Values per constraint - can be list or dict
-                cts_start = self.joint_cts_start[joint_index]
-                if joint_index + 1 < len(self.joint_cts_start):
-                    cts_end = self.joint_cts_start[joint_index + 1]
+                index_start = start_array[joint_index]
+                if joint_index + 1 < len(start_array):
+                    index_end = start_array[joint_index + 1]
                 else:
-                    cts_end = self.joint_constraint_count
+                    index_end = total_count
 
-                cts_count = cts_end - cts_start
                 apply_indexed_values(
                     value=value,
                     attr_key=attr_key,
-                    expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
-                    index_start=cts_start,
-                    index_count=cts_count,
-                    index_label="constraint",
-                    count_label="constraints",
+                    expected_frequency=freq,
+                    index_start=index_start,
+                    index_count=index_end - index_start,
+                    index_label=index_label,
+                    count_label=count_label,
                     length_error_template=(
-                        "JOINT_CONSTRAINT attribute '{attr_key}' has {actual} values but joint has {expected} constraints"
+                        f"{freq.name} attribute '{{attr_key}}' has {{actual}} values "
+                        f"but joint has {{expected}} {count_label}"
                     ),
                 )
 
