@@ -840,6 +840,14 @@
 <div class="nboutput docutils container">
 <div class="prompt empty docutils container">
 </div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. Proceeding in CPU-only mode.
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
 Warp 1.12.0.dev20260127 initialized:
@@ -848,14 +856,6 @@ Warp 1.12.0.dev20260127 initialized:
      &#34;cpu&#34;      : &#34;x86_64&#34;
    Kernel cache:
      /home/runner/.cache/warp/1.12.0.dev20260127
-</pre></div></div>
-</div>
-<div class="nboutput nblast docutils container">
-<div class="prompt empty docutils container">
-</div>
-<div class="output_area stderr docutils container">
-<div class="highlight"><pre>
-Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. Proceeding in CPU-only mode.
 </pre></div></div>
 </div>
 </section>
@@ -967,7 +967,7 @@ Added 4 bodies with collision shapes
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.geometry.inertia 8e8f74f load on device &#39;cpu&#39; took 2198.76 ms  (compiled)
+Module newton._src.geometry.inertia 8e8f74f load on device &#39;cpu&#39; took 2442.30 ms  (compiled)
 Added mesh body with 6102 vertices
 </pre></div></div>
 </div>
@@ -1000,7 +1000,7 @@ Added mesh body with 6102 vertices
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module validate_and_correct_inertia_kernel_1911a1c2 f78b133 load on device &#39;cpu&#39; took 1818.90 ms  (compiled)
+Module validate_and_correct_inertia_kernel_1911a1c2 f78b133 load on device &#39;cpu&#39; took 2042.78 ms  (compiled)
 Model finalized for device cpu:
   Bodies: 5
   Shapes: 7
@@ -1051,12 +1051,12 @@ Model finalized for device cpu:
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.sim.collide 5ade590 load on device &#39;cpu&#39; took 2644.19 ms  (compiled)
-Module newton._src.geometry.broad_phase_nxn e7bae85 load on device &#39;cpu&#39; took 1998.47 ms  (compiled)
-Module newton._src.geometry.narrow_phase 4616d06 load on device &#39;cpu&#39; took 2685.46 ms  (compiled)
-Module newton._src.geometry.narrow_phase c2abaa2 load on device &#39;cpu&#39; took 4695.73 ms  (compiled)
-Module newton._src.geometry.narrow_phase 98788b6 load on device &#39;cpu&#39; took 4450.86 ms  (compiled)
-Module newton._src.geometry.narrow_phase 36a79f8 load on device &#39;cpu&#39; took 6035.68 ms  (compiled)
+Module newton._src.sim.collide 5ade590 load on device &#39;cpu&#39; took 2980.08 ms  (compiled)
+Module newton._src.geometry.broad_phase_nxn e7bae85 load on device &#39;cpu&#39; took 2282.13 ms  (compiled)
+Module newton._src.geometry.narrow_phase 4616d06 load on device &#39;cpu&#39; took 3047.47 ms  (compiled)
+Module newton._src.geometry.narrow_phase c2abaa2 load on device &#39;cpu&#39; took 5262.94 ms  (compiled)
+Module newton._src.geometry.narrow_phase 98788b6 load on device &#39;cpu&#39; took 4999.94 ms  (compiled)
+Module newton._src.geometry.narrow_phase 36a79f8 load on device &#39;cpu&#39; took 6512.05 ms  (compiled)
 State and control objects created
 </pre></div></div>
 </div>
@@ -1220,7 +1220,7 @@ Running on CPU (no CUDA graph)
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.viewer.kernels 5d36fe6 load on device &#39;cpu&#39; took 2748.67 ms  (compiled)
+Module newton._src.viewer.kernels 5d36fe6 load on device &#39;cpu&#39; took 3038.84 ms  (compiled)
 </pre></div></div>
 </div>
 </section>
@@ -1263,8 +1263,8 @@ Module newton._src.viewer.kernels 5d36fe6 load on device &#39;cpu&#39; took 2748
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.solvers.xpbd.kernels bff295d load on device &#39;cpu&#39; took 10374.47 ms  (compiled)
-Module newton._src.solvers.solver dc85a44 load on device &#39;cpu&#39; took 2183.60 ms  (compiled)
+Module newton._src.solvers.xpbd.kernels bff295d load on device &#39;cpu&#39; took 11344.63 ms  (compiled)
+Module newton._src.solvers.solver dc85a44 load on device &#39;cpu&#39; took 2416.07 ms  (compiled)
 
 Simulation complete! Total time: 8.33 seconds
 </pre></div></div>

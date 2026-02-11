@@ -891,6 +891,12 @@ should be indexed in relation to the model’s entities such as joints, bodies, 
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.AttributeFrequency.CONSTRAINT_MIMIC">
+<span class="sig-name descname"><span class="pre">CONSTRAINT_MIMIC</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">14</span></em><a class="headerlink" href="#newton.Model.AttributeFrequency.CONSTRAINT_MIMIC" title="Link to this definition">#</a></dt>
+<dd><p>Attribute frequency follows the number of mimic constraints (see <a class="reference internal" href="#newton.Model.constraint_mimic_count" title="newton.Model.constraint_mimic_count"><code class="xref py py-attr docutils literal notranslate"><span class="pre">constraint_mimic_count</span></code></a>).</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.AttributeFrequency.EDGE">
 <span class="sig-name descname"><span class="pre">EDGE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">10</span></em><a class="headerlink" href="#newton.Model.AttributeFrequency.EDGE" title="Link to this definition">#</a></dt>
 <dd><p>Attribute frequency follows the number of edges (see <a class="reference internal" href="#newton.Model.edge_count" title="newton.Model.edge_count"><code class="xref py py-attr docutils literal notranslate"><span class="pre">edge_count</span></code></a>).</p>
@@ -964,7 +970,7 @@ should be indexed in relation to the model’s entities such as joints, bodies, 
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.AttributeFrequency.WORLD">
-<span class="sig-name descname"><span class="pre">WORLD</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">14</span></em><a class="headerlink" href="#newton.Model.AttributeFrequency.WORLD" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">WORLD</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">15</span></em><a class="headerlink" href="#newton.Model.AttributeFrequency.WORLD" title="Link to this definition">#</a></dt>
 <dd><p>Attribute frequency follows the number of worlds (see <a class="reference internal" href="#newton.Model.num_worlds" title="newton.Model.num_worlds"><code class="xref py py-attr docutils literal notranslate"><span class="pre">num_worlds</span></code></a>).</p>
 </dd></dl>
 
@@ -1361,6 +1367,54 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dt>The total number of global bodies can be computed as:</dt><dd><p><cite>num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]</cite>.</p>
 </dd>
 </dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_coef0">
+<span class="sig-name descname"><span class="pre">constraint_mimic_coef0</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_coef0" title="Link to this definition">#</a></dt>
+<dd><p>Offset coefficient (coef0) for the mimic constraint (<code class="docutils literal notranslate"><span class="pre">joint0</span> <span class="pre">=</span> <span class="pre">coef0</span> <span class="pre">+</span> <span class="pre">coef1</span> <span class="pre">*</span> <span class="pre">joint1</span></code>), shape [constraint_mimic_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_coef1">
+<span class="sig-name descname"><span class="pre">constraint_mimic_coef1</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_coef1" title="Link to this definition">#</a></dt>
+<dd><p>Scale coefficient (coef1) for the mimic constraint (<code class="docutils literal notranslate"><span class="pre">joint0</span> <span class="pre">=</span> <span class="pre">coef0</span> <span class="pre">+</span> <span class="pre">coef1</span> <span class="pre">*</span> <span class="pre">joint1</span></code>), shape [constraint_mimic_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_count">
+<span class="sig-name descname"><span class="pre">constraint_mimic_count</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_count" title="Link to this definition">#</a></dt>
+<dd><p>Total number of mimic constraints in the system.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_enabled">
+<span class="sig-name descname"><span class="pre">constraint_mimic_enabled</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_enabled" title="Link to this definition">#</a></dt>
+<dd><p>Whether constraint is active, shape [constraint_mimic_count], bool.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_joint0">
+<span class="sig-name descname"><span class="pre">constraint_mimic_joint0</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_joint0" title="Link to this definition">#</a></dt>
+<dd><p>Follower joint index (<code class="docutils literal notranslate"><span class="pre">joint0</span> <span class="pre">=</span> <span class="pre">coef0</span> <span class="pre">+</span> <span class="pre">coef1</span> <span class="pre">*</span> <span class="pre">joint1</span></code>), shape [constraint_mimic_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_joint1">
+<span class="sig-name descname"><span class="pre">constraint_mimic_joint1</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_joint1" title="Link to this definition">#</a></dt>
+<dd><p>Leader joint index (<code class="docutils literal notranslate"><span class="pre">joint0</span> <span class="pre">=</span> <span class="pre">coef0</span> <span class="pre">+</span> <span class="pre">coef1</span> <span class="pre">*</span> <span class="pre">joint1</span></code>), shape [constraint_mimic_count], int.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_key">
+<span class="sig-name descname"><span class="pre">constraint_mimic_key</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_key" title="Link to this definition">#</a></dt>
+<dd><p>Constraint name/key, shape [constraint_mimic_count], str.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_world">
+<span class="sig-name descname"><span class="pre">constraint_mimic_world</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_world" title="Link to this definition">#</a></dt>
+<dd><p>World index for each constraint, shape [constraint_mimic_count], int.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2396,6 +2450,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.AttributeFrequency"><code class="docutils literal notranslate"><span class="pre">Model.AttributeFrequency</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.AttributeFrequency.ARTICULATION"><code class="docutils literal notranslate"><span class="pre">Model.AttributeFrequency.ARTICULATION</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.AttributeFrequency.BODY"><code class="docutils literal notranslate"><span class="pre">Model.AttributeFrequency.BODY</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.AttributeFrequency.CONSTRAINT_MIMIC"><code class="docutils literal notranslate"><span class="pre">Model.AttributeFrequency.CONSTRAINT_MIMIC</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.AttributeFrequency.EDGE"><code class="docutils literal notranslate"><span class="pre">Model.AttributeFrequency.EDGE</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.AttributeFrequency.EQUALITY_CONSTRAINT"><code class="docutils literal notranslate"><span class="pre">Model.AttributeFrequency.EQUALITY_CONSTRAINT</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.AttributeFrequency.JOINT"><code class="docutils literal notranslate"><span class="pre">Model.AttributeFrequency.JOINT</span></code></a></li>
@@ -2448,6 +2503,14 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_shapes"><code class="docutils literal notranslate"><span class="pre">Model.body_shapes</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_world"><code class="docutils literal notranslate"><span class="pre">Model.body_world</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_world_start"><code class="docutils literal notranslate"><span class="pre">Model.body_world_start</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_coef0"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_coef0</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_coef1"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_coef1</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_count"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_count</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_enabled"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_enabled</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_joint0"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_joint0</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_joint1"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_joint1</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_key"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_world"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_world</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.custom_frequency_counts"><code class="docutils literal notranslate"><span class="pre">Model.custom_frequency_counts</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.device"><code class="docutils literal notranslate"><span class="pre">Model.device</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.edge_bending_properties"><code class="docutils literal notranslate"><span class="pre">Model.edge_bending_properties</span></code></a></li>
