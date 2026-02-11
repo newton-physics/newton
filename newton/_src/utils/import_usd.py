@@ -241,6 +241,8 @@ def parse_usd(
     path_joint_map: dict[str, int] = {}
     # cache for resolved material properties (keyed by prim path)
     material_props_cache: dict[str, dict[str, Any]] = {}
+    # cache for mesh data loaded from USD prims
+    mesh_cache: dict[tuple[str, bool], Mesh] = {}
 
     physics_scene_prim = None
     physics_dt = None
@@ -269,6 +271,21 @@ def parse_usd(
         if prim_path not in material_props_cache:
             material_props_cache[prim_path] = usd.resolve_material_properties_for_prim(prim)
         return material_props_cache[prim_path]
+
+    def _get_mesh_cached(prim: Usd.Prim, *, load_uvs: bool = False) -> Mesh:
+        """Load and cache mesh data to avoid repeated expensive USD mesh extraction."""
+        prim_path = str(prim.GetPath())
+        key = (prim_path, load_uvs)
+        if key in mesh_cache:
+            return mesh_cache[key]
+
+        # A mesh loaded with UVs is a superset of the no-UV representation.
+        if not load_uvs and (prim_path, True) in mesh_cache:
+            return mesh_cache[(prim_path, True)]
+
+        mesh = usd.get_mesh(prim, load_uvs=load_uvs)
+        mesh_cache[key] = mesh
+        return mesh
 
     def _load_visual_shapes_impl(
         parent_body_id: int,
@@ -431,7 +448,7 @@ def parse_usd(
                 material_props = _get_material_props_cached(prim)
                 texture = material_props.get("texture")
                 # Only load UVs if we have a texture to avoid expensive faceVarying expansion
-                mesh = usd.get_mesh(prim, load_uvs=(texture is not None))
+                mesh = _get_mesh_cached(prim, load_uvs=(texture is not None))
                 if texture:
                     mesh.texture = texture
                 if mesh.texture is not None and mesh.uvs is None:
@@ -1719,7 +1736,7 @@ def parse_usd(
                     )
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     # Resolve mesh hull vertex limit from schema with fallback to parameter
-                    mesh = usd.get_mesh(prim)
+                    mesh = _get_mesh_cached(prim)
                     mesh.maxhullvert = R.get_value(
                         prim,
                         prim_type=PrimType.SHAPE,
@@ -1788,7 +1805,7 @@ def parse_usd(
                 elif key == UsdPhysics.ObjectType.MeshShape:
                     shape_geo_type = GeoType.MESH
                     shape_scale = wp.vec3(*shape_spec.meshScale)
-                    shape_src = usd.get_mesh(prim)
+                    shape_src = _get_mesh_cached(prim)
 
                 if shape_geo_type is not None:
                     shape_axis = getattr(shape_spec, "axis", None)
