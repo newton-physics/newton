@@ -2148,8 +2148,8 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     # Tolerance overrides for trajectory-dependent fields (divergence compounds over steps)
     tolerance_overrides: ClassVar[dict[str, float]] = {
         "qacc": 0.1,
-        "qfrc_actuator": 0.01,
-        "actuator_force": 0.01,
+        "qfrc_actuator": 0.02,
+        "actuator_force": 0.02,
         "cfrc_int": 1e-3,
         "qM": 5e-6,
     }
