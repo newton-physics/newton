@@ -27,10 +27,22 @@ from newton.tests.unittest_utils import add_function_test, find_nan_members, get
 
 
 class RobotComposerSim:
-    """Test base_joint, and parent_body functionality to attach end effectors to a robot.
+    """Test ``base_joint`` and ``parent_body`` importer functionality.
 
-    Composes robots by attaching end effectors using parent_body across
-    multiple importers (URDF, MJCF, USD).
+    Builds four composed-robot scenarios that exercise hierarchical
+    composition across URDF, MJCF, and USD importers:
+
+    1. UR5e (MJCF) + Robotiq 2F-85 gripper (MJCF) with a planar D6 base joint.
+       The gripper is actuated via ``joint_target_pos`` on the driver joints
+       (``right_driver_joint``, ``left_driver_joint``) instead of the default
+       MuJoCo actuator, which is disabled to avoid instability in MJWarp.
+    2. UR5e (MJCF) + LEAP hand left (MJCF) with a planar D6 base joint.
+    3. Franka FR3 (URDF) + Allegro hand (MJCF) with a planar D6 base joint.
+    4. UR10 (USD) with a planar D6 base joint (no end effector).
+
+    Each scenario uses ``parent_body`` to attach the end effector to the
+    arm's wrist link and ``base_joint`` to override the default fixed-base
+    behaviour with a planar (2-linear + 1-angular) D6 joint.
     """
 
     def __init__(self, device, do_rendering=False, num_frames=50, num_worlds=2):
