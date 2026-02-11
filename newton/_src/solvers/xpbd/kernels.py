@@ -110,7 +110,7 @@ def apply_particle_shape_restitution(
         # if denom == 0.0:
         #     return
 
-        wp.atomic_add(particle_v_out, tid, dv)
+        wp.atomic_add(particle_v_out, particle_index, dv)
 
 
 @wp.kernel

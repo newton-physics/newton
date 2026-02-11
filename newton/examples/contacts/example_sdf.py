@@ -149,7 +149,7 @@ class Example:
         # Override rigid_contact_max BEFORE creating collision pipeline to limit memory allocation
         self.model.rigid_contact_max = self.rigid_contact_max
 
-        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        self.collision_pipeline = newton.CollisionPipeline.from_model(
             self.model,
             reduce_contacts=True,
             broad_phase_mode=self.broad_phase_mode,
@@ -174,7 +174,6 @@ class Example:
                 nconmax=num_per_world,
                 iterations=15,
                 ls_iterations=100,
-                ls_parallel=True,
                 impratio=1.0,
             )
         else:

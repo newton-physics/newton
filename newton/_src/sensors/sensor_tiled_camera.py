@@ -130,10 +130,15 @@ class SensorTiledCamera:
                 enable_particles=True,
                 enable_backface_culling=True,
             ),
+            device=self.model.device,
         )
         self.render_context.mesh_ids = model.shape_source_ptr
-        self.render_context.shape_mesh_indices = wp.empty(self.model.shape_count, dtype=wp.int32)
-        self.render_context.mesh_bounds = wp.empty((self.model.shape_count, 2), dtype=wp.vec3f, ndim=2)
+        self.render_context.shape_mesh_indices = wp.empty(
+            self.model.shape_count, dtype=wp.int32, device=self.render_context.device
+        )
+        self.render_context.mesh_bounds = wp.empty(
+            (self.model.shape_count, 2), dtype=wp.vec3f, ndim=2, device=self.render_context.device
+        )
 
         if model.particle_q is not None and model.particle_q.shape[0]:
             self.render_context.particles_position = model.particle_q
@@ -144,19 +149,29 @@ class SensorTiledCamera:
                 self.render_context.triangle_indices = model.tri_indices.flatten()
                 self.render_context.options.enable_particles = False
 
-        self.render_context.shape_enabled = wp.empty(self.model.shape_count, dtype=wp.uint32)
+        self.render_context.shape_enabled = wp.empty(
+            self.model.shape_count, dtype=wp.uint32, device=self.render_context.device
+        )
         self.render_context.shape_types = model.shape_type
-        self.render_context.shape_sizes = wp.empty(self.model.shape_count, dtype=wp.vec3f)
-        self.render_context.shape_transforms = wp.empty(self.model.shape_count, dtype=wp.transformf)
+        self.render_context.shape_sizes = wp.empty(
+            self.model.shape_count, dtype=wp.vec3f, device=self.render_context.device
+        )
+        self.render_context.shape_transforms = wp.empty(
+            self.model.shape_count, dtype=wp.transformf, device=self.render_context.device
+        )
         self.render_context.shape_materials = wp.array(
-            np.full(self.model.shape_count, fill_value=-1, dtype=np.int32), dtype=wp.int32
+            np.full(self.model.shape_count, fill_value=-1, dtype=np.int32),
+            dtype=wp.int32,
+            device=self.render_context.device,
         )
         self.render_context.shape_colors = wp.array(
-            np.full((self.model.shape_count, 4), fill_value=1.0, dtype=wp.float32), dtype=wp.vec4f
+            np.full((self.model.shape_count, 4), fill_value=1.0, dtype=wp.float32),
+            dtype=wp.vec4f,
+            device=self.render_context.device,
         )
         self.render_context.shape_world_index = self.model.shape_world
 
-        num_enabled_shapes = wp.zeros(1, dtype=wp.int32)
+        num_enabled_shapes = wp.zeros(1, dtype=wp.int32, device=self.render_context.device)
         wp.launch(
             kernel=compute_enabled_shapes,
             dim=self.model.shape_count,
@@ -167,6 +182,7 @@ class SensorTiledCamera:
                 self.render_context.shape_mesh_indices,
                 num_enabled_shapes,
             ],
+            device=self.render_context.device,
         )
         self.render_context.num_shapes_total = self.model.shape_count
         self.render_context.num_shapes_enabled = int(num_enabled_shapes.numpy()[0])
@@ -203,6 +219,7 @@ class SensorTiledCamera:
                     self.render_context.shape_transforms,
                     self.render_context.shape_sizes,
                 ],
+                device=self.render_context.device,
             )
 
         if self.render_context.has_triangle_mesh:
@@ -280,11 +297,11 @@ class SensorTiledCamera:
         """
 
         if isinstance(camera_fovs, float):
-            camera_fovs = wp.array([camera_fovs], dtype=wp.float32)
+            camera_fovs = wp.array([camera_fovs], dtype=wp.float32, device=self.render_context.device)
         elif isinstance(camera_fovs, list):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32)
+            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.render_context.device)
         elif isinstance(camera_fovs, np.ndarray):
-            camera_fovs = wp.array(camera_fovs, dtype=wp.float32)
+            camera_fovs = wp.array(camera_fovs, dtype=wp.float32, device=self.render_context.device)
         return self.render_context.utils.compute_pinhole_camera_rays(width, height, camera_fovs)
 
     def flatten_color_image_to_rgba(

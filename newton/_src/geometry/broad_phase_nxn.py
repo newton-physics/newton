@@ -13,12 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""NxN (all-pairs) broad phase collision detection.
+
+Provides O(N^2) broad phase using AABB overlap tests. Simple and effective
+for small scenes (<100 shapes). For larger scenes, use SAP broad phase.
+
+See Also:
+    :class:`BroadPhaseSAP` in ``broad_phase_sap.py`` for O(N log N) performance.
+"""
+
 from __future__ import annotations
 
 import numpy as np
 import warp as wp
 
-from .broad_phase_common import check_aabb_overlap, precompute_world_map, test_world_and_group_pair, write_pair
+from .broad_phase_common import (
+    check_aabb_overlap,
+    is_pair_excluded,
+    precompute_world_map,
+    test_world_and_group_pair,
+    write_pair,
+)
 
 
 @wp.kernel
@@ -138,6 +153,8 @@ def _nxn_broadphase_kernel(
     world_slice_ends: wp.array(dtype=int, ndim=1),  # End indices of each world slice
     world_index_map: wp.array(dtype=int, ndim=1),  # Index map into source geometry
     num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
+    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    num_filter_pairs: int,
     # Output arrays
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
     num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
@@ -201,6 +218,9 @@ def _nxn_broadphase_kernel(
         shape_bounding_box_upper[shape2],
         margin2,
     ):
+        # Skip explicitly excluded pairs (e.g. shape_collision_filter_pairs)
+        if num_filter_pairs > 0 and is_pair_excluded(wp.vec2i(shape1, shape2), filter_pairs, num_filter_pairs):
+            return
         write_pair(
             wp.vec2i(shape1, shape2),
             candidate_pair,
@@ -304,6 +324,8 @@ class BroadPhaseAllPairs:
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
         device=None,  # Device to launch on
+        filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
+        num_filter_pairs: int | None = None,
     ):
         """Launch the N x N broad phase collision detection.
 
@@ -328,7 +350,8 @@ class BroadPhaseAllPairs:
 
         The method will populate candidate_pair with the indices of shape pairs (i,j) where i < j whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose world indices are
-        compatible (same world or at least one is global). The number of pairs found will be written to num_candidate_pair[0].
+        compatible (same world or at least one is global). Pairs in filter_pairs (if provided) are excluded.
+        The number of pairs found will be written to num_candidate_pair[0].
         """
         max_candidate_pair = candidate_pair.shape[0]
 
@@ -340,6 +363,14 @@ class BroadPhaseAllPairs:
         # If no margins provided, pass empty array (kernel will use 0.0 margins)
         if shape_contact_margin is None:
             shape_contact_margin = wp.empty(0, dtype=wp.float32, device=device)
+
+        # Exclusion filter: empty array and 0 when not provided or empty
+        if filter_pairs is None or filter_pairs.shape[0] == 0:
+            filter_pairs_arr = wp.empty(0, dtype=wp.vec2i, device=device)
+            n_filter = 0
+        else:
+            filter_pairs_arr = filter_pairs
+            n_filter = num_filter_pairs if num_filter_pairs is not None else filter_pairs.shape[0]
 
         # Launch with the precomputed number of kernel threads
         wp.launch(
@@ -355,6 +386,8 @@ class BroadPhaseAllPairs:
                 self.world_slice_ends,
                 self.world_index_map,
                 self.num_regular_worlds,
+                filter_pairs_arr,
+                n_filter,
             ],
             outputs=[candidate_pair, num_candidate_pair, max_candidate_pair],
             device=device,

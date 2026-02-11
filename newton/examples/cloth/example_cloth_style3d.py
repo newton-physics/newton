@@ -13,9 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
+from pxr import Usd
 
 import newton
 import newton.examples
@@ -54,14 +53,13 @@ class Example:
             usd_stage = Usd.Stage.Open(str(asset_path / "garments" / (garment_usd_name + ".usd")))
             usd_prim_garment = usd_stage.GetPrimAtPath(str("/Root/" + garment_usd_name + "/Root_Garment"))
 
-            garment_mesh = newton.usd.get_mesh(usd_prim_garment, load_uvs=True)
-            garment_mesh_indices = garment_mesh.indices
-            garment_mesh_points = garment_mesh.vertices
-            garment_mesh_uv = garment_mesh.uvs * 1e-3
-
-            # Load UV indices separately (not part of Mesh class)
-            garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
-            garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
+            garment_mesh, garment_mesh_uv_indices = newton.usd.get_mesh(
+                usd_prim_garment,
+                load_uvs=True,
+                preserve_facevarying_uvs=True,
+                return_uv_indices=True,
+            )
+            garment_mesh_uv = garment_mesh.uvs * 1.0e-3
 
             # Avatar
             usd_stage = Usd.Stage.Open(str(asset_path / "avatars" / "Female.usd"))
@@ -77,8 +75,8 @@ class Example:
                 vel=wp.vec3(0.0, 0.0, 0.0),
                 panel_verts=garment_mesh_uv.tolist(),
                 panel_indices=garment_mesh_uv_indices.tolist(),
-                vertices=garment_mesh_points.tolist(),
-                indices=garment_mesh_indices.tolist(),
+                vertices=garment_mesh.vertices.tolist(),
+                indices=garment_mesh.indices.tolist(),
                 density=0.3,
                 scale=1.0,
                 particle_radius=5.0e-3,
@@ -145,7 +143,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
+        # Create collision pipeline (default)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 

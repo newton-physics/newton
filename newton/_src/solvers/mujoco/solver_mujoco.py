@@ -24,7 +24,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import MAXVAL, nparray, override, vec5, vec10
-from ...geometry import MESH_MAXHULLVERT, GeoType, ShapeFlags
+from ...geometry import GeoType, Mesh, ShapeFlags
 from ...sim import (
     ActuatorMode,
     Contacts,
@@ -654,6 +654,7 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:option:integrator",
                 mjcf_attribute_name="integrator",
                 mjcf_value_transformer=cls._parse_integrator,
+                usd_value_transformer=cls._parse_integrator,
             )
         )
         builder.add_custom_attribute(
@@ -667,6 +668,7 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:option:solver",
                 mjcf_attribute_name="solver",
                 mjcf_value_transformer=cls._parse_solver,
+                usd_value_transformer=cls._parse_solver,
             )
         )
         builder.add_custom_attribute(
@@ -680,6 +682,7 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:option:cone",
                 mjcf_attribute_name="cone",
                 mjcf_value_transformer=cls._parse_cone,
+                usd_value_transformer=cls._parse_cone,
             )
         )
         builder.add_custom_attribute(
@@ -693,6 +696,7 @@ class SolverMuJoCo(SolverBase):
                 usd_attribute_name="mjc:option:jacobian",
                 mjcf_attribute_name="jacobian",
                 mjcf_value_transformer=cls._parse_jacobian,
+                usd_value_transformer=cls._parse_jacobian,
             )
         )
 
@@ -2587,7 +2591,7 @@ class SolverMuJoCo(SolverBase):
         actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         ls_parallel: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
@@ -2635,6 +2639,8 @@ class SolverMuJoCo(SolverBase):
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
                 ``mujoco_warp`` and MuJoCo.
         """
+        if mesh_maxhullvert is None:
+            mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
 
         if not model.joint_count:
             raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
@@ -3947,7 +3953,7 @@ class SolverMuJoCo(SolverBase):
             "geom_pos",
             "geom_quat",
             "geom_friction",
-            # "geom_margin",
+            "geom_margin",
             "geom_gap",
             # "geom_rgba",
             # "site_pos",

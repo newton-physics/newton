@@ -18,7 +18,7 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 ## Quickstart
 
-During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager. You may find uv installation instructions in the [Newton Installation Guide](https://newton-physics.github.io/newton/guide/installation.html#method-1-using-uv-recommended).
+During the alpha development phase, we recommend using the [uv](https://docs.astral.sh/uv/) Python package and project manager. You may find uv installation instructions in the [Newton Installation Guide](https://newton-physics.github.io/newton/latest/guide/installation.html#method-1-using-uv-recommended).
 
 Once uv is installed, running Newton examples is straightforward:
 
@@ -34,7 +34,7 @@ uv sync --extra examples
 uv run -m newton.examples basic_pendulum
 ```
 
-See the [installation guide](https://newton-physics.github.io/newton/guide/installation.html) for detailed instructions that include steps for setting up a Python environment for use with Newton.
+See the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html) for detailed instructions that include steps for setting up a Python environment for use with Newton.
 
 ## Examples
 
@@ -225,6 +225,30 @@ uv sync --extra examples
       <code>uv run -m newton.examples cable_bundle_hysteresis</code>
     </td>
   </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_pile.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_pile.jpg" alt="Cable Pile">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_y_junction.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_y_junction.jpg" alt="Cable Y-Junction">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples cable_pile</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples cable_y_junction</code>
+    </td>
+    <td align="center">
+    </td>
+  </tr>
 </table>
 
 ### Cloth Examples
@@ -269,6 +293,11 @@ uv sync --extra examples
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_twist.jpg" alt="Cloth Twist">
       </a>
     </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cloth/example_rolling_cloth.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cloth_rolling_cloth.png" alt="Rolling Cloth">
+      </a>
+    </td>
   </tr>
  <tr>
     <td align="center">
@@ -276,6 +305,9 @@ uv sync --extra examples
     </td>
     <td align="center">
       <code>uv run -m newton.examples cloth_twist</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples rolling_cloth</code>
     </td>
  </tr>
 </table>
@@ -503,6 +535,56 @@ uv sync --extra examples
   </tr>
 </table>
 
+### Multi-Physics Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_falling_gift.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_falling_gift.png" alt="Falling Gift">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_softbody_dropping_to_cloth.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_softbody_dropping_to_cloth.png" alt="Softbody Dropping to Cloth">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_poker_cards_stacking.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_multiphysics_poker_cards_stacking.png" alt="Poker Cards Stacking">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples falling_gift</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples softbody_dropping_to_cloth</code>
+    </td>
+    <td align="center">
+      <code>uv run -m newton.examples poker_cards_stacking</code>
+    </td>
+  </tr>
+</table>
+
+### Softbody Examples
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/softbody/example_softbody_hanging.py">
+        <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_hanging.png" alt="Softbody Hanging">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <code>uv run -m newton.examples softbody_hanging</code>
+    </td>
+  </tr>
+</table>
+
 ### Example Options
 
 The examples support the following command-line arguments:
@@ -534,11 +616,11 @@ uv run -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 
 ## Contributing and Development
 
-See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/guide/development.html) for instructions on how to contribute to Newton.
+See the [contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) and the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for instructions on how to contribute to Newton.
 
 ## Support and Community Discussion
 
-For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
+For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/latest/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
 
 ## Code of Conduct
 

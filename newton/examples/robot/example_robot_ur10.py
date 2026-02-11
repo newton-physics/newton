@@ -48,7 +48,7 @@ def update_joint_target_trajectory_kernel(
     step = int(t)
     time[world_idx] = t
 
-    num_dofs = joint_target.shape[1]
+    num_dofs = joint_target.shape[2]
     for dof in range(num_dofs):
         # add world_idx here to make the sequence of dofs different for each world
         di = (dof + world_idx) % num_dofs

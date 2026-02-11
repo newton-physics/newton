@@ -62,11 +62,29 @@ __all__ += [
 ]
 
 # ==================================================================================
+# cable utils
+# ==================================================================================
+from ._src.utils.cable import (  # noqa: E402
+    create_cable_stiffness_from_elastic_moduli,
+    create_parallel_transport_cable_quaternions,
+    create_straight_cable_points,
+    create_straight_cable_points_and_quaternions,
+)
+
+__all__ += [
+    "create_cable_stiffness_from_elastic_moduli",
+    "create_parallel_transport_cable_quaternions",
+    "create_straight_cable_points",
+    "create_straight_cable_points_and_quaternions",
+]
+
+# ==================================================================================
 # spatial math
 # TODO: move these to Warp?
 # ==================================================================================
 from ._src.core.spatial import (  # noqa: E402
     quat_between_axes,
+    quat_between_vectors_robust,
     quat_decompose,
     quat_from_euler,
     quat_to_euler,
@@ -80,6 +98,7 @@ from ._src.core.spatial import (  # noqa: E402
 
 __all__ += [
     "quat_between_axes",
+    "quat_between_vectors_robust",
     "quat_decompose",
     "quat_from_euler",
     "quat_to_euler",
@@ -156,4 +175,15 @@ from ._src.utils.import_utils import string_to_warp  # noqa: E402
 
 __all__ += [
     "string_to_warp",
+]
+
+# ==================================================================================
+# texture utils
+# ==================================================================================
+
+from ._src.utils.texture import load_texture, normalize_texture  # noqa: E402
+
+__all__ += [
+    "load_texture",
+    "normalize_texture",
 ]

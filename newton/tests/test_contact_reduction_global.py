@@ -496,6 +496,7 @@ def test_export_reduced_contacts_kernel(test, device):
 
     # Create dummy shape_data for thickness lookup
     num_shapes = 200
+    shape_types = wp.zeros(num_shapes, dtype=int, device=device)  # Shape types (0 = PLANE, doesn't affect test)
     shape_data = wp.zeros(num_shapes, dtype=wp.vec4, device=device)
     shape_data_np = shape_data.numpy()
     for i in range(num_shapes):
@@ -526,6 +527,7 @@ def test_export_reduced_contacts_kernel(test, device):
             reducer.position_depth,
             reducer.normal,
             reducer.shape_pairs,
+            shape_types,
             shape_data,
             shape_contact_margin,
             writer_data,
