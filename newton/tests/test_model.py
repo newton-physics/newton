@@ -1640,7 +1640,6 @@ class TestModel(unittest.TestCase):
         except Exception as e:
             self.fail(f"control.clear() raised {type(e).__name__}: {e}")
 
-
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
         builder = ModelBuilder()
