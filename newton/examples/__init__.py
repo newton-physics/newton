@@ -336,6 +336,12 @@ def create_parser():
         default=None,
         help="Maximum number of worlds to render (for performance with many environments).",
     )
+    parser.add_argument(
+        "--quiet",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Suppress Warp compilation messages.",
+    )
 
     return parser
 
@@ -364,6 +370,10 @@ def init(parser=None):
     else:
         # When parser is provided, use parse_args() to properly handle --help
         args = parser.parse_args()
+
+    # Suppress Warp compilation messages if requested
+    if args.quiet:
+        wp.config.quiet = True
 
     # Set device if specified
     if args.device:

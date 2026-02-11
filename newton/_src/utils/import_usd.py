@@ -28,7 +28,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import MESH_MAXHULLVERT, ShapeFlags, compute_sphere_inertia
+from ..geometry import Mesh, ShapeFlags, compute_sphere_inertia
 from ..sim.builder import ModelBuilder
 from ..sim.joints import ActuatorMode
 from ..sim.model import Model
@@ -60,7 +60,7 @@ def parse_usd(
     load_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
     parse_mujoco_options: bool = True,
-    mesh_maxhullvert: int = MESH_MAXHULLVERT,
+    mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
     force_position_velocity_actuation: bool = False,
 ) -> dict[str, Any]:
@@ -147,6 +147,8 @@ def parse_usd(
             * - ``"path_original_body_map"``
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
     """
+    if mesh_maxhullvert is None:
+        mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
     if schema_resolvers is None:
         schema_resolvers = [SchemaResolverNewton()]
     collect_schema_attrs = len(schema_resolvers) > 0
@@ -225,6 +227,10 @@ def parse_usd(
 
     # Initialize schema resolver according to precedence
     R = SchemaResolverManager(schema_resolvers)
+
+    # Validate solver-specific custom attributes are registered
+    for resolver in schema_resolvers:
+        resolver.validate_custom_attributes(builder)
 
     # mapping from prim path to body index in ModelBuilder
     path_body_map: dict[str, int] = {}

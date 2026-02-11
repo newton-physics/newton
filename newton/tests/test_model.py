@@ -321,6 +321,82 @@ class TestModel(unittest.TestCase):
         self.assertEqual(len(mesh.vertices), 8)
         self.assertEqual(len(mesh.indices), 36)
 
+    def test_approximate_meshes_collision_filter_child_bodies(self):
+        def normalize_pair(a, b):
+            return (min(a, b), max(a, b))
+
+        def get_filter_set(builder):
+            return {normalize_pair(a, b) for a, b in builder.shape_collision_filter_pairs}
+
+        builder = ModelBuilder()
+
+        # Create a chain of 3 bodies (like an articulation)
+        body0 = builder.add_link()
+        body1 = builder.add_link()
+        body2 = builder.add_link()
+
+        # Add initial shapes to each body (like mesh shapes before decomposition)
+        shape0_initial = builder.add_shape_sphere(body=body0, radius=0.1)
+        shape1_initial = builder.add_shape_sphere(body=body1, radius=0.1)
+        shape2_initial = builder.add_shape_sphere(body=body2, radius=0.1)
+
+        # Create joints (establishes parent->child relationships)
+        # body0 is parent of body1, body1 is parent of body2
+        joint_free = builder.add_joint_free(parent=-1, child=body0)
+        joint0 = builder.add_joint_revolute(parent=body0, child=body1, axis=(0, 0, 1))
+        joint1 = builder.add_joint_revolute(parent=body1, child=body2, axis=(0, 0, 1))
+        builder.add_articulation(joints=[joint_free, joint0, joint1])
+
+        # At this point, initial shapes should be filtered between adjacent bodies
+        filter_set = get_filter_set(builder)
+        self.assertIn(
+            normalize_pair(shape0_initial, shape1_initial),
+            filter_set,
+            "Initial body0-body1 shapes should be filtered",
+        )
+        self.assertIn(
+            normalize_pair(shape1_initial, shape2_initial),
+            filter_set,
+            "Initial body1-body2 shapes should be filtered",
+        )
+
+        # Now simulate what approximate_meshes() does: add additional shapes to bodies
+        # after joints are already created (like convex decomposition adding multiple parts)
+        shape0_extra1 = builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        shape0_extra2 = builder.add_shape_capsule(body=body0, radius=0.05, half_height=0.1)
+        shape1_extra1 = builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+
+        filter_set = get_filter_set(builder)
+
+        # Verify: new body0 shapes should filter with ALL body1 shapes (including initial)
+        for parent_shape in [shape0_extra1, shape0_extra2]:
+            for child_shape in [shape1_initial, shape1_extra1]:
+                expected_pair = normalize_pair(parent_shape, child_shape)
+                self.assertIn(
+                    expected_pair,
+                    filter_set,
+                    f"New parent body0 shape {parent_shape} should filter with body1 shape {child_shape}",
+                )
+
+        # Verify: new body1 shapes should filter with ALL body0 shapes (parent)
+        for child_shape in [shape1_extra1]:
+            for parent_shape in [shape0_initial, shape0_extra1, shape0_extra2]:
+                expected_pair = normalize_pair(parent_shape, child_shape)
+                self.assertIn(
+                    expected_pair,
+                    filter_set,
+                    f"New body1 shape {child_shape} should filter with parent body0 shape {parent_shape}",
+                )
+
+        # Verify: new body1 shapes should filter with ALL body2 shapes (child)
+        for parent_shape in [shape1_extra1]:
+            expected_pair = normalize_pair(parent_shape, shape2_initial)
+            self.assertIn(
+                expected_pair,
+                filter_set,
+                f"New body1 shape {parent_shape} should filter with child body2 shape {shape2_initial}",
+            )
+
     def test_add_particles_grouping(self):
         """Test that add_particles correctly assigns world groups."""
         builder = ModelBuilder()
