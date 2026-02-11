@@ -235,13 +235,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collapse_fixed_joints_preserves_orphan_joints(self):
-        """collapse_fixed_joints must not drop orphan joints or their bodies.
-
-        Regression test: when no PhysicsArticulationRootAPI exists in the USD
-        and only body-to-body joints are present, collapse_fixed_joints would
-        drop all bodies and joints because the DFS only started from children
-        of world (-1), which was empty when free joints were not auto-inserted.
-        """
+        """collapse_fixed_joints must not drop orphan joints or their bodies."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
 
         stage = Usd.Stage.CreateInMemory()
