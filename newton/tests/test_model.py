@@ -1570,7 +1570,10 @@ class TestModel(unittest.TestCase):
 
         model = builder.finalize()
         control = model.control()
-        control.clear()
+        try:
+            control.clear()
+        except Exception as e:
+            self.fail(f"control.clear() raised {type(e).__name__}: {e}")
 
 
 if __name__ == "__main__":
