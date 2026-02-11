@@ -2131,7 +2131,7 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
 
     robot_folder = "universal_robots_ur5e"
     floating = False
-    control_strategy = StructuredControlStrategy(amplitude_scale=0.5, frequency_range=(0.5, 1.5))
+    control_strategy = RandomControlStrategy(seed=42)
     num_worlds = 34
     debug_visual = False  # Enable viewer
     debug_view_newton = False  # False=Native, True=Newton
