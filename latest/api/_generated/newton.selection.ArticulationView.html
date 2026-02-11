@@ -854,6 +854,52 @@ attribute access and modification for simulation and control.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.selection.ArticulationView.eval_jacobian">
+<span class="sig-name descname"><span class="pre">eval_jacobian</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">J</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_S_s</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.selection.ArticulationView.eval_jacobian" title="Link to this definition">#</a></dt>
+<dd><p>Evaluate spatial Jacobian for articulations in this view.</p>
+<p>Computes the spatial Jacobian J that maps joint velocities to spatial
+velocities of each link in world frame.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The state containing body transforms (body_q).</p></li>
+<li><p><strong>J</strong> – Optional output array for the Jacobian, shape (articulation_count, max_links*6, max_dofs).
+If None, allocates internally.</p></li>
+<li><p><strong>joint_S_s</strong> – Optional pre-allocated temp array for motion subspaces.</p></li>
+<li><p><strong>mask</strong> – Optional mask of articulations in this ArticulationView (all by default).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The Jacobian array J, or None if the model has no articulations.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.selection.ArticulationView.eval_mass_matrix">
+<span class="sig-name descname"><span class="pre">eval_mass_matrix</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">H</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">J</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body_I_s</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_S_s</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.selection.ArticulationView.eval_mass_matrix" title="Link to this definition">#</a></dt>
+<dd><p>Evaluate generalized mass matrix for articulations in this view.</p>
+<p>Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
+Jacobian and M is the block-diagonal spatial mass matrix.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The state containing body transforms (body_q).</p></li>
+<li><p><strong>H</strong> – Optional output array for mass matrix, shape (articulation_count, max_dofs, max_dofs).
+If None, allocates internally.</p></li>
+<li><p><strong>J</strong> – Optional pre-computed Jacobian. If None, computes internally.</p></li>
+<li><p><strong>body_I_s</strong> – Optional pre-allocated temp array for spatial inertias.</p></li>
+<li><p><strong>joint_S_s</strong> – Optional pre-allocated temp array for motion subspaces.</p></li>
+<li><p><strong>mask</strong> – Optional mask of articulations in this ArticulationView (all by default).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The mass matrix array H, or None if the model has no articulations.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.selection.ArticulationView.get_attribute">
 <span class="sig-name descname"><span class="pre">get_attribute</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">source</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.selection.ArticulationView.get_attribute" title="Link to this definition">#</a></dt>
 <dd><p>Get an attribute from the source (Model, State, or Control).</p>
@@ -1143,6 +1189,8 @@ Call <a class="reference internal" href="#newton.selection.ArticulationView.eval
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView"><code class="docutils literal notranslate"><span class="pre">ArticulationView</span></code></a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.__init__"><code class="docutils literal notranslate"><span class="pre">ArticulationView.__init__()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_fk"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_fk()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_jacobian"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_jacobian()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_mass_matrix"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_mass_matrix()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_attribute"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_attribute()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_forces"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_dof_forces()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_positions"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_dof_positions()</span></code></a></li>
