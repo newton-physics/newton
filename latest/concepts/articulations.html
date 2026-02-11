@@ -1021,8 +1021,8 @@ The indexing of the linear and angular degrees of freedom for a joint at a given
 relative transform from the parent and child body to the respective anchor frames of the joint in the parent and child body:</p>
 <a class="reference internal image-reference" href="../_images/joint_transforms.png"><img alt="../_images/joint_transforms.png" class="align-center" src="../_images/joint_transforms.png" style="width: 400px;" />
 </a>
-<div class="pst-scrollable-table-container"><table class="table" id="id3">
-<caption><span class="caption-text">Variable names in the kernels from <code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.core.articulation</span></code></span><a class="headerlink" href="#id3" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id4">
+<caption><span class="caption-text">Variable names in the kernels from <code class="xref py py-mod docutils literal notranslate"><span class="pre">newton.core.articulation</span></code></span><a class="headerlink" href="#id4" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 10.0%" />
 <col style="width: 90.0%" />
@@ -1097,6 +1097,24 @@ Cannot be used together with mask parameter.</p></li>
 </dd></dl>
 
 </section>
+<section id="orphan-joints">
+<span id="id3"></span><h2>Orphan joints<a class="headerlink" href="#orphan-joints" title="Link to this heading">#</a></h2>
+<p>An <strong>orphan joint</strong> is a joint that is not part of any articulation. This situation can arise when:</p>
+<ul class="simple">
+<li><p>The USD asset does not define a <code class="docutils literal notranslate"><span class="pre">PhysicsArticulationRootAPI</span></code> on any prim, so no articulations are discovered during parsing.</p></li>
+<li><p>A joint connects two bodies that are not under any <code class="docutils literal notranslate"><span class="pre">PhysicsArticulationRootAPI</span></code> prim, even though other articulations exist in the scene.</p></li>
+</ul>
+<p>When orphan joints are detected during USD parsing (<a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_usd()</span></code></a>), Newton issues a warning with the affected joint paths.</p>
+<p><strong>Validation and finalization</strong></p>
+<p>By default, <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a> validates that every joint belongs to an articulation and raises a <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ValueError</span></code></a> if orphan joints are found.
+To proceed with orphan joints, skip this validation:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">(</span><span class="n">skip_validation_joints</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>Solver compatibility</strong></p>
+<p>Only maximal-coordinate solvers (<a class="reference internal" href="../api/_generated/newton.solvers.SolverXPBD.html#newton.solvers.SolverXPBD" title="newton.solvers.SolverXPBD"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code></a>, <a class="reference internal" href="../api/_generated/newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>) support orphan joints.
+Generalized-coordinate solvers (<a class="reference internal" href="../api/_generated/newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>) require every joint to belong to an articulation.</p>
+</section>
 </section>
 
 
@@ -1130,6 +1148,7 @@ Cannot be used together with mask parameter.</p></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#forward-inverse-kinematics">Forward / Inverse Kinematics</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#orphan-joints">Orphan joints</a></li>
 </ul>
   </nav></div>
 
