@@ -3410,6 +3410,18 @@ class ModelBuilder:
         Returns:
             Constraint index
         """
+        joint_count = self.joint_count
+        if joint0 < 0 or joint0 >= joint_count:
+            raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
+        if joint1 < 0 or joint1 >= joint_count:
+            raise ValueError(f"Invalid leader joint index {joint1}; expected 0..{joint_count - 1}")
+        if self.joint_world[joint0] != self.current_world or self.joint_world[joint1] != self.current_world:
+            raise ValueError(
+                "Mimic constraint joints must belong to the current world. "
+                f"joint0_world={self.joint_world[joint0]}, joint1_world={self.joint_world[joint1]}, "
+                f"current_world={self.current_world}."
+            )
+
         self.constraint_mimic_joint0.append(joint0)
         self.constraint_mimic_joint1.append(joint1)
         self.constraint_mimic_coef0.append(coef0)
@@ -6513,6 +6525,7 @@ class ModelBuilder:
             ("joint_world", self.joint_world),
             ("articulation_world", self.articulation_world),
             ("equality_constraint_world", self.equality_constraint_world),
+            ("constraint_mimic_world", self.constraint_mimic_world),
         ]
 
         all_world_indices = set()
