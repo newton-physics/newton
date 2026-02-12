@@ -158,8 +158,8 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
+        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
-            self.model.collide(self.state_0, self.contacts)
             self.state_0.clear_forces()
 
             # apply forces to the model for picking, wind, etc
