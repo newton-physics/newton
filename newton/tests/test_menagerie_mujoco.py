@@ -1133,14 +1133,12 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
 # body_inertia: Newton re-diagonalizes inertia tensors (diff ~2.7e-3)
 # body_iquat: Different principal axes from re-diagonalization (diff ~1.5)
 # body_invweight0/dof_invweight0: Derived from inertia (diff ~1e-6)
-# actuator_acc0: Small derived difference
-# Note: body_pos/body_quat/body_subtreemass have tiny diffs (<1e-6) but don't affect simulation
+# Note: Other fields (body_pos/quat, subtreemass, actuator_acc0) have tiny diffs but don't affect simulation
 MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
     "body_iquat",
     "body_invweight0",
     "dof_invweight0",
-    "actuator_acc0",
 ]
 
 
