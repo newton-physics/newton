@@ -1129,6 +1129,12 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
 # These are computed during mj_setConst() and affect forward dynamics.
 # The differences arise from Newton's inertia re-diagonalization and different
 # float accumulation paths during model compilation.
+# Fields needed to eliminate numerical differences from model compilation.
+# body_inertia: Newton re-diagonalizes inertia tensors (diff ~2.7e-3)
+# body_iquat: Different principal axes from re-diagonalization (diff ~1.5)
+# body_invweight0/dof_invweight0: Derived from inertia (diff ~1e-6)
+# body_subtreemass/actuator_acc0: Small derived differences
+# Note: body_pos/body_quat have tiny diffs (~1e-7) but don't affect simulation
 MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
     "body_iquat",
@@ -1136,8 +1142,6 @@ MODEL_BACKFILL_FIELDS: list[str] = [
     "body_subtreemass",
     "dof_invweight0",
     "actuator_acc0",
-    "body_quat",
-    "body_pos",
 ]
 
 
