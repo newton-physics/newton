@@ -55,6 +55,14 @@ following precedence:
    A collider is skipped (with warning) only if neither path provides usable collider mass
    information.
 
+   .. note::
+
+      The callback payload provided by Newton in this path is unit-density collider shape
+      information (volume/COM/inertia basis). Collider density authored via ``UsdPhysics.MassAPI``
+      (for example, ``physics:density``) or via bound ``UsdPhysics.MaterialAPI`` is still applied
+      by USD during ``ComputeMassProperties(...)``. In other words, unit-density callback data does
+      not mean authored densities are ignored.
+
 When a body mass value is resolved in either path, Newton always overwrites body mass and inverse
 mass for the imported body. If resolved mass is non-positive, inverse mass is set to ``0``.
 
