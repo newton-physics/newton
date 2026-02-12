@@ -1711,27 +1711,6 @@ Attaches two bodies to each other, removing all relative degrees of freedom betw
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.ModelBuilder.add_free_joints_to_floating_bodies">
-<span class="sig-name descname"><span class="pre">add_free_joints_to_floating_bodies</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">new_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_free_joints_to_floating_bodies" title="Link to this definition">#</a></dt>
-<dd><p>Adds a free joint and single-joint articulation to every rigid body that is not a child in any joint
-and has positive mass.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>new_bodies</strong> (<em>Iterable</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>] or </em><em>None</em><em>, </em><em>optional</em>) – The set of body indices to consider for adding free joints.</p>
-</dd>
-</dl>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<ul class="simple">
-<li><p>Bodies that are already a child in any joint will be skipped.</p></li>
-<li><p>Only bodies with strictly positive mass will receive a free joint.</p></li>
-<li><p>Each free joint is added to its own single-joint articulation.</p></li>
-<li><p>This is useful for ensuring that all floating (unconnected) bodies are properly articulated.</p></li>
-</ul>
-</div>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="newton.ModelBuilder.add_ground_plane">
 <span class="sig-name descname"><span class="pre">add_ground_plane</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cfg</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">key</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_ground_plane" title="Link to this definition">#</a></dt>
 <dd><p>Adds a ground plane collision shape to the model.</p>
@@ -2101,7 +2080,7 @@ center of mass, or inertia. This does not affect merging behavior in
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ModelBuilder.add_mjcf">
-<span class="sig-name descname"><span class="pre">add_mjcf</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">floating</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_joint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">armature_scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hide_visuals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_visuals_as_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_meshes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_visuals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_mujoco_options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Axis.Z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_names</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_classes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visual_classes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">('visual',)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_classes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">('collision',)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">no_class_as_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_show_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_self_collisions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_inertial_definitions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ensure_nonstatic_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">static_link_mass</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collapse_fixed_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_equality_constraints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">convert_3d_hinge_to_ball_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh_maxhullvert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrl_direct</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">path_resolver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_mjcf" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">add_mjcf</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">floating</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_joint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">armature_scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hide_visuals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_visuals_as_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_meshes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_visuals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_mujoco_options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Axis.Z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_names</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_classes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">()</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visual_classes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">('visual',)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collider_classes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">('collision',)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">no_class_as_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_show_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_self_collisions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_inertial_definitions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ensure_nonstatic_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">static_link_mass</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collapse_fixed_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_equality_constraints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">convert_3d_hinge_to_ball_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh_maxhullvert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrl_direct</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">path_resolver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_mjcf" title="Link to this definition">#</a></dt>
 <dd><p>Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
 MuJoCo-specific custom attributes are registered on the builder automatically.</p>
 <dl class="field-list simple">
@@ -2109,8 +2088,91 @@ MuJoCo-specific custom attributes are registered on the builder automatically.</
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>source</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – The filename of the MuJoCo file to parse, or the MJCF XML string content.</p></li>
 <li><p><strong>xform</strong> (<em>Transform</em>) – The transform to apply to the imported mechanism.</p></li>
-<li><p><strong>floating</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.</p></li>
-<li><p><strong>base_joint</strong> (<em>Union</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a><em>]</em>) – The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. “px,py,rz” for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see <a class="reference internal" href="#newton.ModelBuilder.add_joint" title="newton.ModelBuilder.add_joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_joint()</span></code></a>).</p></li>
+<li><p><strong>floating</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> or </em><em>None</em>) – <p>Controls the base joint type for the root body.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">None</span></code> (default): Uses format-specific default (honors <code class="docutils literal notranslate"><span class="pre">&lt;freejoint&gt;</span></code> tags in MJCF,
+otherwise creates a FIXED joint).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">True</span></code>: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+<code class="docutils literal notranslate"><span class="pre">parent_body</span> <span class="pre">==</span> <span class="pre">-1</span></code> since FREE joints must connect to world frame.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">False</span></code>: Creates a FIXED joint (0 DOF).</p></li>
+</ul>
+<p>Cannot be specified together with <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>.</p>
+</p></li>
+<li><p><strong>base_joint</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a>) – <p>Custom joint specification for connecting the root body to the world
+(or to <code class="docutils literal notranslate"><span class="pre">parent_body</span></code> if specified). This parameter enables hierarchical composition with
+custom mobility. Dictionary with joint parameters as accepted by
+<a class="reference internal" href="#newton.ModelBuilder.add_joint" title="newton.ModelBuilder.add_joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_joint()</span></code></a> (e.g., joint type, axes, limits, stiffness).</p>
+<p>Cannot be specified together with <code class="docutils literal notranslate"><span class="pre">floating</span></code>.</p>
+</p></li>
+<li><p><strong>parent_body</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – <p>Parent body index for hierarchical composition. If specified, attaches the
+imported root body to this existing body, making them part of the same kinematic articulation.
+The connection type is determined by <code class="docutils literal notranslate"><span class="pre">floating</span></code> or <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>. If <code class="docutils literal notranslate"><span class="pre">-1</span></code> (default),
+the root connects to the world frame. <strong>Restriction</strong>: Only the most recently added
+articulation can be used as parent; attempting to attach to an older articulation will raise
+a <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Valid combinations of <code class="docutils literal notranslate"><span class="pre">floating</span></code>, <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>, and <code class="docutils literal notranslate"><span class="pre">parent_body</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 55.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>floating</p></th>
+<th class="head"><p>base_joint</p></th>
+<th class="head"><p>parent_body</p></th>
+<th class="head"><p>Result</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>Format default (MJCF: honors <code class="docutils literal notranslate"><span class="pre">&lt;freejoint&gt;</span></code>, else FIXED)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">True</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>FREE joint to world (6 DOF)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>FIXED joint to world (0 DOF)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{dict}</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>Custom joint to world (e.g., D6)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>FIXED joint to parent body</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{dict}</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>Custom joint to parent body (e.g., D6)</p></td>
+</tr>
+<tr class="row-even"><td><p><em>explicitly set</em></p></td>
+<td><p><em>explicitly set</em></p></td>
+<td><p><em>any</em></p></td>
+<td><p>❌ Error: mutually exclusive (cannot specify both)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">True</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>❌ Error: FREE joints require world frame</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</p></li>
 <li><p><strong>armature_scale</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Scaling factor to apply to the MJCF-defined joint armature values.</p></li>
 <li><p><strong>scale</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The scaling factor to apply to the imported mechanism.</p></li>
 <li><p><strong>hide_visuals</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, hide visual shapes after loading them (affects visibility, not loading).</p></li>
@@ -2988,15 +3050,97 @@ between the particles in their initial configuration.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ModelBuilder.add_urdf">
-<span class="sig-name descname"><span class="pre">add_urdf</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">floating</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_joint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hide_visuals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_visuals_as_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Axis.Z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_show_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_self_collisions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_inertial_definitions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ensure_nonstatic_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">static_link_mass</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_ordering</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'dfs'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bodies_follow_joint_ordering</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collapse_fixed_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh_maxhullvert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_position_velocity_actuation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_urdf" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">add_urdf</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">floating</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_joint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hide_visuals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_visuals_as_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Axis.Z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_show_colliders</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_self_collisions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_inertial_definitions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ensure_nonstatic_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">static_link_mass</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1e-2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_ordering</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'dfs'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bodies_follow_joint_ordering</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collapse_fixed_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh_maxhullvert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_position_velocity_actuation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_urdf" title="Link to this definition">#</a></dt>
 <dd><p>Parses a URDF file and adds the bodies and joints to the given ModelBuilder.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>source</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – The filename of the URDF file to parse, or the URDF XML string content.</p></li>
 <li><p><strong>xform</strong> (<em>Transform</em>) – The transform to apply to the root body. If None, the transform is set to identity.</p></li>
-<li><p><strong>floating</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a <cite>base_joint</cite> is defined.</p></li>
-<li><p><strong>base_joint</strong> (<em>Union</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a><em>]</em>) – The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. “px,py,rz” for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see <a class="reference internal" href="#newton.ModelBuilder.add_joint" title="newton.ModelBuilder.add_joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_joint()</span></code></a>).</p></li>
+<li><p><strong>floating</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> or </em><em>None</em>) – <p>Controls the base joint type for the root body.</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">None</span></code> (default): Uses format-specific default (creates a FIXED joint for URDF).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">True</span></code>: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+<code class="docutils literal notranslate"><span class="pre">parent_body</span> <span class="pre">==</span> <span class="pre">-1</span></code> since FREE joints must connect to world frame.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">False</span></code>: Creates a FIXED joint (0 DOF).</p></li>
+</ul>
+<p>Cannot be specified together with <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>.</p>
+</p></li>
+<li><p><strong>base_joint</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a>) – <p>Custom joint specification for connecting the root body to the world
+(or to <code class="docutils literal notranslate"><span class="pre">parent_body</span></code> if specified). This parameter enables hierarchical composition with
+custom mobility. Dictionary with joint parameters as accepted by
+<a class="reference internal" href="#newton.ModelBuilder.add_joint" title="newton.ModelBuilder.add_joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_joint()</span></code></a> (e.g., joint type, axes, limits, stiffness).</p>
+<p>Cannot be specified together with <code class="docutils literal notranslate"><span class="pre">floating</span></code>.</p>
+</p></li>
+<li><p><strong>parent_body</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – <p>Parent body index for hierarchical composition. If specified, attaches the
+imported root body to this existing body, making them part of the same kinematic articulation.
+The connection type is determined by <code class="docutils literal notranslate"><span class="pre">floating</span></code> or <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>. If <code class="docutils literal notranslate"><span class="pre">-1</span></code> (default),
+the root connects to the world frame. <strong>Restriction</strong>: Only the most recently added
+articulation can be used as parent; attempting to attach to an older articulation will raise
+a <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Valid combinations of <code class="docutils literal notranslate"><span class="pre">floating</span></code>, <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>, and <code class="docutils literal notranslate"><span class="pre">parent_body</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 55.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>floating</p></th>
+<th class="head"><p>base_joint</p></th>
+<th class="head"><p>parent_body</p></th>
+<th class="head"><p>Result</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>Format default (URDF: FIXED joint)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">True</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>FREE joint to world (6 DOF)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>FIXED joint to world (0 DOF)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{dict}</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>Custom joint to world (e.g., D6)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>FIXED joint to parent body</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{dict}</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>Custom joint to parent body (e.g., D6)</p></td>
+</tr>
+<tr class="row-even"><td><p><em>explicitly set</em></p></td>
+<td><p><em>explicitly set</em></p></td>
+<td><p><em>any</em></p></td>
+<td><p>❌ Error: mutually exclusive (cannot specify both)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">True</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>❌ Error: FREE joints require world frame</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</p></li>
 <li><p><strong>scale</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The scaling factor to apply to the imported mechanism.</p></li>
 <li><p><strong>hide_visuals</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, hide visual shapes.</p></li>
 <li><p><strong>parse_visuals_as_colliders</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, the geometry defined under the <cite>&lt;visual&gt;</cite> tags is used for collision handling instead of the <cite>&lt;collision&gt;</cite> geometries.</p></li>
@@ -3023,7 +3167,7 @@ damping &gt; 0, <a class="reference internal" href="newton.ActuatorMode.html#new
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ModelBuilder.add_usd">
-<span class="sig-name descname"><span class="pre">add_usd</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">only_load_enabled_rigid_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">only_load_enabled_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_drive_gains_scaling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_paths</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collapse_fixed_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_self_collisions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">apply_up_axis_from_stage</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">root_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'/'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_ordering</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'dfs'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bodies_follow_joint_ordering</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_mesh_approximation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">load_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">load_visual_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hide_collision_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_mujoco_options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh_maxhullvert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">schema_resolvers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_position_velocity_actuation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_usd" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">add_usd</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">source</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">floating</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_joint</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parent_body</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">only_load_enabled_rigid_bodies</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">only_load_enabled_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_drive_gains_scaling</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ignore_paths</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collapse_fixed_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enable_self_collisions</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">apply_up_axis_from_stage</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">root_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'/'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint_ordering</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'dfs'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">bodies_follow_joint_ordering</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">skip_mesh_approximation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">load_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">load_visual_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hide_collision_shapes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">parse_mujoco_options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh_maxhullvert</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">schema_resolvers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">force_position_velocity_actuation</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_usd" title="Link to this definition">#</a></dt>
 <dd><p>Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.</p>
 <p>The USD description has to be either a path (file name or URL), or an existing USD stage instance that implements the <a class="reference external" href="https://openusd.org/dev/api/class_usd_stage.html">Stage</a> interface.</p>
 <p>See <a class="reference internal" href="../../concepts/usd_parsing.html#usd-parsing"><span class="std std-ref">USD Parsing and Schema Resolver System</span></a> for more information.</p>
@@ -3032,6 +3176,91 @@ damping &gt; 0, <a class="reference internal" href="newton.ActuatorMode.html#new
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>source</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>pxr.Usd.Stage</em>) – The file path to the USD file, or an existing USD stage instance.</p></li>
 <li><p><strong>xform</strong> (<em>Transform</em>) – The transform to apply to the entire scene.</p></li>
+<li><p><strong>floating</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> or </em><em>None</em>) – <p>Controls the base joint type for the root body (bodies not connected as
+a child to any joint).</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">None</span></code> (default): Uses format-specific default (creates a FREE joint for USD bodies without joints).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">True</span></code>: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+<code class="docutils literal notranslate"><span class="pre">parent_body</span> <span class="pre">==</span> <span class="pre">-1</span></code> since FREE joints must connect to world frame.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">False</span></code>: Creates a FIXED joint (0 DOF).</p></li>
+</ul>
+<p>Cannot be specified together with <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>.</p>
+</p></li>
+<li><p><strong>base_joint</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a>) – <p>Custom joint specification for connecting the root body to the world
+(or to <code class="docutils literal notranslate"><span class="pre">parent_body</span></code> if specified). This parameter enables hierarchical composition with
+custom mobility. Dictionary with joint parameters as accepted by
+<a class="reference internal" href="#newton.ModelBuilder.add_joint" title="newton.ModelBuilder.add_joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.add_joint()</span></code></a> (e.g., joint type, axes, limits, stiffness).</p>
+<p>Cannot be specified together with <code class="docutils literal notranslate"><span class="pre">floating</span></code>.</p>
+</p></li>
+<li><p><strong>parent_body</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – <p>Parent body index for hierarchical composition. If specified, attaches the
+imported root body to this existing body, making them part of the same kinematic articulation.
+The connection type is determined by <code class="docutils literal notranslate"><span class="pre">floating</span></code> or <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>. If <code class="docutils literal notranslate"><span class="pre">-1</span></code> (default),
+the root connects to the world frame. <strong>Restriction</strong>: Only the most recently added
+articulation can be used as parent; attempting to attach to an older articulation will raise
+a <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Valid combinations of <code class="docutils literal notranslate"><span class="pre">floating</span></code>, <code class="docutils literal notranslate"><span class="pre">base_joint</span></code>, and <code class="docutils literal notranslate"><span class="pre">parent_body</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 55.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>floating</p></th>
+<th class="head"><p>base_joint</p></th>
+<th class="head"><p>parent_body</p></th>
+<th class="head"><p>Result</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>Format default (USD: FREE joint for bodies without joints)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">True</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>FREE joint to world (6 DOF)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>FIXED joint to world (0 DOF)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{dict}</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+<td><p>Custom joint to world (e.g., D6)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>FIXED joint to parent body</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">{dict}</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>Custom joint to parent body (e.g., D6)</p></td>
+</tr>
+<tr class="row-even"><td><p><em>explicitly set</em></p></td>
+<td><p><em>explicitly set</em></p></td>
+<td><p><em>any</em></p></td>
+<td><p>❌ Error: mutually exclusive (cannot specify both)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">True</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">body_idx</span></code></p></td>
+<td><p>❌ Error: FREE joints require world frame</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</p></li>
 <li><p><strong>only_load_enabled_rigid_bodies</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, only rigid bodies which do not have <cite>physics:rigidBodyEnabled</cite> set to False are loaded.</p></li>
 <li><p><strong>only_load_enabled_joints</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, only joints which do not have <cite>physics:jointEnabled</cite> set to False are loaded.</p></li>
 <li><p><strong>joint_drive_gains_scaling</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as “newton:joint_drive_gains_scaling”.</p></li>
@@ -3788,7 +4017,6 @@ Default: False.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_equality_constraint_connect"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_equality_constraint_connect()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_equality_constraint_joint"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_equality_constraint_joint()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_equality_constraint_weld"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_equality_constraint_weld()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_free_joints_to_floating_bodies"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_free_joints_to_floating_bodies()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_ground_plane"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_ground_plane()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_joint"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_joint()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_joint_ball"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_joint_ball()</span></code></a></li>
