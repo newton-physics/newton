@@ -47,7 +47,7 @@ def load_heightfield_elevation(
     ext = os.path.splitext(filename)[1].lower()
 
     if ext == ".png":
-        from PIL import Image  # noqa: PLC0415
+        from PIL import Image
 
         img = Image.open(filename).convert("L")
         data = np.array(img, dtype=np.float32) / 255.0

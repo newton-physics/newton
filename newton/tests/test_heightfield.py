@@ -221,7 +221,7 @@ class TestHeightfield(unittest.TestCase):
     def test_solver_mujoco_hfield(self):
         """Test converting Newton model with heightfield to MuJoCo."""
         try:
-            import mujoco  # noqa: F401, PLC0415
+            import mujoco  # noqa: F401
         except ImportError:
             self.skipTest("MuJoCo not installed")
 
@@ -246,7 +246,7 @@ class TestHeightfield(unittest.TestCase):
     def test_heightfield_collision(self):
         """Test that a sphere doesn't fall through a heightfield."""
         try:
-            import mujoco  # noqa: F401, PLC0415
+            import mujoco  # noqa: F401
         except ImportError:
             self.skipTest("MuJoCo not installed")
 
