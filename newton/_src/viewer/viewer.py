@@ -630,6 +630,26 @@ class ViewerBase:
         and an index buffer. Slices them into separate arrays and forwards to log_mesh.
         """
 
+        # Heightfield: convert to mesh for rendering
+        if geo_type == newton.GeoType.HFIELD:
+            if geo_src is None:
+                raise ValueError(f"log_geo requires geo_src for HFIELD (name={name})")
+            from ..geometry.terrain_generator import create_mesh_heightfield  # noqa: PLC0415
+
+            # Denormalize elevation data to actual Z heights.
+            # Transpose because create_mesh_heightfield uses ij indexing (i=X, j=Y)
+            # while Heightfield uses row-major (row=Y, col=X).
+            actual_heights = geo_src.min_z + geo_src.data * (geo_src.max_z - geo_src.min_z)
+            vertices, indices = create_mesh_heightfield(
+                heightfield=actual_heights.T,
+                extent_x=geo_src.hx * 2.0,
+                extent_y=geo_src.hy * 2.0,
+            )
+            points = wp.array(vertices, dtype=wp.vec3, device=self.device)
+            indices = wp.array(indices, dtype=wp.int32, device=self.device)
+            self.log_mesh(name, points, indices, hidden=hidden)
+            return
+
         # GEO_MESH handled by provided source geometry
         if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
             if geo_src is None:
@@ -910,6 +930,7 @@ class ViewerBase:
             newton.GeoType.ELLIPSOID: "ellipsoid",
             newton.GeoType.MESH: "mesh",
             newton.GeoType.CONVEX_MESH: "convex_hull",
+            newton.GeoType.HFIELD: "heightfield",
         }.get(geo_type)
 
         if base_name is None:
@@ -922,7 +943,9 @@ class ViewerBase:
             tuple(scale_list),
             float(thickness),
             bool(is_solid),
-            geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
+            geo_src=geo_src
+            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+            else None,
             hidden=True,
         )
         self._geometry_cache[geo_hash] = mesh_path
@@ -974,7 +997,9 @@ class ViewerBase:
                     tuple(geo_scale),
                     float(geo_thickness),
                     bool(geo_is_solid),
-                    geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
+                    geo_src=geo_src
+                    if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+                    else None,
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
