@@ -1248,13 +1248,19 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(robot_urdf, builder, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False)
+        self.parse_urdf(
+            robot_urdf, builder, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False, up_axis="Z"
+        )
 
         ee_body_idx = builder.body_key.index("end_effector")
 
         # xform is in world coordinates, offset by +0.1 in Z (vertical up)
         self.parse_urdf(
-            gripper_urdf, builder, parent_body=ee_body_idx, xform=wp.transform((0.0, 0.1, 0.0), wp.quat_identity())
+            gripper_urdf,
+            builder,
+            parent_body=ee_body_idx,
+            xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()),
+            up_axis="Z",
         )
 
         gripper_body_idx = builder.body_key.index("gripper_base")

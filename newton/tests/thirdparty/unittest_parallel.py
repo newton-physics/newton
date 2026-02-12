@@ -48,6 +48,26 @@ except ImportError:
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
 
+def _parallel_download(items, download_fn, description, max_jobs):
+    """Download *items* in parallel via a thread pool, re-raising on first failure."""
+
+    max_workers = max(1, min(max_jobs, len(items)))
+    futures = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for item in items:
+            futures[executor.submit(download_fn, item)] = item
+
+        for future in concurrent.futures.as_completed(futures):
+            item = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"{description} download failed: {item}: {e}", file=sys.stderr)
+                raise
+
+    print(f"Downloaded {description}")
+
+
 def main(argv=None):
     """
     unittest-parallel command-line script main entry point
@@ -181,8 +201,6 @@ def main(argv=None):
 
     # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
     # For now this avoids races and conflicting downloads in parallel test runs.
-    from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
-
     import newton.utils  # noqa: PLC0415
 
     assets_to_download = [
@@ -198,23 +216,13 @@ def main(argv=None):
         "universal_robots_ur10",
         "wonik_allegro",
     ]
-
-    # Respect CLI cap for parallelism
-    max_workers = max(1, min(args.maxjobs, len(assets_to_download)))
-    futures = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for asset in assets_to_download:
-            futures[executor.submit(newton.utils.download_asset, asset)] = asset
-
-        for future in as_completed(futures):
-            asset = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                print(f"Asset download failed: {asset}: {e}", file=sys.stderr)
-                raise
-
-    print("Downloaded assets")
+    # Passing args.maxjobs to respect CLI cap for parallelism.
+    _parallel_download(
+        assets_to_download,
+        newton.utils.download_asset,
+        "assets",
+        args.maxjobs,
+    )
 
     # Pre-download mujoco_menagerie folders used by test_robot_composer
     from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
@@ -226,21 +234,13 @@ def main(argv=None):
         "wonik_allegro",
         "robotiq_2f85",
     ]
-
-    futures = {}
-    with ThreadPoolExecutor(max_workers=max(1, min(args.maxjobs, len(menagerie_folders)))) as executor:
-        for folder in menagerie_folders:
-            futures[executor.submit(download_git_folder, git_url=menagerie_url, folder_path=folder)] = folder
-
-        for future in as_completed(futures):
-            folder = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                print(f"Git folder download failed: {folder}: {e}", file=sys.stderr)
-                raise
-
-    print("Downloaded mujoco_menagerie folders")
+    # Passing args.maxjobs to respect CLI cap for parallelism.
+    _parallel_download(
+        menagerie_folders,
+        lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),
+        "mujoco_menagerie folders",
+        args.maxjobs,
+    )
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:
