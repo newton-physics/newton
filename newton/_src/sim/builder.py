@@ -8127,6 +8127,48 @@ class ModelBuilder:
                 m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
 
             # ---------------------
+            # heightfield collision data
+            has_heightfields = any(t == GeoType.HFIELD for t in self.shape_type)
+            if has_heightfields:
+                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+
+                hfield_data_list = []
+                elevation_chunks = []
+                offset = 0
+                empty_hfield = create_empty_heightfield_data()
+                for i in range(len(self.shape_type)):
+                    if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
+                        hf = self.shape_source[i]
+                        hd = HeightfieldData()
+                        hd.data_offset = offset
+                        hd.nrow = hf.nrow
+                        hd.ncol = hf.ncol
+                        hd.hx = hf.hx
+                        hd.hy = hf.hy
+                        hd.min_z = hf.min_z
+                        hd.max_z = hf.max_z
+                        hfield_data_list.append(hd)
+                        elevation_chunks.append(hf.data.flatten())
+                        offset += hf.nrow * hf.ncol
+                    else:
+                        hfield_data_list.append(empty_hfield)
+                m.shape_heightfield_data = wp.array(hfield_data_list, dtype=HeightfieldData, device=device)
+                if elevation_chunks:
+                    m.heightfield_elevation_data = wp.array(
+                        np.concatenate(elevation_chunks), dtype=wp.float32, device=device
+                    )
+                else:
+                    m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
+            else:
+                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+
+                empty_hfield = create_empty_heightfield_data()
+                m.shape_heightfield_data = wp.array(
+                    [empty_hfield] * max(len(self.shape_type), 1), dtype=HeightfieldData, device=device
+                )
+                m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
+
+            # ---------------------
             # springs
 
             def _to_wp_array(data, dtype, requires_grad):

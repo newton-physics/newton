@@ -324,6 +324,52 @@ class TestHeightfield(unittest.TestCase):
         self.assertEqual(len(hfield.warp_array.shape), 1)
         self.assertEqual(hfield.warp_array.shape[0], nrow * ncol)
 
+    def test_heightfield_native_collision_flat(self):
+        """Test native CollisionPipeline detects contact between sphere and flat heightfield."""
+        builder = newton.ModelBuilder()
+
+        # Flat heightfield at z=0
+        nrow, ncol = 10, 10
+        elevation = np.zeros((nrow, ncol), dtype=np.float32)
+        hfield = Heightfield(data=elevation, nrow=nrow, ncol=ncol, hx=5.0, hy=5.0, min_z=0.0, max_z=1.0)
+        builder.add_shape_heightfield(heightfield=hfield)
+
+        # Sphere slightly above the heightfield surface
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
+
+        model = builder.finalize()
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline.from_model(model)
+        contacts = model.collide(state, collision_pipeline=pipeline)
+
+        # Should detect at least one contact (sphere is within contact margin of heightfield)
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(contact_count, 0, "No contacts detected between sphere and heightfield")
+
+    def test_heightfield_native_collision_no_contact(self):
+        """Test that no contacts are generated when sphere is far above heightfield."""
+        builder = newton.ModelBuilder()
+
+        nrow, ncol = 10, 10
+        elevation = np.zeros((nrow, ncol), dtype=np.float32)
+        hfield = Heightfield(data=elevation, nrow=nrow, ncol=ncol, hx=5.0, hy=5.0, min_z=0.0, max_z=1.0)
+        builder.add_shape_heightfield(heightfield=hfield)
+
+        # Sphere far above the heightfield
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 5.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
+
+        model = builder.finalize()
+        state = model.state()
+
+        pipeline = newton.CollisionPipeline.from_model(model)
+        contacts = model.collide(state, collision_pipeline=pipeline)
+
+        contact_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertEqual(contact_count, 0, f"Unexpected contacts detected: {contact_count}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
