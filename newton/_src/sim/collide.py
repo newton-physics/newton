@@ -490,7 +490,7 @@ class CollisionPipeline:
         Returns:
             Contacts: A newly allocated contacts buffer sized for this pipeline.
         """
-        return Contacts(
+        contacts = Contacts(
             self.rigid_contact_max,
             self.soft_contact_max,
             requires_grad=self.requires_grad,
@@ -498,6 +498,10 @@ class CollisionPipeline:
             per_contact_shape_properties=self.narrow_phase.sdf_hydroelastic is not None,
             requested_attributes=self.model.get_requested_contact_attributes(),
         )
+
+        # attach custom attributes with assignment==CONTACT
+        self.model._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
+        return contacts
 
     def collide(
         self,

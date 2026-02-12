@@ -850,8 +850,6 @@ class Model:
             self._init_collision_pipeline()
 
         contacts = self._collision_pipeline.contacts()
-        # attach custom attributes with assignment==CONTACT
-        self._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=self.requires_grad)
         return contacts
 
     def collide(
