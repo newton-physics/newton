@@ -104,7 +104,9 @@ class Model:
         """Attribute frequency follows the number of tetrahedra (see :attr:`~newton.Model.tet_count`)."""
         SPRING = 13
         """Attribute frequency follows the number of springs (see :attr:`~newton.Model.spring_count`)."""
-        WORLD = 14
+        CONSTRAINT_MIMIC = 14
+        """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
+        WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
 
     class AttributeNamespace:
@@ -509,6 +511,8 @@ class Model:
         """
         self.max_joints_per_articulation = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
+        self.max_dofs_per_articulation = 0
+        """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
@@ -567,6 +571,21 @@ class Model:
             `num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]`.
         """
 
+        self.constraint_mimic_joint0 = None
+        """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        self.constraint_mimic_joint1 = None
+        """Leader joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        self.constraint_mimic_coef0 = None
+        """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        self.constraint_mimic_coef1 = None
+        """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        self.constraint_mimic_enabled = None
+        """Whether constraint is active, shape [constraint_mimic_count], bool."""
+        self.constraint_mimic_key = []
+        """Constraint name/key, shape [constraint_mimic_count], str."""
+        self.constraint_mimic_world = None
+        """World index for each constraint, shape [constraint_mimic_count], int."""
+
         self.particle_count = 0
         """Total number of particles in the system."""
         self.body_count = 0
@@ -595,6 +614,8 @@ class Model:
         """Total number of joint constraints of all joints."""
         self.equality_constraint_count = 0
         """Total number of equality constraints in the system."""
+        self.constraint_mimic_count = 0
+        """Total number of mimic constraints in the system."""
 
         # indices of particles sharing the same color
         self.particle_color_groups = []

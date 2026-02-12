@@ -403,7 +403,7 @@ class ModelBuilder:
 
         Built-in entity types (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``,
-              ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
+              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
             - ``"world"``: Values are replaced with ``current_world`` (not offset)
@@ -789,6 +789,15 @@ class ModelBuilder:
         self.equality_constraint_enabled = []
         self.equality_constraint_world = []
 
+        # mimic constraints
+        self.constraint_mimic_joint0 = []
+        self.constraint_mimic_joint1 = []
+        self.constraint_mimic_coef0 = []
+        self.constraint_mimic_coef1 = []
+        self.constraint_mimic_enabled = []
+        self.constraint_mimic_key = []
+        self.constraint_mimic_world = []
+
         # per-world entity start indices
         self.particle_world_start = []
         self.body_world_start = []
@@ -1111,67 +1120,51 @@ class ModelBuilder:
                     expected_frequency=Model.AttributeFrequency.JOINT,
                 )
 
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_DOF:
-                # Values per DOF - can be list or dict
-                dof_start = self.joint_qd_start[joint_index]
-                if joint_index + 1 < len(self.joint_qd_start):
-                    dof_end = self.joint_qd_start[joint_index + 1]
-                else:
-                    dof_end = self.joint_dof_count
-
-                dof_count = dof_end - dof_start
-                apply_indexed_values(
-                    value=value,
-                    attr_key=attr_key,
-                    expected_frequency=Model.AttributeFrequency.JOINT_DOF,
-                    index_start=dof_start,
-                    index_count=dof_count,
-                    index_label="DOF",
-                    count_label="DOFs",
-                    length_error_template="JOINT_DOF '{attr_key}': got {actual}, expected {expected}",
-                )
-
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_COORD:
-                # Values per coordinate - can be list or dict
-                coord_start = self.joint_q_start[joint_index]
-                if joint_index + 1 < len(self.joint_q_start):
-                    coord_end = self.joint_q_start[joint_index + 1]
-                else:
-                    coord_end = self.joint_coord_count
-
-                coord_count = coord_end - coord_start
-                apply_indexed_values(
-                    value=value,
-                    attr_key=attr_key,
-                    expected_frequency=Model.AttributeFrequency.JOINT_COORD,
-                    index_start=coord_start,
-                    index_count=coord_count,
-                    index_label="coord",
-                    count_label="coordinates",
-                    length_error_template=(
-                        "JOINT_COORD attribute '{attr_key}' has {actual} values but joint has {expected} coordinates"
+            elif custom_attr.frequency in (
+                Model.AttributeFrequency.JOINT_DOF,
+                Model.AttributeFrequency.JOINT_COORD,
+                Model.AttributeFrequency.JOINT_CONSTRAINT,
+            ):
+                freq = custom_attr.frequency
+                freq_config = {
+                    Model.AttributeFrequency.JOINT_DOF: (
+                        self.joint_qd_start,
+                        self.joint_dof_count,
+                        "DOF",
+                        "DOFs",
                     ),
-                )
+                    Model.AttributeFrequency.JOINT_COORD: (
+                        self.joint_q_start,
+                        self.joint_coord_count,
+                        "coord",
+                        "coordinates",
+                    ),
+                    Model.AttributeFrequency.JOINT_CONSTRAINT: (
+                        self.joint_cts_start,
+                        self.joint_constraint_count,
+                        "constraint",
+                        "constraints",
+                    ),
+                }
+                start_array, total_count, index_label, count_label = freq_config[freq]
 
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_CONSTRAINT:
-                # Values per constraint - can be list or dict
-                cts_start = self.joint_cts_start[joint_index]
-                if joint_index + 1 < len(self.joint_cts_start):
-                    cts_end = self.joint_cts_start[joint_index + 1]
+                index_start = start_array[joint_index]
+                if joint_index + 1 < len(start_array):
+                    index_end = start_array[joint_index + 1]
                 else:
-                    cts_end = self.joint_constraint_count
+                    index_end = total_count
 
-                cts_count = cts_end - cts_start
                 apply_indexed_values(
                     value=value,
                     attr_key=attr_key,
-                    expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
-                    index_start=cts_start,
-                    index_count=cts_count,
-                    index_label="constraint",
-                    count_label="constraints",
+                    expected_frequency=freq,
+                    index_start=index_start,
+                    index_count=index_end - index_start,
+                    index_label=index_label,
+                    count_label=count_label,
                     length_error_template=(
-                        "JOINT_CONSTRAINT attribute '{attr_key}' has {actual} values but joint has {expected} constraints"
+                        f"{freq.name} attribute '{{attr_key}}' has {{actual}} values "
+                        f"but joint has {{expected}} {count_label}"
                     ),
                 )
 
@@ -1938,6 +1931,7 @@ class ModelBuilder:
         start_joint_constraint_idx = self.joint_constraint_count
         start_articulation_idx = self.articulation_count
         start_equality_constraint_idx = len(self.equality_constraint_type)
+        start_constraint_mimic_idx = len(self.constraint_mimic_joint0)
         start_edge_idx = self.edge_count
         start_triangle_idx = self.tri_count
         start_tetrahedron_idx = self.tet_count
@@ -2103,6 +2097,23 @@ class ModelBuilder:
             self.equality_constraint_key.extend(builder.equality_constraint_key)
             self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
 
+        # For mimic constraints
+        if len(builder.constraint_mimic_joint0) > 0:
+            constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
+            self.constraint_mimic_world.extend(constraint_worlds)
+
+            # Remap joint indices in mimic constraints
+            self.constraint_mimic_joint0.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint0]
+            )
+            self.constraint_mimic_joint1.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint1]
+            )
+            self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
+            self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
+            self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
+            self.constraint_mimic_key.extend(builder.constraint_mimic_key)
+
         more_builder_attrs = [
             "articulation_key",
             "body_inertia",
@@ -2195,6 +2206,7 @@ class ModelBuilder:
             "joint_constraint": start_joint_constraint_idx,
             "articulation": start_articulation_idx,
             "equality_constraint": start_equality_constraint_idx,
+            "constraint_mimic": start_constraint_mimic_idx,
             "particle": start_particle_idx,
             "edge": start_edge_idx,
             "triangle": start_triangle_idx,
@@ -3382,6 +3394,67 @@ class ModelBuilder:
             enabled=enabled,
         )
 
+    def add_constraint_mimic(
+        self,
+        joint0: int,
+        joint1: int,
+        coef0: float = 0.0,
+        coef1: float = 1.0,
+        enabled: bool = True,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a mimic constraint to the model.
+
+        A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
+        following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
+        multi-DOF joints are supported. For multi-DOF joints, the mimic behavior is
+        applied equally to all degrees of freedom.
+
+        Args:
+            joint0: Index of the follower joint (the one being constrained)
+            joint1: Index of the leader joint (the one being mimicked)
+            coef0: Offset added after scaling
+            coef1: Scale factor applied to joint1's position/angle
+            enabled: Whether constraint is active
+            key: Optional constraint name
+            custom_attributes: Custom attributes to set on the constraint
+
+        Returns:
+            Constraint index
+        """
+        joint_count = self.joint_count
+        if joint0 < 0 or joint0 >= joint_count:
+            raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
+        if joint1 < 0 or joint1 >= joint_count:
+            raise ValueError(f"Invalid leader joint index {joint1}; expected 0..{joint_count - 1}")
+        if self.joint_world[joint0] != self.current_world or self.joint_world[joint1] != self.current_world:
+            raise ValueError(
+                "Mimic constraint joints must belong to the current world. "
+                f"joint0_world={self.joint_world[joint0]}, joint1_world={self.joint_world[joint1]}, "
+                f"current_world={self.current_world}."
+            )
+
+        self.constraint_mimic_joint0.append(joint0)
+        self.constraint_mimic_joint1.append(joint1)
+        self.constraint_mimic_coef0.append(coef0)
+        self.constraint_mimic_coef1.append(coef1)
+        self.constraint_mimic_enabled.append(enabled)
+        self.constraint_mimic_key.append(key)
+        self.constraint_mimic_world.append(self.current_world)
+
+        constraint_idx = len(self.constraint_mimic_joint0) - 1
+
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=constraint_idx,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.CONSTRAINT_MIMIC,
+            )
+
+        return constraint_idx
+
     # endregion
 
     def plot_articulation(
@@ -3915,6 +3988,25 @@ class ModelBuilder:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
                 self.equality_constraint_enabled[i] = False
+
+        # Remap mimic constraint joint indices
+        for i in range(len(self.constraint_mimic_joint0)):
+            old_joint0 = self.constraint_mimic_joint0[i]
+            old_joint1 = self.constraint_mimic_joint1[i]
+
+            if old_joint0 in joint_remap:
+                self.constraint_mimic_joint0[i] = joint_remap[old_joint0]
+            elif old_joint0 != -1:
+                if verbose:
+                    print(f"Warning: Mimic constraint references removed joint {old_joint0}, disabling constraint")
+                self.constraint_mimic_enabled[i] = False
+
+            if old_joint1 in joint_remap:
+                self.constraint_mimic_joint1[i] = joint_remap[old_joint1]
+            elif old_joint1 != -1:
+                if verbose:
+                    print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
+                self.constraint_mimic_enabled[i] = False
 
         # Rebuild parent/child lookups
         self.joint_parents.clear()
@@ -6887,6 +6979,7 @@ class ModelBuilder:
             ("joint_world", self.joint_world),
             ("articulation_world", self.articulation_world),
             ("equality_constraint_world", self.equality_constraint_world),
+            ("constraint_mimic_world", self.constraint_mimic_world),
         ]
 
         all_world_indices = set()
@@ -8194,13 +8287,19 @@ class ModelBuilder:
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
 
-            # Compute max joints per articulation for IK kernel launches
+            # Compute max joints and dofs per articulation for IK/Jacobian kernel launches
             max_joints_per_articulation = 0
+            max_dofs_per_articulation = 0
             for art_idx in range(len(self.articulation_start)):
                 joint_start = articulation_start[art_idx]
                 joint_end = articulation_start[art_idx + 1]
                 num_joints = joint_end - joint_start
                 max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
+                # Compute dofs for this articulation
+                dof_start = joint_qd_start[joint_start]
+                dof_end = joint_qd_start[joint_end]
+                num_dofs = dof_end - dof_start
+                max_dofs_per_articulation = max(max_dofs_per_articulation, num_dofs)
 
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
@@ -8208,6 +8307,7 @@ class ModelBuilder:
             m.articulation_key = self.articulation_key
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
+            m.max_dofs_per_articulation = max_dofs_per_articulation
 
             # ---------------------
             # equality constraints
@@ -8225,6 +8325,15 @@ class ModelBuilder:
             m.equality_constraint_key = self.equality_constraint_key
             m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
             m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
+
+            # mimic constraints
+            m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
+            m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
+            m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
+            m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
+            m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
+            m.constraint_mimic_key = self.constraint_mimic_key
+            m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)
 
             # ---------------------
             # per-world start indices
@@ -8254,6 +8363,7 @@ class ModelBuilder:
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
             m.equality_constraint_count = len(self.equality_constraint_type)
+            m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             self.find_shape_contact_pairs(m)
 
@@ -8346,6 +8456,8 @@ class ModelBuilder:
                     count = m.num_worlds
                 elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
+                elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
+                    count = m.constraint_mimic_count
                 elif freq_key == Model.AttributeFrequency.PARTICLE:
                     count = m.particle_count
                 elif freq_key == Model.AttributeFrequency.EDGE:
