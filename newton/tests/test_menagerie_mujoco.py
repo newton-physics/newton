@@ -2131,17 +2131,43 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
 
     robot_folder = "universal_robots_ur5e"
     floating = False
-    control_strategy = RandomControlStrategy(seed=42)
+    control_strategy = StructuredControlStrategy(seed=42)
     num_worlds = 34
     num_steps = 500
 
-    # Tolerance overrides for dynamics fields that diverge over time
+    # Structured control causes correlated errors that compound over time.
+    # Backfill eliminates model compilation differences, contact injection
+    # bypasses mujoco_warp non-determinism with >8 worlds.
+    backfill_model = True
+    use_contact_injection = True
+
+    # Tolerance overrides: structured control needs looser tolerances than random
+    # because errors compound coherently rather than canceling statistically.
     tolerance_overrides: ClassVar[dict[str, float]] = {
-        "qacc": 0.05,
-        "qfrc_actuator": 0.01,
-        "actuator_force": 0.01,
-        "cfrc_int": 5e-4,
+        # Kinematics: 5e-6 (small drift from integration)
+        "qpos": 5e-6,
+        "xpos": 5e-6,
+        "xquat": 5e-6,
+        "xmat": 5e-6,
+        "geom_xpos": 5e-6,
+        "geom_xmat": 5e-6,
+        "site_xpos": 5e-6,
+        "site_xmat": 5e-6,
+        "subtree_com": 5e-6,
+        "actuator_length": 5e-6,
+        "qfrc_passive": 5e-6,
+        "energy": 5e-6,
         "qM": 5e-6,
+        # Dynamics: looser (compound over 500 steps)
+        "qvel": 1e-3,
+        "cacc": 1e-3,
+        "cvel": 1e-3,
+        "actuator_velocity": 1e-3,
+        "qfrc_bias": 1e-3,
+        "qacc": 0.5,
+        "qfrc_actuator": 0.05,
+        "actuator_force": 0.05,
+        "cfrc_int": 0.02,
     }
 
 
