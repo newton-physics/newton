@@ -46,7 +46,7 @@ except ImportError:
 
 
 def _download_file(dst, url: str) -> None:
-    import requests  # noqa: PLC0415
+    import requests
 
     with requests.get(url, stream=True, timeout=10) as response:
         response.raise_for_status()
@@ -70,8 +70,9 @@ def parse_urdf(
     source: str,
     *,
     xform: Transform | None = None,
-    floating: bool = False,
-    base_joint: dict | str | None = None,
+    floating: bool | None = None,
+    base_joint: dict | None = None,
+    parent_body: int = -1,
     scale: float = 1.0,
     hide_visuals: bool = False,
     parse_visuals_as_colliders: bool = False,
@@ -94,8 +95,71 @@ def parse_urdf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the URDF file to parse, or the URDF XML string content.
         xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-        floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
-        base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+        floating (bool or None): Controls the base joint type for the root body.
+
+            - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
+            - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+              ``parent_body == -1`` since FREE joints must connect to world frame.
+            - ``False``: Creates a FIXED joint (0 DOF).
+
+            Cannot be specified together with ``base_joint``.
+        base_joint (dict): Custom joint specification for connecting the root body to the world
+            (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
+            custom mobility. Dictionary with joint parameters as accepted by
+            :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
+
+            Cannot be specified together with ``floating``.
+        parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+            imported root body to this existing body, making them part of the same kinematic articulation.
+            The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
+            the root connects to the world frame. **Restriction**: Only the most recently added
+            articulation can be used as parent; attempting to attach to an older articulation will raise
+            a ``ValueError``.
+
+            .. note::
+               Valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
+
+               .. list-table::
+                  :header-rows: 1
+                  :widths: 15 15 15 55
+
+                  * - floating
+                    - base_joint
+                    - parent_body
+                    - Result
+                  * - ``None``
+                    - ``None``
+                    - ``-1``
+                    - Format default (URDF: FIXED joint)
+                  * - ``True``
+                    - ``None``
+                    - ``-1``
+                    - FREE joint to world (6 DOF)
+                  * - ``False``
+                    - ``None``
+                    - ``-1``
+                    - FIXED joint to world (0 DOF)
+                  * - ``None``
+                    - ``{dict}``
+                    - ``-1``
+                    - Custom joint to world (e.g., D6)
+                  * - ``False``
+                    - ``None``
+                    - ``body_idx``
+                    - FIXED joint to parent body
+                  * - ``None``
+                    - ``{dict}``
+                    - ``body_idx``
+                    - Custom joint to parent body (e.g., D6)
+                  * - *explicitly set*
+                    - *explicitly set*
+                    - *any*
+                    - ❌ Error: mutually exclusive (cannot specify both)
+                  * - ``True``
+                    - ``None``
+                    - ``body_idx``
+                    - ❌ Error: FREE joints require world frame
+
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes.
         parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
@@ -116,8 +180,12 @@ def parse_urdf(
             damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
     """
+    # Early validation of base joint parameters
+    builder._validate_base_joint_params(floating, base_joint, parent_body)
+
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
+
     axis_xform = wp.transform(wp.vec3(0.0), quat_between_axes(up_axis, builder.up_axis))
     if xform is None:
         xform = axis_xform
@@ -595,45 +663,34 @@ def parse_urdf(
     else:
         base_link_name = next(iter(link_index.keys()))
     root = link_index[base_link_name]
+
+    # Determine the parent for the base joint (-1 for world, or an existing body index)
+    base_parent = parent_body
+
     if base_joint is not None:
         # in case of a given base joint, the position is applied first, the rotation only
         # after the base joint itself to not rotate its axis
+        # When parent_body is set, xform is interpreted as relative to the parent body
         base_parent_xform = wp.transform(xform.p, wp.quat_identity())
         base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(xform.q))
-        if isinstance(base_joint, str):
-            axes = base_joint.lower().split(",")
-            axes = [ax.strip() for ax in axes]
-            linear_axes = [ax[-1] for ax in axes if ax[0] in {"l", "p"}]
-            angular_axes = [ax[-1] for ax in axes if ax[0] in {"a", "r"}]
-            axes = {
-                "x": [1.0, 0.0, 0.0],
-                "y": [0.0, 1.0, 0.0],
-                "z": [0.0, 0.0, 1.0],
-            }
-            joint_indices.append(
-                builder.add_joint_d6(
-                    linear_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in linear_axes],
-                    angular_axes=[ModelBuilder.JointDofConfig(axes[a]) for a in angular_axes],
-                    parent_xform=base_parent_xform,
-                    child_xform=base_child_xform,
-                    parent=-1,
-                    child=root,
-                    key="base_joint",
-                )
-            )
-        elif isinstance(base_joint, dict):
-            base_joint["parent"] = -1
-            base_joint["child"] = root
-            base_joint["parent_xform"] = base_parent_xform
-            base_joint["child_xform"] = base_child_xform
-            base_joint["key"] = "base_joint"
-            joint_indices.append(builder.add_joint(**base_joint))
-        else:
-            raise ValueError(
-                "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
-            )
-    elif floating:
-        floating_joint_id = builder.add_joint_free(root, key="floating_base")
+        base_joint_id = builder._add_base_joint(
+            child=root,
+            base_joint=base_joint,
+            key="base_joint",
+            parent_xform=base_parent_xform,
+            child_xform=base_child_xform,
+            parent=base_parent,
+        )
+        joint_indices.append(base_joint_id)
+    elif floating and base_parent == -1:
+        # floating=True only makes sense when connecting to world
+        floating_joint_id = builder._add_base_joint(
+            child=root,
+            floating=True,
+            key="floating_base",
+            parent_xform=xform,
+            parent=base_parent,
+        )
         joint_indices.append(floating_joint_id)
 
         # set dofs to transform for the floating base joint
@@ -648,7 +705,17 @@ def parse_urdf(
         builder.joint_q[start + 5] = xform.q[2]
         builder.joint_q[start + 6] = xform.q[3]
     else:
-        joint_indices.append(builder.add_joint_fixed(-1, root, parent_xform=xform, key="fixed_base"))
+        # Fixed joint to world or to parent_body
+        # When parent_body is set, xform is interpreted as relative to the parent body
+        joint_indices.append(
+            builder._add_base_joint(
+                child=root,
+                floating=False,
+                key="fixed_base",
+                parent_xform=xform,
+                parent=base_parent,
+            )
+        )
 
     # add joints, in the desired order starting from root body
     # Track only joints that are actually created (some may be skipped if their child body wasn't inserted).
@@ -770,16 +837,16 @@ def parse_urdf(
             )
 
     # Create articulation from all collected joints
-    if joint_indices:
-        articulation_key = urdf_root.attrib.get("name")
-        articulation_custom_attrs = parse_custom_attributes(
-            urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
-        )
-        builder.add_articulation(
-            joints=joint_indices,
-            key=articulation_key,
-            custom_attributes=articulation_custom_attrs,
-        )
+    articulation_key = urdf_root.attrib.get("name")
+    articulation_custom_attrs = parse_custom_attributes(
+        urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
+    )
+    builder._finalize_imported_articulation(
+        joint_indices=joint_indices,
+        parent_body=parent_body,
+        articulation_key=articulation_key,
+        custom_attributes=articulation_custom_attrs,
+    )
 
     for i in range(start_shape_count, end_shape_count):
         for j in visual_shapes:

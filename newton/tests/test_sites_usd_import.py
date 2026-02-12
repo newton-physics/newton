@@ -19,7 +19,6 @@ import unittest
 
 import numpy as np
 import warp as wp
-from pxr import Usd
 
 import newton
 from newton import GeoType, ShapeFlags
@@ -28,12 +27,14 @@ from newton import GeoType, ShapeFlags
 class TestUSDSiteImport(unittest.TestCase):
     """Test parsing sites from USD files."""
 
-    def _create_usd_stage(self, usd_content: str) -> Usd.Stage:
+    def _create_usd_stage(self, usd_content: str):
         """Create a USD stage in memory from the given content.
 
         Uses ImportFromString() instead of programmatic stage construction to allow
         applying unregistered API schemas (like MjcSiteAPI) without requiring schema plugins.
         """
+        from pxr import Usd
+
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
         return stage

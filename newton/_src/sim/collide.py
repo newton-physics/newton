@@ -276,9 +276,15 @@ def _estimate_rigid_contact_max(model: Model) -> int:
     """
     Estimate the maximum number of rigid contacts for the collision pipeline.
 
-    Uses a linear estimate based on shape count and types, with contact reduction
-    for mesh-mesh pairs. This function assumes each shape contacts
-    only a limited number of neighbors (due to spatial locality).
+    Uses a linear neighbor-budget estimate assuming each non-plane shape contacts
+    at most ``MAX_NEIGHBORS_PER_SHAPE`` others (spatial locality).  The non-plane
+    term is additive across independent worlds so a single-pool computation is
+    correct.  The plane term (each plane vs all non-planes in its world) would be
+    quadratic if computed globally, so it is evaluated per world when metadata is
+    available.
+
+    When precomputed contact pairs are available their count is used as an
+    alternative tighter bound (``min`` of heuristic and pair-based estimate).
 
     Args:
         model: The simulation model.
@@ -286,32 +292,82 @@ def _estimate_rigid_contact_max(model: Model) -> int:
     Returns:
         Estimated maximum number of rigid contacts.
     """
-    # Get shape types
     if not hasattr(model, "shape_type") or model.shape_type is None:
         return 1000  # Fallback
 
     shape_types = model.shape_type.numpy()
 
-    # Constants for contact estimation
-    CONTACTS_PER_PAIR = 20
-    # Assume each shape contacts at most this many other shapes (spatial locality)
+    # Primitive pairs (GJK/MPR) produce up to 5 manifold contacts.
+    # Mesh-involved pairs (SDF + contact reduction) typically retain ~40.
+    PRIMITIVE_CPP = 5
+    MESH_CPP = 40
     MAX_NEIGHBORS_PER_SHAPE = 20
 
-    # Count shapes by type
-    mesh_types = {int(GeoType.MESH), int(GeoType.CONVEX_MESH)}
-    num_meshes = sum(1 for t in shape_types if t in mesh_types)
-    num_planes = sum(1 for t in shape_types if t == int(GeoType.PLANE))
-    num_other = len(shape_types) - num_meshes - num_planes
+    mesh_mask = shape_types == int(GeoType.MESH)
+    plane_mask = shape_types == int(GeoType.PLANE)
+    non_plane_mask = ~plane_mask
+    num_meshes = int(np.count_nonzero(mesh_mask))
+    num_non_planes = int(np.count_nonzero(non_plane_mask))
+    num_primitives = num_non_planes - num_meshes
+    num_planes = int(np.count_nonzero(plane_mask))
 
-    # Linear estimate: each shape contacts up to MAX_NEIGHBORS_PER_SHAPE others
-    # Divide by 2 to avoid double-counting pairs
-    num_shapes = num_meshes + num_other
-    estimated_pairs = (num_shapes * MAX_NEIGHBORS_PER_SHAPE) // 2
+    # Weighted contacts from non-plane shape types.
+    # Each shape's neighbor pairs are weighted by its type's contacts-per-pair.
+    # Divide by 2 to avoid double-counting pairs.
+    non_plane_contacts = (
+        num_primitives * MAX_NEIGHBORS_PER_SHAPE * PRIMITIVE_CPP + num_meshes * MAX_NEIGHBORS_PER_SHAPE * MESH_CPP
+    ) // 2
 
-    # Add plane contacts (each plane can contact all shapes)
-    plane_contacts = num_planes * (num_meshes + num_other) * CONTACTS_PER_PAIR
+    # Weighted average contacts-per-pair based on the scene's shape mix.
+    avg_cpp = (
+        (num_primitives * PRIMITIVE_CPP + num_meshes * MESH_CPP) // max(num_non_planes, 1) if num_non_planes > 0 else 0
+    )
 
-    total_contacts = estimated_pairs * CONTACTS_PER_PAIR + plane_contacts
+    # Plane contacts: each plane contacts all non-plane shapes *in its world*.
+    # The naive global formula (num_planes * num_non_planes) is O(worlds²) when
+    # both counts grow with the number of worlds.  Use per-world counts instead.
+    plane_contacts = 0
+    if num_planes > 0 and num_non_planes > 0:
+        has_world_info = (
+            hasattr(model, "shape_world")
+            and model.shape_world is not None
+            and hasattr(model, "num_worlds")
+            and model.num_worlds > 0
+        )
+        shape_world = model.shape_world.numpy() if has_world_info else None
+
+        if shape_world is not None and len(shape_world) == len(shape_types):
+            global_mask = shape_world == -1
+            local_mask = ~global_mask
+            n_worlds = model.num_worlds
+
+            global_planes = int(np.count_nonzero(global_mask & plane_mask))
+            global_non_planes = int(np.count_nonzero(global_mask & non_plane_mask))
+
+            local_plane_counts = np.bincount(shape_world[local_mask & plane_mask], minlength=n_worlds)[:n_worlds]
+            local_non_plane_counts = np.bincount(shape_world[local_mask & non_plane_mask], minlength=n_worlds)[
+                :n_worlds
+            ]
+
+            per_world_planes = local_plane_counts + global_planes
+            per_world_non_planes = local_non_plane_counts + global_non_planes
+
+            # Global-global pairs appear in every world slice; keep one copy.
+            plane_pair_count = int(np.sum(per_world_planes * per_world_non_planes))
+            if n_worlds > 1:
+                plane_pair_count -= (n_worlds - 1) * global_planes * global_non_planes
+            plane_contacts = plane_pair_count * avg_cpp
+        else:
+            # Fallback: exact type-weighted sum (correct for single-world models).
+            plane_contacts = num_planes * (num_primitives * PRIMITIVE_CPP + num_meshes * MESH_CPP)
+
+    total_contacts = non_plane_contacts + plane_contacts
+
+    # When precomputed contact pairs are available, use as a tighter bound.
+    if hasattr(model, "shape_contact_pair_count") and model.shape_contact_pair_count > 0:
+        weighted_cpp = max(avg_cpp, PRIMITIVE_CPP)
+        pair_contacts = int(model.shape_contact_pair_count) * weighted_cpp
+        total_contacts = min(total_contacts, pair_contacts)
 
     # Ensure minimum allocation
     return max(1000, total_contacts)

@@ -532,7 +532,7 @@ def load_meshes_from_file(
     Returns:
         List of Mesh objects.
     """
-    import trimesh  # noqa: PLC0415
+    import trimesh
 
     filename = os.fspath(filename)
     scale = np.asarray(scale, dtype=np.float32)
