@@ -229,15 +229,15 @@ class FrequencyLayout:
         return f"FrequencyLayout(\n    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n)"
 
 
-def get_name_from_key(key: str):
-    return key.split("/")[-1]
+def get_name_from_label(label: str):
+    return label.split("/")[-1]
 
 
-def find_matching_ids(pattern: str, keys: list[str], world_ids, num_worlds: int):
+def find_matching_ids(pattern: str, labels: list[str], world_ids, num_worlds: int):
     grouped_ids = [[] for _ in range(num_worlds)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
-    for id, key in enumerate(keys):
-        if fnmatch(key, pattern):
+    for id, label in enumerate(labels):
+        if fnmatch(label, pattern):
             world = world_ids[id]
             if world == -1:
                 global_ids.append(id)
@@ -281,7 +281,7 @@ class ArticulationView:
 
     Args:
         model (Model): The model containing the articulations.
-        pattern (str): Pattern to match articulation keys.
+        pattern (str): Pattern to match articulation labels.
         include_joints (list[str | int] | None): List of joint names, patterns, or indices to include.
         exclude_joints (list[str | int] | None): List of joint names, patterns, or indices to exclude.
         include_links (list[str | int] | None): List of link names, patterns, or indices to include.
@@ -319,7 +319,7 @@ class ArticulationView:
 
         # get articulation ids grouped by world
         articulation_ids, global_articulation_ids = find_matching_ids(
-            pattern, model.articulation_key, model_articulation_world, model.num_worlds
+            pattern, model.articulation_label, model_articulation_world, model.num_worlds
         )
 
         # determine articulation counts per world
@@ -376,7 +376,7 @@ class ArticulationView:
         for joint_id in range(arti_joint_begin, arti_joint_end):
             # joint_id = arti_joint_begin + idx
             arti_joint_ids.append(joint_id)
-            arti_joint_names.append(get_name_from_key(model.joint_key[joint_id]))
+            arti_joint_names.append(get_name_from_label(model.joint_label[joint_id]))
             arti_joint_types.append(model_joint_type[joint_id])
             link_id = int(model_joint_child[joint_id])
             arti_link_ids.append(link_id)
@@ -385,14 +385,14 @@ class ArticulationView:
         arti_link_ids = sorted(arti_link_ids)
         arti_link_count = len(arti_link_ids)
         for link_id in arti_link_ids:
-            arti_link_names.append(get_name_from_key(model.body_key[link_id]))
+            arti_link_names.append(get_name_from_label(model.body_label[link_id]))
             arti_shape_ids.extend(model.body_shapes[link_id])
 
         # use shape order as they appear in the model
         arti_shape_ids = sorted(arti_shape_ids)
         arti_shape_count = len(arti_shape_ids)
         for shape_id in arti_shape_ids:
-            arti_shape_names.append(get_name_from_key(model.shape_key[shape_id]))
+            arti_shape_names.append(get_name_from_label(model.shape_label[shape_id]))
 
         # compute counts and offsets of joints, links, etc.
         joint_starts = list_of_lists(world_count)
@@ -874,11 +874,11 @@ class ArticulationView:
 
                     self.tendon_count = arti_tendon_count
 
-                    # Populate tendon_names from model.mujoco.tendon_key if available
-                    if hasattr(mujoco_attrs, "tendon_key"):
+                    # Populate tendon_names from model.mujoco.tendon_label if available
+                    if hasattr(mujoco_attrs, "tendon_label"):
                         for tendon_idx in arti_tendon_ids:
-                            if tendon_idx < len(mujoco_attrs.tendon_key):
-                                self.tendon_names.append(mujoco_attrs.tendon_key[tendon_idx])
+                            if tendon_idx < len(mujoco_attrs.tendon_label):
+                                self.tendon_names.append(mujoco_attrs.tendon_label[tendon_idx])
                             else:
                                 self.tendon_names.append(f"tendon_{tendon_idx}")
 
