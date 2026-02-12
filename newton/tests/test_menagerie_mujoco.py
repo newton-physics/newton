@@ -255,26 +255,19 @@ class ControlStrategy:
             self.rng = np.random.default_rng(seed)
 
     @abstractmethod
-    def get_control(
-        self,
-        t: float,
-        step: int,
-        num_worlds: int,
-        num_actuators: int,
-    ) -> np.ndarray | wp.array:
-        """
-        Generate control values for the given timestep.
+    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
+        """Initialize with the ctrl arrays that will be filled.
 
         Args:
-            t: Current simulation time
-            step: Current step number
-            num_worlds: Number of parallel worlds
-            num_actuators: Number of actuators per world
-
-        Returns:
-            Control array of shape (num_worlds, num_actuators) - numpy or warp array
+            native_ctrl: Native mujoco_warp data ctrl array (num_worlds, num_actuators)
+            newton_ctrl: Newton control.mujoco.ctrl array (num_worlds * num_actuators,)
         """
-        pass
+        ...
+
+    @abstractmethod
+    def fill_control(self, t: float):
+        """Fill control values into the initialized arrays at time t."""
+        ...
 
 
 class ZeroControlStrategy(ControlStrategy):
@@ -282,31 +275,36 @@ class ZeroControlStrategy(ControlStrategy):
 
     def __init__(self):
         super().__init__(seed=0)
-        self._ctrl: wp.array | None = None
 
-    def get_control(self, t, step, num_worlds, num_actuators):
-        if self._ctrl is None or self._ctrl.shape != (num_worlds, num_actuators):
-            self._ctrl = wp.zeros((num_worlds, num_actuators), dtype=wp.float32)
-        return self._ctrl
+    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
+        """Initialize - ctrl arrays are already zeroed by MuJoCo."""
+        pass
+
+    def fill_control(self, t: float):
+        """No-op - control stays at zero."""
+        pass
 
 
 @wp.kernel
-def generate_sinusoidal_control_kernel(
+def generate_sinusoidal_control_kernel_dual(
     frequencies: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
     phases: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    ctrl_out: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    native_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    newton_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
     t: wp.float32,
     amplitude: wp.float32,
     num_actuators: int,
 ):
-    """Generate sinusoidal control pattern on GPU."""
+    """Generate sinusoidal control pattern and write to both arrays."""
     i = wp.tid()
     act_idx = i % num_actuators  # type: ignore[operator]
     freq = frequencies[act_idx]
-    phase = phases[i]  # phases are stored flat: phases[world_idx * num_actuators + act_idx]
-    two_pi = 6.28318530717959  # 2 * pi
+    phase = phases[i]
+    two_pi = 6.28318530717959
     val = amplitude * wp.sin(two_pi * freq * t + phase)  # type: ignore[operator]
-    ctrl_out[i] = wp.clamp(val, -1.0, 1.0)  # type: ignore[arg-type]
+    clamped = wp.clamp(val, -1.0, 1.0)  # type: ignore[arg-type]
+    native_ctrl[i] = clamped
+    newton_ctrl[i] = clamped
 
 
 class StructuredControlStrategy(ControlStrategy):
@@ -328,65 +326,64 @@ class StructuredControlStrategy(ControlStrategy):
         self.frequency_range = frequency_range
         self._frequencies: wp.array | None = None
         self._phases: wp.array | None = None
-        self._ctrl: wp.array | None = None
+        self._native_ctrl: wp.array | None = None
+        self._newton_ctrl: wp.array | None = None
+        self._n: int = 0
 
-    def _init_for_model(self, num_worlds: int, num_actuators: int):
-        """Initialize frequencies and phases as Warp arrays."""
+    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
+        """Initialize with the ctrl arrays to fill."""
+        num_worlds, num_actuators = native_ctrl.shape
+        n = num_worlds * num_actuators
+
         frequencies_np = self.rng.uniform(self.frequency_range[0], self.frequency_range[1], num_actuators)
-        # Different phase per world for variation - flattened for kernel
-        phases_np = self.rng.uniform(0, 2 * np.pi, (num_worlds, num_actuators)).flatten()
+        phases_np = self.rng.uniform(0, 2 * np.pi, n)
 
         self._frequencies = wp.array(frequencies_np, dtype=wp.float32)
         self._phases = wp.array(phases_np, dtype=wp.float32)
-        self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float32)
+        self._native_ctrl = native_ctrl.flatten()
+        self._newton_ctrl = newton_ctrl
+        self._n = n
 
-    def get_control(self, t, step, num_worlds, num_actuators):
-        expected_size = num_worlds * num_actuators
-        # Re-initialize if size changed or not yet initialized
-        if self._ctrl is None or self._ctrl.size != expected_size:
-            self._init_for_model(num_worlds, num_actuators)
-
-        assert self._frequencies is not None
-        assert self._phases is not None
-        assert self._ctrl is not None
-
+    def fill_control(self, t: float):
+        """Fill control values into both arrays with single kernel launch."""
+        if self._frequencies is None:
+            raise RuntimeError("Call init() first")
         wp.launch(
-            generate_sinusoidal_control_kernel,
-            dim=num_worlds * num_actuators,
+            generate_sinusoidal_control_kernel_dual,
+            dim=self._n,
             inputs=[
                 self._frequencies,
                 self._phases,
-                self._ctrl,
+                self._native_ctrl,
+                self._newton_ctrl,
                 t,
                 self.amplitude_scale,
-                num_actuators,
+                self._n // self._frequencies.shape[0],  # num_actuators
             ],
         )
-        return self._ctrl.reshape((num_worlds, num_actuators))
 
 
 @wp.kernel
-def generate_random_control_kernel(
+def generate_random_control_kernel_dual(
     prev_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
-    ctrl_out: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    native_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
+    newton_ctrl: wp.array(dtype=wp.float32),  # type: ignore[valid-type]
     seed: int,
     step: int,
     noise_scale: wp.float32,
     smoothing: wp.float32,
 ):
-    """Generate random control with smoothing on GPU."""
+    """Generate random control with smoothing, writing to both arrays."""
     i = wp.tid()
-    # Initialize RNG with unique seed per element and step
     state = wp.rand_init(seed, i + step * 1000000)  # type: ignore[arg-type, operator]
-    # Generate uniform random in [-1, 1]
     rand_val = wp.randf(state) * 2.0 - 1.0
     noise = rand_val * noise_scale
-    # Smooth with previous control
     one_minus_smooth = 1.0 - smoothing
     val = smoothing * prev_ctrl[i] + one_minus_smooth * noise
-    ctrl_out[i] = wp.clamp(val, -1.0, 1.0)
-    # Update prev for next step
-    prev_ctrl[i] = ctrl_out[i]
+    clamped = wp.clamp(val, -1.0, 1.0)
+    native_ctrl[i] = clamped
+    newton_ctrl[i] = clamped
+    prev_ctrl[i] = clamped
 
 
 class RandomControlStrategy(ControlStrategy):
@@ -407,33 +404,38 @@ class RandomControlStrategy(ControlStrategy):
         self.noise_scale = noise_scale
         self.smoothing = smoothing
         self._prev_ctrl: wp.array | None = None
-        self._ctrl: wp.array | None = None
+        self._native_ctrl: wp.array | None = None
+        self._newton_ctrl: wp.array | None = None
+        self._n: int = 0
+        self._step: int = 0
 
-    def _init_for_model(self, num_worlds: int, num_actuators: int):
-        """Initialize control arrays."""
-        self._prev_ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float32)
-        self._ctrl = wp.zeros(num_worlds * num_actuators, dtype=wp.float32)
+    def init(self, native_ctrl: wp.array, newton_ctrl: wp.array):
+        """Initialize with the ctrl arrays to fill."""
+        n = native_ctrl.shape[0] * native_ctrl.shape[1]
+        self._prev_ctrl = wp.zeros(n, dtype=wp.float32)
+        self._native_ctrl = native_ctrl.flatten()
+        self._newton_ctrl = newton_ctrl
+        self._n = n
+        self._step = 0
 
-    def get_control(self, t, step, num_worlds, num_actuators):
-        if self._prev_ctrl is None or self._ctrl is None:
-            self._init_for_model(num_worlds, num_actuators)
-
-        assert self._prev_ctrl is not None
-        assert self._ctrl is not None
-
+    def fill_control(self, t: float):
+        """Fill control values into both arrays with single kernel launch."""
+        if self._prev_ctrl is None:
+            raise RuntimeError("Call init() first")
         wp.launch(
-            generate_random_control_kernel,
-            dim=num_worlds * num_actuators,
+            generate_random_control_kernel_dual,
+            dim=self._n,
             inputs=[
                 self._prev_ctrl,
-                self._ctrl,
-                self.rng.integers(0, 2**31),  # Random seed for this step
-                step,
+                self._native_ctrl,
+                self._newton_ctrl,
+                self.rng.integers(0, 2**31),
+                self._step,
                 self.noise_scale,
                 self.smoothing,
             ],
         )
-        return self._ctrl.reshape((num_worlds, num_actuators))
+        self._step += 1
 
 
 # =============================================================================
@@ -1245,7 +1247,14 @@ def compare_mjw_models(
         elif attr == "stat" and hasattr(native_val, "meaninertia"):
             # Special case: Statistic object - compare meaninertia with tolerance
             assert hasattr(newton_val, "meaninertia"), f"{attr}: newton missing meaninertia"
-            diff = abs(float(newton_val.meaninertia) - float(native_val.meaninertia))
+            newton_mi = newton_val.meaninertia
+            native_mi = native_val.meaninertia
+            # Handle both scalar and array cases
+            if hasattr(newton_mi, "numpy"):
+                newton_mi = newton_mi.numpy()
+            if hasattr(native_mi, "numpy"):
+                native_mi = native_mi.numpy()
+            diff = np.max(np.abs(np.asarray(newton_mi) - np.asarray(native_mi)))
             assert diff < tol, f"{attr}.meaninertia: diff={diff:.2e} > tol={tol:.0e}"
         elif attr == "opt":
             # Special case: Option object - compare each field
@@ -1622,8 +1631,8 @@ class TestMenagerieBase(unittest.TestCase):
         if self.backfill_model:
             backfill_model_from_native(newton_solver.mjw_model, native_mjw_model, self.backfill_fields)
 
-        # Get number of actuators from native model (for control generation)
-        num_actuators = native_mjw_data.ctrl.shape[1] if native_mjw_data.ctrl.shape[1] > 0 else 0
+        # Initialize control strategy with the ctrl arrays it will fill
+        self.control_strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)  # type: ignore[union-attr]
 
         # Setup viewer if in debug mode
         viewer = None
@@ -1651,12 +1660,7 @@ class TestMenagerieBase(unittest.TestCase):
         # Helper: step both simulations (full pipeline mode)
         def step_both_full(step_num: int, newton_graph: Any = None, native_graph: Any = None):
             t = step_num * dt
-            ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)  # type: ignore[union-attr]
-            # For Newton: assign to control.mujoco.ctrl (apply_mjc_control reads from there)
-            # Shape is (num_worlds * num_actuators,) flattened
-            newton_control.mujoco.ctrl.assign(ctrl.flatten())
-            # For native: assign directly to mjw_data.ctrl
-            native_mjw_data.ctrl.assign(ctrl)
+            self.control_strategy.fill_control(t)  # type: ignore[union-attr]
 
             if newton_graph and native_graph:
                 wp.capture_launch(native_graph)
@@ -1682,11 +1686,7 @@ class TestMenagerieBase(unittest.TestCase):
             4. Native: fwd_position_post_constraint + step1_rest + step2
             """
             t = step_num * dt
-            ctrl = self.control_strategy.get_control(t, step_num, self.num_worlds, num_actuators)  # type: ignore[union-attr]
-
-            # Assign control to both
-            newton_control.mujoco.ctrl.assign(ctrl.flatten())
-            native_mjw_data.ctrl.assign(ctrl)
+            self.control_strategy.fill_control(t)  # type: ignore[union-attr]
 
             # 1. Newton full step
             if newton_graph:
@@ -1754,9 +1754,7 @@ class TestMenagerieBase(unittest.TestCase):
             if self.use_contact_injection:
                 # Contact injection: capture graphs on step 0, use thereafter
                 if step == 0 and use_cuda_graph:
-                    ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
-                    newton_control.mujoco.ctrl.assign(ctrl.flatten())
-                    native_mjw_data.ctrl.assign(ctrl)
+                    self.control_strategy.fill_control(0.0)  # type: ignore[union-attr]
 
                     # Capture Newton step
                     with wp.ScopedCapture() as capture:
@@ -1789,9 +1787,7 @@ class TestMenagerieBase(unittest.TestCase):
                     step_with_contact_injection(step, newton_graph, pre_constraint_graph, post_constraint_graph)
             elif step == 0 and use_cuda_graph:
                 # Step 0: capture CUDA graphs if available (full pipeline mode only)
-                ctrl = self.control_strategy.get_control(0, 0, self.num_worlds, num_actuators)
-                newton_control.mujoco.ctrl.assign(ctrl.flatten())
-                native_mjw_data.ctrl.assign(ctrl)
+                self.control_strategy.fill_control(0.0)  # type: ignore[union-attr]
 
                 with wp.ScopedCapture() as capture:
                     newton_solver.step(newton_state, newton_state, newton_control, None, dt)
