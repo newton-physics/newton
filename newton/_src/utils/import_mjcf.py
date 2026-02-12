@@ -680,7 +680,6 @@ def parse_mjcf(
 
                 hfield_asset = hfield_assets[hfield_name]
                 nrow, ncol = hfield_asset["nrow"], hfield_asset["ncol"]
-                hfield_size = tuple(s * scale for s in hfield_asset["size"])
 
                 if hfield_asset["elevation"] is not None:
                     elevation = hfield_asset["elevation"]
@@ -689,11 +688,18 @@ def parse_mjcf(
                 else:
                     elevation = np.zeros((nrow, ncol), dtype=np.float32)
 
+                # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
+                # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
+                # so min_z=0 and max_z=size_z. size_base (depth below origin) is ignored.
+                mj_size_x, mj_size_y, mj_size_z, _mj_size_base = hfield_asset["size"]
                 heightfield = Heightfield(
                     data=elevation,
                     nrow=nrow,
                     ncol=ncol,
-                    size=hfield_size,
+                    hx=mj_size_x * scale,
+                    hy=mj_size_y * scale,
+                    min_z=0.0,
+                    max_z=mj_size_z * scale,
                 )
 
                 # Heightfields are always static — don't pass body from shape_kwargs

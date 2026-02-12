@@ -29,36 +29,61 @@ class TestHeightfield(unittest.TestCase):
     """Test suite for heightfield support."""
 
     def test_heightfield_creation(self):
-        """Test creating a Heightfield object and verifying its properties."""
+        """Test creating a Heightfield with auto-normalization."""
         nrow, ncol = 10, 10
-        elevation_data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32)
-        size = (5.0, 5.0, 1.0, 0.0)
+        raw_data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32) * 5.0  # 0-5 meters
 
-        hfield = Heightfield(
-            data=elevation_data,
-            nrow=nrow,
-            ncol=ncol,
-            size=size,
-        )
+        hfield = Heightfield(data=raw_data, nrow=nrow, ncol=ncol, hx=5.0, hy=5.0)
 
-        # Check properties
         self.assertEqual(hfield.nrow, nrow)
         self.assertEqual(hfield.ncol, ncol)
-        self.assertEqual(hfield.size, size)
+        self.assertEqual(hfield.hx, 5.0)
+        self.assertEqual(hfield.hy, 5.0)
         self.assertEqual(hfield.data.dtype, np.float32)
         self.assertEqual(hfield.data.shape, (nrow, ncol))
-        assert_np_equal(hfield.data, elevation_data, tol=1e-6)
+
+        # Data should be normalized to [0, 1]
+        self.assertAlmostEqual(float(hfield.data.min()), 0.0, places=5)
+        self.assertAlmostEqual(float(hfield.data.max()), 1.0, places=5)
+
+        # min_z/max_z should be auto-derived from raw data
+        self.assertAlmostEqual(hfield.min_z, float(raw_data.min()), places=5)
+        self.assertAlmostEqual(hfield.max_z, float(raw_data.max()), places=5)
+
+    def test_heightfield_explicit_z_range(self):
+        """Test creating a Heightfield with explicit min_z/max_z."""
+        nrow, ncol = 5, 5
+        data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32)
+
+        hfield = Heightfield(data=data, nrow=nrow, ncol=ncol, hx=3.0, hy=3.0, min_z=-1.0, max_z=4.0)
+
+        self.assertEqual(hfield.min_z, -1.0)
+        self.assertEqual(hfield.max_z, 4.0)
+        # Data still normalized
+        self.assertAlmostEqual(float(hfield.data.min()), 0.0, places=5)
+        self.assertAlmostEqual(float(hfield.data.max()), 1.0, places=5)
+
+    def test_heightfield_flat(self):
+        """Test that flat (constant) data produces zeros."""
+        nrow, ncol = 5, 5
+        flat_data = np.full((nrow, ncol), 3.0, dtype=np.float32)
+
+        hfield = Heightfield(data=flat_data, nrow=nrow, ncol=ncol, hx=1.0, hy=1.0)
+
+        assert_np_equal(hfield.data, np.zeros((nrow, ncol)), tol=1e-6)
+        self.assertAlmostEqual(hfield.min_z, 3.0, places=5)
+        self.assertAlmostEqual(hfield.max_z, 3.0, places=5)
 
     def test_heightfield_hash(self):
         """Test that heightfield hashing works for deduplication."""
         nrow, ncol = 5, 5
-        data1 = np.zeros((nrow, ncol), dtype=np.float32)
-        data2 = np.zeros((nrow, ncol), dtype=np.float32)
-        data3 = np.ones((nrow, ncol), dtype=np.float32)
+        data_a = np.array([[i + j for j in range(ncol)] for i in range(nrow)], dtype=np.float32)
+        data_b = np.array([[i + j for j in range(ncol)] for i in range(nrow)], dtype=np.float32)
+        data_c = np.array([[i * j for j in range(ncol)] for i in range(nrow)], dtype=np.float32)
 
-        hfield1 = Heightfield(data=data1, nrow=nrow, ncol=ncol)
-        hfield2 = Heightfield(data=data2, nrow=nrow, ncol=ncol)
-        hfield3 = Heightfield(data=data3, nrow=nrow, ncol=ncol)
+        hfield1 = Heightfield(data=data_a, nrow=nrow, ncol=ncol, hx=1.0, hy=1.0)
+        hfield2 = Heightfield(data=data_b, nrow=nrow, ncol=ncol, hx=1.0, hy=1.0)
+        hfield3 = Heightfield(data=data_c, nrow=nrow, ncol=ncol, hx=1.0, hy=1.0)
 
         # Same data should produce same hash
         self.assertEqual(hash(hfield1), hash(hfield2))
@@ -72,18 +97,10 @@ class TestHeightfield(unittest.TestCase):
 
         nrow, ncol = 8, 8
         elevation_data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32)
-        hfield = Heightfield(
-            data=elevation_data,
-            nrow=nrow,
-            ncol=ncol,
-            size=(4.0, 4.0, 0.5, 0.0),
-        )
+        hfield = Heightfield(data=elevation_data, nrow=nrow, ncol=ncol, hx=4.0, hy=4.0)
 
-        shape_id = builder.add_shape_heightfield(
-            heightfield=hfield,
-        )
+        shape_id = builder.add_shape_heightfield(heightfield=hfield)
 
-        # Verify shape was added
         self.assertGreaterEqual(shape_id, 0)
         self.assertEqual(builder.shape_count, 1)
         self.assertEqual(builder.shape_type[shape_id], newton.GeoType.HFIELD)
@@ -111,27 +128,21 @@ class TestHeightfield(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf, parse_meshes=True)
 
-        # Find the heightfield shape
         hfield_shapes = [i for i in range(builder.shape_count) if builder.shape_type[i] == newton.GeoType.HFIELD]
-
-        # Should have exactly one heightfield
         self.assertEqual(len(hfield_shapes), 1)
 
-        shape_id = hfield_shapes[0]
-        hfield = builder.shape_source[shape_id]
-
-        # Verify heightfield properties from MJCF
+        hfield = builder.shape_source[hfield_shapes[0]]
         self.assertIsInstance(hfield, Heightfield)
         self.assertEqual(hfield.nrow, 10)
         self.assertEqual(hfield.ncol, 10)
-        self.assertEqual(hfield.size, (5.0, 5.0, 1.0, 0.0))
+        # MuJoCo size (5, 5, 1, 0) → hx=5, hy=5, min_z=0, max_z=1
+        self.assertAlmostEqual(hfield.hx, 5.0)
+        self.assertAlmostEqual(hfield.hy, 5.0)
+        self.assertAlmostEqual(hfield.min_z, 0.0)
+        self.assertAlmostEqual(hfield.max_z, 1.0)
 
-        # Data should be all zeros (no file specified)
-        assert_np_equal(
-            hfield.data,
-            np.zeros((10, 10)),
-            tol=1e-6,
-        )
+        # Data should be all zeros (no file, no elevation → flat)
+        assert_np_equal(hfield.data, np.zeros((10, 10)), tol=1e-6)
 
     def test_mjcf_hfield_binary_file(self):
         """Test parsing MJCF with binary heightfield file."""
@@ -139,11 +150,7 @@ class TestHeightfield(unittest.TestCase):
         rng = np.random.default_rng(42)
         elevation = rng.random((nrow, ncol)).astype(np.float32)
 
-        # Write MuJoCo binary format: int32 header + float32 data
-        with tempfile.NamedTemporaryFile(
-            suffix=".bin",
-            delete=False,
-        ) as f:
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
             tmp_path = f.name
             np.array([nrow, ncol], dtype=np.int32).tofile(f)
             elevation.tofile(f)
@@ -165,11 +172,7 @@ class TestHeightfield(unittest.TestCase):
 
         try:
             builder = newton.ModelBuilder()
-            builder.add_mjcf(
-                mjcf,
-                parse_meshes=True,
-                path_resolver=resolver,
-            )
+            builder.add_mjcf(mjcf, parse_meshes=True, path_resolver=resolver)
 
             hfield_shapes = [i for i in range(builder.shape_count) if builder.shape_type[i] == newton.GeoType.HFIELD]
             self.assertEqual(len(hfield_shapes), 1)
@@ -177,8 +180,11 @@ class TestHeightfield(unittest.TestCase):
             hfield = builder.shape_source[hfield_shapes[0]]
             self.assertEqual(hfield.nrow, nrow)
             self.assertEqual(hfield.ncol, ncol)
-            self.assertEqual(hfield.size, (3.0, 2.0, 1.0, 0.0))
-            assert_np_equal(hfield.data, elevation, tol=1e-6)
+            self.assertAlmostEqual(hfield.hx, 3.0)
+            self.assertAlmostEqual(hfield.hy, 2.0)
+            # Data is normalized — check shape and range
+            self.assertAlmostEqual(float(hfield.data.min()), 0.0, places=4)
+            self.assertAlmostEqual(float(hfield.data.max()), 1.0, places=4)
         finally:
             os.unlink(tmp_path)
 
@@ -206,8 +212,11 @@ class TestHeightfield(unittest.TestCase):
         hfield = builder.shape_source[hfield_shapes[0]]
         self.assertEqual(hfield.nrow, 3)
         self.assertEqual(hfield.ncol, 3)
-        expected = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6], [0.7, 0.8, 0.9]], dtype=np.float32)
-        assert_np_equal(hfield.data, expected, tol=1e-6)
+        # Data is normalized from [0.1, 0.9] to [0, 1]
+        self.assertAlmostEqual(float(hfield.data.min()), 0.0, places=5)
+        self.assertAlmostEqual(float(hfield.data.max()), 1.0, places=5)
+        self.assertAlmostEqual(hfield.min_z, -0.0)  # size_base=0 → min_z=0
+        self.assertAlmostEqual(hfield.max_z, 1.0)  # size_z=1 → max_z=1
 
     def test_solver_mujoco_hfield(self):
         """Test converting Newton model with heightfield to MuJoCo."""
@@ -218,37 +227,17 @@ class TestHeightfield(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        # Create a simple heightfield
         nrow, ncol = 5, 5
         elevation_data = np.zeros((nrow, ncol), dtype=np.float32)
-        hfield = Heightfield(
-            data=elevation_data,
-            nrow=nrow,
-            ncol=ncol,
-            size=(2.0, 2.0, 0.5, 0.01),
-        )
+        hfield = Heightfield(data=elevation_data, nrow=nrow, ncol=ncol, hx=2.0, hy=2.0, min_z=0.0, max_z=0.5)
 
-        # Add heightfield to world
-        builder.add_shape_heightfield(
-            heightfield=hfield,
-        )
+        builder.add_shape_heightfield(heightfield=hfield)
 
-        # Add a sphere that will interact with the heightfield
-        sphere_body = builder.add_body(
-            xform=wp.transform(
-                (0.0, 0.0, 1.0),
-                wp.quat_identity(),
-            ),
-        )
-        builder.add_shape_sphere(
-            body=sphere_body,
-            radius=0.1,
-        )
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_sphere(body=sphere_body, radius=0.1)
 
-        # Finalize model
         model = builder.finalize()
 
-        # Create MuJoCo solver (this will convert heightfield to MuJoCo format)
         try:
             newton.solvers.SolverMuJoCo(model)
         except Exception as e:
@@ -263,26 +252,14 @@ class TestHeightfield(unittest.TestCase):
 
         builder = newton.ModelBuilder()
 
-        # Flat heightfield at z=0
         nrow, ncol = 10, 10
         elevation = np.zeros((nrow, ncol), dtype=np.float32)
-        hfield = Heightfield(
-            data=elevation,
-            nrow=nrow,
-            ncol=ncol,
-            size=(5.0, 5.0, 1.0, 0.01),
-        )
+        hfield = Heightfield(data=elevation, nrow=nrow, ncol=ncol, hx=5.0, hy=5.0, min_z=0.0, max_z=1.0)
         builder.add_shape_heightfield(heightfield=hfield)
 
-        # Sphere starting above the heightfield
         sphere_radius = 0.1
         start_z = 0.5
-        sphere_body = builder.add_body(
-            xform=wp.transform(
-                (0.0, 0.0, start_z),
-                wp.quat_identity(),
-            ),
-        )
+        sphere_body = builder.add_body(xform=wp.transform((0.0, 0.0, start_z), wp.quat_identity()))
         builder.add_shape_sphere(body=sphere_body, radius=sphere_radius)
 
         model = builder.finalize()
@@ -293,14 +270,12 @@ class TestHeightfield(unittest.TestCase):
         control = model.control()
         sim_dt = 1.0 / 240.0
 
-        # Let sphere settle on heightfield
         for _ in range(500):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
         final_z = float(state_in.body_q.numpy()[sphere_body, 2])
 
-        # Sphere should rest on the surface, not fall through
         self.assertGreater(
             final_z,
             -sphere_radius,
@@ -312,12 +287,7 @@ class TestHeightfield(unittest.TestCase):
         nrow, ncol = 10, 10
         elevation_data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32)
 
-        hfield = Heightfield(
-            data=elevation_data,
-            nrow=nrow,
-            ncol=ncol,
-            size=(5.0, 5.0, 1.0, 0.0),
-        )
+        hfield = Heightfield(data=elevation_data, nrow=nrow, ncol=ncol, hx=5.0, hy=5.0)
 
         self.assertEqual(hfield.mass, 0.0)
         self.assertFalse(hfield.has_inertia)
@@ -327,21 +297,15 @@ class TestHeightfield(unittest.TestCase):
         from newton._src.geometry.utils import compute_shape_radius  # noqa: PLC0415
 
         nrow, ncol = 10, 10
-        size = (4.0, 3.0, 2.0, 0.0)  # size_x, size_y, size_z, size_base
         elevation_data = np.zeros((nrow, ncol), dtype=np.float32)
 
-        hfield = Heightfield(
-            data=elevation_data,
-            nrow=nrow,
-            ncol=ncol,
-            size=size,
-        )
+        hfield = Heightfield(data=elevation_data, nrow=nrow, ncol=ncol, hx=4.0, hy=3.0, min_z=0.0, max_z=2.0)
 
         scale = (1.0, 1.0, 1.0)
         radius = compute_shape_radius(newton.GeoType.HFIELD, scale, hfield)
 
-        # Expected: sqrt((size_x/2)^2 + (size_y/2)^2 + ((size_z+size_base)/2)^2)
-        expected_radius = np.sqrt((4.0 / 2) ** 2 + (3.0 / 2) ** 2 + ((2.0 + 0.0) / 2) ** 2)
+        # Expected: sqrt(hx^2 + hy^2 + ((max_z - min_z)/2)^2)
+        expected_radius = np.sqrt(4.0**2 + 3.0**2 + ((2.0 - 0.0) / 2) ** 2)
         self.assertAlmostEqual(radius, expected_radius, places=5)
 
     def test_heightfield_finalize(self):
@@ -349,20 +313,16 @@ class TestHeightfield(unittest.TestCase):
         nrow, ncol = 5, 5
         elevation_data = np.random.default_rng(42).random((nrow, ncol)).astype(np.float32)
 
-        hfield = Heightfield(
-            data=elevation_data,
-            nrow=nrow,
-            ncol=ncol,
-            size=(2.0, 2.0, 1.0, 0.0),
-        )
+        hfield = Heightfield(data=elevation_data, nrow=nrow, ncol=ncol, hx=2.0, hy=2.0)
 
-        # Finalize should return a pointer
         ptr = hfield.finalize()
         self.assertIsInstance(ptr, int)
         self.assertGreater(ptr, 0)
-
-        # Warp array should be created
         self.assertIsNotNone(hfield.warp_array)
+
+        # Finalized array should be 1D (flattened)
+        self.assertEqual(len(hfield.warp_array.shape), 1)
+        self.assertEqual(hfield.warp_array.shape[0], nrow * ncol)
 
 
 if __name__ == "__main__":

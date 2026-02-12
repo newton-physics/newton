@@ -3088,24 +3088,32 @@ class SolverMuJoCo(SolverBase):
                             print(f"Warning: Heightfield shape {shape} has no source data, skipping")
                         continue
 
-                    # Extract heightfield properties
-                    nrow = hfield_src.nrow
-                    ncol = hfield_src.ncol
-                    size = hfield_src.size  # (size_x, size_y, size_z, size_base)
-                    elevation_data = hfield_src.data.flatten()  # MuJoCo expects 1D row-major array
+                    # Convert Newton heightfield to MuJoCo format
+                    # MuJoCo size: (size_x, size_y, size_z, size_base) — all must be positive
+                    # Our data is normalized [0,1], height range = max_z - min_z
+                    # We set size_base to eps (MuJoCo requires positive) and shift the
+                    # geom origin by min_z so the lowest point is at the right world Z.
+                    eps = 1e-4
+                    mj_size_z = max(hfield_src.max_z - hfield_src.min_z, eps)
+                    mj_size = (hfield_src.hx, hfield_src.hy, mj_size_z, eps)
+                    elevation_data = hfield_src.data.flatten()
 
-                    # Add hfield asset to MuJoCo spec
                     hfield_name = f"{model.shape_key[shape]}_{shape}"
                     spec.add_hfield(
                         name=hfield_name,
-                        nrow=nrow,
-                        ncol=ncol,
-                        size=size,
+                        nrow=hfield_src.nrow,
+                        ncol=hfield_src.ncol,
+                        size=mj_size,
                         userdata=elevation_data,
                     )
 
-                    # Set geom to reference the hfield
                     geom_params["hfieldname"] = hfield_name
+
+                    # Shift geom origin so data=0 maps to min_z in world space
+                    tf = wp.transform(
+                        wp.vec3(tf.p[0], tf.p[1], tf.p[2] + hfield_src.min_z),
+                        tf.q,
+                    )
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
                     # use mesh-specific maxhullvert or fall back to the default

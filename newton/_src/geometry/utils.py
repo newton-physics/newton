@@ -108,14 +108,12 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | Heightfie
     elif geo_type == GeoType.HFIELD:
         # Heightfield bounding sphere from half-extents
         if src is not None:
-            size_x, size_y, size_z, size_base = src.size
-            half_x = (size_x * scale[0]) / 2.0
-            half_y = (size_y * scale[1]) / 2.0
-            # Vertical range: from -size_base to +size_z
-            half_z = (size_z + size_base) / 2.0 * scale[2]
+            half_x = src.hx * scale[0]
+            half_y = src.hy * scale[1]
+            # Vertical range: from min_z to max_z, centered at midpoint
+            half_z = (src.max_z - src.min_z) / 2.0 * scale[2]
             return np.sqrt(half_x**2 + half_y**2 + half_z**2)
         else:
-            # Default radius if no source provided
             return np.linalg.norm(scale)
     else:
         return 10.0

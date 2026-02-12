@@ -411,27 +411,44 @@ class Heightfield:
     Represents a heightfield (2D elevation grid) for terrain and large static surfaces.
 
     Heightfields are efficient representations of terrain using a 2D grid of elevation values.
-    They are typically used for static ground surfaces in simulation and are more memory-efficient
-    than equivalent triangle meshes.
+    They are always static (zero mass, zero inertia) and more memory-efficient than equivalent
+    triangle meshes.
+
+    The elevation data is always normalized to [0, 1] internally. World-space heights are
+    computed as: ``z = min_z + data[r, c] * (max_z - min_z)``.
 
     Example:
-        Create a heightfield from a 2D numpy array:
+        Create a heightfield from raw elevation data (auto-normalizes):
 
         .. code-block:: python
 
             import numpy as np
             import newton
 
-            # Create 10x10 grid with random elevations
             nrow, ncol = 10, 10
-            elevation_data = np.random.rand(nrow, ncol).astype(np.float32)
+            elevation = np.random.rand(nrow, ncol).astype(np.float32) * 5.0  # 0-5 meters
 
-            # Create heightfield with 5x5 meter extent, 1 meter max height
             hfield = newton.Heightfield(
-                data=elevation_data,
+                data=elevation,
                 nrow=nrow,
                 ncol=ncol,
-                size=(5.0, 5.0, 1.0, 0.0),  # (size_x, size_y, size_z, size_base)
+                hx=5.0,  # half-extent X (field spans [-5, +5] meters)
+                hy=5.0,  # half-extent Y
+            )
+            # min_z and max_z are auto-derived from the data (0.0 and 5.0)
+
+        Create with explicit height range:
+
+        .. code-block:: python
+
+            hfield = newton.Heightfield(
+                data=normalized_data,  # any values, will be normalized
+                nrow=nrow,
+                ncol=ncol,
+                hx=5.0,
+                hy=5.0,
+                min_z=-1.0,
+                max_z=3.0,
             )
     """
 
@@ -440,28 +457,48 @@ class Heightfield:
         data: Sequence[Sequence[float]] | nparray,
         nrow: int,
         ncol: int,
-        size: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 0.0),
+        hx: float = 1.0,
+        hy: float = 1.0,
+        min_z: float | None = None,
+        max_z: float | None = None,
     ):
         """
         Construct a Heightfield object from a 2D elevation grid.
 
-        Heightfields are always static (zero mass, zero inertia).
+        The input data is normalized to [0, 1]. If ``min_z`` and ``max_z`` are not provided,
+        they are derived from the data's minimum and maximum values.
 
         Args:
-            data: 2D array of elevation values, shape (nrow, ncol).
+            data: 2D array of elevation values, shape (nrow, ncol). Any numeric values are
+                accepted and will be normalized to [0, 1] internally.
             nrow: Number of rows in the heightfield grid.
             ncol: Number of columns in the heightfield grid.
-            size: Tuple of (size_x, size_y, size_z, size_base) defining:
-                - size_x: Horizontal extent in X direction (meters)
-                - size_y: Horizontal extent in Y direction (meters)
-                - size_z: Vertical extent / max height range (meters)
-                - size_base: Base height offset (ground level)
-                Defaults to (1.0, 1.0, 1.0, 0.0).
+            hx: Half-extent in X direction (meters). The heightfield spans [-hx, +hx].
+            hy: Half-extent in Y direction (meters). The heightfield spans [-hy, +hy].
+            min_z: World-space Z value corresponding to data minimum. Must be provided
+                together with ``max_z``, or both omitted to auto-derive from data.
+            max_z: World-space Z value corresponding to data maximum. Must be provided
+                together with ``min_z``, or both omitted to auto-derive from data.
         """
-        self._data = np.array(data, dtype=np.float32).reshape(nrow, ncol)
+        if (min_z is None) != (max_z is None):
+            raise ValueError("min_z and max_z must both be provided or both omitted")
+
+        raw = np.array(data, dtype=np.float32).reshape(nrow, ncol)
+        d_min, d_max = float(raw.min()), float(raw.max())
+
+        # Normalize data to [0, 1]
+        if d_max > d_min:
+            self._data = (raw - d_min) / (d_max - d_min)
+        else:
+            self._data = np.zeros_like(raw)
+
         self.nrow = nrow
         self.ncol = ncol
-        self.size = size  # (size_x, size_y, size_z, size_base)
+        self.hx = hx
+        self.hy = hy
+        self.min_z = d_min if min_z is None else float(min_z)
+        self.max_z = d_max if max_z is None else float(max_z)
+
         self.is_solid = True
         self.has_inertia = False
         self.warp_array = None  # Will be set by finalize()
@@ -474,13 +511,20 @@ class Heightfield:
 
     @property
     def data(self):
-        """Get the elevation data as a 2D numpy array."""
+        """Get the normalized [0, 1] elevation data as a 2D numpy array."""
         return self._data
 
     @data.setter
     def data(self, value):
-        """Set the elevation data from a 2D array."""
-        self._data = np.array(value, dtype=np.float32).reshape(self.nrow, self.ncol)
+        """Set the elevation data from a 2D array. Data is normalized to [0, 1]."""
+        raw = np.array(value, dtype=np.float32).reshape(self.nrow, self.ncol)
+        d_min, d_max = float(raw.min()), float(raw.max())
+        if d_max > d_min:
+            self._data = (raw - d_min) / (d_max - d_min)
+        else:
+            self._data = np.zeros_like(raw)
+        self.min_z = d_min
+        self.max_z = d_max
         self._cached_hash = None
 
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
@@ -495,17 +539,13 @@ class Heightfield:
             The ID (pointer) of the simulation-ready Warp array.
         """
         with wp.ScopedDevice(device):
-            # Create 2D Warp array from elevation data
-            self.warp_array = wp.array(self._data, requires_grad=requires_grad, dtype=wp.float32)
+            self.warp_array = wp.array(self._data.flatten(), requires_grad=requires_grad, dtype=wp.float32)
             return self.warp_array.ptr
 
     @override
     def __hash__(self) -> int:
         """
         Compute a hash of the heightfield data for use in caching.
-
-        The hash considers the elevation data, grid dimensions, size parameters,
-        and solid flag. Uses a cached hash if available.
 
         Returns:
             The hash value for the heightfield.
@@ -516,8 +556,10 @@ class Heightfield:
                     tuple(self._data.flatten()),
                     self.nrow,
                     self.ncol,
-                    self.size,
-                    self.is_solid,
+                    self.hx,
+                    self.hy,
+                    self.min_z,
+                    self.max_z,
                 )
             )
         return self._cached_hash
