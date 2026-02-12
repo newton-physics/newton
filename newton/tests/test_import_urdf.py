@@ -676,5 +676,130 @@ class TestUrdfUriResolution(unittest.TestCase):
             self.assertEqual(builder_auto.shape_count, 2)
 
 
+MIMIC_URDF = """
+<robot name="mimic_test">
+    <link name="base_link"/>
+    <link name="leader_link"/>
+    <link name="follower_link"/>
+
+    <joint name="leader_joint" type="revolute">
+        <parent link="base_link"/>
+        <child link="leader_link"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-1.57" upper="1.57"/>
+    </joint>
+
+    <joint name="follower_joint" type="revolute">
+        <parent link="base_link"/>
+        <child link="follower_link"/>
+        <origin xyz="1 0 0" rpy="0 0 0"/>
+        <axis xyz="0 0 1"/>
+        <limit lower="-3.14" upper="3.14"/>
+        <mimic joint="leader_joint" multiplier="2.0" offset="0.5"/>
+    </joint>
+</robot>
+"""
+
+
+class TestMimicConstraints(unittest.TestCase):
+    """Tests for URDF mimic joint parsing."""
+
+    def test_mimic_constraint_basic(self):
+        """Test that mimic constraints are created from URDF mimic tags."""
+        builder = newton.ModelBuilder()
+        builder.add_urdf(MIMIC_URDF)
+        model = builder.finalize()
+
+        # Should have 1 mimic constraint
+        self.assertEqual(model.constraint_mimic_count, 1)
+
+        # Check the constraint values
+        joint0 = model.constraint_mimic_joint0.numpy()[0]
+        joint1 = model.constraint_mimic_joint1.numpy()[0]
+        coef0 = model.constraint_mimic_coef0.numpy()[0]
+        coef1 = model.constraint_mimic_coef1.numpy()[0]
+        enabled = model.constraint_mimic_enabled.numpy()[0]
+
+        # Find joint indices by name
+        leader_idx = model.joint_key.index("leader_joint")
+        follower_idx = model.joint_key.index("follower_joint")
+
+        self.assertEqual(joint0, follower_idx)  # follower joint (joint0)
+        self.assertEqual(joint1, leader_idx)  # leader joint (joint1)
+        self.assertAlmostEqual(coef0, 0.5, places=5)
+        self.assertAlmostEqual(coef1, 2.0, places=5)
+        self.assertTrue(enabled)
+
+    def test_mimic_constraint_default_values(self):
+        """Test mimic constraints with default coef1 and coef0."""
+        urdf = """
+        <robot name="mimic_defaults">
+            <link name="base"/>
+            <link name="l1"/>
+            <link name="l2"/>
+            <joint name="j1" type="revolute">
+                <parent link="base"/><child link="l1"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="j2" type="revolute">
+                <parent link="base"/><child link="l2"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+                <mimic joint="j1"/>
+            </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_urdf(urdf)
+        model = builder.finalize()
+
+        self.assertEqual(model.constraint_mimic_count, 1)
+        coef0 = model.constraint_mimic_coef0.numpy()[0]
+        coef1 = model.constraint_mimic_coef1.numpy()[0]
+
+        # Default values from URDF spec
+        self.assertAlmostEqual(coef0, 0.0, places=5)
+        self.assertAlmostEqual(coef1, 1.0, places=5)
+
+    def test_mimic_joint_skipped_child_does_not_mismatch(self):
+        """Regression test: skipped joints must not be included in name->index mapping."""
+
+        class _SkippingLinkBuilder(newton.ModelBuilder):
+            def add_link(self, *args, key=None, **kwargs):
+                # Simulate a link filtered out by importer-side selection logic.
+                if key == "skipped_link":
+                    return -1
+                return super().add_link(*args, key=key, **kwargs)
+
+        urdf = """
+        <robot name="mimic_skipped_child">
+            <link name="base"/>
+            <link name="leader_link"/>
+            <link name="skipped_link"/>
+            <link name="tail_link"/>
+            <joint name="leader_joint" type="revolute">
+                <parent link="base"/><child link="leader_link"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="skipped_joint" type="revolute">
+                <parent link="base"/><child link="skipped_link"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+                <mimic joint="leader_joint"/>
+            </joint>
+            <joint name="tail_joint" type="revolute">
+                <parent link="base"/><child link="tail_link"/>
+                <axis xyz="0 0 1"/><limit lower="-1" upper="1"/>
+            </joint>
+        </robot>
+        """
+
+        builder = _SkippingLinkBuilder()
+        with self.assertWarnsRegex(UserWarning, "was not created, skipping mimic constraint"):
+            builder.add_urdf(urdf, joint_ordering=None, ensure_nonstatic_links=False)
+
+        # No mimic constraint should be created because the follower joint was skipped.
+        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -481,8 +481,8 @@ def parse_urdf(
         el_mimic = joint.find("mimic")
         if el_mimic is not None:
             joint_data["mimic_joint"] = el_mimic.get("joint")
-            joint_data["mimic_multiplier"] = float(el_mimic.get("multiplier", 1))
-            joint_data["mimic_offset"] = float(el_mimic.get("offset", 0))
+            joint_data["mimic_coef0"] = float(el_mimic.get("offset", 0))
+            joint_data["mimic_coef1"] = float(el_mimic.get("multiplier", 1))
 
         parent_child_joint[(parent, child)] = joint_data
         joints.append(joint_data)
@@ -651,6 +651,8 @@ def parse_urdf(
         joint_indices.append(builder.add_joint_fixed(-1, root, parent_xform=xform, key="fixed_base"))
 
     # add joints, in the desired order starting from root body
+    # Track only joints that are actually created (some may be skipped if their child body wasn't inserted).
+    joint_name_to_idx: dict[str, int] = {}
     for joint in sorted_joints:
         parent = link_index[joint["parent"]]
         child = link_index[joint["child"]]
@@ -676,32 +678,29 @@ def parse_urdf(
         # actuator mode. Default to POSITION.
         actuator_mode = ActuatorMode.POSITION_VELOCITY if force_position_velocity_actuation else ActuatorMode.POSITION
 
+        created_joint_idx: int
         if joint["type"] == "revolute" or joint["type"] == "continuous":
-            joint_indices.append(
-                builder.add_joint_revolute(
-                    axis=joint["axis"],
-                    target_kd=joint_damping,
-                    actuator_mode=actuator_mode,
-                    limit_lower=lower,
-                    limit_upper=upper,
-                    **joint_params,
-                )
+            created_joint_idx = builder.add_joint_revolute(
+                axis=joint["axis"],
+                target_kd=joint_damping,
+                actuator_mode=actuator_mode,
+                limit_lower=lower,
+                limit_upper=upper,
+                **joint_params,
             )
         elif joint["type"] == "prismatic":
-            joint_indices.append(
-                builder.add_joint_prismatic(
-                    axis=joint["axis"],
-                    target_kd=joint_damping,
-                    actuator_mode=actuator_mode,
-                    limit_lower=lower * scale,
-                    limit_upper=upper * scale,
-                    **joint_params,
-                )
+            created_joint_idx = builder.add_joint_prismatic(
+                axis=joint["axis"],
+                target_kd=joint_damping,
+                actuator_mode=actuator_mode,
+                limit_lower=lower * scale,
+                limit_upper=upper * scale,
+                **joint_params,
             )
         elif joint["type"] == "fixed":
-            joint_indices.append(builder.add_joint_fixed(**joint_params))
+            created_joint_idx = builder.add_joint_fixed(**joint_params)
         elif joint["type"] == "floating":
-            joint_indices.append(builder.add_joint_free(**joint_params))
+            created_joint_idx = builder.add_joint_free(**joint_params)
         elif joint["type"] == "planar":
             # find plane vectors perpendicular to axis
             axis = np.array(joint["axis"])
@@ -716,29 +715,59 @@ def parse_urdf(
             v = np.cross(axis, u)
             v /= np.linalg.norm(v)
 
-            joint_indices.append(
-                builder.add_joint_d6(
-                    linear_axes=[
-                        ModelBuilder.JointDofConfig(
-                            u,
-                            limit_lower=lower * scale,
-                            limit_upper=upper * scale,
-                            target_kd=joint_damping,
-                            actuator_mode=actuator_mode,
-                        ),
-                        ModelBuilder.JointDofConfig(
-                            v,
-                            limit_lower=lower * scale,
-                            limit_upper=upper * scale,
-                            target_kd=joint_damping,
-                            actuator_mode=actuator_mode,
-                        ),
-                    ],
-                    **joint_params,
-                )
+            created_joint_idx = builder.add_joint_d6(
+                linear_axes=[
+                    ModelBuilder.JointDofConfig(
+                        u,
+                        limit_lower=lower * scale,
+                        limit_upper=upper * scale,
+                        target_kd=joint_damping,
+                        actuator_mode=actuator_mode,
+                    ),
+                    ModelBuilder.JointDofConfig(
+                        v,
+                        limit_lower=lower * scale,
+                        limit_upper=upper * scale,
+                        target_kd=joint_damping,
+                        actuator_mode=actuator_mode,
+                    ),
+                ],
+                **joint_params,
             )
         else:
             raise Exception("Unsupported joint type: " + joint["type"])
+
+        joint_indices.append(created_joint_idx)
+        joint_name_to_idx[joint["name"]] = created_joint_idx
+
+    # Create mimic constraints
+    for joint in sorted_joints:
+        if "mimic_joint" in joint:
+            mimic_target_name = joint["mimic_joint"]
+            if mimic_target_name not in joint_name_to_idx:
+                warnings.warn(
+                    f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            follower_idx = joint_name_to_idx.get(joint["name"])
+            leader_idx = joint_name_to_idx.get(mimic_target_name)
+
+            if follower_idx is None:
+                warnings.warn(
+                    f"Mimic joint '{joint['name']}' was not created, skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            builder.add_constraint_mimic(
+                joint0=follower_idx,
+                joint1=leader_idx,
+                coef0=joint.get("mimic_coef0", 0.0),
+                coef1=joint.get("mimic_coef1", 1.0),
+                key=f"mimic_{joint['name']}",
+            )
 
     # Create articulation from all collected joints
     if joint_indices:
