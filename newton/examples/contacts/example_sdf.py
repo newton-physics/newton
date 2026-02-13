@@ -439,19 +439,16 @@ if __name__ == "__main__":
         default="mujoco",
         help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
     )
-    parser.add_argument(
-        "--num-per-world",
-        type=int,
-        default=1,
-        help="Number of assemblies per world.",
-    )
+
+    if args.scene == "gears" and args.solver == "xpbd":
+        print("The gears scene does not work with the xpbd solver, please use mujoco instead")
+        return
 
     viewer, args = newton.examples.init(parser)
 
     example = Example(
         viewer,
         num_worlds=args.num_worlds,
-        num_per_world=args.num_per_world,
         scene=args.scene,
         solver=args.solver,
         test_mode=args.test,
