@@ -147,9 +147,11 @@ def create_newton_model_from_mjcf(
 
     # Use floating=None to honor the MJCF's explicit joint definitions.
     # Menagerie models define their own <freejoint> tags for floating-base robots.
+    # Disable ensure_nonstatic_links to match MuJoCo's handling of zero-mass bodies.
     robot_builder.add_mjcf(
         str(mjcf_path),
         parse_visuals=parse_visuals,
+        ensure_nonstatic_links=False,
     )
 
     # Create main builder and replicate
@@ -2509,8 +2511,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
-
-    skip_reason = "Not yet verified"
+    skip_reason = "Zero-mass world_link body causes inertia error in SolverMuJoCo spec compilation"
 
 
 class TestMenagerie_ApptronikApollo_USD(TestMenagerieUSD):
