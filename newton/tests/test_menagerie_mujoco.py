@@ -151,7 +151,6 @@ def create_newton_model_from_mjcf(
         str(mjcf_path),
         floating=floating,
         parse_visuals=parse_visuals,
-        ignore_inertial_definitions=False,  # Use MJCF-defined inertials to match MuJoCo
     )
 
     # Create main builder and replicate
