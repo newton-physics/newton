@@ -283,10 +283,13 @@ def write_module_page(mod_name: str) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Script entry
+# Public entry point
 # -----------------------------------------------------------------------------
 
-if __name__ == "__main__":
+
+def generate_all() -> None:
+    """Regenerate all API ``.rst`` files under :data:`OUTPUT_DIR`."""
+
     # delete previously generated files
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 
@@ -295,4 +298,12 @@ if __name__ == "__main__":
 
     for mod in all_modules:
         write_module_page(mod)
+
+
+# -----------------------------------------------------------------------------
+# Script entry
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    generate_all()
     print("\nDone. Add docs/api/index.rst to your TOC or glob it in.")

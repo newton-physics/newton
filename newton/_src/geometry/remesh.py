@@ -1449,7 +1449,7 @@ class SurfaceReconstructor:
         Returns:
             Mesh containing vertices and triangle indices.
         """
-        import open3d as o3d  # noqa: PLC0415  # lazy import, open3d is optional
+        import open3d as o3d  # lazy import, open3d is optional
 
         points = np.asarray(points, dtype=np.float32)
         normals = np.asarray(normals, dtype=np.float32)
@@ -1519,7 +1519,7 @@ class SurfaceReconstructor:
 
     def _simplify_pyfqmr(self, mesh, num_triangles_before: int, verbose: bool) -> tuple[np.ndarray, np.ndarray]:
         """Simplify mesh using pyfqmr (fast)."""
-        from pyfqmr import Simplify  # noqa: PLC0415  # lazy import
+        from pyfqmr import Simplify  # lazy import
 
         vertices = np.asarray(mesh.vertices, dtype=np.float64)
         faces = np.asarray(mesh.triangles, dtype=np.int32)
@@ -1607,7 +1607,7 @@ def extract_largest_island(
         Tuple of (new_vertices, new_indices) containing only the largest island.
         Indices are returned as a flattened array (M*3,).
     """
-    from scipy import sparse  # noqa: PLC0415
+    from scipy import sparse
 
     # Ensure indices are flattened
     indices = np.asarray(indices).flatten()

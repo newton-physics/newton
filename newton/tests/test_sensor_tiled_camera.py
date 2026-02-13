@@ -19,7 +19,6 @@ import unittest
 
 import numpy as np
 import warp as wp
-from pxr import Usd, UsdGeom
 
 import newton
 from newton.sensors import SensorTiledCamera
@@ -27,6 +26,8 @@ from newton.sensors import SensorTiledCamera
 
 class TestSensorTiledCamera(unittest.TestCase):
     def __build_scene(self):
+        from pxr import Usd, UsdGeom
+
         builder = newton.ModelBuilder()
 
         # add ground plane

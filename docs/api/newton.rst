@@ -59,6 +59,8 @@ newton
    AxisType
    eval_fk
    eval_ik
+   eval_jacobian
+   eval_mass_matrix
 
 .. rubric:: Constants
 

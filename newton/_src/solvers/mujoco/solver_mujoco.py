@@ -185,8 +185,8 @@ class SolverMuJoCo(SolverBase):
                     # This is useful to debug import errors on Windows, for example
                     warnings.simplefilter("always", category=ImportWarning)
 
-                    import mujoco  # noqa: PLC0415
-                    import mujoco_warp  # noqa: PLC0415
+                    import mujoco
+                    import mujoco_warp
 
                     cls._mujoco = mujoco
                     cls._mujoco_warp = mujoco_warp
@@ -1675,7 +1675,7 @@ class SolverMuJoCo(SolverBase):
         Returns:
             int: Number of actuators added.
         """
-        import mujoco  # noqa: PLC0415
+        import mujoco
 
         mujoco_attrs = getattr(model, "mujoco", None)
         mujoco_actuator_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
@@ -3953,7 +3953,7 @@ class SolverMuJoCo(SolverBase):
             "geom_pos",
             "geom_quat",
             "geom_friction",
-            # "geom_margin",
+            "geom_margin",
             "geom_gap",
             # "geom_rgba",
             # "site_pos",
@@ -4790,8 +4790,8 @@ class SolverMuJoCo(SolverBase):
             show_transparent_geoms: Whether to show transparent geoms.
         """
         if self._viewer is None:
-            import mujoco  # noqa: PLC0415
-            import mujoco.viewer  # noqa: PLC0415
+            import mujoco
+            import mujoco.viewer
 
             # make the headlights brighter to improve visibility
             # in the MuJoCo viewer

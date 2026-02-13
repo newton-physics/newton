@@ -880,7 +880,7 @@ class ViewerGL(ViewerBase):
             bool: True if the key is currently pressed, False otherwise.
         """
         try:
-            import pyglet  # noqa: PLC0415
+            import pyglet
         except Exception:
             return False
 
@@ -961,7 +961,7 @@ class ViewerGL(ViewerBase):
         if self.ui and self.ui.is_capturing():
             return
 
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         # Handle right-click for picking
         if button == pyglet.window.mouse.RIGHT and self.picking_enabled:
@@ -994,7 +994,7 @@ class ViewerGL(ViewerBase):
         if self.ui and self.ui.is_capturing():
             return
 
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         if buttons & pyglet.window.mouse.LEFT:
             sensitivity = 0.1
@@ -1031,7 +1031,7 @@ class ViewerGL(ViewerBase):
             return
 
         try:
-            import pyglet  # noqa: PLC0415
+            import pyglet
         except Exception:
             return
 
@@ -1098,7 +1098,7 @@ class ViewerGL(ViewerBase):
         distance = max_extent / (2.0 * np.tan(fov_rad / 2.0)) * padding
 
         # Position camera at distance from current viewing direction, looking at center
-        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+        from pyglet.math import Vec3 as PyVec3
 
         front = self.camera.get_front()
         new_pos = PyVec3(
@@ -1134,7 +1134,7 @@ class ViewerGL(ViewerBase):
         if ln > 1.0e-6:
             right /= ln
 
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         desired = np.zeros(3, dtype=np.float32)
         if self.renderer.is_key_down(pyglet.window.key.W) or self.renderer.is_key_down(pyglet.window.key.UP):

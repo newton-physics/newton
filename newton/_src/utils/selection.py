@@ -20,7 +20,7 @@ from typing import Any
 import warp as wp
 from warp.types import is_array
 
-from ..sim import Control, JointType, Model, State, eval_fk
+from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -1376,3 +1376,45 @@ class ArticulationView:
         # translate view mask to Model articulation mask
         articulation_mask = self.get_model_articulation_mask(mask=mask)
         eval_fk(self.model, target.joint_q, target.joint_qd, target, mask=articulation_mask)
+
+    def eval_jacobian(self, state: State, J=None, joint_S_s=None, mask=None):
+        """Evaluate spatial Jacobian for articulations in this view.
+
+        Computes the spatial Jacobian J that maps joint velocities to spatial
+        velocities of each link in world frame.
+
+        Args:
+            state: The state containing body transforms (body_q).
+            J: Optional output array for the Jacobian, shape (articulation_count, max_links*6, max_dofs).
+               If None, allocates internally.
+            joint_S_s: Optional pre-allocated temp array for motion subspaces.
+            mask: Optional mask of articulations in this ArticulationView (all by default).
+
+        Returns:
+            The Jacobian array J, or None if the model has no articulations.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        return eval_jacobian(self.model, state, J, joint_S_s=joint_S_s, mask=articulation_mask)
+
+    def eval_mass_matrix(self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None):
+        """Evaluate generalized mass matrix for articulations in this view.
+
+        Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
+        Jacobian and M is the block-diagonal spatial mass matrix.
+
+        Args:
+            state: The state containing body transforms (body_q).
+            H: Optional output array for mass matrix, shape (articulation_count, max_dofs, max_dofs).
+               If None, allocates internally.
+            J: Optional pre-computed Jacobian. If None, computes internally.
+            body_I_s: Optional pre-allocated temp array for spatial inertias.
+            joint_S_s: Optional pre-allocated temp array for motion subspaces.
+            mask: Optional mask of articulations in this ArticulationView (all by default).
+
+        Returns:
+            The mass matrix array H, or None if the model has no articulations.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        return eval_mass_matrix(
+            self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
+        )

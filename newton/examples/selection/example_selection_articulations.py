@@ -134,6 +134,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        # Contacts only needed for non-MuJoCo solvers
+        self.contacts = self.model.contacts() if not isinstance(self.solver, newton.solvers.SolverMuJoCo) else None
 
         self.next_reset = 0.0
         self.step_count = 0
@@ -218,12 +220,10 @@ class Example:
             self.state_0.clear_forces()
 
             # explicit collisions needed without MuJoCo solver
-            if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
-                contacts = self.model.collide(self.state_0)
-            else:
-                contacts = None
+            if self.contacts is not None:
+                self.model.collide(self.state_0, self.contacts)
 
-            self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):

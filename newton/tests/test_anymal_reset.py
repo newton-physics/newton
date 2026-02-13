@@ -18,7 +18,6 @@
 import copy
 import unittest
 
-import mujoco
 import numpy as np
 import warp as wp
 
@@ -72,7 +71,7 @@ class TestAnymalReset(unittest.TestCase):
 
         self.model = builder.finalize()
 
-        if cone_type == mujoco.mjtCone.mjCONE_PYRAMIDAL:
+        if cone_type == "pyramidal":
             impratio = 1.0
         else:
             impratio = 100.0
@@ -111,12 +110,7 @@ class TestAnymalReset(unittest.TestCase):
             self.graph = None
 
     def _cone_type_name(self, cone_type):
-        if cone_type == mujoco.mjtCone.mjCONE_ELLIPTIC:
-            return "ELLIPTIC"
-        elif cone_type == mujoco.mjtCone.mjCONE_PYRAMIDAL:
-            return "PYRAMIDAL"
-        else:
-            return f"UNKNOWN({cone_type})"
+        return cone_type.upper()
 
     def simulate(self):
         self.contacts = None
@@ -318,7 +312,7 @@ add_function_test(
     "test_reset_functionality_elliptic",
     test_reset_functionality,
     devices=devices,
-    cone_type=mujoco.mjtCone.mjCONE_ELLIPTIC,
+    cone_type="elliptic",
     check_output=False,
 )
 add_function_test(
@@ -326,7 +320,7 @@ add_function_test(
     "test_reset_functionality_pyramidal",
     test_reset_functionality,
     devices=devices,
-    cone_type=mujoco.mjtCone.mjCONE_PYRAMIDAL,
+    cone_type="pyramidal",
     check_output=False,
 )
 
