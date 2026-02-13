@@ -110,7 +110,7 @@ class Example:
             solver_params = {
                 "add_springs": True,
                 "spring_ke": 1.0e3,
-                "spring_kd": 1.0e1,
+                "spring_kd": 1.0e0,
             }
 
         else:  # self.solver_type == "vbd"
