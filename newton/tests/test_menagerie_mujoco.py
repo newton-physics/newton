@@ -119,7 +119,6 @@ def download_menagerie_asset(
 def create_newton_model_from_mjcf(
     mjcf_path: Path,
     *,
-    floating: bool = True,
     num_worlds: int = 1,
     add_ground: bool = True,
     parse_visuals: bool = False,
@@ -129,7 +128,6 @@ def create_newton_model_from_mjcf(
 
     Args:
         mjcf_path: Path to the MJCF XML file
-        floating: Whether the robot has a floating base
         num_worlds: Number of world instances to create
         add_ground: Whether to add a ground plane
         parse_visuals: Whether to parse visual-only geoms (default False for physics testing)
@@ -147,9 +145,10 @@ def create_newton_model_from_mjcf(
     robot_builder.default_shape_cfg.torsional_friction = 0.005
     robot_builder.default_shape_cfg.rolling_friction = 0.0001
 
+    # Use floating=None to honor the MJCF's explicit joint definitions.
+    # Menagerie models define their own <freejoint> tags for floating-base robots.
     robot_builder.add_mjcf(
         str(mjcf_path),
-        floating=floating,
         parse_visuals=parse_visuals,
     )
 
@@ -171,7 +170,6 @@ def create_newton_model_from_mjcf(
 def create_newton_model_from_usd(
     mjcf_path: Path,
     *,
-    floating: bool = True,
     num_worlds: int = 1,
     add_ground: bool = True,
 ) -> newton.Model:
@@ -182,7 +180,6 @@ def create_newton_model_from_usd(
 
     Args:
         mjcf_path: Path to the MJCF XML file
-        floating: Whether the robot has a floating base
         num_worlds: Number of world instances to create
         add_ground: Whether to add a ground plane
 
@@ -1474,7 +1471,6 @@ class TestMenagerieBase(unittest.TestCase):
     Subclasses must define:
         - robot_folder: str - menagerie folder name
         - robot_xml: str - path to XML within folder
-        - floating: bool - whether robot has floating base
 
     Optional overrides:
         - num_worlds: int - number of parallel worlds (default: 2)
@@ -1489,7 +1485,6 @@ class TestMenagerieBase(unittest.TestCase):
     # Must be defined by subclasses
     robot_folder: str = ""
     robot_xml: str = "scene.xml"  # Default; most menagerie robots use scene.xml
-    floating: bool = True
 
     # Configurable defaults
     num_worlds: int = 34
@@ -1968,7 +1963,6 @@ class TestMenagerieMJCF(TestMenagerieBase):
         """Create Newton model by loading MJCF directly."""
         return create_newton_model_from_mjcf(
             self.mjcf_path,
-            floating=self.floating,
             num_worlds=self.num_worlds,
             add_ground=False,  # scene.xml includes ground plane
         )
@@ -1988,7 +1982,6 @@ class TestMenagerieUSD(TestMenagerieBase):
         """Create Newton model by converting MJCF to USD first."""
         return create_newton_model_from_usd(
             self.mjcf_path,
-            floating=self.floating,
             num_worlds=self.num_worlds,
             add_ground=False,  # scene.xml includes ground plane
         )
@@ -2011,7 +2004,7 @@ class TestMenagerie_AgilexPiper(TestMenagerieMJCF):
     """AgileX PIPER bimanual arm."""
 
     robot_folder = "agilex_piper"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2019,14 +2012,13 @@ class TestMenagerie_AgilexPiper_USD(TestMenagerieUSD):
     """AgileX PIPER bimanual arm. (USD)."""
 
     robot_folder = "agilex_piper"
-    floating = False
 
 
 class TestMenagerie_ArxL5(TestMenagerieMJCF):
     """ARX L5 arm."""
 
     robot_folder = "arx_l5"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2034,14 +2026,13 @@ class TestMenagerie_ArxL5_USD(TestMenagerieUSD):
     """ARX L5 arm. (USD)."""
 
     robot_folder = "arx_l5"
-    floating = False
 
 
 class TestMenagerie_Dynamixel2r(TestMenagerieMJCF):
     """Dynamixel 2R simple arm."""
 
     robot_folder = "dynamixel_2r"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2049,14 +2040,13 @@ class TestMenagerie_Dynamixel2r_USD(TestMenagerieUSD):
     """Dynamixel 2R simple arm. (USD)."""
 
     robot_folder = "dynamixel_2r"
-    floating = False
 
 
 class TestMenagerie_FrankaEmikaPanda(TestMenagerieMJCF):
     """Franka Emika Panda arm."""
 
     robot_folder = "franka_emika_panda"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2064,14 +2054,13 @@ class TestMenagerie_FrankaEmikaPanda_USD(TestMenagerieUSD):
     """Franka Emika Panda arm. (USD)."""
 
     robot_folder = "franka_emika_panda"
-    floating = False
 
 
 class TestMenagerie_FrankaFr3(TestMenagerieMJCF):
     """Franka FR3 arm."""
 
     robot_folder = "franka_fr3"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2079,14 +2068,13 @@ class TestMenagerie_FrankaFr3_USD(TestMenagerieUSD):
     """Franka FR3 arm. (USD)."""
 
     robot_folder = "franka_fr3"
-    floating = False
 
 
 class TestMenagerie_FrankaFr3V2(TestMenagerieMJCF):
     """Franka FR3 v2 arm."""
 
     robot_folder = "franka_fr3_v2"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2094,14 +2082,13 @@ class TestMenagerie_FrankaFr3V2_USD(TestMenagerieUSD):
     """Franka FR3 v2 arm. (USD)."""
 
     robot_folder = "franka_fr3_v2"
-    floating = False
 
 
 class TestMenagerie_KinovaGen3(TestMenagerieMJCF):
     """Kinova Gen3 arm."""
 
     robot_folder = "kinova_gen3"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2109,14 +2096,13 @@ class TestMenagerie_KinovaGen3_USD(TestMenagerieUSD):
     """Kinova Gen3 arm. (USD)."""
 
     robot_folder = "kinova_gen3"
-    floating = False
 
 
 class TestMenagerie_KukaIiwa14(TestMenagerieMJCF):
     """KUKA iiwa 14 arm."""
 
     robot_folder = "kuka_iiwa_14"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2124,14 +2110,13 @@ class TestMenagerie_KukaIiwa14_USD(TestMenagerieUSD):
     """KUKA iiwa 14 arm. (USD)."""
 
     robot_folder = "kuka_iiwa_14"
-    floating = False
 
 
 class TestMenagerie_LowCostRobotArm(TestMenagerieMJCF):
     """Low-cost robot arm."""
 
     robot_folder = "low_cost_robot_arm"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2139,14 +2124,13 @@ class TestMenagerie_LowCostRobotArm_USD(TestMenagerieUSD):
     """Low-cost robot arm. (USD)."""
 
     robot_folder = "low_cost_robot_arm"
-    floating = False
 
 
 class TestMenagerie_RethinkSawyer(TestMenagerieMJCF):
     """Rethink Robotics Sawyer arm."""
 
     robot_folder = "rethink_robotics_sawyer"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2154,14 +2138,13 @@ class TestMenagerie_RethinkSawyer_USD(TestMenagerieUSD):
     """Rethink Robotics Sawyer arm. (USD)."""
 
     robot_folder = "rethink_robotics_sawyer"
-    floating = False
 
 
 class TestMenagerie_TrossenVx300s(TestMenagerieMJCF):
     """Trossen Robotics ViperX 300 S arm."""
 
     robot_folder = "trossen_vx300s"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2169,14 +2152,13 @@ class TestMenagerie_TrossenVx300s_USD(TestMenagerieUSD):
     """Trossen Robotics ViperX 300 S arm. (USD)."""
 
     robot_folder = "trossen_vx300s"
-    floating = False
 
 
 class TestMenagerie_TrossenWx250s(TestMenagerieMJCF):
     """Trossen Robotics WidowX 250 S arm."""
 
     robot_folder = "trossen_wx250s"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2184,14 +2166,13 @@ class TestMenagerie_TrossenWx250s_USD(TestMenagerieUSD):
     """Trossen Robotics WidowX 250 S arm. (USD)."""
 
     robot_folder = "trossen_wx250s"
-    floating = False
 
 
 class TestMenagerie_TrossenWxai(TestMenagerieMJCF):
     """Trossen Robotics WidowX AI arm."""
 
     robot_folder = "trossen_wxai"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2199,14 +2180,13 @@ class TestMenagerie_TrossenWxai_USD(TestMenagerieUSD):
     """Trossen Robotics WidowX AI arm. (USD)."""
 
     robot_folder = "trossen_wxai"
-    floating = False
 
 
 class TestMenagerie_TrsSoArm100(TestMenagerieMJCF):
     """TRS SO-ARM100 arm."""
 
     robot_folder = "trs_so_arm100"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2214,14 +2194,13 @@ class TestMenagerie_TrsSoArm100_USD(TestMenagerieUSD):
     """TRS SO-ARM100 arm. (USD)."""
 
     robot_folder = "trs_so_arm100"
-    floating = False
 
 
 class TestMenagerie_UfactoryLite6(TestMenagerieMJCF):
     """UFACTORY Lite 6 arm."""
 
     robot_folder = "ufactory_lite6"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2229,14 +2208,13 @@ class TestMenagerie_UfactoryLite6_USD(TestMenagerieUSD):
     """UFACTORY Lite 6 arm. (USD)."""
 
     robot_folder = "ufactory_lite6"
-    floating = False
 
 
 class TestMenagerie_UfactoryXarm7(TestMenagerieMJCF):
     """UFACTORY xArm 7 arm."""
 
     robot_folder = "ufactory_xarm7"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2244,14 +2222,13 @@ class TestMenagerie_UfactoryXarm7_USD(TestMenagerieUSD):
     """UFACTORY xArm 7 arm. (USD)."""
 
     robot_folder = "ufactory_xarm7"
-    floating = False
 
 
 class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     """Universal Robots UR5e arm."""
 
     robot_folder = "universal_robots_ur5e"
-    floating = False
+
     control_strategy = StructuredControlStrategy(seed=42)
     num_worlds = 34
     num_steps = 500
@@ -2268,14 +2245,13 @@ class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
     """Universal Robots UR5e arm (USD)."""
 
     robot_folder = "universal_robots_ur5e"
-    floating = False
 
 
 class TestMenagerie_UniversalRobotsUr10e(TestMenagerieMJCF):
     """Universal Robots UR10e arm."""
 
     robot_folder = "universal_robots_ur10e"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2283,7 +2259,6 @@ class TestMenagerie_UniversalRobotsUr10e_USD(TestMenagerieUSD):
     """Universal Robots UR10e arm. (USD)."""
 
     robot_folder = "universal_robots_ur10e"
-    floating = False
 
 
 # -----------------------------------------------------------------------------
@@ -2295,7 +2270,7 @@ class TestMenagerie_LeapHand(TestMenagerieMJCF):
     """LEAP Hand."""
 
     robot_folder = "leap_hand"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2303,14 +2278,13 @@ class TestMenagerie_LeapHand_USD(TestMenagerieUSD):
     """LEAP Hand. (USD)."""
 
     robot_folder = "leap_hand"
-    floating = False
 
 
 class TestMenagerie_Robotiq2f85(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper."""
 
     robot_folder = "robotiq_2f85"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2318,29 +2292,27 @@ class TestMenagerie_Robotiq2f85_USD(TestMenagerieUSD):
     """Robotiq 2F-85 gripper. (USD)."""
 
     robot_folder = "robotiq_2f85"
-    floating = False
 
 
 class TestMenagerie_Robotiq2f85V4(TestMenagerieMJCF):
     """Robotiq 2F-85 gripper v4."""
 
     robot_folder = "robotiq_2f85_v4"
-    floating = False
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+
+    skip_reason = "Not yet verified"
 
 
 class TestMenagerie_Robotiq2f85V4_USD(TestMenagerieUSD):
     """Robotiq 2F-85 gripper v4. (USD)."""
 
     robot_folder = "robotiq_2f85_v4"
-    floating = False
 
 
 class TestMenagerie_ShadowDexee(TestMenagerieMJCF):
     """Shadow DEX-EE hand."""
 
     robot_folder = "shadow_dexee"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2348,29 +2320,27 @@ class TestMenagerie_ShadowDexee_USD(TestMenagerieUSD):
     """Shadow DEX-EE hand. (USD)."""
 
     robot_folder = "shadow_dexee"
-    floating = False
 
 
 class TestMenagerie_ShadowHand(TestMenagerieMJCF):
     """Shadow Hand."""
 
     robot_folder = "shadow_hand"
-    floating = False
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+
+    skip_reason = "Not yet verified"
 
 
 class TestMenagerie_ShadowHand_USD(TestMenagerieUSD):
     """Shadow Hand. (USD)."""
 
     robot_folder = "shadow_hand"
-    floating = False
 
 
 class TestMenagerie_TetheriaAeroHandOpen(TestMenagerieMJCF):
     """Tetheria Aero Hand (open)."""
 
     robot_folder = "tetheria_aero_hand_open"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2378,14 +2348,13 @@ class TestMenagerie_TetheriaAeroHandOpen_USD(TestMenagerieUSD):
     """Tetheria Aero Hand (open). (USD)."""
 
     robot_folder = "tetheria_aero_hand_open"
-    floating = False
 
 
 class TestMenagerie_UmiGripper(TestMenagerieMJCF):
     """UMI Gripper."""
 
     robot_folder = "umi_gripper"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2393,29 +2362,27 @@ class TestMenagerie_UmiGripper_USD(TestMenagerieUSD):
     """UMI Gripper. (USD)."""
 
     robot_folder = "umi_gripper"
-    floating = False
 
 
 class TestMenagerie_WonikAllegro(TestMenagerieMJCF):
     """Wonik Allegro Hand."""
 
     robot_folder = "wonik_allegro"
-    floating = False
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+
+    skip_reason = "Not yet verified"
 
 
 class TestMenagerie_WonikAllegro_USD(TestMenagerieUSD):
     """Wonik Allegro Hand. (USD)."""
 
     robot_folder = "wonik_allegro"
-    floating = False
 
 
 class TestMenagerie_IitSoftfoot(TestMenagerieMJCF):
     """IIT Softfoot biomechanical gripper."""
 
     robot_folder = "iit_softfoot"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2423,7 +2390,6 @@ class TestMenagerie_IitSoftfoot_USD(TestMenagerieUSD):
     """IIT Softfoot biomechanical gripper. (USD)."""
 
     robot_folder = "iit_softfoot"
-    floating = False
 
 
 # -----------------------------------------------------------------------------
@@ -2435,7 +2401,7 @@ class TestMenagerie_Aloha(TestMenagerieMJCF):
     """ALOHA bimanual system."""
 
     robot_folder = "aloha"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2443,14 +2409,13 @@ class TestMenagerie_Aloha_USD(TestMenagerieUSD):
     """ALOHA bimanual system. (USD)."""
 
     robot_folder = "aloha"
-    floating = False
 
 
 class TestMenagerie_GoogleRobot(TestMenagerieMJCF):
     """Google Robot (bimanual)."""
 
     robot_folder = "google_robot"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2458,7 +2423,6 @@ class TestMenagerie_GoogleRobot_USD(TestMenagerieUSD):
     """Google Robot (bimanual). (USD)."""
 
     robot_folder = "google_robot"
-    floating = False
 
 
 # -----------------------------------------------------------------------------
@@ -2470,7 +2434,7 @@ class TestMenagerie_HelloRobotStretch(TestMenagerieMJCF):
     """Hello Robot Stretch."""
 
     robot_folder = "hello_robot_stretch"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2478,14 +2442,13 @@ class TestMenagerie_HelloRobotStretch_USD(TestMenagerieUSD):
     """Hello Robot Stretch. (USD)."""
 
     robot_folder = "hello_robot_stretch"
-    floating = True
 
 
 class TestMenagerie_HelloRobotStretch3(TestMenagerieMJCF):
     """Hello Robot Stretch 3."""
 
     robot_folder = "hello_robot_stretch_3"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2493,14 +2456,13 @@ class TestMenagerie_HelloRobotStretch3_USD(TestMenagerieUSD):
     """Hello Robot Stretch 3. (USD)."""
 
     robot_folder = "hello_robot_stretch_3"
-    floating = True
 
 
 class TestMenagerie_PalTiago(TestMenagerieMJCF):
     """PAL Robotics TIAGo."""
 
     robot_folder = "pal_tiago"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2508,14 +2470,13 @@ class TestMenagerie_PalTiago_USD(TestMenagerieUSD):
     """PAL Robotics TIAGo. (USD)."""
 
     robot_folder = "pal_tiago"
-    floating = True
 
 
 class TestMenagerie_PalTiagoDual(TestMenagerieMJCF):
     """PAL Robotics TIAGo Dual."""
 
     robot_folder = "pal_tiago_dual"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2523,14 +2484,13 @@ class TestMenagerie_PalTiagoDual_USD(TestMenagerieUSD):
     """PAL Robotics TIAGo Dual. (USD)."""
 
     robot_folder = "pal_tiago_dual"
-    floating = True
 
 
 class TestMenagerie_StanfordTidybot(TestMenagerieMJCF):
     """Stanford Tidybot mobile manipulator."""
 
     robot_folder = "stanford_tidybot"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2538,7 +2498,6 @@ class TestMenagerie_StanfordTidybot_USD(TestMenagerieUSD):
     """Stanford Tidybot mobile manipulator. (USD)."""
 
     robot_folder = "stanford_tidybot"
-    floating = True
 
 
 # -----------------------------------------------------------------------------
@@ -2550,22 +2509,21 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
-    floating = True
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+
+    skip_reason = "Not yet verified"
 
 
 class TestMenagerie_ApptronikApollo_USD(TestMenagerieUSD):
     """Apptronik Apollo humanoid. (USD)."""
 
     robot_folder = "apptronik_apollo"
-    floating = True
 
 
 class TestMenagerie_BerkeleyHumanoid(TestMenagerieMJCF):
     """Berkeley Humanoid."""
 
     robot_folder = "berkeley_humanoid"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2573,29 +2531,27 @@ class TestMenagerie_BerkeleyHumanoid_USD(TestMenagerieUSD):
     """Berkeley Humanoid. (USD)."""
 
     robot_folder = "berkeley_humanoid"
-    floating = True
 
 
 class TestMenagerie_BoosterT1(TestMenagerieMJCF):
     """Booster Robotics T1 humanoid."""
 
     robot_folder = "booster_t1"
-    floating = True
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+
+    skip_reason = "Not yet verified"
 
 
 class TestMenagerie_BoosterT1_USD(TestMenagerieUSD):
     """Booster Robotics T1 humanoid. (USD)."""
 
     robot_folder = "booster_t1"
-    floating = True
 
 
 class TestMenagerie_FourierN1(TestMenagerieMJCF):
     """Fourier N1 humanoid."""
 
     robot_folder = "fourier_n1"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2603,14 +2559,13 @@ class TestMenagerie_FourierN1_USD(TestMenagerieUSD):
     """Fourier N1 humanoid. (USD)."""
 
     robot_folder = "fourier_n1"
-    floating = True
 
 
 class TestMenagerie_PalTalos(TestMenagerieMJCF):
     """PAL Robotics TALOS humanoid."""
 
     robot_folder = "pal_talos"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2618,14 +2573,13 @@ class TestMenagerie_PalTalos_USD(TestMenagerieUSD):
     """PAL Robotics TALOS humanoid. (USD)."""
 
     robot_folder = "pal_talos"
-    floating = True
 
 
 class TestMenagerie_PndboticsAdamLite(TestMenagerieMJCF):
     """PNDbotics Adam Lite humanoid."""
 
     robot_folder = "pndbotics_adam_lite"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2633,14 +2587,13 @@ class TestMenagerie_PndboticsAdamLite_USD(TestMenagerieUSD):
     """PNDbotics Adam Lite humanoid. (USD)."""
 
     robot_folder = "pndbotics_adam_lite"
-    floating = True
 
 
 class TestMenagerie_RobotisOp3(TestMenagerieMJCF):
     """Robotis OP3 humanoid."""
 
     robot_folder = "robotis_op3"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2648,14 +2601,13 @@ class TestMenagerie_RobotisOp3_USD(TestMenagerieUSD):
     """Robotis OP3 humanoid. (USD)."""
 
     robot_folder = "robotis_op3"
-    floating = True
 
 
 class TestMenagerie_ToddlerBot2xc(TestMenagerieMJCF):
     """ToddlerBot 2XC humanoid."""
 
     robot_folder = "toddlerbot_2xc"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2663,14 +2615,13 @@ class TestMenagerie_ToddlerBot2xc_USD(TestMenagerieUSD):
     """ToddlerBot 2XC humanoid. (USD)."""
 
     robot_folder = "toddlerbot_2xc"
-    floating = True
 
 
 class TestMenagerie_ToddlerBot2xm(TestMenagerieMJCF):
     """ToddlerBot 2XM humanoid."""
 
     robot_folder = "toddlerbot_2xm"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2678,37 +2629,34 @@ class TestMenagerie_ToddlerBot2xm_USD(TestMenagerieUSD):
     """ToddlerBot 2XM humanoid. (USD)."""
 
     robot_folder = "toddlerbot_2xm"
-    floating = True
 
 
 class TestMenagerie_UnitreeG1(TestMenagerieMJCF):
     """Unitree G1 humanoid."""
 
     robot_folder = "unitree_g1"
-    floating = True
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+
+    skip_reason = "Not yet verified"
 
 
 class TestMenagerie_UnitreeG1_USD(TestMenagerieUSD):
     """Unitree G1 humanoid. (USD)."""
 
     robot_folder = "unitree_g1"
-    floating = True
 
 
 class TestMenagerie_UnitreeH1(TestMenagerieMJCF):
     """Unitree H1 humanoid."""
 
     robot_folder = "unitree_h1"
-    floating = True
-    skip_reason = "HIGH PRIORITY - Not yet implemented"
+
+    skip_reason = "Not yet verified"
 
 
 class TestMenagerie_UnitreeH1_USD(TestMenagerieUSD):
     """Unitree H1 humanoid. (USD)."""
 
     robot_folder = "unitree_h1"
-    floating = True
 
 
 # -----------------------------------------------------------------------------
@@ -2720,7 +2668,7 @@ class TestMenagerie_AgilityCassie(TestMenagerieMJCF):
     """Agility Robotics Cassie biped."""
 
     robot_folder = "agility_cassie"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2728,7 +2676,6 @@ class TestMenagerie_AgilityCassie_USD(TestMenagerieUSD):
     """Agility Robotics Cassie biped. (USD)."""
 
     robot_folder = "agility_cassie"
-    floating = True
 
 
 # -----------------------------------------------------------------------------
@@ -2740,7 +2687,7 @@ class TestMenagerie_AnyboticsAnymalB(TestMenagerieMJCF):
     """ANYbotics ANYmal B quadruped."""
 
     robot_folder = "anybotics_anymal_b"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2748,14 +2695,13 @@ class TestMenagerie_AnyboticsAnymalB_USD(TestMenagerieUSD):
     """ANYbotics ANYmal B quadruped. (USD)."""
 
     robot_folder = "anybotics_anymal_b"
-    floating = True
 
 
 class TestMenagerie_AnyboticsAnymalC(TestMenagerieMJCF):
     """ANYbotics ANYmal C quadruped."""
 
     robot_folder = "anybotics_anymal_c"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2763,14 +2709,13 @@ class TestMenagerie_AnyboticsAnymalC_USD(TestMenagerieUSD):
     """ANYbotics ANYmal C quadruped. (USD)."""
 
     robot_folder = "anybotics_anymal_c"
-    floating = True
 
 
 class TestMenagerie_BostonDynamicsSpot(TestMenagerieMJCF):
     """Boston Dynamics Spot quadruped."""
 
     robot_folder = "boston_dynamics_spot"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2778,14 +2723,13 @@ class TestMenagerie_BostonDynamicsSpot_USD(TestMenagerieUSD):
     """Boston Dynamics Spot quadruped. (USD)."""
 
     robot_folder = "boston_dynamics_spot"
-    floating = True
 
 
 class TestMenagerie_GoogleBarkourV0(TestMenagerieMJCF):
     """Google Barkour v0 quadruped."""
 
     robot_folder = "google_barkour_v0"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2793,14 +2737,13 @@ class TestMenagerie_GoogleBarkourV0_USD(TestMenagerieUSD):
     """Google Barkour v0 quadruped. (USD)."""
 
     robot_folder = "google_barkour_v0"
-    floating = True
 
 
 class TestMenagerie_GoogleBarkourVb(TestMenagerieMJCF):
     """Google Barkour vB quadruped."""
 
     robot_folder = "google_barkour_vb"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2808,14 +2751,13 @@ class TestMenagerie_GoogleBarkourVb_USD(TestMenagerieUSD):
     """Google Barkour vB quadruped. (USD)."""
 
     robot_folder = "google_barkour_vb"
-    floating = True
 
 
 class TestMenagerie_UnitreeA1(TestMenagerieMJCF):
     """Unitree A1 quadruped."""
 
     robot_folder = "unitree_a1"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2823,14 +2765,13 @@ class TestMenagerie_UnitreeA1_USD(TestMenagerieUSD):
     """Unitree A1 quadruped. (USD)."""
 
     robot_folder = "unitree_a1"
-    floating = True
 
 
 class TestMenagerie_UnitreeGo1(TestMenagerieMJCF):
     """Unitree Go1 quadruped."""
 
     robot_folder = "unitree_go1"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2838,14 +2779,13 @@ class TestMenagerie_UnitreeGo1_USD(TestMenagerieUSD):
     """Unitree Go1 quadruped. (USD)."""
 
     robot_folder = "unitree_go1"
-    floating = True
 
 
 class TestMenagerie_UnitreeGo2(TestMenagerieMJCF):
     """Unitree Go2 quadruped."""
 
     robot_folder = "unitree_go2"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2853,7 +2793,6 @@ class TestMenagerie_UnitreeGo2_USD(TestMenagerieUSD):
     """Unitree Go2 quadruped. (USD)."""
 
     robot_folder = "unitree_go2"
-    floating = True
 
 
 # -----------------------------------------------------------------------------
@@ -2865,7 +2804,7 @@ class TestMenagerie_UnitreeZ1(TestMenagerieMJCF):
     """Unitree Z1 arm."""
 
     robot_folder = "unitree_z1"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2873,7 +2812,6 @@ class TestMenagerie_UnitreeZ1_USD(TestMenagerieUSD):
     """Unitree Z1 arm. (USD)."""
 
     robot_folder = "unitree_z1"
-    floating = False
 
 
 # -----------------------------------------------------------------------------
@@ -2885,7 +2823,7 @@ class TestMenagerie_BitcrazeCrazyflie2(TestMenagerieMJCF):
     """Bitcraze Crazyflie 2 quadrotor."""
 
     robot_folder = "bitcraze_crazyflie_2"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2893,14 +2831,13 @@ class TestMenagerie_BitcrazeCrazyflie2_USD(TestMenagerieUSD):
     """Bitcraze Crazyflie 2 quadrotor. (USD)."""
 
     robot_folder = "bitcraze_crazyflie_2"
-    floating = True
 
 
 class TestMenagerie_SkydioX2(TestMenagerieMJCF):
     """Skydio X2 drone."""
 
     robot_folder = "skydio_x2"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2908,7 +2845,6 @@ class TestMenagerie_SkydioX2_USD(TestMenagerieUSD):
     """Skydio X2 drone. (USD)."""
 
     robot_folder = "skydio_x2"
-    floating = True
 
 
 # -----------------------------------------------------------------------------
@@ -2920,7 +2856,7 @@ class TestMenagerie_RobotSoccerKit(TestMenagerieMJCF):
     """Robot Soccer Kit omniwheel base."""
 
     robot_folder = "robot_soccer_kit"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2928,14 +2864,13 @@ class TestMenagerie_RobotSoccerKit_USD(TestMenagerieUSD):
     """Robot Soccer Kit omniwheel base. (USD)."""
 
     robot_folder = "robot_soccer_kit"
-    floating = True
 
 
 class TestMenagerie_RobotstudioSo101(TestMenagerieMJCF):
     """RobotStudio SO-101."""
 
     robot_folder = "robotstudio_so101"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2943,7 +2878,6 @@ class TestMenagerie_RobotstudioSo101_USD(TestMenagerieUSD):
     """RobotStudio SO-101. (USD)."""
 
     robot_folder = "robotstudio_so101"
-    floating = True
 
 
 # -----------------------------------------------------------------------------
@@ -2955,7 +2889,7 @@ class TestMenagerie_Flybody(TestMenagerieMJCF):
     """Flybody fruit fly model."""
 
     robot_folder = "flybody"
-    floating = True
+
     skip_reason = "Not yet implemented"
 
 
@@ -2963,7 +2897,6 @@ class TestMenagerie_Flybody_USD(TestMenagerieUSD):
     """Flybody fruit fly model. (USD)."""
 
     robot_folder = "flybody"
-    floating = True
 
 
 # -----------------------------------------------------------------------------
@@ -2975,7 +2908,7 @@ class TestMenagerie_I2rtYam(TestMenagerieMJCF):
     """i2rt YAM (Yet Another Manipulator)."""
 
     robot_folder = "i2rt_yam"
-    floating = False
+
     skip_reason = "Not yet implemented"
 
 
@@ -2983,7 +2916,6 @@ class TestMenagerie_I2rtYam_USD(TestMenagerieUSD):
     """i2rt YAM (Yet Another Manipulator). (USD)."""
 
     robot_folder = "i2rt_yam"
-    floating = False
 
 
 # =============================================================================
