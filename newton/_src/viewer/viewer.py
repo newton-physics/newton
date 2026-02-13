@@ -644,6 +644,7 @@ class ViewerBase:
                 heightfield=actual_heights.T,
                 extent_x=geo_src.hx * 2.0,
                 extent_y=geo_src.hy * 2.0,
+                ground_z=geo_src.min_z,
             )
             points = wp.array(vertices, dtype=wp.vec3, device=self.device)
             indices = wp.array(indices, dtype=wp.int32, device=self.device)
