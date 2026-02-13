@@ -43,7 +43,7 @@ except ImportError:
 
 @unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
 class TestActuatorBuilder(unittest.TestCase):
-    """Tests for ModelBuilder.add_actuator - functionality, multi-world, and scalar params."""
+    """Tests for ModelBuilder.add_external_actuator - functionality, multi-world, and scalar params."""
 
     def test_accumulation_and_parameters(self):
         """Test actuator accumulation, parameters, defaults, and input/output indices."""
@@ -59,9 +59,11 @@ class TestActuatorBuilder(unittest.TestCase):
         dofs = [builder.joint_qd_start[j] for j in joints]
 
         # Add actuators - should accumulate into one
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.5, constant_force=1.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=100.0, kd=10.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], output_indices=[dofs[2]], kp=150.0, max_force=50.0)
+        builder.add_external_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.5, constant_force=1.0)
+        builder.add_external_actuator(ActuatorPD, input_indices=[dofs[1]], kp=100.0, kd=10.0)
+        builder.add_external_actuator(
+            ActuatorPD, input_indices=[dofs[1]], output_indices=[dofs[2]], kp=150.0, max_force=50.0
+        )
 
         model = builder.finalize()
 
@@ -95,9 +97,9 @@ class TestActuatorBuilder(unittest.TestCase):
         dof1 = template.joint_qd_start[joint1]
         dof2 = template.joint_qd_start[joint2]
 
-        template.add_actuator(ActuatorPD, input_indices=[dof0], kp=100.0, kd=10.0)
-        template.add_actuator(ActuatorPID, input_indices=[dof1], kp=200.0, ki=5.0, kd=20.0)
-        template.add_actuator(ActuatorPD, input_indices=[dof1], output_indices=[dof2], kp=300.0)
+        template.add_external_actuator(ActuatorPD, input_indices=[dof0], kp=100.0, kd=10.0)
+        template.add_external_actuator(ActuatorPID, input_indices=[dof1], kp=200.0, ki=5.0, kd=20.0)
+        template.add_external_actuator(ActuatorPD, input_indices=[dof1], output_indices=[dof2], kp=300.0)
 
         num_worlds = 3
         builder = newton.ModelBuilder()
@@ -142,12 +144,12 @@ class TestActuatorBuilder(unittest.TestCase):
 
         dofs = [builder.joint_qd_start[j] for j in joints]
 
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=150.0)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[2]], kp=200.0, delay=3)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[3]], kp=250.0, delay=3)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[4]], kp=300.0, delay=7)
-        builder.add_actuator(ActuatorDelayedPD, input_indices=[dofs[5]], kp=350.0, delay=7)
+        builder.add_external_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+        builder.add_external_actuator(ActuatorPD, input_indices=[dofs[1]], kp=150.0)
+        builder.add_external_actuator(ActuatorDelayedPD, input_indices=[dofs[2]], kp=200.0, delay=3)
+        builder.add_external_actuator(ActuatorDelayedPD, input_indices=[dofs[3]], kp=250.0, delay=3)
+        builder.add_external_actuator(ActuatorDelayedPD, input_indices=[dofs[4]], kp=300.0, delay=7)
+        builder.add_external_actuator(ActuatorDelayedPD, input_indices=[dofs[5]], kp=350.0, delay=7)
 
         model = builder.finalize()
 
@@ -178,9 +180,9 @@ class TestActuatorBuilder(unittest.TestCase):
         dofs = [builder.joint_qd_start[j] for j in joints]
 
         # Add multi-input actuators: each reads from 2 DOFs
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0], dofs[1]], kp=100.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[2], dofs[3]], kp=200.0)
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[4], dofs[5]], kp=300.0)
+        builder.add_external_actuator(ActuatorPD, input_indices=[dofs[0], dofs[1]], kp=100.0)
+        builder.add_external_actuator(ActuatorPD, input_indices=[dofs[2], dofs[3]], kp=200.0)
+        builder.add_external_actuator(ActuatorPD, input_indices=[dofs[4], dofs[5]], kp=300.0)
 
         model = builder.finalize()
 
@@ -220,11 +222,11 @@ class TestActuatorBuilder(unittest.TestCase):
         dofs = [builder.joint_qd_start[j] for j in joints]
 
         # First call: 1 input
-        builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
+        builder.add_external_actuator(ActuatorPD, input_indices=[dofs[0]], kp=100.0)
 
         # Second call: 2 inputs - should raise
         with self.assertRaises(ValueError) as ctx:
-            builder.add_actuator(ActuatorPD, input_indices=[dofs[1], dofs[2]], kp=200.0)
+            builder.add_external_actuator(ActuatorPD, input_indices=[dofs[1], dofs[2]], kp=200.0)
 
         self.assertIn("dimension mismatch", str(ctx.exception))
 
@@ -250,7 +252,7 @@ class TestActuatorUSDParsing(unittest.TestCase):
 
         # With parse function - actuators parsed
         builder2 = newton.ModelBuilder()
-        result2 = parse_usd(builder2, usd_path, parse_actuator_fn=parse_actuator_prim)
+        result2 = parse_usd(builder2, usd_path, parse_external_actuator_fn=parse_actuator_prim)
         self.assertGreaterEqual(result2["actuator_count"], 0)
         model2 = builder2.finalize()
         self.assertGreater(len(model2.actuators), 0)
@@ -271,7 +273,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     Follows the same parameterised pattern as the joint/link selection tests:
     a single ``run_test_actuator_selection`` helper is driven by four thin
-    entry-point tests that cover (use_mask × use_multiple_artics_per_view).
+    entry-point tests that cover (use_mask x use_multiple_artics_per_view).
     """
 
     def run_test_actuator_selection(self, use_mask: bool, use_multiple_artics_per_view: bool):
@@ -318,7 +320,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         for i, jname in enumerate(joint_names):
             j_idx = single_articulation_builder.joint_key.index(jname)
             dof = single_articulation_builder.joint_qd_start[j_idx]
-            single_articulation_builder.add_actuator(ActuatorPD, input_indices=[dof], kp=100.0 * (i + 1))
+            single_articulation_builder.add_external_actuator(ActuatorPD, input_indices=[dof], kp=100.0 * (i + 1))
 
         # Create a world with 2 articulations
         single_world_builder = newton.ModelBuilder()
@@ -373,7 +375,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         joint_view.set_actuator_parameter(actuator, "kp", wp_kp, mask=mask)
 
         # Build expected flat kp array and verify against the full actuator.kp array.
-        # Initial flat layout: [100, 200, 300] per articulation × 6 articulations.
+        # Initial flat layout: [100, 200, 300] per articulation x 6 articulations.
         expected_kp = []
         if use_mask:
             if use_multiple_artics_per_view:
