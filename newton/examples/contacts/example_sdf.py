@@ -82,9 +82,12 @@ def add_mesh_object(
 
     mesh = newton.Mesh(vertices, indices)
 
-    # Apply scale to the mesh shape
-    body = builder.add_body(key=key, xform=transform)
-    builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), cfg=shape_cfg)
+    if key == "gear_base":
+        body = -1
+        builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), xform=transform, cfg=shape_cfg, key=key)
+    else:
+        body = builder.add_body(key=key, xform=transform)
+        builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), cfg=shape_cfg)
     return body
 
 
@@ -184,6 +187,19 @@ class Example:
         self.control = self.model.control()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        if self.scene == "gears":
+            joint_child = self.model.joint_child.numpy()
+            joint_qd_start = self.model.joint_qd_start.numpy()
+            joint_f = self.control.joint_f.numpy()
+            for body_idx, key in enumerate(self.model.body_key):
+                if key == "gear_large":
+                    for j in range(self.model.joint_count):
+                        if joint_child[j] == body_idx:
+                            qd_start = int(joint_qd_start[j])
+                            joint_f[qd_start + 5] = 2.0  # z-axis torque (N·m)
+                            break
+            self.control.joint_f.assign(joint_f)
 
         self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
 
@@ -439,10 +455,6 @@ if __name__ == "__main__":
         default="mujoco",
         help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
     )
-
-    if args.scene == "gears" and args.solver == "xpbd":
-        print("The gears scene does not work with the xpbd solver, please use mujoco instead")
-        return
 
     viewer, args = newton.examples.init(parser)
 
