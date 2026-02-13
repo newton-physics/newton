@@ -1940,7 +1940,7 @@ class SolverMuJoCo(SolverBase):
         see :attr:`mjc_eq_to_newton_eq` for the corresponding equality constraint index.
 
         Shape [nworld, neq], dtype int32."""
-        self.mjc_eq_to_newton_mimic: wp.array(dtype=wp.int32, ndim=2) = None
+        self.mjc_eq_to_newton_mimic: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, eq] to Newton mimic constraint index.
 
         Corresponds to the equality constraints that are created in MuJoCo from Newton's mimic constraints.

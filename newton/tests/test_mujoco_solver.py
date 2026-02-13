@@ -5902,7 +5902,16 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
     """Tests for mimic constraint support in SolverMuJoCo."""
 
     def _make_two_revolute_model(self, coef0=0.0, coef1=1.0, enabled=True):
-        """Helper to create a model with two revolute joints and a mimic constraint."""
+        """Create a model with two revolute joints and a mimic constraint.
+
+        Args:
+            coef0: Offset coefficient for the mimic constraint (joint0 = coef0 + coef1 * joint1).
+            coef1: Scale coefficient for the mimic constraint.
+            enabled: Whether the mimic constraint is active.
+
+        Returns:
+            Finalized Newton Model with two revolute joints linked by a mimic constraint.
+        """
         builder = newton.ModelBuilder()
         b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
         b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
@@ -6004,9 +6013,16 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         control = model.control()
         contacts = model.contacts()
 
+        # Derive DOF indices from mimic constraint metadata
+        mimic_joint1 = model.constraint_mimic_joint1.numpy()[0]  # leader
+        mimic_joint0 = model.constraint_mimic_joint0.numpy()[0]  # follower
+        joint_qd_start = model.joint_qd_start.numpy()
+        leader_dof = joint_qd_start[mimic_joint1]
+        follower_dof = joint_qd_start[mimic_joint0]
+
         # Set initial velocity on leader joint to create motion
         qd = state_in.joint_qd.numpy()
-        qd[0] = 1.0
+        qd[leader_dof] = 1.0
         state_in.joint_qd.assign(qd)
 
         solver = SolverMuJoCo(model, iterations=50, disable_contacts=True)
@@ -6018,10 +6034,12 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
 
         # After simulation, follower (j2) should approximately equal 2.0 * leader (j1)
         q = state_in.joint_q.numpy()
-        self.assertNotAlmostEqual(
-            float(q[0]), 0.0, places=1, msg="Leader joint should have moved from initial position"
+        leader_q = float(q[leader_dof])
+        follower_q = float(q[follower_dof])
+        self.assertNotAlmostEqual(leader_q, 0.0, places=1, msg="Leader joint should have moved from initial position")
+        np.testing.assert_allclose(
+            follower_q, 2.0 * leader_q, atol=0.1, err_msg="Mimic follower should track 2x leader"
         )
-        np.testing.assert_allclose(q[1], 2.0 * q[0], atol=0.1, err_msg="Mimic follower should track 2x leader")
 
 
 if __name__ == "__main__":
