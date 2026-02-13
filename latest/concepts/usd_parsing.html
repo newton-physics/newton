@@ -831,6 +831,38 @@ Newton’s schema resolver system automatically handles these differences, allow
 <li><p>Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements</p></li>
 </ul>
 </section>
+<section id="mass-and-inertia-precedence">
+<h2>Mass and Inertia Precedence<a class="headerlink" href="#mass-and-inertia-precedence" title="Link to this heading">#</a></h2>
+<p>For rigid bodies with <code class="docutils literal notranslate"><span class="pre">UsdPhysics.MassAPI</span></code> applied, Newton resolves inertial properties using the
+following precedence:</p>
+<ol class="arabic">
+<li><p>If both <code class="docutils literal notranslate"><span class="pre">physics:mass</span></code> and <code class="docutils literal notranslate"><span class="pre">physics:diagonalInertia</span></code> are authored on the rigid body, those
+authored values are used directly (no mass-property recomputation).
+If <code class="docutils literal notranslate"><span class="pre">physics:centerOfMass</span></code> is missing, <code class="docutils literal notranslate"><span class="pre">(0,</span> <span class="pre">0,</span> <span class="pre">0)</span></code> is used.
+If <code class="docutils literal notranslate"><span class="pre">physics:principalAxes</span></code> is missing, identity rotation is used.</p></li>
+<li><p>If either mass or diagonal inertia is missing, Newton falls back to
+<code class="docutils literal notranslate"><span class="pre">UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)</span></code>.
+In this fallback path, collider contributions use a two-level precedence:</p>
+<ol class="loweralpha simple">
+<li><p>If collider <code class="docutils literal notranslate"><span class="pre">UsdPhysics.MassAPI</span></code> has authored <code class="docutils literal notranslate"><span class="pre">mass</span></code> and <code class="docutils literal notranslate"><span class="pre">diagonalInertia</span></code>, those
+authored values are converted to unit-density collider mass information.</p></li>
+<li><p>Otherwise, Newton derives unit-density collider mass information from collider geometry.</p></li>
+</ol>
+<p>A collider is skipped (with warning) only if neither path provides usable collider mass
+information.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The callback payload provided by Newton in this path is unit-density collider shape
+information (volume/COM/inertia basis). Collider density authored via <code class="docutils literal notranslate"><span class="pre">UsdPhysics.MassAPI</span></code>
+(for example, <code class="docutils literal notranslate"><span class="pre">physics:density</span></code>) or via bound <code class="docutils literal notranslate"><span class="pre">UsdPhysics.MaterialAPI</span></code> is still applied
+by USD during <code class="docutils literal notranslate"><span class="pre">ComputeMassProperties(...)</span></code>. In other words, unit-density callback data does
+not mean authored densities are ignored.</p>
+</div>
+</li>
+</ol>
+<p>When a body mass value is resolved in either path, Newton always overwrites body mass and inverse
+mass for the imported body. If resolved mass is non-positive, inverse mass is set to <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p>
+</section>
 <section id="solver-attribute-remapping">
 <span id="schema-resolvers"></span><h2>1. Solver Attribute Remapping<a class="headerlink" href="#solver-attribute-remapping" title="Link to this heading">#</a></h2>
 <div class="admonition note">
@@ -1317,6 +1349,7 @@ Besides the programmatic way of defining custom attributes through the <a class=
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#understanding-usd-and-usdphysics">Understanding USD and UsdPhysics</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton-s-usd-import-system">Newton’s USD Import System</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mass-and-inertia-precedence">Mass and Inertia Precedence</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-attribute-remapping">1. Solver Attribute Remapping</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#priority-based-resolution">2. Priority-Based Resolution</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#solver-specific-attribute-collection">3. Solver-Specific Attribute Collection</a></li>
