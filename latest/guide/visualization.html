@@ -900,33 +900,25 @@ This is useful for capturing simulations for debugging, sharing results, or post
 </pre></div>
 </div>
 <p><strong>Loading and playing back recordings:</strong></p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>The RecorderModelAndState class is deprecated and will be removed in a future version.
-Use the <code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerFile</span></code> class instead.</p>
-</div>
+<p>Use <a class="reference internal" href="../api/_generated/newton.viewer.ViewerFile.html#newton.viewer.ViewerFile" title="newton.viewer.ViewerFile"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerFile</span></code></a> to load a recording, then restore the model and state for a given frame. Use <a class="reference internal" href="../api/_generated/newton.viewer.ViewerGL.html#newton.viewer.ViewerGL" title="newton.viewer.ViewerGL"><code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerGL</span></code></a> (or another rendering viewer) to visualize.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Load a recording for playback</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">newton._src.utils.recorder</span><span class="w"> </span><span class="kn">import</span> <span class="n">RecorderModelAndState</span>
-<span class="n">recorder</span> <span class="o">=</span> <span class="n">RecorderModelAndState</span><span class="p">()</span>
-<span class="n">recorder</span><span class="o">.</span><span class="n">load_from_file</span><span class="p">(</span><span class="s2">&quot;simulation.bin&quot;</span><span class="p">)</span>
+<span class="n">viewer_file</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerFile</span><span class="p">(</span><span class="s2">&quot;simulation.bin&quot;</span><span class="p">)</span>
+<span class="n">viewer_file</span><span class="o">.</span><span class="n">load_recording</span><span class="p">()</span>
 
-<span class="c1"># Create model and state for playback</span>
+<span class="c1"># Restore the model and state from the recording</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">Model</span><span class="p">()</span>
-<span class="n">state</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">State</span><span class="p">()</span>
+<span class="n">viewer_file</span><span class="o">.</span><span class="n">load_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 
-<span class="c1"># Restore the model from the recording</span>
-<span class="n">recorder</span><span class="o">.</span><span class="n">playback_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">state</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
+<span class="n">viewer_file</span><span class="o">.</span><span class="n">load_state</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">frame_id</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>  <span class="c1"># frame index in [0, get_frame_count())</span>
 
-<span class="c1"># Playback a specific frame (e.g., frame 10)</span>
-<span class="n">recorder</span><span class="o">.</span><span class="n">playback</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">frame_index</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
-
-<span class="c1"># Use with any viewer to visualize</span>
+<span class="c1"># Use ViewerGL for visualization</span>
 <span class="n">viewer</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">viewer</span><span class="o">.</span><span class="n">ViewerGL</span><span class="p">()</span>
 <span class="n">viewer</span><span class="o">.</span><span class="n">set_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 <span class="n">viewer</span><span class="o">.</span><span class="n">log_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>For a complete example with UI controls for playback, see <code class="docutils literal notranslate"><span class="pre">newton/examples/basic/example_replay_viewer.py</span></code>.</p>
+<p>For a complete example with UI controls for scrubbing and playback, see <code class="docutils literal notranslate"><span class="pre">newton/examples/basic/example_replay_viewer.py</span></code>.</p>
 <p>Key parameters:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">output_path</span></code>: Path to the output file (format determined by extension: .json or .bin)</p></li>
