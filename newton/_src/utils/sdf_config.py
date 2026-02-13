@@ -36,10 +36,10 @@ def enable_sdf(
     contact_margin: float = 0.01,
 ) -> None:
     """Enable SDF-based collision detection for a ModelBuilder.
-    
-    .. deprecated:: 
+
+    .. deprecated::
         Use :meth:`ModelBuilder.enable_sdf()` instead.
-    
+
     Args:
         builder: The ModelBuilder to configure
         max_resolution: Maximum SDF grid dimension (must be divisible by 8). Common: 32, 64, 128, 256
@@ -55,12 +55,11 @@ def enable_sdf(
 
 def disable_sdf(builder: ModelBuilder) -> None:
     """Disable SDF-based collision detection for a ModelBuilder.
-    
+
     .. deprecated::
         Use :meth:`ModelBuilder.disable_sdf()` instead.
-    
+
     Args:
         builder: The ModelBuilder to configure
     """
     builder.disable_sdf()
-

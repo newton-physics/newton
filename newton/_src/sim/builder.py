@@ -4613,10 +4613,10 @@ class ModelBuilder:
         contact_margin: float = 0.01,
     ) -> None:
         """Enable SDF-based collision detection for this ModelBuilder.
-        
+
         Must be called BEFORE importing USD assets or adding shapes.
         All subsequently added shapes will use SDF collision detection.
-        
+
         Args:
             max_resolution: Maximum SDF grid dimension (must be divisible by 8). Common: 32, 64, 128, 256
             narrow_band_range: (inner, outer) distance range for SDF computation in meters
@@ -4628,17 +4628,15 @@ class ModelBuilder:
                 "This is required because SDF volumes are allocated in 8x8x8 tiles."
             )
         if narrow_band_range[0] >= narrow_band_range[1]:
-            raise ValueError(
-                f"narrow_band_range must have inner < outer (got {narrow_band_range})"
-            )
-        
+            raise ValueError(f"narrow_band_range must have inner < outer (got {narrow_band_range})")
+
         self.default_shape_cfg.sdf_max_resolution = max_resolution
         self.default_shape_cfg.sdf_narrow_band_range = narrow_band_range
         self.default_shape_cfg.contact_margin = contact_margin
 
     def disable_sdf(self) -> None:
         """Disable SDF-based collision detection for this ModelBuilder.
-        
+
         Shapes will use BVH-based collision detection instead.
         """
         self.default_shape_cfg.sdf_max_resolution = None
@@ -4710,9 +4708,7 @@ class ModelBuilder:
                 raise ValueError(f"sdf_narrow_band_range must be a tuple of length 2 (got {sdf_narrow_band_range})")
             inner, outer = sdf_narrow_band_range
             if inner >= outer:
-                raise ValueError(
-                    f"sdf_narrow_band_range must have inner < outer (got {sdf_narrow_band_range})"
-                )
+                raise ValueError(f"sdf_narrow_band_range must have inner < outer (got {sdf_narrow_band_range})")
             self.shape_sdf_narrow_band_range[shape_idx] = sdf_narrow_band_range
 
         # Apply sdf_target_voxel_size
