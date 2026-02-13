@@ -2139,9 +2139,8 @@ class SolverMuJoCo(SolverBase):
             self.update_pair_properties()
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
             self.update_model_properties()
-        if flags & SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES:
+        if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
             self.update_eq_properties()
-        if flags & SolverNotifyFlags.MIMIC_CONSTRAINT_PROPERTIES:
             self.update_mimic_eq_properties()
         if flags & SolverNotifyFlags.TENDON_PROPERTIES:
             self.update_tendon_properties()
@@ -4612,7 +4611,7 @@ class SolverMuJoCo(SolverBase):
         Maps mimic constraints to MuJoCo mjEQ_JOINT equality constraints
         using the polycoef representation: q1 = coef0 + coef1 * q2.
         """
-        if self.model.constraint_mimic_count == 0:
+        if self.model.constraint_mimic_count == 0 or self.mjc_eq_to_newton_mimic is None:
             return
 
         neq = self.mj_model.neq

@@ -5954,7 +5954,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         model.constraint_mimic_enabled.assign(np.array([False], dtype=bool))
 
         # Trigger update
-        solver.notify_model_changed(SolverNotifyFlags.MIMIC_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updated values
         eq_data = solver.mjw_model.eq_data.numpy()
@@ -6040,6 +6040,47 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         np.testing.assert_allclose(
             follower_q, 2.0 * leader_q, atol=0.1, err_msg="Mimic follower should track 2x leader"
         )
+
+    def test_mimic_constraint_multi_world_randomized(self):
+        """Test mimic constraints with per-world randomized coefficients."""
+        template_builder = newton.ModelBuilder()
+        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = template_builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = template_builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j1, j2])
+        template_builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify initial state
+        self.assertEqual(model.constraint_mimic_count, num_worlds)
+        self.assertEqual(solver.mj_model.neq, 1)
+
+        # Randomize coefficients per world
+        rng = np.random.default_rng(42)
+        new_coef0 = rng.uniform(-1.0, 1.0, size=num_worlds).astype(np.float32)
+        new_coef1 = rng.uniform(0.5, 3.0, size=num_worlds).astype(np.float32)
+        model.constraint_mimic_coef0.assign(new_coef0)
+        model.constraint_mimic_coef1.assign(new_coef1)
+
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        # Verify each world got its own coefficients
+        eq_data = solver.mjw_model.eq_data.numpy()
+        for w in range(num_worlds):
+            np.testing.assert_allclose(
+                eq_data[w, 0, 0], new_coef0[w], rtol=1e-5, err_msg=f"coef0 mismatch in world {w}"
+            )
+            np.testing.assert_allclose(
+                eq_data[w, 0, 1], new_coef1[w], rtol=1e-5, err_msg=f"coef1 mismatch in world {w}"
+            )
 
 
 if __name__ == "__main__":

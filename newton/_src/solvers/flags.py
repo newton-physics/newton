@@ -45,17 +45,17 @@ class SolverNotifyFlags(IntEnum):
     MODEL_PROPERTIES = 1 << 5
     """Indicates model property updates: gravity and other global parameters."""
 
-    EQUALITY_CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates equality constraint property updates: equality_constraint_anchor, equality_constraint_relpose, equality_constraint_polycoef, equality_constraint_torquescale, equality_constraint_enabled, and mujoco.eq_solref, mujoco.eq_solimp custom attributes."""
+    CONSTRAINT_PROPERTIES = 1 << 6
+    """Indicates constraint property updates: equality constraints (equality_constraint_anchor, equality_constraint_relpose, equality_constraint_polycoef, equality_constraint_torquescale, equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled)."""
+
+    EQUALITY_CONSTRAINT_PROPERTIES = CONSTRAINT_PROPERTIES
+    """Deprecated alias for :attr:`CONSTRAINT_PROPERTIES`."""
 
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
 
     ACTUATOR_PROPERTIES = 1 << 8
     """Indicates actuator property updates: gains, biases, limits, etc."""
-
-    MIMIC_CONSTRAINT_PROPERTIES = 1 << 9
-    """Indicates mimic constraint property updates: constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled."""
 
     ALL = (
         JOINT_PROPERTIES
@@ -64,10 +64,9 @@ class SolverNotifyFlags(IntEnum):
         | BODY_INERTIAL_PROPERTIES
         | SHAPE_PROPERTIES
         | MODEL_PROPERTIES
-        | EQUALITY_CONSTRAINT_PROPERTIES
+        | CONSTRAINT_PROPERTIES
         | TENDON_PROPERTIES
         | ACTUATOR_PROPERTIES
-        | MIMIC_CONSTRAINT_PROPERTIES
     )
     """Indicates all property updates."""
 
