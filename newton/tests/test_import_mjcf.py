@@ -1199,8 +1199,8 @@ class TestImportMjcf(unittest.TestCase):
         # tendon_invweight0 is computed by MuJoCo based on the mass matrix and tendon geometry.
         # The formula accounts for: sum(coef^2 * effective_dof_inv_weight) / (1 + armature)
         # where effective_dof_inv_weight depends on the full articulated body inertia.
-        # These expected values are verified against the Newton -> MuJoCo pipeline.
-        expected_invweight0 = [4.6796, 5.9226]  # Values after Newton's inertia processing
+        # These expected values are verified against the Newton -> MuJoCo pipeline using MJCF-defined inertia.
+        expected_invweight0 = [4.5780, 5.7940]  # Values when using MJCF-defined inertia
         invweight0 = solver.mj_model.tendon_invweight0
         for i, expected in enumerate(expected_invweight0):
             self.assertAlmostEqual(

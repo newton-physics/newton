@@ -110,34 +110,27 @@ To use binary format, install the optional dependency:
 
 **Loading and playing back recordings:**
 
-.. note::
-
-  The RecorderModelAndState class is deprecated and will be removed in a future version.
-  Use the :class:`~newton.viewers.ViewerFile` class instead.
+Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the model and state for a given frame. Use :class:`~newton.viewer.ViewerGL` (or another rendering viewer) to visualize.
 
 .. code-block:: python
 
     # Load a recording for playback
-    from newton._src.utils.recorder import RecorderModelAndState
-    recorder = RecorderModelAndState()
-    recorder.load_from_file("simulation.bin")
+    viewer_file = newton.viewer.ViewerFile("simulation.bin")
+    viewer_file.load_recording()
 
-    # Create model and state for playback
+    # Restore the model and state from the recording
     model = newton.Model()
-    state = newton.State()
+    viewer_file.load_model(model)
 
-    # Restore the model from the recording
-    recorder.playback_model(model)
+    state = model.state()
+    viewer_file.load_state(state, frame_id=10)  # frame index in [0, get_frame_count())
 
-    # Playback a specific frame (e.g., frame 10)
-    recorder.playback(state, frame_index=10)
-
-    # Use with any viewer to visualize
+    # Use ViewerGL for visualization
     viewer = newton.viewer.ViewerGL()
     viewer.set_model(model)
     viewer.log_state(state)
 
-For a complete example with UI controls for playback, see ``newton/examples/basic/example_replay_viewer.py``.
+For a complete example with UI controls for scrubbing and playback, see ``newton/examples/basic/example_replay_viewer.py``.
 
 Key parameters:
 

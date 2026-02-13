@@ -26,9 +26,28 @@ rspec.xml
 .mypy_cache/
 
 # IDEs & Editors
-.vscode/
+.vscode
 .history/
-.idea/
+.idea
+
+# Claude Code
+.claude/
+.mcp.json
+
+# Claude Code sandbox artifacts (empty placeholder files created in repo root)
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+.gitconfig
+.gitmodules
+.ripgreprc
+/HEAD
+/config
+/hooks
+/objects
+/refs
 
 # Documentation
 docs/_build/
