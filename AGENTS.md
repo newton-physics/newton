@@ -71,6 +71,18 @@ uv run --extra dev -m newton.tests -k test_viewer_log_shapes
 uv run --extra dev -m newton.tests -k test_basic.example_basic_shapes
 ```
 
+**Warp kernel cache:**
+
+Use a session-specific cache directory to avoid interference with parallel sessions:
+```bash
+export WARP_CACHE_ROOT=/tmp/claude/warp-cache-$$
+```
+
+Use `--no-cache-clear` to skip clearing the kernel cache for faster turnaround:
+```bash
+uv run --extra dev -m newton.tests --no-cache-clear -k test_model
+```
+
 ### Pre-commit (lint/format hooks)
 
 **CRITICAL: Always run pre-commit hooks BEFORE committing, not after.**
