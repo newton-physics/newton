@@ -27,6 +27,7 @@ from .inertia import compute_mesh_inertia
 from .types import (
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
 )
 
@@ -82,7 +83,7 @@ def compute_obb_candidates(
     transforms[angle_idx, axis_idx] = wp.transform(world_center, wp.quat_inverse(quat))
 
 
-def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:
+def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | Heightfield | None) -> float:
     """
     Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
     """
@@ -104,6 +105,16 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> 
             return np.linalg.norm(scale)
         else:
             return 1.0e6
+    elif geo_type == GeoType.HFIELD:
+        # Heightfield bounding sphere — hx/hy are already half-extents
+        if src is not None:
+            half_x = src.hx * scale[0]
+            half_y = src.hy * scale[1]
+            # Vertical range: from min_z to max_z, centered at midpoint
+            half_z = (src.max_z - src.min_z) / 2.0 * scale[2]
+            return np.sqrt(half_x**2 + half_y**2 + half_z**2)
+        else:
+            return np.linalg.norm(scale)
     else:
         return 10.0
 
