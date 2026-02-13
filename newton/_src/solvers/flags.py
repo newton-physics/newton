@@ -54,6 +54,9 @@ class SolverNotifyFlags(IntEnum):
     ACTUATOR_PROPERTIES = 1 << 8
     """Indicates actuator property updates: gains, biases, limits, etc."""
 
+    MIMIC_CONSTRAINT_PROPERTIES = 1 << 9
+    """Indicates mimic constraint property updates: constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled."""
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -64,6 +67,7 @@ class SolverNotifyFlags(IntEnum):
         | EQUALITY_CONSTRAINT_PROPERTIES
         | TENDON_PROPERTIES
         | ACTUATOR_PROPERTIES
+        | MIMIC_CONSTRAINT_PROPERTIES
     )
     """Indicates all property updates."""
 

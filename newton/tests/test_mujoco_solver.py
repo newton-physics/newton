@@ -5898,5 +5898,131 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         )
 
 
+class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
+    """Tests for mimic constraint support in SolverMuJoCo."""
+
+    def _make_two_revolute_model(self, coef0=0.0, coef1=1.0, enabled=True):
+        """Helper to create a model with two revolute joints and a mimic constraint."""
+        builder = newton.ModelBuilder()
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1, j2])
+        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=coef0, coef1=coef1, enabled=enabled)
+        return builder.finalize()
+
+    def test_mimic_constraint_conversion(self):
+        """Test that mimic constraints are converted to MuJoCo mjEQ_JOINT constraints."""
+        import mujoco
+
+        model = self._make_two_revolute_model(coef0=0.5, coef1=2.0)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo has 1 equality constraint of type JOINT
+        self.assertEqual(solver.mj_model.neq, 1)
+        self.assertEqual(solver.mj_model.eq_type[0], mujoco.mjtEq.mjEQ_JOINT)
+
+        # Verify polycoef data: [coef0, coef1, 0, 0, 0]
+        eq_data = solver.mjw_model.eq_data.numpy()
+        np.testing.assert_allclose(eq_data[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0], rtol=1e-5)
+
+        # Verify mapping exists
+        self.assertIsNotNone(solver.mjc_eq_to_newton_mimic)
+        mimic_map = solver.mjc_eq_to_newton_mimic.numpy()
+        self.assertEqual(mimic_map[0, 0], 0)
+
+    def test_mimic_constraint_runtime_update(self):
+        """Test that mimic constraint properties can be updated at runtime."""
+        model = self._make_two_revolute_model(coef0=0.5, coef1=2.0)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Modify coefficients via assign
+        model.constraint_mimic_coef0.assign(np.array([1.0], dtype=np.float32))
+        model.constraint_mimic_coef1.assign(np.array([3.0], dtype=np.float32))
+        model.constraint_mimic_enabled.assign(np.array([False], dtype=bool))
+
+        # Trigger update
+        solver.notify_model_changed(SolverNotifyFlags.MIMIC_CONSTRAINT_PROPERTIES)
+
+        # Verify updated values
+        eq_data = solver.mjw_model.eq_data.numpy()
+        np.testing.assert_allclose(eq_data[0, 0, 0], 1.0, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[0, 0, 1], 3.0, rtol=1e-5)
+        eq_active = solver.mjw_data.eq_active.numpy()
+        self.assertFalse(eq_active[0, 0])
+
+    def test_mimic_no_constraints(self):
+        """Test solver works with zero mimic constraints."""
+        builder = newton.ModelBuilder()
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(model.constraint_mimic_count, 0)
+        # No MuJoCo eq constraints created, so mapping should be all -1
+        self.assertTrue(np.all(solver.mjc_eq_to_newton_mimic.numpy() == -1))
+
+    def test_mimic_mixed_with_equality_constraints(self):
+        """Test mimic constraints coexist with regular equality constraints."""
+        import mujoco
+
+        builder = newton.ModelBuilder()
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1, j2])
+
+        # Add a regular JOINT equality constraint
+        builder.add_equality_constraint_joint(joint1=j1, joint2=j2, polycoef=[0.0, 1.0, 0.0, 0.0, 0.0])
+        # Add a mimic constraint
+        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # 1 regular eq + 1 mimic = 2 MuJoCo eq constraints
+        self.assertEqual(solver.mj_model.neq, 2)
+        self.assertEqual(solver.mj_model.eq_type[0], mujoco.mjtEq.mjEQ_JOINT)
+        self.assertEqual(solver.mj_model.eq_type[1], mujoco.mjtEq.mjEQ_JOINT)
+
+    def test_mimic_constraint_simulation(self):
+        """Test that mimic constraint enforces joint tracking during simulation."""
+        # Use coef1=2.0 so the relationship is non-trivial: j2 = 2.0 * j1
+        model = self._make_two_revolute_model(coef0=0.0, coef1=2.0)
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        # Set initial velocity on leader joint to create motion
+        qd = state_in.joint_qd.numpy()
+        qd[0] = 1.0
+        state_in.joint_qd.assign(qd)
+
+        solver = SolverMuJoCo(model, iterations=50, disable_contacts=True)
+
+        dt = 0.01
+        for _ in range(200):
+            solver.step(state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
+
+        # After simulation, follower (j2) should approximately equal 2.0 * leader (j1)
+        q = state_in.joint_q.numpy()
+        self.assertNotAlmostEqual(
+            float(q[0]), 0.0, places=1, msg="Leader joint should have moved from initial position"
+        )
+        np.testing.assert_allclose(q[1], 2.0 * q[0], atol=0.1, err_msg="Mimic follower should track 2x leader")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
