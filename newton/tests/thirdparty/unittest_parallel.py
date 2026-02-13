@@ -177,6 +177,12 @@ def main(argv=None):
     group_warp.add_argument(
         "--no-shared-cache", action="store_true", help="Use a separate kernel cache per test process."
     )
+    group_warp.add_argument(
+        "--no-cache-clear",
+        action="store_true",
+        help="Skip clearing the Warp kernel cache before running tests. "
+        "Useful for faster iteration and avoiding interference with parallel sessions.",
+    )
     args = parser.parse_args(args=argv)
 
     if args.coverage_branch:
@@ -195,9 +201,10 @@ def main(argv=None):
     import warp as wp  # noqa: PLC0415 NVIDIA Modification
 
     # Clear the Warp cache (NVIDIA Modification)
-    wp.clear_lto_cache()
-    wp.clear_kernel_cache()
-    print("Cleared Warp kernel cache")
+    if not args.no_cache_clear:
+        wp.clear_lto_cache()
+        wp.clear_kernel_cache()
+        print("Cleared Warp kernel cache")
 
     # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
     # For now this avoids races and conflicting downloads in parallel test runs.

@@ -64,6 +64,7 @@ class Example:
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.7), wp.quat_identity()),
             floating=True,
             enable_self_collisions=False,
+            ignore_inertial_definitions=True,  # Use geometry-based inertia for stability
         )
 
         # set initial joint positions
