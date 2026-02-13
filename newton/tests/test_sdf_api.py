@@ -126,8 +126,19 @@ class TestSDFAPI(unittest.TestCase):
 
         builder.enable_sdf(max_resolution=128, narrow_band_range=(-0.02, 0.02), contact_margin=0.02)
         self.assertEqual(builder.default_shape_cfg.sdf_max_resolution, 128)
+        self.assertIsNone(builder.default_shape_cfg.sdf_target_voxel_size)
         self.assertEqual(builder.default_shape_cfg.sdf_narrow_band_range, (-0.02, 0.02))
         self.assertEqual(builder.default_shape_cfg.contact_margin, 0.02)
+
+        # target_voxel_size takes precedence and clears max_resolution
+        builder.enable_sdf(target_voxel_size=0.005)
+        self.assertEqual(builder.default_shape_cfg.sdf_target_voxel_size, 0.005)
+        self.assertIsNone(builder.default_shape_cfg.sdf_max_resolution)
+
+        # switching back to max_resolution clears target_voxel_size
+        builder.enable_sdf(max_resolution=64)
+        self.assertEqual(builder.default_shape_cfg.sdf_max_resolution, 64)
+        self.assertIsNone(builder.default_shape_cfg.sdf_target_voxel_size)
 
         builder.disable_sdf()
         self.assertIsNone(builder.default_shape_cfg.sdf_max_resolution)
@@ -138,6 +149,9 @@ class TestSDFAPI(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             newton.ModelBuilder().enable_sdf(narrow_band_range=(0.01, -0.01))
+
+        with self.assertRaises(ValueError):
+            newton.ModelBuilder().enable_sdf(target_voxel_size=-0.01)
 
     def test_usd_with_defaults(self, device=None):
         """USD attributes override builder defaults; shapes without attrs fall back to defaults."""

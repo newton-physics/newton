@@ -4609,18 +4609,22 @@ class ModelBuilder:
         self,
         *,
         max_resolution: int = 64,
+        target_voxel_size: float | None = None,
         narrow_band_range: tuple[float, float] = (-0.01, 0.01),
         contact_margin: float = 0.01,
     ) -> None:
         """Enable SDF-based collision detection for this ModelBuilder.
 
-        Must be called BEFORE importing USD assets or adding shapes.
+        Must be called before importing USD assets or adding shapes.
         All subsequently added shapes will use SDF collision detection.
 
         Args:
-            max_resolution: Maximum SDF grid dimension (must be divisible by 8). Common: 32, 64, 128, 256
-            narrow_band_range: (inner, outer) distance range for SDF computation in meters
-            contact_margin: Contact detection margin in meters
+            max_resolution: Maximum SDF grid dimension (must be divisible by 8). Common: 32, 64, 128, 256.
+                Ignored when *target_voxel_size* is provided.
+            target_voxel_size: Physical voxel size in meters. When provided, takes precedence
+                over *max_resolution* and the grid resolution is derived from the mesh extent.
+            narrow_band_range: (inner, outer) distance range for SDF computation in meters.
+            contact_margin: Contact detection margin in meters.
         """
         if max_resolution % 8 != 0:
             raise ValueError(
@@ -4631,8 +4635,15 @@ class ModelBuilder:
             raise ValueError(f"narrow_band_range must be a 2-tuple (inner, outer), got {narrow_band_range}")
         if narrow_band_range[0] >= narrow_band_range[1]:
             raise ValueError(f"narrow_band_range must have inner < outer (got {narrow_band_range})")
+        if target_voxel_size is not None and target_voxel_size <= 0.0:
+            raise ValueError(f"target_voxel_size must be positive (got {target_voxel_size})")
 
-        self.default_shape_cfg.sdf_max_resolution = max_resolution
+        if target_voxel_size is not None:
+            self.default_shape_cfg.sdf_target_voxel_size = target_voxel_size
+            self.default_shape_cfg.sdf_max_resolution = None
+        else:
+            self.default_shape_cfg.sdf_max_resolution = max_resolution
+            self.default_shape_cfg.sdf_target_voxel_size = None
         self.default_shape_cfg.sdf_narrow_band_range = narrow_band_range
         self.default_shape_cfg.contact_margin = contact_margin
 
@@ -4695,7 +4706,9 @@ class ModelBuilder:
             if shape_idx < 0 or shape_idx >= len(self.shape_key):
                 raise IndexError(f"Shape index {shape_idx} is out of range [0, {len(self.shape_key)})")
 
-        # Validate and apply sdf_max_resolution
+        # Validate and apply sdf_max_resolution / sdf_target_voxel_size (mutually exclusive)
+        if sdf_max_resolution is not None and sdf_target_voxel_size is not None:
+            raise ValueError("sdf_max_resolution and sdf_target_voxel_size are mutually exclusive; provide only one.")
         if sdf_max_resolution is not None:
             if sdf_max_resolution % 8 != 0:
                 raise ValueError(
@@ -4703,6 +4716,12 @@ class ModelBuilder:
                     "This is required because SDF volumes are allocated in 8x8x8 tiles."
                 )
             self.shape_sdf_max_resolution[shape_idx] = sdf_max_resolution
+            self.shape_sdf_target_voxel_size[shape_idx] = None  # clear so max_resolution takes effect
+        if sdf_target_voxel_size is not None:
+            if sdf_target_voxel_size <= 0.0:
+                raise ValueError(f"sdf_target_voxel_size must be positive (got {sdf_target_voxel_size})")
+            self.shape_sdf_target_voxel_size[shape_idx] = sdf_target_voxel_size
+            self.shape_sdf_max_resolution[shape_idx] = None  # clear so target_voxel_size takes effect
 
         # Validate and apply sdf_narrow_band_range
         if sdf_narrow_band_range is not None:
@@ -4712,10 +4731,6 @@ class ModelBuilder:
             if inner >= outer:
                 raise ValueError(f"sdf_narrow_band_range must have inner < outer (got {sdf_narrow_band_range})")
             self.shape_sdf_narrow_band_range[shape_idx] = sdf_narrow_band_range
-
-        # Apply sdf_target_voxel_size
-        if sdf_target_voxel_size is not None:
-            self.shape_sdf_target_voxel_size[shape_idx] = sdf_target_voxel_size
 
         # Apply is_hydroelastic (stored in shape_flags).
         # Planes and heightfields can never have HYDROELASTIC — always clear for those types.
