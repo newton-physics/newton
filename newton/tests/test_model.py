@@ -203,8 +203,8 @@ class TestModel(unittest.TestCase):
         base_com = wp.vec3(0.1, 0.2, 0.3)
         base_inertia = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
 
-        locked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=True)
-        unlocked_body = builder.add_link(mass=2.0, com=base_com, I_m=base_inertia, lock_inertia=False)
+        locked_body = builder.add_link(mass=2.0, com=base_com, inertia=base_inertia, lock_inertia=True)
+        unlocked_body = builder.add_link(mass=2.0, com=base_com, inertia=base_inertia, lock_inertia=False)
 
         locked_mass = builder.body_mass[locked_body]
         locked_com = builder.body_com[locked_body]
@@ -321,6 +321,82 @@ class TestModel(unittest.TestCase):
         self.assertEqual(len(mesh.vertices), 8)
         self.assertEqual(len(mesh.indices), 36)
 
+    def test_approximate_meshes_collision_filter_child_bodies(self):
+        def normalize_pair(a, b):
+            return (min(a, b), max(a, b))
+
+        def get_filter_set(builder):
+            return {normalize_pair(a, b) for a, b in builder.shape_collision_filter_pairs}
+
+        builder = ModelBuilder()
+
+        # Create a chain of 3 bodies (like an articulation)
+        body0 = builder.add_link()
+        body1 = builder.add_link()
+        body2 = builder.add_link()
+
+        # Add initial shapes to each body (like mesh shapes before decomposition)
+        shape0_initial = builder.add_shape_sphere(body=body0, radius=0.1)
+        shape1_initial = builder.add_shape_sphere(body=body1, radius=0.1)
+        shape2_initial = builder.add_shape_sphere(body=body2, radius=0.1)
+
+        # Create joints (establishes parent->child relationships)
+        # body0 is parent of body1, body1 is parent of body2
+        joint_free = builder.add_joint_free(parent=-1, child=body0)
+        joint0 = builder.add_joint_revolute(parent=body0, child=body1, axis=(0, 0, 1))
+        joint1 = builder.add_joint_revolute(parent=body1, child=body2, axis=(0, 0, 1))
+        builder.add_articulation(joints=[joint_free, joint0, joint1])
+
+        # At this point, initial shapes should be filtered between adjacent bodies
+        filter_set = get_filter_set(builder)
+        self.assertIn(
+            normalize_pair(shape0_initial, shape1_initial),
+            filter_set,
+            "Initial body0-body1 shapes should be filtered",
+        )
+        self.assertIn(
+            normalize_pair(shape1_initial, shape2_initial),
+            filter_set,
+            "Initial body1-body2 shapes should be filtered",
+        )
+
+        # Now simulate what approximate_meshes() does: add additional shapes to bodies
+        # after joints are already created (like convex decomposition adding multiple parts)
+        shape0_extra1 = builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        shape0_extra2 = builder.add_shape_capsule(body=body0, radius=0.05, half_height=0.1)
+        shape1_extra1 = builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+
+        filter_set = get_filter_set(builder)
+
+        # Verify: new body0 shapes should filter with ALL body1 shapes (including initial)
+        for parent_shape in [shape0_extra1, shape0_extra2]:
+            for child_shape in [shape1_initial, shape1_extra1]:
+                expected_pair = normalize_pair(parent_shape, child_shape)
+                self.assertIn(
+                    expected_pair,
+                    filter_set,
+                    f"New parent body0 shape {parent_shape} should filter with body1 shape {child_shape}",
+                )
+
+        # Verify: new body1 shapes should filter with ALL body0 shapes (parent)
+        for child_shape in [shape1_extra1]:
+            for parent_shape in [shape0_initial, shape0_extra1, shape0_extra2]:
+                expected_pair = normalize_pair(parent_shape, child_shape)
+                self.assertIn(
+                    expected_pair,
+                    filter_set,
+                    f"New body1 shape {child_shape} should filter with parent body0 shape {parent_shape}",
+                )
+
+        # Verify: new body1 shapes should filter with ALL body2 shapes (child)
+        for parent_shape in [shape1_extra1]:
+            expected_pair = normalize_pair(parent_shape, shape2_initial)
+            self.assertIn(
+                expected_pair,
+                filter_set,
+                f"New body1 shape {parent_shape} should filter with child body2 shape {shape2_initial}",
+            )
+
     def test_add_particles_grouping(self):
         """Test that add_particles correctly assigns world groups."""
         builder = ModelBuilder()
@@ -346,6 +422,10 @@ class TestModel(unittest.TestCase):
 
     def test_world_grouping(self):
         """Test world grouping functionality for Model entities."""
+        # Optionally enable debug printing
+        verbose = False  # Set to True to enable debug output
+
+        # Create builder with a mix of global and world-specific entities
         main_builder = ModelBuilder()
 
         # Create global entities (world -1)
@@ -366,13 +446,18 @@ class TestModel(unittest.TestCase):
             # Add articulated body
             b1 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=10.0)
             b2 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()), mass=5.0)
+            b3 = world_builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=2.5)
             j1 = world_builder.add_joint_revolute(parent=b1, child=b2, axis=(0, 1, 0))
-            world_builder.add_articulation([j1])
+            j2 = world_builder.add_joint_revolute(parent=b2, child=b3, axis=(0, 1, 0))
+            world_builder.add_articulation([j1, j2])
             world_builder.add_shape_sphere(
                 body=b1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.1
             )
             world_builder.add_shape_sphere(
                 body=b2, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.05
+            )
+            world_builder.add_shape_sphere(
+                body=b3, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), radius=0.025
             )
 
             return world_builder
@@ -389,60 +474,161 @@ class TestModel(unittest.TestCase):
         world2_builder = create_world_builder()
         main_builder.add_world(world2_builder, xform=wp.transform(wp.vec3(3.0, 0.0, 0.0), wp.quat_identity()))
 
+        # Add more global entities to end of the model
+        floor_body = main_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()), mass=0.0)
+        main_builder.add_shape_box(
+            body=floor_body, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), hx=5.0, hy=5.0, hz=0.1
+        )
+        ball_body = main_builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()), mass=0.0)
+        main_builder.add_shape_sphere(
+            body=ball_body, xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()), radius=0.5
+        )
+        main_builder.add_particle((0.0, 0.0, 5.0), (0.0, 0.0, 0.0), mass=1.0)
+        main_builder.add_particle((0.0, 0.0, 5.5), (0.0, 0.0, 0.0), mass=1.0)
+
         # Finalize the model
         model = main_builder.finalize()
 
         # Verify counts
         self.assertEqual(model.num_worlds, 3)
-        self.assertEqual(model.particle_count, 7)  # 1 global + 2*3 = 7
-        self.assertEqual(model.body_count, 7)  # 1 global + 2*3 = 7
-        self.assertEqual(model.shape_count, 7)  # 1 global + 2*3 = 7
-        self.assertEqual(model.joint_count, 4)  # 1 global + 1*3 = 4
-        self.assertEqual(model.articulation_count, 4)  # 1 global + 1*3 = 4
+        self.assertEqual(model.particle_count, 9)  # 3 global + 2*3 = 9
+        self.assertEqual(model.body_count, 12)  # 3 global + 3*3 = 12
+        self.assertEqual(model.shape_count, 12)  # 3 global + 3*3 = 12
+        self.assertEqual(model.joint_count, 9)  # 3 global + 2*3 = 9
+        self.assertEqual(model.articulation_count, 6)  # 3 global + 1*3 = 6
 
         # Verify group assignments
-        particle_groups = model.particle_world.numpy() if model.particle_world is not None else []
-        body_groups = model.body_world.numpy() if model.body_world is not None else []
-        shape_worlds = model.shape_world.numpy() if model.shape_world is not None else []
-        joint_worlds = model.joint_world.numpy() if model.joint_world is not None else []
-        articulation_groups = model.articulation_world.numpy() if model.articulation_world is not None else []
+        particle_world = model.particle_world.numpy() if model.particle_world is not None else []
+        body_world = model.body_world.numpy() if model.body_world is not None else []
+        shape_world = model.shape_world.numpy() if model.shape_world is not None else []
+        joint_world = model.joint_world.numpy() if model.joint_world is not None else []
+        articulation_world = model.articulation_world.numpy() if model.articulation_world is not None else []
 
-        if len(particle_groups) > 0:
+        if len(particle_world) > 0:
             # Check global entities
-            self.assertEqual(particle_groups[0], -1)  # global particle
+            self.assertEqual(particle_world[0], -1)  # global particle at front
+            self.assertEqual(particle_world[-2], -1)  # global particle at back
+            self.assertEqual(particle_world[-1], -1)  # global particle at back
 
-            # Check world 0 entities (indices 1-2 for particles)
-            self.assertTrue(np.all(particle_groups[1:3] == 0))
+            # Check world 0 entities (indices for particles)
+            self.assertTrue(np.all(particle_world[1:3] == 0))
 
-            # Check world 1 entities
-            self.assertTrue(np.all(particle_groups[3:5] == 1))
+            # Check world 1 entities (auto-assigned)
+            self.assertTrue(np.all(particle_world[3:5] == 1))
 
             # Check world 2 entities (auto-assigned)
-            self.assertTrue(np.all(particle_groups[5:7] == 2))
+            self.assertTrue(np.all(particle_world[5:7] == 2))
 
-        if len(body_groups) > 0:
-            self.assertEqual(body_groups[0], -1)  # ground body
-            self.assertTrue(np.all(body_groups[1:3] == 0))
-            self.assertTrue(np.all(body_groups[3:5] == 1))
-            self.assertTrue(np.all(body_groups[5:7] == 2))
+        if len(body_world) > 0:
+            self.assertEqual(body_world[0], -1)  # ground body
+            self.assertTrue(np.all(body_world[1:4] == 0))
+            self.assertTrue(np.all(body_world[4:7] == 1))
+            self.assertTrue(np.all(body_world[7:10] == 2))
+            self.assertEqual(body_world[10], -1)  # floor body
+            self.assertEqual(body_world[11], -1)  # ball body
 
-        if len(shape_worlds) > 0:
-            self.assertEqual(shape_worlds[0], -1)  # ground shape
-            self.assertTrue(np.all(shape_worlds[1:3] == 0))
-            self.assertTrue(np.all(shape_worlds[3:5] == 1))
-            self.assertTrue(np.all(shape_worlds[5:7] == 2))
+        if len(shape_world) > 0:
+            self.assertEqual(shape_world[0], -1)  # ground shape
+            self.assertTrue(np.all(shape_world[1:4] == 0))
+            self.assertTrue(np.all(shape_world[4:7] == 1))
+            self.assertTrue(np.all(shape_world[7:10] == 2))
+            self.assertEqual(shape_world[10], -1)  # floor shape
+            self.assertEqual(shape_world[11], -1)  # ball shape
 
-        if len(joint_worlds) > 0:
-            self.assertEqual(joint_worlds[0], -1)  # ground body's free joint
-            self.assertEqual(joint_worlds[1], 0)
-            self.assertEqual(joint_worlds[2], 1)
-            self.assertEqual(joint_worlds[3], 2)
+        if len(joint_world) > 0:
+            self.assertEqual(joint_world[0], -1)  # ground body's free joint
+            self.assertEqual(joint_world[1], 0)
+            self.assertEqual(joint_world[2], 0)
+            self.assertEqual(joint_world[3], 1)
+            self.assertEqual(joint_world[4], 1)
+            self.assertEqual(joint_world[5], 2)
+            self.assertEqual(joint_world[6], 2)
+            self.assertEqual(joint_world[7], -1)  # floor body's free joint
+            self.assertEqual(joint_world[8], -1)  # ball body's free joint
 
-        if len(articulation_groups) > 0:
-            self.assertEqual(articulation_groups[0], -1)  # ground body's articulation
-            self.assertEqual(articulation_groups[1], 0)
-            self.assertEqual(articulation_groups[2], 1)
-            self.assertEqual(articulation_groups[3], 2)
+        if len(articulation_world) > 0:
+            self.assertEqual(articulation_world[0], -1)  # ground body's articulation
+            self.assertEqual(articulation_world[1], 0)
+            self.assertEqual(articulation_world[2], 1)
+            self.assertEqual(articulation_world[3], 2)
+            self.assertEqual(articulation_world[4], -1)  # floor body's articulation
+            self.assertEqual(articulation_world[5], -1)  # ball body's articulation
+
+        # Verify world start indices
+        particle_world_start = model.particle_world_start.numpy() if model.particle_world_start is not None else []
+        body_world_start = model.body_world_start.numpy() if model.body_world_start is not None else []
+        shape_world_start = model.shape_world_start.numpy() if model.shape_world_start is not None else []
+        joint_world_start = model.joint_world_start.numpy() if model.joint_world_start is not None else []
+        articulation_world_start = (
+            model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
+        )
+        equality_constraint_world_start = (
+            model.equality_constraint_world_start.numpy() if model.equality_constraint_world_start is not None else []
+        )
+        joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
+        joint_coord_world_start = (
+            model.joint_coord_world_start.numpy() if model.joint_coord_world_start is not None else []
+        )
+        joint_constraint_world_start = (
+            model.joint_constraint_world_start.numpy() if model.joint_constraint_world_start is not None else []
+        )
+
+        # Optional console-output for debugging
+        if verbose:
+            print(f"particle_world_start: {particle_world_start}")
+            print(f"body_world_start: {body_world_start}")
+            print(f"shape_world_start: {shape_world_start}")
+            print(f"joint_world_start: {joint_world_start}")
+            print(f"articulation_world_start: {articulation_world_start}")
+            print(f"equality_constraint_world_start: {equality_constraint_world_start}")
+            print(f"joint_dof_world_start: {joint_dof_world_start}")
+            print(f"joint_coord_world_start: {joint_coord_world_start}")
+            print(f"joint_constraint_world_start: {joint_constraint_world_start}")
+
+        # Check that sizes match num_worlds + 2, i.e. conforms to spec
+        self.assertEqual(particle_world_start.size, model.num_worlds + 2)
+        self.assertEqual(body_world_start.size, model.num_worlds + 2)
+        self.assertEqual(shape_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_world_start.size, model.num_worlds + 2)
+        self.assertEqual(articulation_world_start.size, model.num_worlds + 2)
+        self.assertEqual(equality_constraint_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_dof_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_coord_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_constraint_world_start.size, model.num_worlds + 2)
+
+        # Check that the last elements match total counts
+        self.assertEqual(particle_world_start[-1], model.particle_count)
+        self.assertEqual(body_world_start[-1], model.body_count)
+        self.assertEqual(shape_world_start[-1], model.shape_count)
+        self.assertEqual(joint_world_start[-1], model.joint_count)
+        self.assertEqual(articulation_world_start[-1], model.articulation_count)
+        self.assertEqual(equality_constraint_world_start[-1], model.equality_constraint_count)
+        self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
+        self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
+        self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
+
+        # Check that world starts are non-decreasing
+        for i in range(model.num_worlds + 1):
+            self.assertLessEqual(particle_world_start[i], particle_world_start[i + 1])
+            self.assertLessEqual(body_world_start[i], body_world_start[i + 1])
+            self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
+            self.assertLessEqual(joint_world_start[i], joint_world_start[i + 1])
+            self.assertLessEqual(articulation_world_start[i], articulation_world_start[i + 1])
+            self.assertLessEqual(equality_constraint_world_start[i], equality_constraint_world_start[i + 1])
+            self.assertLessEqual(joint_dof_world_start[i], joint_dof_world_start[i + 1])
+            self.assertLessEqual(joint_coord_world_start[i], joint_coord_world_start[i + 1])
+            self.assertLessEqual(joint_constraint_world_start[i], joint_constraint_world_start[i + 1])
+
+        # Check exact values of world starts for this specific case
+        self.assertTrue(np.array_equal(particle_world_start, np.array([1, 3, 5, 7, 9])))
+        self.assertTrue(np.array_equal(body_world_start, np.array([1, 4, 7, 10, 12])))
+        self.assertTrue(np.array_equal(shape_world_start, np.array([1, 4, 7, 10, 12])))
+        self.assertTrue(np.array_equal(joint_world_start, np.array([1, 3, 5, 7, 9])))
+        self.assertTrue(np.array_equal(articulation_world_start, np.array([1, 2, 3, 4, 6])))
+        self.assertTrue(np.array_equal(equality_constraint_world_start, np.array([0, 0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(joint_dof_world_start, np.array([6, 8, 10, 12, 24])))
+        self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
+        self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
 
     def test_num_worlds_tracking(self):
         """Test that num_worlds is properly tracked when using add_world."""
@@ -569,6 +755,10 @@ class TestModel(unittest.TestCase):
 
     def test_collapse_fixed_joints_with_groups(self):
         """Test that collapse_fixed_joints correctly preserves world groups."""
+        # Optionally enable debug printing
+        verbose = False  # Set to True to enable debug output
+
+        # Create builder with multiple worlds and fixed joints
         builder = ModelBuilder()
 
         # World 0: Chain with fixed joints
@@ -641,7 +831,7 @@ class TestModel(unittest.TestCase):
         self.assertEqual(builder.joint_world, [0, 0, 0, 1, 1, -1])  # 6 joints now (includes free joint from add_body)
 
         # Collapse fixed joints
-        builder.collapse_fixed_joints(verbose=False)
+        builder.collapse_fixed_joints(verbose=verbose)
 
         # After collapse:
         # - b0_0 and b0_1 are merged (b0_1 removed)
@@ -673,6 +863,102 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_worlds[1], 0)  # b0_0->b0_2 from world 0
         self.assertEqual(joint_worlds[2], 1)  # world->b1_0 from world 1
         self.assertEqual(joint_worlds[3], 1)  # b1_0->b1_1 from world 1
+
+        # Verify world start indices
+        particle_world_start = model.particle_world_start.numpy() if model.particle_world_start is not None else []
+        body_world_start = model.body_world_start.numpy() if model.body_world_start is not None else []
+        shape_world_start = model.shape_world_start.numpy() if model.shape_world_start is not None else []
+        joint_world_start = model.joint_world_start.numpy() if model.joint_world_start is not None else []
+        articulation_world_start = (
+            model.articulation_world_start.numpy() if model.articulation_world_start is not None else []
+        )
+        equality_constraint_world_start = (
+            model.equality_constraint_world_start.numpy() if model.equality_constraint_world_start is not None else []
+        )
+        joint_dof_world_start = model.joint_dof_world_start.numpy() if model.joint_dof_world_start is not None else []
+        joint_coord_world_start = (
+            model.joint_coord_world_start.numpy() if model.joint_coord_world_start is not None else []
+        )
+        joint_constraint_world_start = (
+            model.joint_constraint_world_start.numpy() if model.joint_constraint_world_start is not None else []
+        )
+
+        # Optional console-output for debugging
+        if verbose:
+            print(f"particle_world_start: {particle_world_start}")
+            print(f"body_world_start: {body_world_start}")
+            print(f"shape_world_start: {shape_world_start}")
+            print(f"joint_world_start: {joint_world_start}")
+            print(f"articulation_world_start: {articulation_world_start}")
+            print(f"equality_constraint_world_start: {equality_constraint_world_start}")
+            print(f"joint_dof_world_start: {joint_dof_world_start}")
+            print(f"joint_coord_world_start: {joint_coord_world_start}")
+            print(f"joint_constraint_world_start: {joint_constraint_world_start}")
+
+        # Verify total counts
+        self.assertEqual(builder.particle_count, 0)
+        self.assertEqual(builder.body_count, 5)
+        self.assertEqual(builder.shape_count, 0)
+        self.assertEqual(builder.joint_count, 5)
+        self.assertEqual(builder.articulation_count, 3)
+        self.assertEqual(len(builder.equality_constraint_world), 0)
+        self.assertEqual(builder.joint_dof_count, 10)
+        self.assertEqual(builder.joint_coord_count, 11)
+        self.assertEqual(builder.joint_constraint_count, 20)
+        self.assertEqual(particle_world_start[-1], builder.particle_count)
+        self.assertEqual(body_world_start[-1], builder.body_count)
+        self.assertEqual(shape_world_start[-1], builder.shape_count)
+        self.assertEqual(joint_world_start[-1], builder.joint_count)
+        self.assertEqual(articulation_world_start[-1], builder.articulation_count)
+        self.assertEqual(equality_constraint_world_start[-1], len(builder.equality_constraint_world))
+        self.assertEqual(joint_dof_world_start[-1], builder.joint_dof_count)
+        self.assertEqual(joint_coord_world_start[-1], builder.joint_coord_count)
+        self.assertEqual(joint_constraint_world_start[-1], builder.joint_constraint_count)
+
+        # Check that sizes match num_worlds + 2, i.e. conforms to spec
+        self.assertEqual(particle_world_start.size, model.num_worlds + 2)
+        self.assertEqual(body_world_start.size, model.num_worlds + 2)
+        self.assertEqual(shape_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_world_start.size, model.num_worlds + 2)
+        self.assertEqual(articulation_world_start.size, model.num_worlds + 2)
+        self.assertEqual(equality_constraint_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_dof_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_coord_world_start.size, model.num_worlds + 2)
+        self.assertEqual(joint_constraint_world_start.size, model.num_worlds + 2)
+
+        # Check that the last elements match total counts
+        self.assertEqual(particle_world_start[-1], model.particle_count)
+        self.assertEqual(body_world_start[-1], model.body_count)
+        self.assertEqual(shape_world_start[-1], model.shape_count)
+        self.assertEqual(joint_world_start[-1], model.joint_count)
+        self.assertEqual(articulation_world_start[-1], model.articulation_count)
+        self.assertEqual(equality_constraint_world_start[-1], model.equality_constraint_count)
+        self.assertEqual(joint_dof_world_start[-1], model.joint_dof_count)
+        self.assertEqual(joint_coord_world_start[-1], model.joint_coord_count)
+        self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
+
+        # Check that world starts are non-decreasing
+        for i in range(model.num_worlds + 1):
+            self.assertLessEqual(particle_world_start[i], particle_world_start[i + 1])
+            self.assertLessEqual(body_world_start[i], body_world_start[i + 1])
+            self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
+            self.assertLessEqual(joint_world_start[i], joint_world_start[i + 1])
+            self.assertLessEqual(articulation_world_start[i], articulation_world_start[i + 1])
+            self.assertLessEqual(equality_constraint_world_start[i], equality_constraint_world_start[i + 1])
+            self.assertLessEqual(joint_dof_world_start[i], joint_dof_world_start[i + 1])
+            self.assertLessEqual(joint_coord_world_start[i], joint_coord_world_start[i + 1])
+            self.assertLessEqual(joint_constraint_world_start[i], joint_constraint_world_start[i + 1])
+
+        # Check exact values of world starts for this specific case
+        self.assertTrue(np.array_equal(particle_world_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(body_world_start, np.array([0, 2, 4, 5])))
+        self.assertTrue(np.array_equal(shape_world_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(joint_world_start, np.array([0, 2, 4, 5])))
+        self.assertTrue(np.array_equal(articulation_world_start, np.array([0, 1, 2, 3])))
+        self.assertTrue(np.array_equal(equality_constraint_world_start, np.array([0, 0, 0, 0])))
+        self.assertTrue(np.array_equal(joint_dof_world_start, np.array([0, 2, 4, 10])))
+        self.assertTrue(np.array_equal(joint_coord_world_start, np.array([0, 2, 4, 11])))
+        self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 20])))
 
     def test_add_world(self):
         orig_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.5, 0.6, 0.7))
@@ -996,6 +1282,376 @@ class TestModel(unittest.TestCase):
         self.assertIn((shape0, shape1), model.shape_collision_filter_pairs)
         self.assertIn((shape0, shape2), model.shape_collision_filter_pairs)
         self.assertIn((shape1, shape2), model.shape_collision_filter_pairs)
+
+    def test_validate_structure_invalid_shape_body(self):
+        """Test that _validate_structure catches invalid shape_body references."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        builder.add_shape_sphere(body=body, radius=0.5, key="test_shape")
+
+        # Manually set invalid body reference
+        builder.shape_body[0] = 999  # Invalid body index
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid body reference", error_msg)
+        self.assertIn("shape_body", error_msg)
+        self.assertIn("test_shape", error_msg)
+        self.assertIn("999", error_msg)
+
+    def test_validate_structure_invalid_joint_parent(self):
+        """Test that _validate_structure catches invalid joint_parent references."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, key="test_joint")
+        builder.add_articulation([joint])
+
+        # Manually set invalid parent body reference
+        builder.joint_parent[0] = 999  # Invalid body index
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid body reference", error_msg)
+        self.assertIn("joint_parent", error_msg)
+        self.assertIn("test_joint", error_msg)
+
+    def test_validate_structure_invalid_joint_child(self):
+        """Test that _validate_structure catches invalid joint_child references."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, key="test_joint")
+        builder.add_articulation([joint])
+
+        # Manually set invalid child body reference (child cannot be -1)
+        builder.joint_child[0] = -1  # Invalid: child cannot be world
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid body reference", error_msg)
+        self.assertIn("joint_child", error_msg)
+        self.assertIn("Child cannot be the world", error_msg)
+
+    def test_validate_structure_self_referential_joint(self):
+        """Test that _validate_structure catches self-referential joints."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body, key="self_ref_joint")
+        builder.add_articulation([joint])
+
+        # Manually set parent == child (self-referential)
+        builder.joint_parent[0] = body
+        builder.joint_child[0] = body
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Self-referential joint", error_msg)
+        self.assertIn("self_ref_joint", error_msg)
+
+    def test_validate_structure_invalid_equality_constraint_body(self):
+        """Test that _validate_structure catches invalid equality constraint body references."""
+        builder = ModelBuilder()
+        body1 = builder.add_body(mass=1.0)
+        body2 = builder.add_body(mass=1.0)
+        builder.add_equality_constraint_weld(
+            body1=body1,
+            body2=body2,
+            key="test_constraint",
+        )
+
+        # Manually set invalid body reference
+        builder.equality_constraint_body1[0] = 999
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid body reference", error_msg)
+        self.assertIn("equality_constraint_body1", error_msg)
+        self.assertIn("test_constraint", error_msg)
+
+    def test_validate_structure_invalid_equality_constraint_joint(self):
+        """Test that _validate_structure catches invalid equality constraint joint references."""
+        builder = ModelBuilder()
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        builder.add_articulation([joint1, joint2])
+
+        # Add a joint equality constraint
+        builder.add_equality_constraint_joint(
+            joint1=joint1,
+            joint2=joint2,
+            key="joint_constraint",
+        )
+
+        # Manually set invalid joint reference
+        builder.equality_constraint_joint1[0] = 999
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Invalid joint reference", error_msg)
+        self.assertIn("equality_constraint_joint1", error_msg)
+        self.assertIn("joint_constraint", error_msg)
+
+    def test_validate_structure_array_length_mismatch(self):
+        """Test that _validate_structure catches array length mismatches."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_articulation([joint])
+
+        # Manually corrupt array length
+        builder.joint_armature.append(0.0)  # Add extra element
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+
+        error_msg = str(context.exception)
+        self.assertIn("Array length mismatch", error_msg)
+        self.assertIn("joint_armature", error_msg)
+
+    def test_validate_joint_ordering_correct_order(self):
+        """Test that validate_joint_ordering passes for correctly ordered joints."""
+        builder = ModelBuilder()
+
+        # Create a simple chain in DFS order
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        body3 = builder.add_link(mass=1.0)
+
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        joint3 = builder.add_joint_revolute(parent=body2, child=body3)
+        builder.add_articulation([joint1, joint2, joint3])
+
+        # Should not warn
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = builder.validate_joint_ordering()
+            ordering_warnings = [warning for warning in w if "DFS topological order" in str(warning.message)]
+            self.assertEqual(len(ordering_warnings), 0)
+
+        self.assertTrue(result)
+
+    def test_validate_joint_ordering_incorrect_order(self):
+        """Test that validate_joint_ordering warns for incorrectly ordered joints."""
+        builder = ModelBuilder()
+
+        # Create a chain: world -> body1 -> body2 -> body3
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        body3 = builder.add_link(mass=1.0)
+
+        # Create joints in WRONG order: joint3 (body2->body3) comes BEFORE joint2 (body1->body2)
+        # This is invalid because body2 hasn't been processed yet when we try to process joint3
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint3 = builder.add_joint_revolute(parent=body2, child=body3)  # Out of order - parent not processed
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        builder.add_articulation([joint1, joint3, joint2])  # Wrong order: should be [joint1, joint2, joint3]
+
+        # Should warn about non-DFS order
+        with self.assertWarns(UserWarning) as cm:
+            result = builder.validate_joint_ordering()
+
+        self.assertFalse(result)
+        self.assertIn("DFS topological order", str(cm.warning))
+
+    def test_skip_all_validations(self):
+        """Test that skip_all_validations skips all validation checks."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        builder.add_joint_revolute(parent=-1, child=body, key="orphan_joint")
+        # Don't add articulation - this would normally fail _validate_joints
+
+        # Without skip_all_validations, should raise ValueError about orphan joint
+        with self.assertRaises(ValueError) as context:
+            builder.finalize(skip_all_validations=False)
+        self.assertIn("orphan_joint", str(context.exception))
+
+        # With skip_all_validations=True, should NOT raise the validation error
+        # Create a fresh builder for clean test
+        builder2 = ModelBuilder()
+        body2 = builder2.add_link(mass=1.0)
+        builder2.add_joint_revolute(parent=-1, child=body2, key="orphan_joint2")
+        # This should succeed (validation skipped)
+        model = builder2.finalize(skip_all_validations=True)
+        self.assertIsNotNone(model)
+
+    def test_skip_validation_structure(self):
+        """Test that skip_validation_structure skips structural validation."""
+        builder = ModelBuilder()
+        body = builder.add_link(mass=1.0)
+        joint = builder.add_joint_revolute(parent=-1, child=body)
+        builder.add_articulation([joint])
+
+        # Manually corrupt array length to trigger structure validation error
+        builder.joint_armature.append(0.0)  # Add extra element
+
+        # Without skip_validation_structure, should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            builder.finalize(skip_validation_structure=False)
+        self.assertIn("Array length mismatch", str(context.exception))
+
+        # Create fresh builder with same corruption
+        builder2 = ModelBuilder()
+        body2 = builder2.add_link(mass=1.0)
+        joint2 = builder2.add_joint_revolute(parent=-1, child=body2)
+        builder2.add_articulation([joint2])
+        builder2.joint_armature.append(0.0)
+
+        # With skip_validation_structure=True, should skip the structure check
+        # Model creation will likely fail, but not from structure validation
+        try:
+            builder2.finalize(skip_validation_structure=True)
+        except ValueError as e:
+            # If it raises ValueError, it should NOT be about array length mismatch
+            self.assertNotIn("Array length mismatch", str(e))
+
+    def test_skip_validation_joint_ordering_default(self):
+        """Test that joint ordering validation is skipped by default."""
+        builder = ModelBuilder()
+
+        # Create a chain: world -> body1 -> body2 -> body3
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        body3 = builder.add_link(mass=1.0)
+
+        # Create joints in WRONG order for the chain
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint3 = builder.add_joint_revolute(parent=body2, child=body3)  # Out of order
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        builder.add_articulation([joint1, joint3, joint2])
+
+        # By default (skip_validation_joint_ordering=True), should not warn
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.finalize()
+            ordering_warnings = [warning for warning in w if "DFS topological order" in str(warning.message)]
+            self.assertEqual(len(ordering_warnings), 0)
+
+    def test_enable_validation_joint_ordering(self):
+        """Test that joint ordering validation can be enabled."""
+        builder = ModelBuilder()
+
+        # Create a chain: world -> body1 -> body2 -> body3
+        body1 = builder.add_link(mass=1.0)
+        body2 = builder.add_link(mass=1.0)
+        body3 = builder.add_link(mass=1.0)
+
+        # Create joints in WRONG order for the chain
+        joint1 = builder.add_joint_revolute(parent=-1, child=body1)
+        joint3 = builder.add_joint_revolute(parent=body2, child=body3)  # Out of order
+        joint2 = builder.add_joint_revolute(parent=body1, child=body2)
+        builder.add_articulation([joint1, joint3, joint2])
+
+        # With skip_validation_joint_ordering=False, should warn
+        with self.assertWarns(UserWarning) as cm:
+            builder.finalize(skip_validation_joint_ordering=False)
+
+        self.assertIn("DFS topological order", str(cm.warning))
+
+    def test_mimic_constraint_programmatic(self):
+        """Test programmatic creation of mimic constraints."""
+        builder = newton.ModelBuilder()
+
+        # Create two joints
+        b0 = builder.add_body()
+        b1 = builder.add_body()
+        b2 = builder.add_body()
+
+        j1 = builder.add_joint_revolute(
+            parent=-1,
+            child=b0,
+            axis=(0, 0, 1),
+            key="j1",
+        )
+        j2 = builder.add_joint_revolute(
+            parent=-1,
+            child=b1,
+            axis=(0, 0, 1),
+            key="j2",
+        )
+        j3 = builder.add_joint_revolute(
+            parent=-1,
+            child=b2,
+            axis=(0, 0, 1),
+            key="j3",
+        )
+
+        # Add mimic constraints
+        _c1 = builder.add_constraint_mimic(
+            joint0=j2,
+            joint1=j1,
+            coef0=-0.25,
+            coef1=1.5,
+            key="mimic1",
+        )
+        _c2 = builder.add_constraint_mimic(
+            joint0=j3,
+            joint1=j1,
+            coef0=0.0,
+            coef1=-1.0,
+            enabled=False,
+            key="mimic2",
+        )
+
+        model = builder.finalize()
+
+        self.assertEqual(model.constraint_mimic_count, 2)
+
+        # Check first constraint
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], j2)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
+        self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
+        self.assertEqual(model.constraint_mimic_key[0], "mimic1")
+
+        # Check second constraint
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
+        self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
+        self.assertEqual(model.constraint_mimic_key[1], "mimic2")
+
+    def test_control_clear(self):
+        """Test that Control.clear() works without errors."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+
+        model = builder.finalize()
+        control = model.control()
+        try:
+            control.clear()
+        except Exception as e:
+            self.fail(f"control.clear() raised {type(e).__name__}: {e}")
+
+    def test_add_base_joint_fixed_to_parent(self):
+        """Test that add_base_joint with parent creates fixed joint."""
+        builder = ModelBuilder()
+        parent_body = builder.add_body(wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
+        builder.add_articulation([parent_joint])  # Register parent body into an articulation
+
+        child_body = builder.add_body(wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)
+
+        self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_parent[joint_id], parent_body)
 
 
 if __name__ == "__main__":

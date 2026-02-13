@@ -238,7 +238,6 @@ class Example:
             solver="newton",
             integrator="implicitfast",
             iterations=20,
-            ls_parallel=True,
             ls_iterations=100,
             nconmax=1000,
             njmax=2000,
@@ -256,9 +255,9 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Setup ik and tasks
         self.state = self.model.state()
@@ -304,11 +303,11 @@ class Example:
 
     def simulate(self):
         if not self.collide_substeps:
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             if self.collide_substeps:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.state_0.clear_forces()
 
@@ -503,14 +502,14 @@ class Example:
         self.home_pos = wp.vec3(init_ee_pos)
 
         # Position objective
-        self.pos_obj = ik.IKPositionObjective(
+        self.pos_obj = ik.IKObjectivePosition(
             link_index=self.ee_index,
             link_offset=wp.vec3(0.0, 0.0, 0.0),
             target_positions=wp.array([self.home_pos] * self.num_worlds, dtype=wp.vec3),
         )
 
         # Rotation objective
-        self.rot_obj = ik.IKRotationObjective(
+        self.rot_obj = ik.IKObjectiveRotation(
             link_index=self.ee_index,
             link_offset_rotation=wp.quat_identity(),
             target_rotations=wp.array([wp.transform_get_rotation(self.ee_tf)[:4]] * self.num_worlds, dtype=wp.vec4),
@@ -522,7 +521,7 @@ class Example:
         self.joint_limit_lower = wp.clone(self.model.joint_limit_lower.reshape((self.num_worlds, -1))[:, :ik_dofs])
         self.joint_limit_upper = wp.clone(self.model.joint_limit_upper.reshape((self.num_worlds, -1))[:, :ik_dofs])
 
-        self.obj_joint_limits = ik.IKJointLimitObjective(
+        self.obj_joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.joint_limit_lower.flatten(),
             joint_limit_upper=self.joint_limit_upper.flatten(),
         )
@@ -536,7 +535,7 @@ class Example:
             n_problems=self.num_worlds,
             objectives=[self.pos_obj, self.rot_obj, self.obj_joint_limits],
             lambda_initial=0.1,
-            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
 
     def setup_tasks(self):

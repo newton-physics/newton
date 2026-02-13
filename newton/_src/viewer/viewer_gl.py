@@ -345,6 +345,7 @@ class ViewerGL(ViewerBase):
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture: np.ndarray | str | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -357,6 +358,7 @@ class ViewerGL(ViewerBase):
             indices (wp.array): Triangle indices.
             normals (wp.array, optional): Vertex normals.
             uvs (wp.array, optional): Vertex UVs.
+            texture (np.ndarray | str, optional): Texture path/URL or image array (H, W, C).
             hidden (bool): Whether the mesh is hidden.
             backface_culling (bool): Enable backface culling.
         """
@@ -370,7 +372,7 @@ class ViewerGL(ViewerBase):
                 len(points), len(indices), self.device, hidden=hidden, backface_culling=backface_culling
             )
 
-        self.objects[name].update(points, indices, normals, uvs)
+        self.objects[name].update(points, indices, normals, uvs, texture)
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
 
@@ -878,7 +880,7 @@ class ViewerGL(ViewerBase):
             bool: True if the key is currently pressed, False otherwise.
         """
         try:
-            import pyglet  # noqa: PLC0415
+            import pyglet
         except Exception:
             return False
 
@@ -937,6 +939,16 @@ class ViewerGL(ViewerBase):
         self.camera.fov -= fov_delta
         self.camera.fov = max(min(self.camera.fov, 90.0), 15.0)
 
+    def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
+        """Convert window coordinates to framebuffer coordinates."""
+        fb_w, fb_h = self.renderer.window.get_framebuffer_size()
+        win_w, win_h = self.renderer.window.get_size()
+        if win_w <= 0 or win_h <= 0:
+            return float(x), float(y)
+        scale_x = fb_w / win_w
+        scale_y = fb_h / win_h
+        return float(x) * scale_x, float(y) * scale_y
+
     def on_mouse_press(self, x, y, button, modifiers):
         """
         Handle mouse press events (object picking).
@@ -949,11 +961,12 @@ class ViewerGL(ViewerBase):
         if self.ui and self.ui.is_capturing():
             return
 
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         # Handle right-click for picking
         if button == pyglet.window.mouse.RIGHT and self.picking_enabled:
-            ray_start, ray_dir = self.camera.get_world_ray(x, y)
+            fb_x, fb_y = self._to_framebuffer_coords(x, y)
+            ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
             if self._last_state is not None:
                 self.picking.pick(self._last_state, ray_start, ray_dir)
 
@@ -981,7 +994,7 @@ class ViewerGL(ViewerBase):
         if self.ui and self.ui.is_capturing():
             return
 
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         if buttons & pyglet.window.mouse.LEFT:
             sensitivity = 0.1
@@ -994,7 +1007,8 @@ class ViewerGL(ViewerBase):
             self.camera.pitch += dy
 
         if buttons & pyglet.window.mouse.RIGHT and self.picking_enabled:
-            ray_start, ray_dir = self.camera.get_world_ray(x, y)
+            fb_x, fb_y = self._to_framebuffer_coords(x, y)
+            ray_start, ray_dir = self.camera.get_world_ray(fb_x, fb_y)
 
             if self.picking.is_picking():
                 self.picking.update(ray_start, ray_dir)
@@ -1017,7 +1031,7 @@ class ViewerGL(ViewerBase):
             return
 
         try:
-            import pyglet  # noqa: PLC0415
+            import pyglet
         except Exception:
             return
 
@@ -1084,7 +1098,7 @@ class ViewerGL(ViewerBase):
         distance = max_extent / (2.0 * np.tan(fov_rad / 2.0)) * padding
 
         # Position camera at distance from current viewing direction, looking at center
-        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+        from pyglet.math import Vec3 as PyVec3
 
         front = self.camera.get_front()
         new_pos = PyVec3(
@@ -1120,7 +1134,7 @@ class ViewerGL(ViewerBase):
         if ln > 1.0e-6:
             right /= ln
 
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         desired = np.zeros(3, dtype=np.float32)
         if self.renderer.is_key_down(pyglet.window.key.W) or self.renderer.is_key_down(pyglet.window.key.UP):

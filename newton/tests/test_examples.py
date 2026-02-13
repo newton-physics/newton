@@ -103,7 +103,7 @@ def add_example_test(
         torch_required = options.pop("torch_required", False)
         if torch_required:
             try:
-                import torch  # noqa: PLC0415
+                import torch
 
                 if wp.get_device(device).is_cuda and not torch.cuda.is_available():
                     # Ensure torch has CUDA support
@@ -140,7 +140,7 @@ def add_example_test(
             command = [sys.executable]
 
         # Append Warp commands
-        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test"])
+        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
 
         if not use_viewer:
             stage_path = (
@@ -273,6 +273,14 @@ add_example_test(
     test_options={"num-frames": 20},
 )
 
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_y_junction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+
 
 class TestClothExamples(unittest.TestCase):
     pass
@@ -282,7 +290,7 @@ add_example_test(
     TestClothExamples,
     name="cloth.example_cloth_bending",
     devices=test_devices,
-    test_options={"num-frames": 200},
+    test_options={"num-frames": 400},
     use_viewer=True,
 )
 add_example_test(
@@ -331,6 +339,13 @@ add_example_test(
     name="cloth.example_cloth_twist",
     devices=cuda_test_devices,
     test_options={"num-frames": 100},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
+    name="cloth.example_rolling_cloth",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 200},
     use_viewer=True,
 )
 
@@ -685,6 +700,46 @@ add_example_test(
     name="contacts.example_sdf",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "num-worlds": 1, "scene": "nut_bolt"},
+    use_viewer=True,
+)
+
+
+class TestMultiphysicsExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_falling_gift",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 200},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_poker_cards_stacking",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 30},
+    use_viewer=True,
+)
+add_example_test(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_softbody_dropping_to_cloth",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 200},
+    use_viewer=True,
+)
+
+
+class TestSoftbodyExamples(unittest.TestCase):
+    pass
+
+
+add_example_test(
+    TestSoftbodyExamples,
+    name="softbody.example_softbody_hanging",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120},
     use_viewer=True,
 )
 

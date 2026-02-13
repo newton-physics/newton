@@ -19,6 +19,7 @@ from pathlib import Path
 
 import warp as wp
 
+from ..core.types import override
 from ..utils.recorder import RecorderModelAndState
 from .viewer import ViewerBase
 
@@ -56,6 +57,7 @@ class ViewerFile(ViewerBase):
         self._frame_count = 0
         self._model_recorded = False
 
+    @override
     def set_model(self, model, max_worlds: int | None = None):
         """Override set_model to record the model when it's set."""
         super().set_model(model, max_worlds=max_worlds)
@@ -64,6 +66,7 @@ class ViewerFile(ViewerBase):
             self._recorder.record_model(model)
             self._model_recorded = True
 
+    @override
     def log_state(self, state):
         """Override log_state to record the state in addition to standard processing."""
         super().log_state(state)
@@ -90,43 +93,52 @@ class ViewerFile(ViewerBase):
 
     # Abstract method implementations (no-ops for file recording)
 
+    @override
     def log_mesh(
         self,
         name,
         points: wp.array,
         indices: wp.array,
-        normals: wp.array = None,
-        uvs: wp.array = None,
+        normals: wp.array | None = None,
+        uvs: wp.array | None = None,
+        texture=None,
         hidden=False,
         backface_culling=True,
     ):
         """File viewer doesn't render meshes, so this is a no-op."""
         pass
 
+    @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """File viewer doesn't render instances, so this is a no-op."""
         pass
 
-    def log_lines(self, name, line_begins, line_ends, line_colors, hidden=False):
+    @override
+    def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """File viewer doesn't render lines, so this is a no-op."""
         pass
 
-    def log_points(self, name, points, widths, colors, hidden=False):
+    @override
+    def log_points(self, name, points, radii, colors, hidden=False):
         """File viewer doesn't render points, so this is a no-op."""
         pass
 
+    @override
     def log_array(self, name, array):
         """File viewer doesn't log arrays visually, so this is a no-op."""
         pass
 
+    @override
     def log_scalar(self, name, value):
         """File viewer doesn't log scalars visually, so this is a no-op."""
         pass
 
+    @override
     def end_frame(self):
         """No frame rendering needed for file viewer."""
         pass
 
+    @override
     def close(self):
         """Save final recording and cleanup."""
         if self._frame_count > 0:

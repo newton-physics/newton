@@ -134,8 +134,10 @@ class Example:
         main_scene = newton.ModelBuilder()
         main_scene.default_shape_cfg.contact_margin = 0.01
         # Add ground plane with offset (plane equation: z = offset)
+        # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d
+        # Therefore, to get plane at z = offset, we need d = -offset
         main_scene.add_shape_plane(
-            plane=(0.0, 0.0, 1.0, self.ground_plane_offset),
+            plane=(0.0, 0.0, 1.0, -self.ground_plane_offset),
             width=0.0,
             length=0.0,
             key="ground_plane",
@@ -147,7 +149,7 @@ class Example:
         # Override rigid_contact_max BEFORE creating collision pipeline to limit memory allocation
         self.model.rigid_contact_max = self.rigid_contact_max
 
-        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
             broad_phase_mode=self.broad_phase_mode,
@@ -172,7 +174,6 @@ class Example:
                 nconmax=num_per_world,
                 iterations=15,
                 ls_iterations=100,
-                ls_parallel=True,
                 impratio=1.0,
             )
         else:
@@ -184,7 +185,7 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -292,12 +293,12 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             self.viewer.apply_forces(self.state_0)
-            # self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            # self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0

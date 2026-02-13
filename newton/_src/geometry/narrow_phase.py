@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import warp as wp
@@ -34,7 +35,10 @@ from ..geometry.collision_core import (
 )
 from ..geometry.collision_primitive import (
     collide_capsule_capsule,
+    collide_plane_box,
     collide_plane_capsule,
+    collide_plane_cylinder,
+    collide_plane_ellipsoid,
     collide_plane_sphere,
     collide_sphere_box,
     collide_sphere_capsule,
@@ -43,18 +47,16 @@ from ..geometry.collision_primitive import (
 )
 from ..geometry.contact_data import ContactData, contact_passes_margin_check
 from ..geometry.contact_reduction import (
-    NUM_SPATIAL_DIRECTIONS,
     ContactReductionFunctions,
     ContactStruct,
     compute_voxel_index,
-    create_betas_array,
     synchronize,
 )
 from ..geometry.contact_reduction_global import (
     GlobalContactReducer,
     create_export_reduced_contacts_kernel,
-    create_mesh_triangle_contacts_to_reducer_kernel,
-    create_reduce_buffered_contacts_kernel,
+    mesh_triangle_contacts_to_reducer_kernel,
+    reduce_buffered_contacts_kernel,
 )
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
@@ -285,6 +287,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             is_sphere_b = type_b == int(GeoType.SPHERE)
             is_capsule_a = type_a == int(GeoType.CAPSULE)
             is_capsule_b = type_b == int(GeoType.CAPSULE)
+            is_ellipsoid_b = type_b == int(GeoType.ELLIPSOID)
             is_cylinder_b = type_b == int(GeoType.CYLINDER)
             is_box_b = type_b == int(GeoType.BOX)
 
@@ -301,8 +304,12 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             num_contacts = 0
             contact_dist_0 = float(0.0)
             contact_dist_1 = float(0.0)
+            contact_dist_2 = float(0.0)
+            contact_dist_3 = float(0.0)
             contact_pos_0 = wp.vec3()
             contact_pos_1 = wp.vec3()
+            contact_pos_2 = wp.vec3()
+            contact_pos_3 = wp.vec3()
             contact_normal = wp.vec3()
 
             # -----------------------------------------------------------------
@@ -314,6 +321,42 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_dist_0, contact_pos_0 = collide_plane_sphere(plane_normal, pos_a, pos_b, sphere_radius)
                 contact_normal = plane_normal
                 num_contacts = 1
+
+            # -----------------------------------------------------------------
+            # Plane-Ellipsoid collision (type_a=PLANE=0, type_b=ELLIPSOID=4)
+            # Produces 1 contact
+            # -----------------------------------------------------------------
+            elif is_plane_a and is_ellipsoid_b:
+                plane_normal = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
+                ellipsoid_rot = wp.quat_to_matrix(quat_b)
+                ellipsoid_size = scale_b
+                contact_dist_0, contact_pos_0, contact_normal = collide_plane_ellipsoid(
+                    plane_normal, pos_a, pos_b, ellipsoid_rot, ellipsoid_size
+                )
+                num_contacts = 1
+
+            # -----------------------------------------------------------------
+            # Plane-Box collision (type_a=PLANE=0, type_b=BOX=6)
+            # Produces up to 4 contacts
+            # -----------------------------------------------------------------
+            elif is_plane_a and is_box_b:
+                plane_normal = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
+                box_rot = wp.quat_to_matrix(quat_b)
+                box_size = scale_b
+
+                dists4_box, positions4_box, contact_normal = collide_plane_box(
+                    plane_normal, pos_a, pos_b, box_rot, box_size, margin
+                )
+
+                contact_dist_0 = dists4_box[0]
+                contact_dist_1 = dists4_box[1]
+                contact_dist_2 = dists4_box[2]
+                contact_dist_3 = dists4_box[3]
+                contact_pos_0 = wp.vec3(positions4_box[0, 0], positions4_box[0, 1], positions4_box[0, 2])
+                contact_pos_1 = wp.vec3(positions4_box[1, 0], positions4_box[1, 1], positions4_box[1, 2])
+                contact_pos_2 = wp.vec3(positions4_box[2, 0], positions4_box[2, 1], positions4_box[2, 2])
+                contact_pos_3 = wp.vec3(positions4_box[3, 0], positions4_box[3, 1], positions4_box[3, 2])
+                num_contacts = 4
 
             # -----------------------------------------------------------------
             # Sphere-Sphere collision (type_a=SPHERE=2, type_b=SPHERE=2)
@@ -344,6 +387,30 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_pos_1 = wp.vec3(positions[1, 0], positions[1, 1], positions[1, 2])
                 contact_normal = plane_normal
                 num_contacts = 2
+
+            # -----------------------------------------------------------------
+            # Plane-Cylinder collision (type_a=PLANE=0, type_b=CYLINDER=5)
+            # Produces up to 4 contacts
+            # -----------------------------------------------------------------
+            elif is_plane_a and is_cylinder_b:
+                plane_normal = wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0))
+                cylinder_axis = wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0))
+                cylinder_radius = scale_b[0]
+                cylinder_half_height = scale_b[1]
+
+                dists4, positions4, contact_normal = collide_plane_cylinder(
+                    plane_normal, pos_a, pos_b, cylinder_axis, cylinder_radius, cylinder_half_height
+                )
+
+                contact_dist_0 = dists4[0]
+                contact_dist_1 = dists4[1]
+                contact_dist_2 = dists4[2]
+                contact_dist_3 = dists4[3]
+                contact_pos_0 = wp.vec3(positions4[0, 0], positions4[0, 1], positions4[0, 2])
+                contact_pos_1 = wp.vec3(positions4[1, 0], positions4[1, 1], positions4[1, 2])
+                contact_pos_2 = wp.vec3(positions4[2, 0], positions4[2, 1], positions4[2, 2])
+                contact_pos_3 = wp.vec3(positions4[3, 0], positions4[3, 1], positions4[3, 2])
+                num_contacts = 4
 
             # -----------------------------------------------------------------
             # Sphere-Capsule collision (type_a=SPHERE=2, type_b=CAPSULE=3)
@@ -411,7 +478,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 num_contacts = 1
 
             # =====================================================================
-            # Write all contacts (unified write block for 0, 1, or 2 contacts)
+            # Write all contacts (single write block for 0 to 4 contacts)
             # =====================================================================
             if num_contacts > 0:
                 # Prepare contact data (shared fields for both contacts)
@@ -425,19 +492,33 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 contact_data.shape_b = shape_b
                 contact_data.margin = margin
 
-                # Check margin for both contacts
-                contact_data.contact_point_center = contact_pos_0
-                contact_data.contact_distance = contact_dist_0
-                contact_0_valid = contact_passes_margin_check(contact_data)
+                # Check margin for all possible contacts
+                contact_0_valid = False
+                if contact_dist_0 < MAXVAL:
+                    contact_data.contact_point_center = contact_pos_0
+                    contact_data.contact_distance = contact_dist_0
+                    contact_0_valid = contact_passes_margin_check(contact_data)
 
                 contact_1_valid = False
-                if num_contacts > 1:
+                if num_contacts > 1 and contact_dist_1 < MAXVAL:
                     contact_data.contact_point_center = contact_pos_1
                     contact_data.contact_distance = contact_dist_1
                     contact_1_valid = contact_passes_margin_check(contact_data)
 
+                contact_2_valid = False
+                if num_contacts > 2 and contact_dist_2 < MAXVAL:
+                    contact_data.contact_point_center = contact_pos_2
+                    contact_data.contact_distance = contact_dist_2
+                    contact_2_valid = contact_passes_margin_check(contact_data)
+
+                contact_3_valid = False
+                if num_contacts > 3 and contact_dist_3 < MAXVAL:
+                    contact_data.contact_point_center = contact_pos_3
+                    contact_data.contact_distance = contact_dist_3
+                    contact_3_valid = contact_passes_margin_check(contact_data)
+
                 # Count valid contacts and allocate consecutive indices
-                num_valid = int(contact_0_valid) + int(contact_1_valid)
+                num_valid = int(contact_0_valid) + int(contact_1_valid) + int(contact_2_valid) + int(contact_3_valid)
                 if num_valid > 0:
                     base_index = wp.atomic_add(writer_data.contact_count, 0, num_valid)
 
@@ -458,6 +539,20 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                     if contact_1_valid:
                         contact_data.contact_point_center = contact_pos_1
                         contact_data.contact_distance = contact_dist_1
+                        writer_func(contact_data, writer_data, base_index)
+                        base_index += 1
+
+                    # Write third contact if valid
+                    if contact_2_valid:
+                        contact_data.contact_point_center = contact_pos_2
+                        contact_data.contact_distance = contact_dist_2
+                        writer_func(contact_data, writer_data, base_index)
+                        base_index += 1
+
+                    # Write fourth contact if valid
+                    if contact_3_valid:
+                        contact_data.contact_point_center = contact_pos_3
+                        contact_data.contact_distance = contact_dist_3
                         writer_func(contact_data, writer_data, base_index)
 
                 continue
@@ -823,7 +918,6 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         _shape_voxel_resolution: wp.array(dtype=wp.vec3i),  # Unused but kept for API compatibility
         shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
-        _betas: wp.array(dtype=wp.float32),  # Unused but kept for API compatibility
         writer_data: Any,
         total_num_blocks: int,
     ):
@@ -936,7 +1030,6 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
         shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
-        betas: wp.array(dtype=wp.float32),
         writer_data: Any,
         total_num_blocks: int,
     ):
@@ -1066,7 +1159,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
                 # Apply contact reduction
                 store_reduced_contact_func(
-                    t, has_contact, c, contacts_shared_mem, active_contacts_shared_mem, betas, empty_marker, voxel_idx
+                    t, has_contact, c, contacts_shared_mem, active_contacts_shared_mem, empty_marker, voxel_idx
                 )
 
             # Write reduced contacts to output (store_reduced_contact ends with sync)
@@ -1137,9 +1230,18 @@ class NarrowPhase:
         self.reduce_contacts = reduce_contacts
         self.has_meshes = has_meshes
 
+        # Warn when running on CPU with meshes: mesh-mesh SDF contacts require CUDA
+        is_gpu_device = wp.get_device(device).is_cuda
+        if has_meshes and not is_gpu_device:
+            warnings.warn(
+                "NarrowPhase running on CPU: mesh-mesh contacts will be skipped "
+                "(SDF-based mesh-mesh collision requires CUDA). "
+                "Use a CUDA device for full mesh-mesh contact support.",
+                stacklevel=2,
+            )
+
         # Create contact reduction functions only when reduce_contacts is enabled, running on GPU, and has meshes
         # Contact reduction requires GPU for shared memory operations and is only used for mesh contacts
-        is_gpu_device = wp.get_device(device).is_cuda
         if reduce_contacts and is_gpu_device and has_meshes:
             self.contact_reduction_funcs = ContactReductionFunctions()
             self.num_reduction_slots = self.contact_reduction_funcs.num_reduction_slots
@@ -1187,10 +1289,14 @@ class NarrowPhase:
                 writer_func,
                 contact_reduction_funcs=self.contact_reduction_funcs,
             )
-            self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
-                writer_func,
-                contact_reduction_funcs=self.contact_reduction_funcs,
-            )
+            # Only create mesh-mesh SDF kernel on CUDA (uses __shared__ memory via func_native)
+            if is_gpu_device:
+                self.mesh_mesh_contacts_kernel = create_narrow_phase_process_mesh_mesh_contacts_kernel(
+                    writer_func,
+                    contact_reduction_funcs=self.contact_reduction_funcs,
+                )
+            else:
+                self.mesh_mesh_contacts_kernel = None
         else:
             self.mesh_triangle_contacts_kernel = None
             self.mesh_plane_contacts_kernel = None
@@ -1198,21 +1304,13 @@ class NarrowPhase:
 
         # Create global contact reduction kernels for mesh-triangle contacts (only if has_meshes and reduce_contacts)
         if self.reduce_contacts and has_meshes:
-            # Global contact reducer uses single beta threshold (same as shared-memory reduction)
-            # Slot layout: 6 spatial direction slots + 1 max-depth slot = 7 slots per key
-            beta_threshold = ContactReductionFunctions.BETA_THRESHOLD
-
-            self.mesh_triangle_to_reducer_kernel = create_mesh_triangle_contacts_to_reducer_kernel()
-            self.reduce_buffered_contacts_kernel = create_reduce_buffered_contacts_kernel(beta=beta_threshold)
-            self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(
-                writer_func, values_per_key=NUM_SPATIAL_DIRECTIONS + 1
-            )
+            # Global contact reducer uses hardcoded BETA_THRESHOLD (0.1mm) same as shared-memory reduction
+            # Slot layout: 6 spatial direction slots + 1 max-depth slot = 7 slots per key (VALUES_PER_KEY)
+            self.export_reduced_contacts_kernel = create_export_reduced_contacts_kernel(writer_func)
             # Global contact reducer for mesh-triangle contacts
             # Capacity is based on max_triangle_pairs since that's the max contacts we might generate
             self.global_contact_reducer = GlobalContactReducer(max_triangle_pairs, device=device)
         else:
-            self.mesh_triangle_to_reducer_kernel = None
-            self.reduce_buffered_contacts_kernel = None
             self.export_reduced_contacts_kernel = None
             self.global_contact_reducer = None
 
@@ -1255,15 +1353,12 @@ class NarrowPhase:
                 self.shape_pairs_mesh_plane = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
                 self.shape_pairs_mesh_plane_cumsum = wp.zeros(max_candidate_pairs, dtype=wp.int32, device=device)
                 self.shape_pairs_mesh_mesh = wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device)
-                # Betas array for contact reduction (single fixed threshold)
-                self.betas = create_betas_array(betas=(ContactReductionFunctions.BETA_THRESHOLD,), device=device)
             else:
                 self.shape_pairs_mesh = None
                 self.triangle_pairs = None
                 self.shape_pairs_mesh_plane = None
                 self.shape_pairs_mesh_plane_cumsum = None
                 self.shape_pairs_mesh_mesh = None
-                self.betas = None
 
             # None values for when optional features are disabled
             self.empty_tangent = None
@@ -1414,7 +1509,6 @@ class NarrowPhase:
                 shape_voxel_resolution,
                 self.shape_pairs_mesh_plane,
                 self.shape_pairs_mesh_plane_count,
-                self.betas,
                 writer_data,
                 self.num_tile_blocks,
             ]
@@ -1470,7 +1564,7 @@ class NarrowPhase:
                 # Collect contacts into the reducer
                 reducer_data = self.global_contact_reducer.get_data_struct()
                 wp.launch(
-                    kernel=self.mesh_triangle_to_reducer_kernel,
+                    kernel=mesh_triangle_contacts_to_reducer_kernel,
                     dim=self.total_num_threads,
                     inputs=[
                         shape_types,
@@ -1487,10 +1581,10 @@ class NarrowPhase:
                     block_dim=self.block_dim,
                 )
 
-                # Register buffered contacts to hashtable
+                # Register buffered contacts to hashtable (uses hardcoded BETA_THRESHOLD)
                 # This is a separate pass to reduce register pressure on the contact generation kernel
                 wp.launch(
-                    kernel=self.reduce_buffered_contacts_kernel,
+                    kernel=reduce_buffered_contacts_kernel,
                     dim=self.total_num_threads,
                     inputs=[
                         reducer_data,
@@ -1515,6 +1609,7 @@ class NarrowPhase:
                         self.global_contact_reducer.position_depth,
                         self.global_contact_reducer.normal,
                         self.global_contact_reducer.shape_pairs,
+                        shape_types,
                         shape_data,
                         shape_contact_margin,
                         writer_data,
@@ -1543,9 +1638,10 @@ class NarrowPhase:
                     block_dim=self.block_dim,
                 )
 
-            # Launch mesh-mesh contact processing kernel (only if SDF data is available)
-            # SDF-based mesh-mesh collision requires GPU (wp.Volume only supports CUDA)
-            if shape_sdf_data.shape[0] > 0:
+            # Launch mesh-mesh contact processing kernel (only on CUDA with SDF data)
+            # SDF-based mesh-mesh collision requires GPU: uses shared memory (launch_tiled)
+            # and wp.Volume which only supports CUDA
+            if shape_sdf_data.shape[0] > 0 and wp.get_device(device).is_cuda:
                 wp.launch_tiled(
                     kernel=self.mesh_mesh_contacts_kernel,
                     dim=(self.num_tile_blocks,),
@@ -1560,7 +1656,6 @@ class NarrowPhase:
                         shape_voxel_resolution,
                         self.shape_pairs_mesh_mesh,
                         self.shape_pairs_mesh_mesh_count,
-                        self.betas,
                         writer_data,
                         self.num_tile_blocks,
                     ],
@@ -1573,6 +1668,9 @@ class NarrowPhase:
                 shape_sdf_data,
                 shape_transform,
                 shape_contact_margin,
+                shape_local_aabb_lower,
+                shape_local_aabb_upper,
+                shape_voxel_resolution,
                 self.shape_pairs_sdf_sdf,
                 self.shape_pairs_sdf_sdf_count,
                 writer_data,

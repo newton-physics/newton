@@ -48,11 +48,11 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    # Create model with sites
    builder = newton.ModelBuilder()
    
-   base = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   base = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
    ref_site = builder.add_site(base, key="reference")
    j_free = builder.add_joint_free(base)
    
-   end_effector = builder.add_link(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   end_effector = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
    ee_site = builder.add_site(end_effector, key="end_effector")
    
    # Add a revolute joint to connect bodies
@@ -103,13 +103,13 @@ The sensor supports measuring multiple objects, optionally with different refere
    
    # Setup model with multiple sites
    builder = newton.ModelBuilder()
-   body1 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   body1 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
    site1 = builder.add_site(body1, key="site1")
-   body2 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   body2 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
    site2 = builder.add_site(body2, key="site2")
-   body3 = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   body3 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
    site3 = builder.add_site(body3, key="site3")
-   ref_body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   ref_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
    ref_site = builder.add_site(ref_body, key="ref_site")
 
    # Multiple objects, multiple references (must match in count) for sensor 2
@@ -175,7 +175,7 @@ SensorIMU
 Basic Usage
 ~~~~~~~~~~~
 
-``SensorIMU`` takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the :doc:`extended state attribute <extended_state_attributes>` :attr:`State.body_qdd <newton.State.body_qdd>`.
+``SensorIMU`` takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the :doc:`extended attribute <extended_attributes>` :attr:`State.body_qdd <newton.State.body_qdd>`.
 
 By default, the sensor requests ``body_qdd`` from the model during construction, so that subsequent calls to :meth:`Model.state() <newton.Model.state>` allocate it.
 If you need to allocate the State before constructing the sensor, you must request ``body_qdd`` on the model yourself before calling :meth:`Model.state() <newton.Model.state>`.
@@ -187,7 +187,7 @@ If you need to allocate the State before constructing the sensor, you must reque
    import newton
 
    builder = newton.ModelBuilder()
-   body = builder.add_body(mass=1.0, I_m=wp.mat33(np.eye(3)))
+   body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
    s1 = builder.add_site(body, key="imu1")
    s2 = builder.add_site(body, key="imu2")
    model = builder.finalize()
@@ -212,7 +212,7 @@ See Also
 
 * :doc:`sites` — Using sites as reference frames
 * :doc:`../api/newton_sensors` — Full sensor API reference
-* :doc:`extended_state_attributes` — Optional State arrays (e.g., ``body_qdd``) required by some sensors.
+* :doc:`extended_attributes` — Optional State/Contacts arrays (e.g., ``State.body_qdd``, ``Contacts.force``) required by some sensors.
 * ``newton.examples.sensors.example_sensor_contact`` — SensorContact example
 * ``newton.examples.sensors.example_sensor_imu`` — SensorIMU example
 * ``newton.examples.sensors.example_sensor_tiled_camera`` — SensorTiledCamera example

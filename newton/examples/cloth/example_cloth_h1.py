@@ -75,14 +75,15 @@ class Example:
         usd_stage = Usd.Stage.Open(f"{asset_path}/garments/{garment_usd_name}.usd")
         usd_prim_garment = usd_stage.GetPrimAtPath(f"/Root/{garment_usd_name}/Root_Garment")
 
-        garment_mesh = newton.usd.get_mesh(usd_prim_garment, load_uvs=True)
+        garment_mesh = newton.usd.get_mesh(usd_prim_garment, load_uvs=False)
         self.garment_mesh_indices = garment_mesh.indices
         self.garment_mesh_points = garment_mesh.vertices[:, [2, 0, 1]]  # y-up to z-up
-        self.garment_mesh_uv = garment_mesh.uvs * 1e-3
 
-        # Load UV indices separately (not part of Mesh class)
-        garment_prim = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
-        self.garment_mesh_uv_indices = np.array(garment_prim.GetIndices())
+        # Load raw UV values and indices directly from the primvar
+        # (get_mesh expands indexed UVs, but style3d needs raw values + indices)
+        uv_primvar = UsdGeom.PrimvarsAPI(usd_prim_garment).GetPrimvar("st")
+        self.garment_mesh_uv = np.array(uv_primvar.Get()) * 1e-3
+        self.garment_mesh_uv_indices = np.array(uv_primvar.GetIndices())
 
         style3d.add_cloth_mesh(
             cloth_builder,
@@ -145,7 +146,7 @@ class Example:
             tf = self.ee_tfs[ee_i]
 
             self.pos_objs.append(
-                ik.IKPositionObjective(
+                ik.IKObjectivePosition(
                     link_index=link_idx,
                     link_offset=wp.vec3(0.0, 0.0, 0.0),
                     target_positions=wp.array([wp.transform_get_translation(tf)], dtype=wp.vec3),
@@ -153,7 +154,7 @@ class Example:
             )
 
             self.rot_objs.append(
-                ik.IKRotationObjective(
+                ik.IKObjectiveRotation(
                     link_index=link_idx,
                     link_offset_rotation=wp.quat_identity(),
                     target_rotations=wp.array([_q2v4(wp.transform_get_rotation(tf))], dtype=wp.vec4),
@@ -161,7 +162,7 @@ class Example:
             )
 
         # Joint limit objective
-        self.obj_joint_limits = ik.IKJointLimitObjective(
+        self.obj_joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.model.joint_limit_lower,
             joint_limit_upper=self.model.joint_limit_upper,
             weight=10.0,
@@ -176,7 +177,7 @@ class Example:
             n_problems=1,
             objectives=[*self.pos_objs, *self.rot_objs, self.obj_joint_limits],
             lambda_initial=0.1,
-            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
         self.ik_solver.step(self.joint_q, self.joint_q, iterations=self.ik_iters)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
@@ -192,9 +193,9 @@ class Example:
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
+        # Create collision pipeline (default)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
         self.shape_flags = self.model.shape_flags.numpy()
 
     # ----------------------------------------------------------------------
@@ -241,7 +242,7 @@ class Example:
                 device=self.model.device,
             )
             self.state.body_q.assign(self.state1.body_q)
-            self.contacts = self.model.collide(self.state, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state, self.contacts)
             self.cloth_solver.step(self.state, self.state1, self.control, self.contacts, self.sim_dt)
             (self.state, self.state1) = (self.state1, self.state)
 
@@ -322,7 +323,7 @@ class Example:
         newton.examples.test_particle_state(
             self.state,
             "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
 
     def render(self):

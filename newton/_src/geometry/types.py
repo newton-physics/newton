@@ -14,12 +14,31 @@
 # limitations under the License.
 
 import enum
+import os
 from collections.abc import Sequence
 
 import numpy as np
 import warp as wp
 
-from ..core.types import Devicelike, Vec2, Vec3, nparray, override
+from ..core.types import Devicelike, Mat33, Vec2, Vec3, nparray, override
+from ..utils.texture import compute_texture_hash
+
+
+def _normalize_texture_input(texture: str | os.PathLike[str] | nparray | None) -> str | nparray | None:
+    """Normalize texture input for lazy storage.
+
+    String paths and PathLike objects are stored as strings (no decoding).
+    Arrays are normalized to contiguous arrays.
+    Decoding of paths is deferred until the viewer requests the image data.
+    """
+    if texture is None:
+        return None
+    if isinstance(texture, os.PathLike):
+        return os.fspath(texture)
+    if isinstance(texture, str):
+        return texture
+    # Array input: make it contiguous
+    return np.ascontiguousarray(np.asarray(texture))
 
 
 class GeoType(enum.IntEnum):
@@ -67,10 +86,6 @@ class GeoType(enum.IntEnum):
     """No geometry (placeholder)."""
 
 
-# Default maximum vertices for convex hull approximation
-MESH_MAXHULLVERT = 64
-
-
 class SDF:
     """
     Represents a signed distance field (SDF) for simulation.
@@ -80,18 +95,24 @@ class SDF:
     SDF volume and its physical properties for use in simulation.
     """
 
-    def __init__(self, volume: wp.Volume | None = None, I=None, mass=1.0, com=None):
+    def __init__(
+        self,
+        volume: wp.Volume | None = None,
+        inertia: Mat33 | None = None,
+        mass: float = 1.0,
+        com: Vec3 | None = None,
+    ):
         """
         Initialize an SDF object.
 
         Args:
-            volume (wp.Volume | None): The Warp volume object representing the SDF.
-            I (Mat33, optional): 3x3 inertia matrix. Defaults to identity.
-            mass (float, optional): Total mass. Defaults to 1.0.
-            com (Vec3, optional): Center of mass. Defaults to zero vector.
+            volume: The Warp volume object representing the SDF.
+            inertia: 3x3 inertia matrix. Defaults to identity.
+            mass: Total mass. Defaults to 1.0.
+            com: Center of mass. Defaults to zero vector.
         """
         self.volume = volume
-        self.I = I if I is not None else wp.mat33(np.eye(3))
+        self.I = inertia if inertia is not None else wp.mat33(np.eye(3))
         self.mass = mass
         self.com = com if com is not None else wp.vec3()
 
@@ -104,7 +125,7 @@ class SDF:
         Returns the ID of the underlying SDF volume.
 
         Returns:
-            wp.uint64: The unique identifier of the SDF volume.
+            The unique identifier of the SDF volume.
         """
         return self.volume.id
 
@@ -136,6 +157,9 @@ class Mesh:
             mesh = newton.Mesh(mesh_points, mesh_indices)
     """
 
+    MAX_HULL_VERTICES = 64
+    _color: Vec3 | None = None
+
     def __init__(
         self,
         vertices: Sequence[Vec3] | nparray,
@@ -144,8 +168,11 @@ class Mesh:
         uvs: Sequence[Vec2] | nparray | None = None,
         compute_inertia: bool = True,
         is_solid: bool = True,
-        maxhullvert: int = MESH_MAXHULLVERT,
+        maxhullvert: int | None = None,
         color: Vec3 | None = None,
+        roughness: float | None = None,
+        metallic: float | None = None,
+        texture: str | nparray | None = None,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -155,14 +182,17 @@ class Mesh:
         if the mesh is closed (two-manifold).
 
         Args:
-            vertices (Sequence[Vec3] | nparray): List or array of mesh vertices, shape (N, 3).
-            indices (Sequence[int] | nparray): Flattened list or array of triangle indices (3 per triangle).
-            normals (Sequence[Vec3] | nparray | None, optional): Optional per-vertex normals, shape (N, 3).
-            uvs (Sequence[Vec2] | nparray | None, optional): Optional per-vertex UVs, shape (N, 2).
-            compute_inertia (bool, optional): If True, compute mass, inertia tensor, and center of mass (default: True).
-            is_solid (bool, optional): If True, mesh is assumed solid for inertia computation (default: True).
-            maxhullvert (int, optional): Max vertices for convex hull approximation (default: 64).
-            color (Vec3 | None, optional): Optional per-mesh base color (values in [0, 1]).
+            vertices: List or array of mesh vertices, shape (N, 3).
+            indices: Flattened list or array of triangle indices (3 per triangle).
+            normals: Optional per-vertex normals, shape (N, 3).
+            uvs: Optional per-vertex UVs, shape (N, 2).
+            compute_inertia: If True, compute mass, inertia tensor, and center of mass (default: True).
+            is_solid: If True, mesh is assumed solid for inertia computation (default: True).
+            maxhullvert: Max vertices for convex hull approximation (default: :attr:`~newton.Mesh.MAX_HULL_VERTICES`).
+            color: Optional per-mesh base color (values in [0, 1]).
+            roughness: Optional mesh roughness in [0, 1].
+            metallic: Optional mesh metallic in [0, 1].
+            texture: Optional texture path/URL or image data (H, W, C).
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
@@ -170,12 +200,19 @@ class Mesh:
         self._indices = np.array(indices, dtype=np.int32).flatten()
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
-        self._color = color
+        self.color = color
+        # Store texture lazily: strings/paths are kept as-is, arrays are normalized
+        self._texture = _normalize_texture_input(texture)
+        self._roughness = roughness
+        self._metallic = metallic
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
+        if maxhullvert is None:
+            maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
         self._cached_hash = None
+        self._texture_hash = None
 
         if compute_inertia:
             self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
@@ -194,12 +231,12 @@ class Mesh:
         Create a copy of this mesh, optionally with new vertices or indices.
 
         Args:
-            vertices (Sequence[Vec3] | nparray | None, optional): New vertices to use (default: current vertices).
-            indices (Sequence[int] | nparray | None, optional): New indices to use (default: current indices).
-            recompute_inertia (bool, optional): If True, recompute inertia properties (default: False).
+            vertices: New vertices to use (default: current vertices).
+            indices: New indices to use (default: current indices).
+            recompute_inertia: If True, recompute inertia properties (default: False).
 
         Returns:
-            Mesh: A new Mesh object with the specified properties.
+            A new Mesh object with the specified properties.
         """
         if vertices is None:
             vertices = self.vertices.copy()
@@ -213,6 +250,12 @@ class Mesh:
             maxhullvert=self.maxhullvert,
             normals=self.normals.copy() if self.normals is not None else None,
             uvs=self.uvs.copy() if self.uvs is not None else None,
+            color=self.color,
+            texture=self._texture
+            if isinstance(self._texture, str)
+            else (self._texture.copy() if self._texture is not None else None),
+            roughness=self._roughness,
+            metallic=self._metallic,
         )
         if not recompute_inertia:
             m.I = self.I
@@ -247,17 +290,59 @@ class Mesh:
     def uvs(self):
         return self._uvs
 
+    @property
+    def color(self) -> Vec3 | None:
+        return self._color
+
+    @color.setter
+    def color(self, value: Vec3 | None):
+        self._color = value
+
+    @property
+    def texture(self) -> str | nparray | None:
+        return self._texture
+
+    @texture.setter
+    def texture(self, value: str | nparray | None):
+        # Store texture lazily: strings/paths are kept as-is, arrays are normalized
+        self._texture = _normalize_texture_input(value)
+        self._texture_hash = None
+        self._cached_hash = None
+
+    def _compute_texture_hash(self) -> int:
+        if self._texture_hash is None:
+            self._texture_hash = compute_texture_hash(self._texture)
+        return self._texture_hash
+
+    @property
+    def roughness(self) -> float | None:
+        return self._roughness
+
+    @roughness.setter
+    def roughness(self, value: float | None):
+        self._roughness = value
+        self._cached_hash = None
+
+    @property
+    def metallic(self) -> float | None:
+        return self._metallic
+
+    @metallic.setter
+    def metallic(self, value: float | None):
+        self._metallic = value
+        self._cached_hash = None
+
     # construct simulation ready buffers from points
     def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
         """
         Construct a simulation-ready Warp Mesh object from the mesh data and return its ID.
 
         Args:
-            device (Devicelike, optional): Device on which to allocate mesh buffers.
-            requires_grad (bool, optional): If True, mesh points and velocities are allocated with gradient tracking.
+            device: Device on which to allocate mesh buffers.
+            requires_grad: If True, mesh points and velocities are allocated with gradient tracking.
 
         Returns:
-            wp.uint64: The ID of the simulation-ready Warp Mesh.
+            The ID of the simulation-ready Warp Mesh.
         """
         with wp.ScopedDevice(device):
             pos = wp.array(self.vertices, requires_grad=requires_grad, dtype=wp.vec3)
@@ -272,11 +357,11 @@ class Mesh:
         Compute and return the convex hull of this mesh.
 
         Args:
-            replace (bool, optional): If True, replace this mesh's vertices/indices with the convex hull (in-place).
-                                      If False, return a new Mesh for the convex hull.
+            replace: If True, replace this mesh's vertices/indices with the convex hull (in-place).
+                If False, return a new Mesh for the convex hull.
 
         Returns:
-            Mesh: The convex hull mesh (either new or self, depending on `replace`).
+            The convex hull mesh (either new or self, depending on `replace`).
         """
         from .utils import remesh_convex_hull  # noqa: PLC0415
 
@@ -305,10 +390,17 @@ class Mesh:
         Uses a cached hash if available, otherwise computes and caches the hash.
 
         Returns:
-            int: The hash value for the mesh.
+            The hash value for the mesh.
         """
         if self._cached_hash is None:
             self._cached_hash = hash(
-                (tuple(np.array(self.vertices).flatten()), tuple(np.array(self.indices).flatten()), self.is_solid)
+                (
+                    tuple(np.array(self.vertices).flatten()),
+                    tuple(np.array(self.indices).flatten()),
+                    self.is_solid,
+                    self._compute_texture_hash(),
+                    self._roughness,
+                    self._metallic,
+                )
             )
         return self._cached_hash

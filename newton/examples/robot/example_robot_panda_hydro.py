@@ -66,7 +66,7 @@ class Example:
     def __init__(self, viewer, scene=SceneType.PEN, num_worlds=1, test_mode=False):
         self.scene = SceneType(scene)
         self.test_mode = test_mode
-        self.show_isosurface = hasattr(viewer, "renderer")
+        self.show_isosurface = False  # Disabled by default for performance
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -227,16 +227,18 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # Create collision pipeline with SDF hydroelastic config
+        # Enable output_contact_surface so the kernel code is compiled (allows runtime toggle)
+        # The actual writing is controlled by set_output_contact_surface() at runtime
         sdf_hydroelastic_config = SDFHydroelasticConfig(
-            output_contact_surface=self.show_isosurface,
+            output_contact_surface=hasattr(viewer, "renderer"),  # Compile in if viewer supports it
         )
-        self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
             broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
             sdf_hydroelastic_config=sdf_hydroelastic_config,
         )
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Create MuJoCo solver with Newton contacts
         self.solver = newton.solvers.SolverMuJoCo(
@@ -249,7 +251,6 @@ class Example:
             nconmax=500,
             iterations=15,
             ls_iterations=100,
-            ls_parallel=True,
             impratio=1000.0,
         )
 
@@ -330,7 +331,7 @@ class Example:
 
         for i in range(self.sim_substeps):
             if i % self.collide_substeps == 0:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -355,16 +356,19 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
-        if self.show_isosurface:
-            self.viewer.log_hydro_contact_surface(
-                self.collision_pipeline.get_hydro_contact_surface(), penetrating_only=True
-            )
+        # Always call log_hydro_contact_surface - it handles show_hydro_contact_surface internally
+        # and will clear the lines when disabled
+        self.viewer.log_hydro_contact_surface(
+            self.collision_pipeline.get_hydro_contact_surface(), penetrating_only=True
+        )
         self.viewer.end_frame()
 
     def render_ui(self, imgui):
         changed, self.show_isosurface = imgui.checkbox("Show Isosurface", self.show_isosurface)
         if changed:
             self.viewer.show_hydro_contact_surface = self.show_isosurface
+            # Toggle whether to compute/write the isosurface data in the collision pipeline
+            self.collision_pipeline.set_output_contact_surface(self.show_isosurface)
 
     def test_final(self):
         # Verify that the object was picked up by checking the maximum height reached
@@ -387,21 +391,21 @@ class Example:
         self.ee_tf = wp.transform(*body_q_np[self.ee_index])
 
         # Position objective (single IK problem)
-        self.pos_obj = ik.IKPositionObjective(
+        self.pos_obj = ik.IKObjectivePosition(
             link_index=self.ee_index,
             link_offset=wp.vec3(0.0, 0.0, 0.0),
             target_positions=wp.array([wp.transform_get_translation(self.ee_tf)], dtype=wp.vec3),
         )
 
         # Rotation objective (single IK problem)
-        self.rot_obj = ik.IKRotationObjective(
+        self.rot_obj = ik.IKObjectiveRotation(
             link_index=self.ee_index,
             link_offset_rotation=wp.quat_identity(),
             target_rotations=wp.array([quat_to_vec4(wp.transform_get_rotation(self.ee_tf))], dtype=wp.vec4),
         )
 
         # Joint limit objective
-        self.obj_joint_limits = ik.IKJointLimitObjective(
+        self.obj_joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.model_single.joint_limit_lower,
             joint_limit_upper=self.model_single.joint_limit_upper,
         )
@@ -415,7 +419,7 @@ class Example:
             n_problems=1,
             objectives=[self.pos_obj, self.rot_obj, self.obj_joint_limits],
             lambda_initial=0.1,
-            jacobian_mode=ik.IKJacobianMode.ANALYTIC,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
         self.time_in_waypoint = 0.0
         self.current_waypoint = 0
@@ -433,7 +437,7 @@ class Example:
         ]
 
         if self.put_in_cup:
-            loose_pos = 0.76
+            loose_pos = 0.74
             wps = []
             cup_pos_higher = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest])
             cup_pos_lower = wp.vec3([self.cup_pos[0] + self.place_offset, self.cup_pos[1], self.z_rest - 0.1])

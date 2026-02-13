@@ -50,6 +50,7 @@ class ViewerNull(ViewerBase):
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture=None,
         hidden=False,
         backface_culling=True,
     ):
@@ -67,6 +68,7 @@ class ViewerNull(ViewerBase):
         """
         pass
 
+    @override
     def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
         """
         No-op implementation for logging mesh instances.
@@ -82,6 +84,7 @@ class ViewerNull(ViewerBase):
         """
         pass
 
+    @override
     def begin_frame(self, time):
         """
         No-op implementation for beginning a frame.
@@ -91,12 +94,14 @@ class ViewerNull(ViewerBase):
         """
         pass
 
+    @override
     def end_frame(self):
         """
         Increment the frame count at the end of each frame.
         """
         self.frame_count += 1
 
+    @override
     def is_running(self) -> bool:
         """
         Check if the viewer should continue running.
@@ -106,6 +111,7 @@ class ViewerNull(ViewerBase):
         """
         return self.frame_count < self.num_frames
 
+    @override
     def close(self):
         """
         No-op implementation for closing the viewer.
@@ -113,6 +119,7 @@ class ViewerNull(ViewerBase):
         pass
 
     # Not implemented yet - placeholder methods from ViewerBase
+    @override
     def log_lines(self, name, starts, ends, colors, width: float = 0.01, hidden=False):
         """
         No-op implementation for logging lines.
@@ -126,7 +133,8 @@ class ViewerNull(ViewerBase):
         """
         pass
 
-    def log_points(self, name, points, radii, colors, width: float = 0.01, hidden=False):
+    @override
+    def log_points(self, name, points, radii, colors, hidden=False):
         """
         No-op implementation for logging points.
 
@@ -139,6 +147,7 @@ class ViewerNull(ViewerBase):
         """
         pass
 
+    @override
     def log_array(self, name, array):
         """
         No-op implementation for logging a generic array.
@@ -149,6 +158,7 @@ class ViewerNull(ViewerBase):
         """
         pass
 
+    @override
     def log_scalar(self, name, value):
         """
         No-op implementation for logging a scalar value.

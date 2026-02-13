@@ -29,6 +29,8 @@ from . import utils as usd
 if TYPE_CHECKING:
     from pxr import Usd
 
+    from ..sim.builder import ModelBuilder
+
 
 class PrimType(IntEnum):
     """Enumeration of USD prim types that can be resolved by schema resolvers."""
@@ -143,6 +145,18 @@ class SchemaResolver:
         merged.update(prefixed_attrs)
         merged.update(prim_solver_attrs)
         return merged
+
+    def validate_custom_attributes(self, builder: ModelBuilder) -> None:
+        """
+        Validate that solver-specific custom attributes are registered on the builder.
+
+        Override in subclasses to check that required custom attributes have been
+        registered before parsing. Called by parse_usd() before processing entities.
+
+        Args:
+            builder: The ModelBuilder to validate custom attributes on.
+        """
+        pass
 
 
 def _collect_attrs_by_name(prim: Usd.Prim, names: list[str]) -> dict[str, Any]:

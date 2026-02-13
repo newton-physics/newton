@@ -40,7 +40,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 80,
         "nconmax": 25,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "g1": {
@@ -48,7 +48,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 210,
         "nconmax": 35,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "h1": {
@@ -56,7 +56,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 65,
         "nconmax": 15,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "cartpole": {
@@ -64,7 +64,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 5,
         "nconmax": 0,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "ant": {
@@ -72,7 +72,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 38,
         "nconmax": 15,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "quadruped": {
@@ -80,7 +80,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 75,
         "nconmax": 50,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "allegro": {
@@ -88,7 +88,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 60,
         "nconmax": 40,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "elliptic",
     },
     "kitchen": {
@@ -191,12 +191,13 @@ def _setup_cartpole(articulation_builder):
         enable_self_collisions=False,
         collapse_fixed_joints=True,
     )
-    # set initial joint positions
-    articulation_builder.joint_q[-3:] = [0.0, 0.3, 0.0]
+    # set initial joint positions (cartpole has 2 joints: prismatic slider + revolute pole)
+    # joint_q[0] = slider position, joint_q[1] = pole angle
+    articulation_builder.joint_q[0] = 0.0  # slider at origin
+    articulation_builder.joint_q[1] = 0.3  # pole tilted
 
     # Setting root pose
     root_dofs = 1
-    articulation_builder.joint_q[:3] = [0.0, 0.3, 0.0]
 
     return root_dofs
 

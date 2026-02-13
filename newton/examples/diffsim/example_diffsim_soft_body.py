@@ -109,7 +109,13 @@ class Example:
         # allocate sim states for trajectory, control and contacts
         self.states = [self.model.state() for _ in range(self.sim_steps * self.sim_substeps + 1)]
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.states[0], soft_contact_margin=0.001)
+        # Create collision pipeline with soft contact margin (requires_grad for differentiable simulation)
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+            soft_contact_margin=0.001,
+            requires_grad=True,
+        )
 
         # Initialize material parameters to be optimized from model
         if self.material_behavior == "anisotropic":
@@ -273,8 +279,10 @@ class Example:
         for i in range(self.sim_substeps):
             t = sim_step * self.sim_substeps + i
             self.states[t].clear_forces()
-            self.contacts = self.model.collide(self.states[t], soft_contact_margin=0.001)
-            self.solver.step(self.states[t], self.states[t + 1], self.control, self.contacts, self.sim_dt)
+            # Allocate fresh contacts each substep for gradient tracking
+            contacts = self.collision_pipeline.contacts()
+            self.collision_pipeline.collide(self.states[t], contacts)
+            self.solver.step(self.states[t], self.states[t + 1], self.control, contacts, self.sim_dt)
 
     def step(self):
         if self.graph:

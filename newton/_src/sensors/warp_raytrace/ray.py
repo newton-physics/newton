@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any
 
 import warp as wp
 
@@ -26,7 +25,7 @@ class vec6f(wp.types.vector(length=6, dtype=wp.float32)):
 
 
 @wp.func
-def safe_div(x: Any, y: Any) -> Any:
+def safe_div(x: wp.float32, y: wp.float32) -> wp.float32:
     return x / wp.where(y != 0.0, y, EPSILON)
 
 

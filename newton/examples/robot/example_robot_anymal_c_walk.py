@@ -31,8 +31,8 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
-from newton import State
-from newton.geometry import generate_terrain_grid
+from newton import GeoType, State
+from newton.geometry import create_mesh_terrain
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -104,16 +104,24 @@ class Example:
             ignore_inertial_definitions=False,
         )
 
+        # Enlarge foot collision spheres to improve walking stability on uneven terrain.
+        # The URDF defines small spheres on the shank links; doubling their radius
+        # prevents the robot from stumbling on terrain features like waves and stairs.
+        for i in range(len(builder.shape_type)):
+            if builder.shape_type[i] == GeoType.SPHERE:
+                r = builder.shape_scale[i][0]
+                builder.shape_scale[i] = (r * 2.0, 0.0, 0.0)
+
         # Generate procedural terrain for visual demonstration (but not during unit tests)
         if not self.is_test:
-            vertices, indices = generate_terrain_grid(
+            vertices, indices = create_mesh_terrain(
                 grid_size=(8, 3),  # 3x8 grid for forward walking
                 block_size=(3.0, 3.0),
                 terrain_types=["random_grid", "flat", "wave", "gap", "pyramid_stairs"],
                 terrain_params={
                     "pyramid_stairs": {"step_width": 0.3, "step_height": 0.02, "platform_width": 0.6},
                     "random_grid": {"grid_width": 0.3, "grid_height_range": (0, 0.02)},
-                    "wave": {"wave_amplitude": 0.15, "wave_frequency": 2.0},
+                    "wave": {"wave_amplitude": 0.1, "wave_frequency": 2.0},  # amplitude reduced from 0.15
                 },
                 seed=42,
             )
@@ -155,14 +163,17 @@ class Example:
 
         self.model = builder.finalize()
 
-        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
-        # Can override with: --collision-pipeline unified --broad-phase-mode nxn|sap|explicit
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+        use_mujoco_contacts = args.use_mujoco_contacts if args else False
+
+        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
+        if not use_mujoco_contacts:
+            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
-            ls_parallel=True,
+            use_mujoco_contacts=use_mujoco_contacts,
+            solver="newton",
+            ls_parallel=False,
             ls_iterations=50,  # Increased from default 10 for determinism
             njmax=50,
             nconmax=100,  # Increased from 75 to handle peak contact count of ~77
@@ -189,7 +200,10 @@ class Example:
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
         # Initialize contacts using collision pipeline
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        if use_mujoco_contacts:
+            self.contacts = None
+        else:
+            self.contacts = self.collision_pipeline.contacts()
 
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
@@ -230,7 +244,8 @@ class Example:
             self.viewer.apply_forces(self.state_0)
 
             # Compute contacts using collision pipeline for terrain mesh
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            if self.contacts is not None:
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -324,7 +339,7 @@ class Example:
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
+            lambda q, qd: newton.math.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
 

@@ -294,7 +294,7 @@ CLOTH_FACES = [
 
 # fmt: on
 class ClothSim:
-    def __init__(self, device, solver, use_cuda_graph=False, do_rendering=False, use_unified_pipeline=False):
+    def __init__(self, device, solver, use_cuda_graph=False, do_rendering=False, use_collision_pipeline=False):
         self.frame_dt = 1 / 60
         self.num_test_frames = 50
         self.iterations = 5
@@ -313,8 +313,8 @@ class ClothSim:
         # controls self-contact of trimesh
         self.particle_self_contact_radius = 0.1
         self.particle_self_contact_margin = 0.1
-        # whether to use unified collision pipeline for particle-shape contacts
-        self.use_unified_pipeline = use_unified_pipeline
+        # whether to use collision pipeline for particle-shape contacts
+        self.use_collision_pipeline = use_collision_pipeline
 
         if solver != "semi_implicit":
             self.num_substeps = 10
@@ -860,19 +860,16 @@ class ClothSim:
         else:
             raise ValueError("Unsupported solver type: " + self.solver_name)
 
-        # Create collision pipeline (unified or standard based on flag)
-        if self.use_unified_pipeline:
-            self.collision_pipeline = newton.CollisionPipelineUnified.from_model(
-                self.model,
-                broad_phase_mode=newton.BroadPhaseMode.NXN,
-                soft_contact_margin=self.soft_contact_margin,
-            )
-        else:
-            self.collision_pipeline = None
+        # Create collision pipeline
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            broad_phase_mode=newton.BroadPhaseMode.NXN,
+            soft_contact_margin=self.soft_contact_margin,
+        )
 
         self.state0 = self.model.state()
         self.state1 = self.model.state()
-        self.model.collide(self.state0)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.init_pos = np.array(self.state0.particle_q.numpy(), copy=True)
 
@@ -885,13 +882,9 @@ class ClothSim:
     def simulate(self):
         for _step in range(self.num_substeps):
             self.state0.clear_forces()
-            contacts = self.model.collide(
-                self.state0,
-                collision_pipeline=self.collision_pipeline,
-                soft_contact_margin=self.soft_contact_margin,
-            )
+            self.collision_pipeline.collide(self.state0, self.contacts)
             control = self.model.control()
-            self.solver.step(self.state0, self.state1, control, contacts, self.dt)
+            self.solver.step(self.state0, self.state1, control, self.contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def run(self):
@@ -1242,19 +1235,19 @@ for solver, tests in tests_to_run.items():
 
 
 # ============================================================================
-# Particle-Shape Collision Tests with Unified Pipeline
+# Particle-Shape Collision Tests with Collision Pipeline
 # ============================================================================
-# These tests run existing cloth collision tests with the unified collision pipeline
-# to verify particle-shape contacts work correctly with both pipelines.
+# These tests run existing cloth collision tests with the collision pipeline
+# to verify particle-shape contacts work correctly.
 
 
-class TestClothUnifiedPipeline(unittest.TestCase):
+class TestClothCollisionPipeline(unittest.TestCase):
     pass
 
 
-def test_cloth_collision_unified(test, device, solver):
-    """Test cloth collision using unified collision pipeline."""
-    example = ClothSim(device, solver, use_cuda_graph=True, use_unified_pipeline=True)
+def test_cloth_collision(test, device, solver):
+    """Test cloth collision using collision pipeline."""
+    example = ClothSim(device, solver, use_cuda_graph=True, use_collision_pipeline=True)
     example.set_collision_experiment()
 
     example.run()
@@ -1267,9 +1260,9 @@ def test_cloth_collision_unified(test, device, solver):
     test.assertTrue((example.init_pos != final_pos).any())
 
 
-def test_cloth_body_collision_unified(test, device, solver):
-    """Test cloth-body collision using unified collision pipeline."""
-    example = ClothSim(device, solver, use_unified_pipeline=True)
+def test_cloth_body_collision(test, device, solver):
+    """Test cloth-body collision using collision pipeline."""
+    example = ClothSim(device, solver, use_collision_pipeline=True)
     example.set_up_body_cloth_contact_experiment()
 
     example.run()
@@ -1282,21 +1275,21 @@ def test_cloth_body_collision_unified(test, device, solver):
     test.assertTrue((np.abs(final_pos[:, 1] - 0.0) < 0.5).all())
 
 
-# Test both collision tests with unified pipeline for solvers that support it
-unified_tests_to_run = {
+# Test both collision tests with collision pipeline for solvers that support it
+collision_pipeline_tests_to_run = {
     "xpbd": [
-        test_cloth_body_collision_unified,
+        test_cloth_body_collision,
     ],
     "vbd": [
-        test_cloth_collision_unified,
-        test_cloth_body_collision_unified,
+        test_cloth_collision,
+        test_cloth_body_collision,
     ],
 }
 
-for solver, tests in unified_tests_to_run.items():
+for solver, tests in collision_pipeline_tests_to_run.items():
     for test in tests:
         add_function_test(
-            TestClothUnifiedPipeline,
+            TestClothCollisionPipeline,
             f"{test.__name__}_{solver}",
             partial(test, solver=solver),
             devices=devices,
