@@ -95,9 +95,9 @@ class TestViewerWorldOffsets(unittest.TestCase):
         assert_np_equal(new_offsets, np.array(expected), tol=1e-5)
 
         # Test with more worlds to verify 2D grid arrangement
-        num_worlds_large = 16
+        world_count_large = 16
         builder_large = newton.ModelBuilder()
-        builder_large.replicate(world, num_worlds_large)
+        builder_large.replicate(world, world_count_large)
         model_large = builder_large.finalize()
 
         viewer_large = ViewerNull(num_frames=1)

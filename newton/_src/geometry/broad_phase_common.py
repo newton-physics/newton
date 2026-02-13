@@ -291,11 +291,11 @@ def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None
         world_local_indices = np.where(filtered_world_ids == world_id)[0]
         # Map back to original shape indices
         world_indices = valid_indices[world_local_indices]
-        num_world_shapes = len(world_indices)
+        world_shape_count = len(world_indices)
 
         # Copy world-specific indices (using original shape indices)
-        index_map[current_pos : current_pos + num_world_shapes] = world_indices
-        current_pos += num_world_shapes
+        index_map[current_pos : current_pos + world_shape_count] = world_indices
+        current_pos += world_shape_count
 
         # Append shared (negative) indices (using original shape indices)
         index_map[current_pos : current_pos + num_shared] = shared_indices

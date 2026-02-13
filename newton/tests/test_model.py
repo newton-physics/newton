@@ -630,7 +630,7 @@ class TestModel(unittest.TestCase):
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
 
-    def test_num_worlds_tracking(self):
+    def test_world_count_tracking(self):
         """Test that world_count is properly tracked when using add_world."""
         main_builder = ModelBuilder()
 
