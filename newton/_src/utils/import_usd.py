@@ -227,7 +227,7 @@ def parse_usd(
     collect_schema_attrs = len(schema_resolvers) > 0
 
     try:
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
     except ImportError as e:
         raise ImportError("Failed to import pxr. Please install USD (e.g. via `pip install usd-core`).") from e
 

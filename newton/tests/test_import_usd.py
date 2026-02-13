@@ -4000,7 +4000,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):
         """Test that physics material density contributes to imported body mass/inertia."""
-        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4046,7 +4046,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_mass_properties_with_stage_linear_scale(self):
         """Test mass/inertia parsing when stage metersPerUnit is not 1.0."""
-        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4090,7 +4090,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_collider_massapi_density_used_by_mass_properties(self):
         """Test that collider MassAPI density contributes in ComputeMassProperties fallback."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4130,7 +4130,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_without_massapi_uses_shape_material(self):
         """Test that non-MassAPI bodies use collider material density for mass accumulation."""
-        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4172,7 +4172,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_without_density_uses_default_shape_density(self):
         """Test that bound materials without authored density fall back to default shape density."""
-        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4215,7 +4215,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_and_inertia_short_circuits_compute(self):
         """If body has authored mass+diagonalInertia, use them directly without compute fallback."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4250,7 +4250,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_falls_back_to_compute(self):
         """If body MassAPI is partial (missing inertia), compute fallback should provide inertia."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4288,7 +4288,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_applies_axis_rotation_in_compute_callback(self):
         """Compute fallback must rotate cone/capsule/cylinder mass frame for non-Z axes."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4333,7 +4333,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_mesh_uses_cached_mesh_loading(self):
         """Mesh collider mass fallback should not reload the same USD mesh multiple times."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4399,7 +4399,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_warns_and_skips_noncontributing_collider(self):
         """Fallback compute warns and skips colliders that cannot provide positive mass info."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
