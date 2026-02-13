@@ -99,11 +99,11 @@ class CollisionSetup:
         self.control = self.model.control()
 
         # Create collision pipeline with the requested broad phase mode
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase_mode=broad_phase_mode,
         )
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.solver = solver_fn(self.model)
 
@@ -112,6 +112,8 @@ class CollisionSetup:
 
         self.graph = None
         if wp.get_device(device).is_cuda:
+            # Warm-up: run once outside capture
+            self.simulate()
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -155,7 +157,7 @@ class CollisionSetup:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -483,12 +485,10 @@ def test_shape_collision_filter_pairs(test, device, broad_phase_mode: newton.Bro
         # Exclude this pair so they must not generate contacts
         builder.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
         model = builder.finalize(device=device)
-        pipeline = newton.CollisionPipeline.from_model(
-            model,
-            broad_phase_mode=broad_phase_mode,
-        )
+        pipeline = newton.CollisionPipeline(model, broad_phase_mode=broad_phase_mode)
         state = model.state()
-        contacts = pipeline.collide(model, state)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
         n = contacts.rigid_contact_count.numpy()[0]
         excluded = (min(shape_a, shape_b), max(shape_a, shape_b))
         for i in range(n):
@@ -545,9 +545,10 @@ def test_collision_filter_consistent_across_broadphases(test, device):
         model = builder.finalize(device=device)
 
         def _contact_pairs(broad_phase_mode):
-            pipeline = newton.CollisionPipeline.from_model(model, broad_phase_mode=broad_phase_mode)
+            pipeline = newton.CollisionPipeline(model, broad_phase_mode=broad_phase_mode)
             state = model.state()
-            contacts = pipeline.collide(model, state)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
             n = contacts.rigid_contact_count.numpy()[0]
             pairs = set()
             for i in range(n):
@@ -710,7 +711,7 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         model = builder.finalize(device=device)
 
         # Create collision pipeline
-        collision_pipeline = newton.CollisionPipeline.from_model(
+        collision_pipeline = newton.CollisionPipeline(
             model,
             broad_phase_mode=newton.BroadPhaseMode.NXN,
             soft_contact_margin=soft_contact_margin,
@@ -719,7 +720,8 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         state = model.state()
 
         # Run collision detection
-        contacts = collision_pipeline.collide(model, state)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
 
         # Verify soft contacts were generated
         soft_count = contacts.soft_contact_count.numpy()[0]

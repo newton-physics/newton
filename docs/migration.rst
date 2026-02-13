@@ -157,6 +157,21 @@ The :meth:`newton.ModelBuilder.add_joint_free()` method now initializes the posi
 The universal and compound joints have been removed in favor of the more general D6 joint.
 
 
+Collisions
+----------
+
++-----------------------------------------------+--------------------------------------------------------------+
+| **warp.sim**                                  | **Newton**                                                   |
++-----------------------------------------------+--------------------------------------------------------------+
+| ``contacts = model.collide(state)``           | ``contacts = model.contacts()``                              |
+|                                               |                                                              |
+|                                               | ``model.collide(state, contacts)``                           |
++-----------------------------------------------+--------------------------------------------------------------+
+
+:meth:`~newton.Model.contacts` allocates the contacts buffer and :meth:`~newton.Model.collide` populates it in place.
+The buffer can be reused across steps. For more control, create a :class:`~newton.CollisionPipeline` directly.
+
+
 Renderers
 ---------
 

@@ -341,8 +341,9 @@ class TestHeightfield(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
 
-        pipeline = newton.CollisionPipeline.from_model(model)
-        contacts = model.collide(state, collision_pipeline=pipeline)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
 
         # Should detect at least one contact (sphere is within contact margin of heightfield)
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
@@ -364,8 +365,9 @@ class TestHeightfield(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
 
-        pipeline = newton.CollisionPipeline.from_model(model)
-        contacts = model.collide(state, collision_pipeline=pipeline)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
 
         contact_count = int(contacts.rigid_contact_count.numpy()[0])
         self.assertEqual(contact_count, 0, f"Unexpected contacts detected: {contact_count}")
