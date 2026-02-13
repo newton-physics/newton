@@ -48,6 +48,26 @@ except ImportError:
 START_DIRECTORY = os.path.dirname(__file__)  # The directory to start test discovery
 
 
+def _parallel_download(items, download_fn, description, max_jobs):
+    """Download *items* in parallel via a thread pool, re-raising on first failure."""
+
+    max_workers = max(1, min(max_jobs, len(items)))
+    futures = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for item in items:
+            futures[executor.submit(download_fn, item)] = item
+
+        for future in concurrent.futures.as_completed(futures):
+            item = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"{description} download failed: {item}: {e}", file=sys.stderr)
+                raise
+
+    print(f"Downloaded {description}")
+
+
 def main(argv=None):
     """
     unittest-parallel command-line script main entry point
@@ -181,8 +201,6 @@ def main(argv=None):
 
     # TODO: Drop this pre-download once download_asset is safe under multiprocessing.
     # For now this avoids races and conflicting downloads in parallel test runs.
-    from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: PLC0415
-
     import newton.utils  # noqa: PLC0415
 
     assets_to_download = [
@@ -198,56 +216,31 @@ def main(argv=None):
         "universal_robots_ur10",
         "wonik_allegro",
     ]
+    # Passing args.maxjobs to respect CLI cap for parallelism.
+    _parallel_download(
+        assets_to_download,
+        newton.utils.download_asset,
+        "assets",
+        args.maxjobs,
+    )
 
-    # Respect CLI cap for parallelism
-    max_workers = max(1, min(args.maxjobs, len(assets_to_download)))
-    futures = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for asset in assets_to_download:
-            futures[executor.submit(newton.utils.download_asset, asset)] = asset
+    # Pre-download mujoco_menagerie folders used by test_robot_composer
+    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
 
-        for future in as_completed(futures):
-            asset = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                print(f"Asset download failed: {asset}: {e}", file=sys.stderr)
-                raise
-
-    print("Downloaded newton-assets")
-
-    # Pre-download MuJoCo Menagerie assets for menagerie tests
-    # This avoids race conditions in parallel test runs
-    from newton.tests.test_menagerie_mujoco import download_menagerie_asset  # noqa: PLC0415
-
-    menagerie_assets_to_download = [
-        # High-priority robots for menagerie integration tests
-        # TODO: Uncomment when menagerie tests are enabled
-        # "apptronik_apollo",
-        # "booster_t1",
-        # "robotiq_2f85_v4",
-        # "shadow_hand",
-        # "unitree_g1",
-        # "unitree_h1",
+    menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
+    menagerie_folders = [
         "universal_robots_ur5e",
-        # "wonik_allegro",
+        "leap_hand",
+        "wonik_allegro",
+        "robotiq_2f85",
     ]
-
-    max_workers = max(1, min(args.maxjobs, len(menagerie_assets_to_download) or 1))
-    futures = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for asset in menagerie_assets_to_download:
-            futures[executor.submit(download_menagerie_asset, asset)] = asset
-
-        for future in as_completed(futures):
-            asset = futures[future]
-            try:
-                future.result()
-            except Exception as e:
-                # Don't fail on menagerie download errors - tests will be skipped
-                print(f"Menagerie asset download failed (tests will be skipped): {asset}: {e}", file=sys.stderr)
-
-    print("Downloaded menagerie assets")
+    # Passing args.maxjobs to respect CLI cap for parallelism.
+    _parallel_download(
+        menagerie_folders,
+        lambda folder: download_git_folder(git_url=menagerie_url, folder_path=folder),
+        "mujoco_menagerie folders",
+        args.maxjobs,
+    )
 
     # Create the temporary directory (for coverage files)
     with tempfile.TemporaryDirectory() as temp_dir:

@@ -58,7 +58,6 @@ from ._src.sim import (  # noqa: E402
     ActuatorMode,
     BroadPhaseMode,
     CollisionPipeline,
-    CollisionPipelineUnified,
     Contacts,
     Control,
     EqType,
@@ -68,13 +67,14 @@ from ._src.sim import (  # noqa: E402
     State,
     eval_fk,
     eval_ik,
+    eval_jacobian,
+    eval_mass_matrix,
 )
 
 __all__ += [
     "ActuatorMode",
     "BroadPhaseMode",
     "CollisionPipeline",
-    "CollisionPipelineUnified",
     "Contacts",
     "Control",
     "EqType",
@@ -84,6 +84,8 @@ __all__ += [
     "State",
     "eval_fk",
     "eval_ik",
+    "eval_jacobian",
+    "eval_mass_matrix",
 ]
 
 # ==================================================================================

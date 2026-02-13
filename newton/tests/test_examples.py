@@ -103,7 +103,7 @@ def add_example_test(
         torch_required = options.pop("torch_required", False)
         if torch_required:
             try:
-                import torch  # noqa: PLC0415
+                import torch
 
                 if wp.get_device(device).is_cuda and not torch.cuda.is_available():
                     # Ensure torch has CUDA support
@@ -140,7 +140,7 @@ def add_example_test(
             command = [sys.executable]
 
         # Append Warp commands
-        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test"])
+        command.extend(["-m", f"newton.examples.{name}", "--device", str(device), "--test", "--quiet"])
 
         if not use_viewer:
             stage_path = (

@@ -32,6 +32,7 @@ import warp as wp
 from .broad_phase_common import (
     binary_search,
     check_aabb_overlap,
+    is_pair_excluded,
     precompute_world_map,
     test_world_and_group_pair,
     write_pair,
@@ -263,9 +264,15 @@ def _process_single_sap_pair(
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
     num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
     max_candidate_pair: int,
+    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    num_filter_pairs: int,
 ):
     shape1 = pair[0]
     shape2 = pair[1]
+
+    # Skip explicitly excluded pairs (e.g. shape_collision_filter_pairs)
+    if num_filter_pairs > 0 and is_pair_excluded(pair, filter_pairs, num_filter_pairs):
+        return
 
     # Check if margins are provided (empty array means AABBs are pre-expanded)
     margin1 = 0.0
@@ -308,6 +315,8 @@ def _sap_broadphase_kernel(
     max_shapes_per_world: int,
     nsweep_in: int,
     num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
+    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    num_filter_pairs: int,
     # Output arrays
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
     num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
@@ -396,6 +405,8 @@ def _sap_broadphase_kernel(
                 candidate_pair,
                 num_candidate_pair,
                 max_candidate_pair,
+                filter_pairs,
+                num_filter_pairs,
             )
 
         workid += nsweep_in
@@ -524,6 +535,8 @@ class BroadPhaseSAP:
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
         num_candidate_pair: wp.array(dtype=int, ndim=1),
         device=None,  # Device to launch on
+        filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
+        num_filter_pairs: int | None = None,
     ):
         """Launch the sweep and prune broad phase collision detection with per-world segmented sort.
 
@@ -548,7 +561,8 @@ class BroadPhaseSAP:
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose worlds are
-        compatible (same world or at least one is global). The number of pairs found will be written to num_candidate_pair[0].
+        compatible (same world or at least one is global). Pairs in filter_pairs (if provided) are excluded.
+        The number of pairs found will be written to num_candidate_pair[0].
         """
         # TODO: Choose an optimal direction
         # random fixed direction
@@ -564,6 +578,14 @@ class BroadPhaseSAP:
         # If no margins provided, pass empty array (kernel will use 0.0 margins)
         if shape_contact_margin is None:
             shape_contact_margin = wp.empty(0, dtype=wp.float32, device=device)
+
+        # Exclusion filter: empty array and 0 when not provided or empty
+        if filter_pairs is None or filter_pairs.shape[0] == 0:
+            filter_pairs_arr = wp.empty(0, dtype=wp.vec2i, device=device)
+            n_filter = 0
+        else:
+            filter_pairs_arr = filter_pairs
+            n_filter = num_filter_pairs if num_filter_pairs is not None else filter_pairs.shape[0]
 
         # Project AABBs onto the sweep axis for each world
         wp.launch(
@@ -649,6 +671,8 @@ class BroadPhaseSAP:
                 self.max_shapes_per_world,
                 nsweep_in,
                 self.num_regular_worlds,
+                filter_pairs_arr,
+                n_filter,
             ],
             outputs=[
                 candidate_pair,

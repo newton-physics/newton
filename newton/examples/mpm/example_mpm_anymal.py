@@ -154,7 +154,6 @@ class Example:
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            ls_parallel=True,
             ls_iterations=50,
             njmax=50,  # ls_iterations=50 for determinism
         )

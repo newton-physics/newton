@@ -100,9 +100,9 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
@@ -119,7 +119,7 @@ class Example:
 
     # simulate() performs one frame's worth of updates
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -158,7 +158,7 @@ class Example:
                 self.state_0,
                 "body velocities are small",
                 lambda q, qd: max(abs(qd))
-                < 0.25,  # Relaxed from 0.1 - unified pipeline has residual velocities up to ~0.2
+                < 0.25,  # Relaxed from 0.1 - collision pipeline has residual velocities up to ~0.2
             )
 
 

@@ -273,7 +273,8 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         self.state_in = self.model.state()
         self.state_out = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_in)
+        self.contacts = self.model.contacts()
+        self.model.collide(self.state_in, self.contacts)
 
 
 class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
@@ -3618,7 +3619,8 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.state_in = self.model.state()
         self.state_out = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_in)
+        self.contacts = self.model.contacts()
+        self.model.collide(self.state_in, self.contacts)
         self.sphere_body_idx = sphere_body_idx
 
     def test_sphere_on_plane_with_newton_contacts(self):
@@ -3632,8 +3634,9 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         sim_dt = 1.0 / 240.0
         num_steps = 120  # Simulate for 0.5 seconds to ensure it settles
 
+        self.contacts = self.model.contacts()
         for _ in range(num_steps):
-            self.contacts = self.model.collide(self.state_in)
+            self.model.collide(self.state_in, self.contacts)
             solver.step(self.state_in, self.state_out, self.control, self.contacts, sim_dt)
             self.state_in, self.state_out = self.state_out, self.state_in
 
@@ -4123,7 +4126,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Run forward kinematics using mujoco_warp (skip if not available)
         try:
-            import mujoco_warp  # noqa: PLC0415
+            import mujoco_warp
 
             mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         except ImportError as e:
@@ -4251,8 +4254,10 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         control_soft = model_soft.control()
         control_stiff = model_stiff.control()
-        contacts_soft = model_soft.collide(state_soft_in)
-        contacts_stiff = model_stiff.collide(state_stiff_in)
+        contacts_soft = model_soft.contacts()
+        model_soft.collide(state_soft_in, contacts_soft)
+        contacts_stiff = model_stiff.contacts()
+        model_stiff.collide(state_stiff_in, contacts_stiff)
 
         # Track minimum positions during simulation
         min_q_soft = float("inf")
@@ -4935,7 +4940,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_attributes_from_usd(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4965,13 +4970,58 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mjc_damping_from_usd_via_schema_resolver(self):
+        """Test mjc:damping attributes are parsed via SchemaResolverMjc."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        # Create root body
+        root_path = "/robot"
+        root_shape = UsdGeom.Cube.Define(stage, root_path)
+        root_prim = root_shape.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(root_prim)
+        UsdPhysics.ArticulationRootAPI.Apply(root_prim)
+        UsdPhysics.CollisionAPI.Apply(root_prim)
+
+        # Create child body
+        child_path = "/robot/child"
+        child_shape = UsdGeom.Cube.Define(stage, child_path)
+        child_prim = child_shape.GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(child_prim)
+        UsdPhysics.CollisionAPI.Apply(child_prim)
+
+        # Create joint with mjc:damping
+        joint_path = "/robot/child/joint"
+        joint = UsdPhysics.RevoluteJoint.Define(stage, joint_path)
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateBody0Rel().SetTargets([root_path])
+        joint.CreateBody1Rel().SetTargets([child_path])
+        joint_prim = joint.GetPrim()
+        joint_prim.CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Double, True).Set(5.0)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
+        model = builder.finalize()
+
+        assert hasattr(model, "mujoco")
+        assert hasattr(model.mujoco, "dof_passive_damping")
+        damping_values = model.mujoco.dof_passive_damping.numpy()
+        # 6 DOFs from floating base (all 0.0) + 1 DOF from revolute joint (5.0)
+        assert damping_values[-1] == 5.0, f"Expected last DOF damping to be 5.0, got {damping_values}"
+
     def test_ref_fk_matches_mujoco(self):
         """Test that Newton's state matches MuJoCo's FK for joints with ref attribute.
 
         When ref is used, Newton relies on MuJoCo's FK (via update_newton_state with eval_fk=False)
         because ref is a MuJoCo-specific feature handled via qpos0.
         """
-        import mujoco_warp  # noqa: PLC0415
+        import mujoco_warp
 
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_ref_fk">
@@ -5344,7 +5394,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
 
         # Create solver
-        import mujoco  # noqa: PLC0415
+        import mujoco
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
@@ -5361,7 +5411,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
 
         # Create solver with constructor override to dense (0)
-        import mujoco  # noqa: PLC0415
+        import mujoco
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, jacobian="dense")
 
@@ -5378,7 +5428,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         2. Custom attribute (if exists)
         3. Default value
         """
-        import mujoco  # noqa: PLC0415
+        import mujoco
 
         model = self._create_multiworld_model(num_worlds=2)
 
@@ -5418,7 +5468,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that solver, integrator, cone, and jacobian use Newton defaults
         when no constructor parameter or custom attribute is provided.
         """
-        import mujoco  # noqa: PLC0415
+        import mujoco
 
         # Create model WITHOUT registering custom attributes
         builder = newton.ModelBuilder()
@@ -5514,7 +5564,7 @@ class TestMuJoCoOptions(unittest.TestCase):
 class TestMuJoCoArticulationConversion(unittest.TestCase):
     def test_loop_joints_only(self):
         """Testing that loop joints are converted to equality constraints."""
-        import mujoco  # noqa: PLC0415
+        import mujoco
 
         builder = newton.ModelBuilder()
         b0 = builder.add_link()
@@ -5553,7 +5603,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
     def test_mixed_loop_joints_and_equality_constraints(self):
         """Testing that loop joints and regular equality constraints are converted to equality constraints."""
-        import mujoco  # noqa: PLC0415
+        import mujoco
 
         builder = newton.ModelBuilder()
         b0 = builder.add_link()

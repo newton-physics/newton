@@ -43,7 +43,7 @@ def check_gl_error():
     if not ENABLE_GL_CHECKS:
         return
 
-    from pyglet import gl  # noqa: PLC0415
+    from pyglet import gl
 
     error = gl.glGetError()
     if error != gl.GL_NO_ERROR:
@@ -857,7 +857,7 @@ class RendererGL:
     @classmethod
     def initialize_gl(cls):
         if cls.gl is None:  # Only import if not already imported
-            from pyglet import gl  # noqa: PLC0415
+            from pyglet import gl
 
             cls.gl = gl
 
@@ -873,14 +873,14 @@ class RendererGL:
         self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
         try:
-            import pyglet  # noqa: PLC0415
+            import pyglet
 
             # disable error checking for performance
             pyglet.options["debug_gl"] = False
 
             # try imports
-            from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: F401, PLC0415
-            from pyglet.math import Vec3 as PyVec3  # noqa: F401, PLC0415
+            from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: F401
+            from pyglet.math import Vec3 as PyVec3  # noqa: F401
 
             RendererGL.initialize_gl()
             gl = RendererGL.gl
@@ -974,7 +974,7 @@ class RendererGL:
         if not headless:
             # set up our own event handling so we can synchronously render frames
             # by calling update() in a loop
-            from pyglet.window import Window  # noqa: PLC0415
+            from pyglet.window import Window
 
             Window._enable_event_queue = False
 
@@ -1005,7 +1005,7 @@ class RendererGL:
         self._make_current()
 
         if not self.headless:
-            import pyglet  # noqa: PLC0415
+            import pyglet
 
             pyglet.clock.tick()
 
@@ -1164,7 +1164,7 @@ class RendererGL:
 
     def _setup_window_callbacks(self):
         """Set up the basic window event handlers."""
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         self.window.push_handlers(on_draw=self._on_draw)
         self.window.push_handlers(on_resize=self._on_window_resize)
@@ -1566,7 +1566,7 @@ class RendererGL:
 
     def _render_shadow_map(self, objects):
         gl = RendererGL.gl
-        from pyglet.math import Mat4, Vec3  # noqa: PLC0415
+        from pyglet.math import Mat4, Vec3
 
         self._make_current()
 
@@ -1690,7 +1690,7 @@ class RendererGL:
             pass
 
     def _set_icon(self):
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         def load_icon(filename):
             filename = os.path.join(os.path.dirname(__file__), filename)

@@ -62,7 +62,6 @@ solvers = {
         njmax=500,
         nconmax=200,
         solver="newton",
-        ls_parallel=True,
         ls_iterations=100,
     ),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=10),
@@ -75,7 +74,7 @@ solvers = {
 def simulate(solver, model, state_0, state_1, control, contacts, collision_pipeline, sim_dt, substeps):
     for _ in range(substeps):
         state_0.clear_forces()
-        contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+        collision_pipeline.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
         state_0, state_1 = state_1, state_0
     return state_0, state_1
@@ -134,7 +133,7 @@ def build_stacked_cubes_scene(
     # Hydroelastic without contact reduction can generate many contacts
     rigid_contact_max = 6000 if not reduce_contacts else 100
 
-    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+    collision_pipeline = newton.CollisionPipeline(
         model,
         rigid_contact_max=rigid_contact_max,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
@@ -155,7 +154,8 @@ def run_stacked_cubes_hydroelastic_test(
         build_stacked_cubes_scene(device, solver_fn, shape_type, cube_half, reduce_contacts)
     )
 
-    contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state_0, contacts)
 
     sdf_sdf_count = collision_pipeline.narrow_phase.shape_pairs_sdf_sdf_count.numpy()[0]
     test.assertEqual(sdf_sdf_count, NUM_CUBES - 1, f"Expected {NUM_CUBES - 1} sdf_sdf collisions, got {sdf_sdf_count}")
@@ -322,7 +322,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         nconmax=2000,
         iterations=20,
         ls_iterations=100,
-        ls_parallel=True,
         impratio=1000.0,
     )
 
@@ -333,13 +332,14 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
     sdf_config = SDFHydroelasticConfig(output_contact_surface=True)
-    collision_pipeline = newton.CollisionPipelineUnified.from_model(
+    collision_pipeline = newton.CollisionPipeline(
         model,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
         sdf_hydroelastic_config=sdf_config,
     )
     # Enable contact surface output for this test (validates penetration depth)
     collision_pipeline.set_output_contact_surface(True)
+    contacts = collision_pipeline.contacts()
 
     # Simulate for 3 seconds to reach equilibrium
     sim_dt = 1.0 / 60.0
@@ -356,7 +356,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
                 forces[body_idx * 6 + 2] = -external_force
             state_0.body_f.assign(forces)
 
-            contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+            collision_pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 
@@ -453,7 +453,8 @@ class TestHydroelastic(unittest.TestCase):
             return
 
         sim_time = 0.0
-        contacts = model.collide(state_0, collision_pipeline=collision_pipeline)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state_0, contacts)
 
         print(
             f"\nRunning {shape_type.value} cubes simulation with {solver_name} solver for {VIEWER_NUM_FRAMES} frames..."

@@ -14,11 +14,12 @@
 # limitations under the License.
 
 """
-USD schema resolvers. Currently not used.
+USD schema resolvers.
 """
 
 from typing import ClassVar
 
+from ..sim.builder import ModelBuilder
 from ..usd.schema_resolver import PrimType, SchemaAttribute, SchemaResolver
 
 
@@ -287,3 +288,20 @@ class SchemaResolverMjc(SchemaResolver):
             "gear": SchemaAttribute("mjc:gear", [1, 0, 0, 0, 0, 0]),
         },
     }
+
+    def validate_custom_attributes(self, builder: ModelBuilder) -> None:
+        """
+        Validate that MuJoCo custom attributes have been registered on the builder.
+
+        Users must call :meth:`SolverMuJoCo.register_custom_attributes` before parsing
+        USD files with this resolver.
+
+        Raises:
+            RuntimeError: If required MuJoCo custom attributes are not registered.
+        """
+        has_mujoco_attrs = any(attr.namespace == "mujoco" for attr in builder.custom_attributes.values())
+        if not has_mujoco_attrs:
+            raise RuntimeError(
+                "MuJoCo custom attributes not registered. "
+                "Call SolverMuJoCo.register_custom_attributes(builder) before parsing USD with SchemaResolverMjc."
+            )

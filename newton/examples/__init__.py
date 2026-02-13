@@ -318,18 +318,11 @@ def create_parser():
         help="Whether to run the example in test mode.",
     )
     parser.add_argument(
-        "--collision-pipeline",
-        type=str,
-        default="unified",
-        choices=["unified", "standard"],
-        help="Collision pipeline to use. 'unified' uses CollisionPipelineUnified (default), 'standard' uses CollisionPipeline.",
-    )
-    parser.add_argument(
         "--broad-phase-mode",
         type=str,
         default="explicit",
         choices=["nxn", "sap", "explicit"],
-        help="Broad phase mode for CollisionPipelineUnified. Only used when --collision-pipeline=unified.",
+        help="Broad phase mode for collision detection.",
     )
     parser.add_argument(
         "--use-mujoco-contacts",
@@ -342,6 +335,12 @@ def create_parser():
         type=int,
         default=None,
         help="Maximum number of worlds to render (for performance with many environments).",
+    )
+    parser.add_argument(
+        "--quiet",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Suppress Warp compilation messages.",
     )
 
     return parser
@@ -372,6 +371,10 @@ def init(parser=None):
         # When parser is provided, use parse_args() to properly handle --help
         args = parser.parse_args()
 
+    # Suppress Warp compilation messages if requested
+    if args.quiet:
+        wp.config.quiet = True
+
     # Set device if specified
     if args.device:
         wp.set_device(args.device)
@@ -395,76 +398,34 @@ def init(parser=None):
     return viewer, args
 
 
-def create_collision_pipeline(
-    model,
-    args=None,
-    collision_pipeline_type=None,
-    broad_phase_mode=None,
-):
-    """Create a collision pipeline based on command-line arguments or explicit parameters.
-
-    This helper function creates either a CollisionPipelineUnified or returns None for the
-    standard CollisionPipeline (which is created implicitly by model.collide()).
+def create_collision_pipeline(model, args=None, **kwargs):
+    """Create a collision pipeline, optionally using --broad-phase-mode from args.
 
     Args:
-        model: The Newton model to create the pipeline for
-        args: Parsed arguments from create_parser() (optional if explicit parameters provided)
-        collision_pipeline_type: Explicit pipeline type ("unified" or "standard"), overrides args
-        broad_phase_mode: Explicit broad phase mode ("nxn", "sap", "explicit"), overrides args
+        model: The Newton model to create the pipeline for.
+        args: Parsed arguments from create_parser() (optional).
+        **kwargs: Additional keyword arguments passed to CollisionPipeline.
 
     Returns:
-        CollisionPipelineUnified instance if unified pipeline is selected, None for standard pipeline
-
-    Note:
-        Contact margins for rigid contacts are read from ``model.shape_contact_margin`` array.
-
-    Examples:
-        # Using command-line args
-        viewer, args = newton.examples.init()
-        model = builder.finalize()
-        pipeline = newton.examples.create_collision_pipeline(model, args)
-        contacts = model.collide(state, collision_pipeline=pipeline)
-
-        # Using explicit parameters
-        pipeline = newton.examples.create_collision_pipeline(
-            model,
-            collision_pipeline_type="unified",
-            broad_phase_mode="nxn"
-        )
+        CollisionPipeline instance.
     """
     import newton  # noqa: PLC0415
 
-    # Determine collision pipeline type
-    if collision_pipeline_type is None:
-        if args is not None and hasattr(args, "collision_pipeline"):
-            collision_pipeline_type = args.collision_pipeline
-        else:
-            collision_pipeline_type = "unified"  # Default
-
-    # If standard pipeline requested, return None (model.collide will create it implicitly)
-    if collision_pipeline_type == "standard":
-        return None
-
-    # Determine broad phase mode for unified pipeline
-    if broad_phase_mode is None:
-        if args is not None and hasattr(args, "broad_phase_mode"):
-            broad_phase_mode = args.broad_phase_mode
-        else:
-            broad_phase_mode = "explicit"  # Default
-
-    # Map string to BroadPhaseMode enum
-    broad_phase_map = {
-        "nxn": newton.BroadPhaseMode.NXN,
-        "sap": newton.BroadPhaseMode.SAP,
-        "explicit": newton.BroadPhaseMode.EXPLICIT,
-    }
-    broad_phase_enum = broad_phase_map.get(broad_phase_mode.lower(), newton.BroadPhaseMode.NXN)
-
-    # Create and return CollisionPipelineUnified
-    return newton.CollisionPipelineUnified.from_model(
-        model,
-        broad_phase_mode=broad_phase_enum,
-    )
+    if "broad_phase_mode" not in kwargs:
+        broad_phase_mode = getattr(args, "broad_phase_mode", "explicit") if args else "explicit"
+    else:
+        broad_phase_mode = kwargs.pop("broad_phase_mode")
+    # Accept both string names and BroadPhaseMode enum values
+    if isinstance(broad_phase_mode, newton.BroadPhaseMode):
+        mode = broad_phase_mode
+    else:
+        broad_phase_map = {
+            "nxn": newton.BroadPhaseMode.NXN,
+            "sap": newton.BroadPhaseMode.SAP,
+            "explicit": newton.BroadPhaseMode.EXPLICIT,
+        }
+        mode = broad_phase_map.get(str(broad_phase_mode).lower(), newton.BroadPhaseMode.EXPLICIT)
+    return newton.CollisionPipeline(model, broad_phase_mode=mode, **kwargs)
 
 
 def main():

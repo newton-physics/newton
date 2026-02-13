@@ -238,7 +238,6 @@ class Example:
             solver="newton",
             integrator="implicitfast",
             iterations=20,
-            ls_parallel=True,
             ls_iterations=100,
             nconmax=1000,
             njmax=2000,
@@ -256,9 +255,9 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Setup ik and tasks
         self.state = self.model.state()
@@ -304,11 +303,11 @@ class Example:
 
     def simulate(self):
         if not self.collide_substeps:
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             if self.collide_substeps:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.state_0.clear_forces()
 
@@ -386,7 +385,7 @@ class Example:
         builder.joint_target_ke[:9] = [4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]
         builder.joint_target_kd[:9] = [450, 450, 350, 350, 200, 200, 200, 10, 10]
         builder.joint_effort_limit[:9] = [87, 87, 87, 87, 12, 12, 12, 100, 100]
-        builder.joint_armature[:9] = [0.195] * 4 + [0.074] * 3 + [0.1] * 2
+        builder.joint_armature[:9] = [0.3] * 4 + [0.11] * 3 + [0.15] * 2
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(thickness=1e-3, density=1000.0)
         shape_cfg.ke = 5.0e4
