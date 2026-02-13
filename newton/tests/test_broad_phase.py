@@ -204,7 +204,7 @@ class TestBroadPhase(unittest.TestCase):
         geom_upper = wp.array(geom_bounding_box_upper, dtype=wp.vec3)
         geom_cutoff = wp.array(np_geom_cutoff)
         collision_group = wp.array(np_collision_group)
-        num_candidate_pair = wp.array(
+        candidate_pair_count = wp.array(
             [
                 0,
             ],
@@ -227,17 +227,17 @@ class TestBroadPhase(unittest.TestCase):
             shape_world,
             ngeom,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair = num_candidate_pair.numpy()[0]
+        candidate_pair_count = candidate_pair_count.numpy()[0]
 
         if verbose:
             print("Warp contact pairs:")
-            for i in range(num_candidate_pair):
+            for i in range(candidate_pair_count):
                 pair = pairs_wp[i]
                 body_a, body_b = pair[0], pair[1]
                 group_a = np_collision_group[body_a]
@@ -245,7 +245,7 @@ class TestBroadPhase(unittest.TestCase):
                 print(f"  Pair {i}: bodies ({body_a}, {body_b}) with collision groups ({group_a}, {group_b})")
 
             print("Checking if bounding boxes actually overlap:")
-            for i in range(num_candidate_pair):
+            for i in range(candidate_pair_count):
                 pair = pairs_wp[i]
                 body_a, body_b = pair[0], pair[1]
 
@@ -271,13 +271,13 @@ class TestBroadPhase(unittest.TestCase):
 
                 print(f"  Pair {i}: bodies ({body_a}, {body_b}) - overlap: {overlap}")
 
-        if len(pairs_np) != num_candidate_pair:
-            print(f"len(pairs_np)={len(pairs_np)}, num_candidate_pair={num_candidate_pair}")
-            assert len(pairs_np) == num_candidate_pair
+        if len(pairs_np) != candidate_pair_count:
+            print(f"len(pairs_np)={len(pairs_np)}, candidate_pair_count={candidate_pair_count}")
+            assert len(pairs_np) == candidate_pair_count
 
         # Ensure every element in pairs_wp is also present in pairs_np
         pairs_np_set = {tuple(pair) for pair in pairs_np}
-        for pair in pairs_wp[:num_candidate_pair]:
+        for pair in pairs_wp[:candidate_pair_count]:
             assert tuple(pair) in pairs_np_set, f"Pair {tuple(pair)} from Warp not found in numpy pairs"
 
         if verbose:
@@ -289,7 +289,7 @@ class TestBroadPhase(unittest.TestCase):
 
         # Create random bounding boxes in min-max format
         ngeom = 50
-        num_worlds = 4  # We'll distribute objects across 4 different worlds
+        world_count = 4  # We'll distribute objects across 4 different worlds
 
         # Generate random centers and sizes using the new Generator API
         rng = np.random.Generator(np.random.PCG64(123))
@@ -312,7 +312,7 @@ class TestBroadPhase(unittest.TestCase):
 
         # Randomly distribute objects across worlds
         # Some objects in specific worlds (0, 1, 2, 3), some global (-1)
-        np_shape_world = rng.integers(0, num_worlds, size=ngeom, dtype=np.int32)
+        np_shape_world = rng.integers(0, world_count, size=ngeom, dtype=np.int32)
 
         # Make some entities global (world -1) - they should collide with all worlds
         num_global = max(3, ngeom // 10)
@@ -322,11 +322,11 @@ class TestBroadPhase(unittest.TestCase):
         if verbose:
             print("\nTest setup:")
             print(f"  Total geometries: {ngeom}")
-            print(f"  Number of worlds: {num_worlds}")
+            print(f"  Number of worlds: {world_count}")
             print(f"  Global entities (world=-1): {num_global}")
             print(f"  Shared entities (group=-1): {num_shared}")
             print("\nWorld distribution:")
-            for world_id in range(-1, num_worlds):
+            for world_id in range(-1, world_count):
                 count = np.sum(np_shape_world == world_id)
                 print(f"  World {world_id}: {count} objects")
             print("\nCollision group distribution:")
@@ -362,7 +362,7 @@ class TestBroadPhase(unittest.TestCase):
         geom_cutoff = wp.array(np_geom_cutoff)
         collision_group = wp.array(np_collision_group)
         shape_world = wp.array(np_shape_world, dtype=wp.int32)
-        num_candidate_pair = wp.array([0], dtype=wp.int32)
+        candidate_pair_count = wp.array([0], dtype=wp.int32)
         candidate_pair = wp.array(np.zeros((max_candidate_pair, 2), dtype=wp.int32), dtype=wp.vec2i)
 
         # Initialize BroadPhaseAllPairs with shape_world for precomputation
@@ -383,14 +383,14 @@ class TestBroadPhase(unittest.TestCase):
             shape_world,
             ngeom,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         # Get results
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair_result = num_candidate_pair.numpy()[0]
+        num_candidate_pair_result = candidate_pair_count.numpy()[0]
 
         if verbose:
             print(f"\nWarp found {num_candidate_pair_result} pairs")
@@ -456,7 +456,7 @@ class TestBroadPhase(unittest.TestCase):
 
         # Create random bounding boxes in min-max format
         ngeom = 50
-        num_worlds = 4  # We'll distribute objects across 4 different worlds
+        world_count = 4  # We'll distribute objects across 4 different worlds
 
         # Generate random centers and sizes using the new Generator API
         rng = np.random.Generator(np.random.PCG64(456))
@@ -479,7 +479,7 @@ class TestBroadPhase(unittest.TestCase):
 
         # Randomly distribute objects across worlds
         # Some objects in specific worlds (0, 1, 2, 3), some global (-1)
-        np_shape_world = rng.integers(0, num_worlds, size=ngeom, dtype=np.int32)
+        np_shape_world = rng.integers(0, world_count, size=ngeom, dtype=np.int32)
 
         # Make some entities global (world -1) - they should collide with all worlds
         num_global = max(3, ngeom // 10)
@@ -512,11 +512,11 @@ class TestBroadPhase(unittest.TestCase):
             print(f"  Total geometries: {ngeom}")
             print(f"  Geometries with COLLIDE_SHAPES flag: {num_colliding}")
             print(f"  Geometries filtered out: {ngeom - num_colliding}")
-            print(f"  Number of worlds: {num_worlds}")
+            print(f"  Number of worlds: {world_count}")
             print(f"  Global entities (world=-1): {num_global}")
             print(f"  World 0 geometries filtered: {np.sum(world_0_mask)}")
             print("\nWorld distribution (after filtering):")
-            for world_id in range(-1, num_worlds):
+            for world_id in range(-1, world_count):
                 count_total = np.sum(np_shape_world == world_id)
                 count_colliding = np.sum((np_shape_world == world_id) & colliding_mask)
                 print(f"  World {world_id}: {count_total} total, {count_colliding} colliding")
@@ -556,7 +556,7 @@ class TestBroadPhase(unittest.TestCase):
         collision_group = wp.array(np_collision_group)
         shape_world = wp.array(np_shape_world, dtype=wp.int32)
         shape_flags = wp.array(np_shape_flags, dtype=wp.int32)
-        num_candidate_pair = wp.array([0], dtype=wp.int32)
+        candidate_pair_count = wp.array([0], dtype=wp.int32)
         candidate_pair = wp.array(np.zeros((max_candidate_pair, 2), dtype=wp.int32), dtype=wp.vec2i)
 
         # Initialize BroadPhaseAllPairs with shape_world AND shape_flags
@@ -591,14 +591,14 @@ class TestBroadPhase(unittest.TestCase):
             shape_world,
             ngeom,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         # Get results
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair_result = num_candidate_pair.numpy()[0]
+        num_candidate_pair_result = candidate_pair_count.numpy()[0]
 
         if verbose:
             print(f"\nWarp found {num_candidate_pair_result} pairs")
@@ -730,7 +730,7 @@ class TestBroadPhase(unittest.TestCase):
         geom_upper = wp.array(geom_bounding_box_upper, dtype=wp.vec3)
         geom_cutoff = wp.array(np_geom_cutoff)
         explicit_pairs_wp = wp.array(explicit_pairs, dtype=wp.vec2i)
-        num_candidate_pair = wp.array(
+        candidate_pair_count = wp.array(
             [
                 0,
             ],
@@ -748,22 +748,22 @@ class TestBroadPhase(unittest.TestCase):
             explicit_pairs_wp,
             num_pairs_to_check,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair = num_candidate_pair.numpy()[0]
+        candidate_pair_count = candidate_pair_count.numpy()[0]
 
         if verbose:
             print("Warp contact pairs:")
-            for i in range(num_candidate_pair):
+            for i in range(candidate_pair_count):
                 pair = pairs_wp[i]
                 print(f"  Pair {i}: bodies ({pair[0]}, {pair[1]})")
 
             print("Checking if bounding boxes actually overlap:")
-            for i in range(num_candidate_pair):
+            for i in range(candidate_pair_count):
                 pair = pairs_wp[i]
                 body_a, body_b = pair[0], pair[1]
 
@@ -789,13 +789,13 @@ class TestBroadPhase(unittest.TestCase):
 
                 print(f"  Pair {i}: bodies ({body_a}, {body_b}) - overlap: {overlap}")
 
-        if len(pairs_np) != num_candidate_pair:
-            print(f"len(pairs_np)={len(pairs_np)}, num_candidate_pair={num_candidate_pair}")
-            assert len(pairs_np) == num_candidate_pair
+        if len(pairs_np) != candidate_pair_count:
+            print(f"len(pairs_np)={len(pairs_np)}, candidate_pair_count={candidate_pair_count}")
+            assert len(pairs_np) == candidate_pair_count
 
         # Ensure every element in pairs_wp is also present in pairs_np
         pairs_np_set = {tuple(pair) for pair in pairs_np}
-        for pair in pairs_wp[:num_candidate_pair]:
+        for pair in pairs_wp[:candidate_pair_count]:
             assert tuple(pair) in pairs_np_set, f"Pair {tuple(pair)} from Warp not found in numpy pairs"
 
         if verbose:
@@ -844,7 +844,7 @@ class TestBroadPhase(unittest.TestCase):
         geom_upper = wp.array(geom_bounding_box_upper, dtype=wp.vec3)
         geom_cutoff = wp.array(np_geom_cutoff)
         collision_group = wp.array(np_collision_group)
-        num_candidate_pair = wp.array(
+        candidate_pair_count = wp.array(
             [
                 0,
             ],
@@ -867,17 +867,17 @@ class TestBroadPhase(unittest.TestCase):
             shape_world,
             ngeom,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair = num_candidate_pair.numpy()[0]
+        candidate_pair_count = candidate_pair_count.numpy()[0]
 
         if verbose:
             print("Warp contact pairs:")
-            for i in range(num_candidate_pair):
+            for i in range(candidate_pair_count):
                 pair = pairs_wp[i]
                 body_a, body_b = pair[0], pair[1]
                 group_a = np_collision_group[body_a]
@@ -885,7 +885,7 @@ class TestBroadPhase(unittest.TestCase):
                 print(f"  Pair {i}: bodies ({body_a}, {body_b}) with collision groups ({group_a}, {group_b})")
 
             print("Checking if bounding boxes actually overlap:")
-            for i in range(num_candidate_pair):
+            for i in range(candidate_pair_count):
                 pair = pairs_wp[i]
                 body_a, body_b = pair[0], pair[1]
 
@@ -911,15 +911,15 @@ class TestBroadPhase(unittest.TestCase):
 
                 print(f"  Pair {i}: bodies ({body_a}, {body_b}) - overlap: {overlap}")
 
-        if len(pairs_np) != num_candidate_pair:
-            print(f"len(pairs_np)={len(pairs_np)}, num_candidate_pair={num_candidate_pair}")
+        if len(pairs_np) != candidate_pair_count:
+            print(f"len(pairs_np)={len(pairs_np)}, candidate_pair_count={candidate_pair_count}")
             # print("pairs_np:", pairs_np)
-            # print("pairs_wp[:num_candidate_pair]:", pairs_wp[:num_candidate_pair])
-            assert len(pairs_np) == num_candidate_pair
+            # print("pairs_wp[:candidate_pair_count]:", pairs_wp[:candidate_pair_count])
+            assert len(pairs_np) == candidate_pair_count
 
         # Ensure every element in pairs_wp is also present in pairs_np
         pairs_np_set = {tuple(pair) for pair in pairs_np}
-        for pair in pairs_wp[:num_candidate_pair]:
+        for pair in pairs_wp[:candidate_pair_count]:
             assert tuple(pair) in pairs_np_set, f"Pair {tuple(pair)} from Warp not found in numpy pairs"
 
         if verbose:
@@ -1001,7 +1001,7 @@ class TestBroadPhase(unittest.TestCase):
         geom_cutoff = wp.array(np_geom_cutoff)
         collision_group = wp.array(np_collision_group)
         shape_world = wp.array(np_shape_world, dtype=wp.int32)
-        num_candidate_pair = wp.array([0], dtype=wp.int32)
+        candidate_pair_count = wp.array([0], dtype=wp.int32)
         max_candidate_pair = num_lower_tri_elements
         candidate_pair = wp.array(np.zeros((max_candidate_pair, 2), dtype=wp.int32), dtype=wp.vec2i)
 
@@ -1015,13 +1015,13 @@ class TestBroadPhase(unittest.TestCase):
             shape_world,
             ngeom,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair_val = num_candidate_pair.numpy()[0]
+        num_candidate_pair_val = candidate_pair_count.numpy()[0]
 
         if verbose:
             print(f"\nWarp found {num_candidate_pair_val} pairs:")
@@ -1094,7 +1094,7 @@ class TestBroadPhase(unittest.TestCase):
 
         # Create random bounding boxes in min-max format
         ngeom = 40
-        num_worlds = 4
+        world_count = 4
 
         # Generate random centers and sizes
         rng = np.random.Generator(np.random.PCG64(789))
@@ -1116,7 +1116,7 @@ class TestBroadPhase(unittest.TestCase):
         np_collision_group[shared_indices] = -1
 
         # Randomly distribute objects across worlds
-        np_shape_world = rng.integers(0, num_worlds, size=ngeom, dtype=np.int32)
+        np_shape_world = rng.integers(0, world_count, size=ngeom, dtype=np.int32)
 
         # Make some entities global (world -1)
         num_global = max(3, ngeom // 10)
@@ -1162,7 +1162,7 @@ class TestBroadPhase(unittest.TestCase):
         collision_group = wp.array(np_collision_group)
         shape_world = wp.array(np_shape_world, dtype=wp.int32)
         shape_flags = wp.array(np_shape_flags, dtype=wp.int32)
-        num_candidate_pair = wp.array([0], dtype=wp.int32)
+        candidate_pair_count = wp.array([0], dtype=wp.int32)
         candidate_pair = wp.array(np.zeros((num_lower_tri_elements, 2), dtype=wp.int32), dtype=wp.vec2i)
 
         # Initialize SAP broad phase with shape_flags
@@ -1189,14 +1189,14 @@ class TestBroadPhase(unittest.TestCase):
             shape_world,
             ngeom,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         # Get results
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair_result = num_candidate_pair.numpy()[0]
+        num_candidate_pair_result = candidate_pair_count.numpy()[0]
 
         # Verify results
         if len(pairs_np) != num_candidate_pair_result:
@@ -1560,7 +1560,7 @@ class TestBroadPhase(unittest.TestCase):
         geom_cutoff = wp.array(np_geom_cutoff)
         collision_group = wp.array(np_collision_group)
         shape_world = wp.array(np_shape_world, dtype=wp.int32)
-        num_candidate_pair = wp.array([0], dtype=wp.int32)
+        candidate_pair_count = wp.array([0], dtype=wp.int32)
         candidate_pair = wp.array(np.zeros((num_lower_tri_elements, 2), dtype=wp.int32), dtype=wp.vec2i)
 
         # Initialize and launch NxN broad phase
@@ -1573,14 +1573,14 @@ class TestBroadPhase(unittest.TestCase):
             shape_world,
             ngeom,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         # Get results
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair_result = num_candidate_pair.numpy()[0]
+        num_candidate_pair_result = candidate_pair_count.numpy()[0]
 
         if verbose:
             print(f"\nWarp found {num_candidate_pair_result} pairs")
@@ -1969,7 +1969,7 @@ class TestBroadPhase(unittest.TestCase):
         geom_cutoff = wp.array(np_geom_cutoff)
         collision_group = wp.array(np_collision_group)
         shape_world = wp.array(np_shape_world, dtype=wp.int32)
-        num_candidate_pair = wp.array([0], dtype=wp.int32)
+        candidate_pair_count = wp.array([0], dtype=wp.int32)
         candidate_pair = wp.array(np.zeros((num_lower_tri_elements, 2), dtype=wp.int32), dtype=wp.vec2i)
 
         # Initialize and launch SAP broad phase
@@ -1982,14 +1982,14 @@ class TestBroadPhase(unittest.TestCase):
             shape_world,
             ngeom,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
         )
 
         wp.synchronize()
 
         # Get results
         pairs_wp = candidate_pair.numpy()
-        num_candidate_pair_result = num_candidate_pair.numpy()[0]
+        num_candidate_pair_result = candidate_pair_count.numpy()[0]
 
         if verbose:
             print(f"\nWarp found {num_candidate_pair_result} pairs")

@@ -221,7 +221,7 @@ def run(example, args):
 
 
 def compute_world_offsets(
-    num_worlds: int,
+    world_count: int,
     world_offset: tuple[float, float, float] = (5.0, 5.0, 0.0),
     up_axis: newton.AxisType = newton.Axis.Z,
 ):
@@ -241,13 +241,13 @@ def compute_world_offsets(
     nonzeros = np.nonzero(world_offset)[0]
     num_dim = nonzeros.shape[0]
     if num_dim > 0:
-        side_length = int(np.ceil(num_worlds ** (1.0 / num_dim)))
+        side_length = int(np.ceil(world_count ** (1.0 / num_dim)))
         world_offsets = []
         if num_dim == 1:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 world_offsets.append(i * world_offset)
         elif num_dim == 2:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 d0 = i // side_length
                 d1 = i % side_length
                 offset = np.zeros(3)
@@ -255,7 +255,7 @@ def compute_world_offsets(
                 offset[nonzeros[1]] = d1 * world_offset[nonzeros[1]]
                 world_offsets.append(offset)
         elif num_dim == 3:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 d0 = i // (side_length * side_length)
                 d1 = (i // side_length) % side_length
                 d2 = i % side_length
@@ -266,7 +266,7 @@ def compute_world_offsets(
                 world_offsets.append(offset)
         world_offsets = np.array(world_offsets)
     else:
-        world_offsets = np.zeros((num_worlds, 3))
+        world_offsets = np.zeros((world_count, 3))
     min_offsets = np.min(world_offsets, axis=0)
     correction = min_offsets + (np.max(world_offsets, axis=0) - min_offsets) / 2.0
     # ensure the envs are not shifted below the ground plane

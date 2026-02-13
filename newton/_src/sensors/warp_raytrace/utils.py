@@ -68,15 +68,15 @@ def flatten_color_image(
     buffer: wp.array(dtype=wp.uint8, ndim=3),
     width: wp.int32,
     height: wp.int32,
-    num_cameras: wp.int32,
-    num_worlds_per_row: wp.int32,
+    camera_count: wp.int32,
+    worlds_per_row: wp.int32,
 ):
     world_id, camera_id, y, x = wp.tid()
 
-    view_id = world_id * num_cameras + camera_id
+    view_id = world_id * camera_count + camera_id
 
-    row = view_id // num_worlds_per_row
-    col = view_id % num_worlds_per_row
+    row = view_id // worlds_per_row
+    col = view_id % worlds_per_row
 
     px = col * width + x
     py = row * height + y
@@ -94,15 +94,15 @@ def flatten_normal_image(
     buffer: wp.array(dtype=wp.uint8, ndim=3),
     width: wp.int32,
     height: wp.int32,
-    num_cameras: wp.int32,
-    num_worlds_per_row: wp.int32,
+    camera_count: wp.int32,
+    worlds_per_row: wp.int32,
 ):
     world_id, camera_id, y, x = wp.tid()
 
-    view_id = world_id * num_cameras + camera_id
+    view_id = world_id * camera_count + camera_id
 
-    row = view_id // num_worlds_per_row
-    col = view_id % num_worlds_per_row
+    row = view_id // worlds_per_row
+    col = view_id % worlds_per_row
 
     px = col * width + x
     py = row * height + y
@@ -130,15 +130,15 @@ def flatten_depth_image(
     depth_range: wp.array(dtype=wp.float32),
     width: wp.int32,
     height: wp.int32,
-    num_cameras: wp.int32,
-    num_worlds_per_row: wp.int32,
+    camera_count: wp.int32,
+    worlds_per_row: wp.int32,
 ):
     world_id, camera_id, y, x = wp.tid()
 
-    view_id = world_id * num_cameras + camera_id
+    view_id = world_id * camera_count + camera_id
 
-    row = view_id // num_worlds_per_row
-    col = view_id % num_worlds_per_row
+    row = view_id // worlds_per_row
+    col = view_id % worlds_per_row
 
     px = col * width + x
     py = row * height + y
@@ -170,13 +170,13 @@ class Utils:
     def compute_pinhole_camera_rays(self, width: int, height: int, camera_fovs: wp.array(dtype=wp.float32)) -> wp.array(
         dtype=wp.vec3f, ndim=4
     ):
-        num_cameras = camera_fovs.size
+        camera_count = camera_fovs.size
 
-        camera_rays = wp.empty((num_cameras, height, width, 2), dtype=wp.vec3f, device=self.__render_context.device)
+        camera_rays = wp.empty((camera_count, height, width, 2), dtype=wp.vec3f, device=self.__render_context.device)
 
         wp.launch(
             kernel=compute_pinhole_camera_rays,
-            dim=(num_cameras, height, width),
+            dim=(camera_count, height, width),
             inputs=[
                 width,
                 height,
@@ -192,21 +192,21 @@ class Utils:
         self,
         image: wp.array(dtype=wp.uint32, ndim=4),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
-        num_worlds_per_row: int | None = None,
+        worlds_per_row: int | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
-        num_cameras = image.shape[1]
+        camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]
 
-        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
-            width, height, num_cameras, out_buffer, num_worlds_per_row
+        out_buffer, worlds_per_row = self.__reshape_buffer_for_flatten(
+            width, height, camera_count, out_buffer, worlds_per_row
         )
 
         wp.launch(
             flatten_color_image,
             (
-                self.__render_context.num_worlds,
-                num_cameras,
+                self.__render_context.world_count,
+                camera_count,
                 height,
                 width,
             ),
@@ -215,8 +215,8 @@ class Utils:
                 out_buffer,
                 width,
                 height,
-                num_cameras,
-                num_worlds_per_row,
+                camera_count,
+                worlds_per_row,
             ],
             device=self.__render_context.device,
         )
@@ -226,21 +226,21 @@ class Utils:
         self,
         image: wp.array(dtype=wp.vec3f, ndim=4),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
-        num_worlds_per_row: int | None = None,
+        worlds_per_row: int | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
-        num_cameras = image.shape[1]
+        camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]
 
-        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
-            width, height, num_cameras, out_buffer, num_worlds_per_row
+        out_buffer, worlds_per_row = self.__reshape_buffer_for_flatten(
+            width, height, camera_count, out_buffer, worlds_per_row
         )
 
         wp.launch(
             flatten_normal_image,
             (
-                self.__render_context.num_worlds,
-                num_cameras,
+                self.__render_context.world_count,
+                camera_count,
                 height,
                 width,
             ),
@@ -249,8 +249,8 @@ class Utils:
                 out_buffer,
                 width,
                 height,
-                num_cameras,
-                num_worlds_per_row,
+                camera_count,
+                worlds_per_row,
             ],
             device=self.__render_context.device,
         )
@@ -260,15 +260,15 @@ class Utils:
         self,
         image: wp.array(dtype=wp.float32, ndim=4),
         out_buffer: wp.array(dtype=wp.uint8, ndim=3) | None = None,
-        num_worlds_per_row: int | None = None,
+        worlds_per_row: int | None = None,
         depth_range: wp.array(dtype=wp.float32) | None = None,
     ) -> wp.array(dtype=wp.uint8, ndim=3):
-        num_cameras = image.shape[1]
+        camera_count = image.shape[1]
         height = image.shape[2]
         width = image.shape[3]
 
-        out_buffer, num_worlds_per_row = self.__reshape_buffer_for_flatten(
-            width, height, num_cameras, out_buffer, num_worlds_per_row
+        out_buffer, worlds_per_row = self.__reshape_buffer_for_flatten(
+            width, height, camera_count, out_buffer, worlds_per_row
         )
 
         if depth_range is None:
@@ -278,8 +278,8 @@ class Utils:
         wp.launch(
             flatten_depth_image,
             (
-                self.__render_context.num_worlds,
-                num_cameras,
+                self.__render_context.world_count,
+                camera_count,
                 height,
                 width,
             ),
@@ -289,17 +289,17 @@ class Utils:
                 depth_range,
                 width,
                 height,
-                num_cameras,
-                num_worlds_per_row,
+                camera_count,
+                worlds_per_row,
             ],
             device=self.__render_context.device,
         )
         return out_buffer
 
     def assign_random_colors_per_world(self, seed: int = 100):
-        if not self.__render_context.num_shapes_total:
+        if not self.__render_context.shape_count_total:
             return
-        colors = np.random.default_rng(seed).random((self.__render_context.num_shapes_total, 4)) * 0.5 + 0.5
+        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
         self.__render_context.shape_colors = wp.array(
             colors[self.__render_context.shape_world_index.numpy() % len(colors)],
@@ -308,7 +308,7 @@ class Utils:
         )
 
     def assign_random_colors_per_shape(self, seed: int = 100):
-        colors = np.random.default_rng(seed).random((self.__render_context.num_shapes_total, 4)) * 0.5 + 0.5
+        colors = np.random.default_rng(seed).random((self.__render_context.shape_count_total, 4)) * 0.5 + 0.5
         colors[:, -1] = 1.0
         self.__render_context.shape_colors = wp.array(colors, dtype=wp.vec4f, device=self.__render_context.device)
 
@@ -353,7 +353,7 @@ class Utils:
         )
 
         self.__render_context.shape_materials = wp.array(
-            np.full(self.__render_context.num_shapes_total, fill_value=0, dtype=np.int32),
+            np.full(self.__render_context.shape_count_total, fill_value=0, dtype=np.int32),
             dtype=wp.int32,
             device=self.__render_context.device,
         )
@@ -362,24 +362,24 @@ class Utils:
         self,
         width: int,
         height: int,
-        num_cameras: int,
+        camera_count: int,
         out_buffer: wp.array | None = None,
-        num_worlds_per_row: int | None = None,
+        worlds_per_row: int | None = None,
     ) -> wp.array():
-        num_worlds_and_cameras = self.__render_context.num_worlds * num_cameras
-        if not num_worlds_per_row:
-            num_worlds_per_row = math.ceil(math.sqrt(num_worlds_and_cameras))
-        num_worlds_per_col = math.ceil(num_worlds_and_cameras / num_worlds_per_row)
+        world_and_camera_count = self.__render_context.world_count * camera_count
+        if not worlds_per_row:
+            worlds_per_row = math.ceil(math.sqrt(world_and_camera_count))
+        worlds_per_col = math.ceil(world_and_camera_count / worlds_per_row)
 
         if out_buffer is None:
             return wp.empty(
                 (
-                    num_worlds_per_col * height,
-                    num_worlds_per_row * width,
+                    worlds_per_col * height,
+                    worlds_per_row * width,
                     4,
                 ),
                 dtype=wp.uint8,
                 device=self.__render_context.device,
-            ), num_worlds_per_row
+            ), worlds_per_row
 
-        return out_buffer.reshape((num_worlds_per_col * height, num_worlds_per_row * width, 4)), num_worlds_per_row
+        return out_buffer.reshape((worlds_per_col * height, worlds_per_row * width, 4)), worlds_per_row

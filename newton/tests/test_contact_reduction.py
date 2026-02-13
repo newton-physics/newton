@@ -193,7 +193,7 @@ def _generate_test_contact(t: int) -> ContactStruct:
 
 def _create_reduction_test_kernel(reduction_funcs: ContactReductionFunctions):
     """Create a test kernel for contact reduction with shared memory."""
-    num_slots = reduction_funcs.num_reduction_slots
+    num_slots = reduction_funcs.reduction_slot_count
     store_reduced_contact = reduction_funcs.store_reduced_contact
     filter_unique_contacts = reduction_funcs.filter_unique_contacts
 
@@ -252,7 +252,7 @@ def test_reduction_functions_initialization(test, device):
     funcs = ContactReductionFunctions()
 
     # 20 bins * (6 directions + 1 max-depth) + 100 voxel slots = 140 + 100 = 240
-    test.assertEqual(funcs.num_reduction_slots, 240)
+    test.assertEqual(funcs.reduction_slot_count, 240)
 
 
 def test_reduction_functions_slot_count(test, device):
@@ -260,13 +260,13 @@ def test_reduction_functions_slot_count(test, device):
     funcs = ContactReductionFunctions()
 
     # 20 bins * (6 directions + 1 max-depth) + 100 voxel slots = 140 + 100 = 240
-    test.assertEqual(funcs.num_reduction_slots, 240)
+    test.assertEqual(funcs.reduction_slot_count, 240)
 
 
 def test_contact_reduction_produces_valid_output(test, device):
     """Test that contact reduction kernel produces valid output."""
     reduction_funcs = ContactReductionFunctions()
-    num_slots = reduction_funcs.num_reduction_slots
+    num_slots = reduction_funcs.reduction_slot_count
 
     # Create test kernel
     kernel = _create_reduction_test_kernel(reduction_funcs)
@@ -304,7 +304,7 @@ def test_contact_reduction_produces_valid_output(test, device):
 def test_contact_reduction_reduces_count(test, device):
     """Test that contact reduction reduces the number of contacts."""
     reduction_funcs = ContactReductionFunctions()
-    num_slots = reduction_funcs.num_reduction_slots
+    num_slots = reduction_funcs.reduction_slot_count
 
     kernel = _create_reduction_test_kernel(reduction_funcs)
 

@@ -21,7 +21,7 @@
 # simple random control policy.
 #
 # To limit the number of worlds to render use the max-worlds argument.
-# Command: python -m newton.examples selection_cartpole --num-worlds 16 --max-worlds 8
+# Command: python -m newton.examples selection_cartpole --world-count 16 --max-worlds 8
 #
 ###########################################################################
 
@@ -56,7 +56,7 @@ def apply_forces_kernel(joint_q: wp.array3d(dtype=float), joint_f: wp.array3d(dt
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=16, max_worlds=None, verbose=True):
+    def __init__(self, viewer, world_count=16, max_worlds=None, verbose=True):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -64,7 +64,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         world = newton.ModelBuilder()
         world.add_usd(
@@ -74,7 +74,7 @@ class Example:
         )
 
         scene = newton.ModelBuilder()
-        scene.replicate(world, num_worlds=self.num_worlds)
+        scene.replicate(world, world_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()
@@ -98,13 +98,13 @@ class Example:
         if USE_TORCH:
             import torch  # noqa: PLC0415
 
-            cart_positions = 2.0 - 4.0 * torch.rand(num_worlds)
-            pole1_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(num_worlds)
-            pole2_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(num_worlds)
+            cart_positions = 2.0 - 4.0 * torch.rand(world_count)
+            pole1_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(world_count)
+            pole2_angles = torch.pi / 8.0 - torch.pi / 4.0 * torch.rand(world_count)
             joint_q = torch.stack([cart_positions, pole1_angles, pole2_angles], dim=1)
         else:
             joint_q = self.cartpoles.get_attribute("joint_q", self.state_0)
-            wp.launch(randomize_states_kernel, dim=num_worlds, inputs=[joint_q, 42])
+            wp.launch(randomize_states_kernel, dim=world_count, inputs=[joint_q, 42])
 
         self.cartpoles.set_attribute("joint_q", self.state_0, joint_q)
 
@@ -176,13 +176,13 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        num_bodies_per_world = self.model.body_count // self.num_worlds
+        num_bodies_per_world = self.model.body_count // self.world_count
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "cart is at ground level and has correct orientation",
             lambda q, qd: q[2] == 0.0 and newton.math.vec_allclose(q.q, wp.quat_identity()),
-            indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
+            indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
@@ -192,7 +192,7 @@ class Example:
             and abs(qd[1]) > 0.05
             and qd[2] == 0.0
             and wp.length_sq(wp.spatial_bottom(qd)) == 0.0,
-            indices=[i * num_bodies_per_world for i in range(self.num_worlds)],
+            indices=[i * num_bodies_per_world for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
@@ -204,7 +204,7 @@ class Example:
             and abs(qd[3]) > 0.3
             and qd[4] == 0.0
             and qd[5] == 0.0,
-            indices=[i * num_bodies_per_world + 1 for i in range(self.num_worlds)],
+            indices=[i * num_bodies_per_world + 1 for i in range(self.world_count)],
         )
         newton.examples.test_body_state(
             self.model,
@@ -216,14 +216,14 @@ class Example:
             and abs(qd[3]) > 0.2
             and qd[4] == 0.0
             and qd[5] == 0.0,
-            indices=[i * num_bodies_per_world + 2 for i in range(self.num_worlds)],
+            indices=[i * num_bodies_per_world + 2 for i in range(self.world_count)],
         )
 
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--num-worlds",
+        "--world-count",
         type=int,
         default=16,
         help="Total number of simulated worlds.",
@@ -236,6 +236,6 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, num_worlds=args.num_worlds, max_worlds=args.max_worlds)
+    example = Example(viewer, world_count=args.world_count, max_worlds=args.max_worlds)
 
     newton.examples.run(example, args)

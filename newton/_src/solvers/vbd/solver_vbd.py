@@ -502,8 +502,8 @@ class SolverVBD(SolverBase):
                 max_contacts = getattr(model, "rigid_contact_max", 0) or 0
                 if max_contacts <= 0:
                     # Estimate from shape contact pairs (same heuristic previously in finalize())
-                    num_pairs = model.shape_contact_pair_count if hasattr(model, "shape_contact_pair_count") else 0
-                    max_contacts = max(10000, num_pairs * 20)
+                    pair_count = model.shape_contact_pair_count if hasattr(model, "shape_contact_pair_count") else 0
+                    max_contacts = max(10000, pair_count * 20)
                 # Per-contact AVBD penalty for body-body contacts
                 self.body_body_contact_penalty_k = wp.full(
                     (max_contacts,), self.k_start_body_contact, dtype=float, device=self.device

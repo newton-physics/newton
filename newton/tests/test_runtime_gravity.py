@@ -231,14 +231,14 @@ def test_per_world_gravity_bodies(test, device, solver_fn):
 
     # Create main builder with 3 worlds
     main_builder = newton.ModelBuilder(gravity=-9.81)
-    num_worlds = 3
-    main_builder.replicate(world_builder, num_worlds)
+    world_count = 3
+    main_builder.replicate(world_builder, world_count)
 
     model = main_builder.finalize(device=device)
     solver = solver_fn(model)
 
     # Verify gravity array has correct size
-    test.assertEqual(model.gravity.shape[0], num_worlds)
+    test.assertEqual(model.gravity.shape[0], world_count)
 
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -383,8 +383,8 @@ def test_set_gravity_array(test, device):
     builder = newton.ModelBuilder(gravity=-9.81)
 
     # Create 4 worlds with particles (curriculum learning scenario)
-    num_worlds = 4
-    for world_idx in range(num_worlds):
+    world_count = 4
+    for world_idx in range(world_count):
         builder.begin_world()
         builder.add_particle(pos=(world_idx * 2.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
         builder.end_world()
@@ -393,14 +393,14 @@ def test_set_gravity_array(test, device):
     solver = SolverXPBD(model)
 
     # Set curriculum gravity: gradually increase from 0 to full
-    gravities = np.array([[0.0, 0.0, g * -9.81] for g in np.linspace(0.0, 1.0, num_worlds)], dtype=np.float32)
+    gravities = np.array([[0.0, 0.0, g * -9.81] for g in np.linspace(0.0, 1.0, world_count)], dtype=np.float32)
 
     model.set_gravity(gravities)
     solver.notify_model_changed(newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES)
 
     # Verify gravity was set correctly
     gravity_np = model.gravity.numpy()
-    for i in range(num_worlds):
+    for i in range(world_count):
         expected_g = gravities[i, 2]
         test.assertAlmostEqual(gravity_np[i, 2], expected_g, places=4)
 
@@ -416,7 +416,7 @@ def test_set_gravity_array(test, device):
 
     # Check velocities increase with gravity
     particle_qd = state_0.particle_qd.numpy()
-    for i in range(num_worlds - 1):
+    for i in range(world_count - 1):
         z_vel_i = particle_qd[i, 2]
         z_vel_next = particle_qd[i + 1, 2]
         # Each subsequent world should be falling faster (more negative velocity)
@@ -459,16 +459,16 @@ def test_replicate_gravity(test, device):
     robot.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     # Replicate into a main builder (which has default gravity -9.81)
-    num_worlds = 3
+    world_count = 3
     worlds = newton.ModelBuilder()
-    worlds.replicate(robot, num_worlds)
+    worlds.replicate(robot, world_count)
 
     model = worlds.finalize(device=device)
     gravity = model.gravity.numpy()
 
     # All worlds should have zero gravity (inherited from robot builder)
-    test.assertEqual(len(gravity), num_worlds)
-    for i in range(num_worlds):
+    test.assertEqual(len(gravity), world_count)
+    for i in range(world_count):
         np.testing.assert_allclose(gravity[i], [0.0, 0.0, 0.0], atol=1e-6)
 
 
@@ -479,16 +479,16 @@ def test_replicate_gravity_nonzero(test, device):
     robot.add_particle(pos=(0.0, 0.0, 1.0), vel=(0.0, 0.0, 0.0), mass=1.0)
 
     # Replicate into a main builder
-    num_worlds = 2
+    world_count = 2
     worlds = newton.ModelBuilder()
-    worlds.replicate(robot, num_worlds)
+    worlds.replicate(robot, world_count)
 
     model = worlds.finalize(device=device)
     gravity = model.gravity.numpy()
 
     # All worlds should have half gravity (inherited from robot builder)
-    test.assertEqual(len(gravity), num_worlds)
-    for i in range(num_worlds):
+    test.assertEqual(len(gravity), world_count)
+    for i in range(world_count):
         np.testing.assert_allclose(gravity[i], [0.0, 0.0, -4.905], atol=1e-6)
 
 

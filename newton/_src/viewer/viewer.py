@@ -161,8 +161,8 @@ class ViewerBase:
         if self.model is None:
             return 0
         if self.max_worlds is None:
-            return self.model.num_worlds
-        return min(self.max_worlds, self.model.num_worlds)
+            return self.model.world_count
+        return min(self.max_worlds, self.model.world_count)
 
     def _get_shape_isomesh(self, shape_idx: int):
         """Get the isomesh for a collision shape with an SDF volume.
@@ -216,7 +216,7 @@ class ViewerBase:
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        num_worlds = self._get_render_world_count()
+        world_count = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -226,7 +226,7 @@ class ViewerBase:
             spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
         # Compute offsets using the shared utility function
-        world_offsets = compute_world_offsets(num_worlds, spacing, up_axis)
+        world_offsets = compute_world_offsets(world_count, spacing, up_axis)
 
         # Convert to warp array
         self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
@@ -236,11 +236,11 @@ class ViewerBase:
         if self.model is None:
             return None
 
-        num_worlds = self.model.num_worlds
+        world_count = self.model.world_count
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), MAXVAL, dtype=wp.float32, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), -MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_min = wp.full((world_count, 3), MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((world_count, 3), -MAXVAL, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()
@@ -255,7 +255,7 @@ class ViewerBase:
                 self.model.shape_collision_radius,
                 self.model.shape_world,
                 state.body_q,
-                num_worlds,
+                world_count,
             ],
             outputs=[world_bounds_min, world_bounds_max],
             device=self.device,

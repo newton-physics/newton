@@ -48,7 +48,7 @@ def check_conditional_graph_support():
     return wp.is_conditional_graph_supported()
 
 
-def compute_world_offsets(num_worlds: int, spacing: tuple[float, float, float], up_axis: Any = None):
+def compute_world_offsets(world_count: int, spacing: tuple[float, float, float], up_axis: Any = None):
     """
     Compute positional offsets for multiple worlds arranged in a grid.
 
@@ -57,17 +57,17 @@ def compute_world_offsets(num_worlds: int, spacing: tuple[float, float, float], 
     based on the non-zero dimensions in the spacing tuple.
 
     Args:
-        num_worlds (int): The number of worlds to arrange.
+        world_count (int): The number of worlds to arrange.
         spacing (tuple[float, float, float]): The spacing between worlds along each axis.
             Non-zero values indicate active dimensions for the grid layout.
         up_axis (Any, optional): The up axis to ensure worlds are not shifted below the ground plane.
             If provided, the offset correction along this axis will be zero.
 
     Returns:
-        np.ndarray: An array of shape (num_worlds, 3) containing the 3D offsets for each world.
+        np.ndarray: An array of shape (world_count, 3) containing the 3D offsets for each world.
     """
     # Handle edge case
-    if num_worlds <= 0:
+    if world_count <= 0:
         return np.zeros((0, 3), dtype=np.float32)
 
     # Compute positional offsets per world
@@ -76,14 +76,14 @@ def compute_world_offsets(num_worlds: int, spacing: tuple[float, float, float], 
     num_dim = nonzeros.shape[0]
 
     if num_dim > 0:
-        side_length = int(np.ceil(num_worlds ** (1.0 / num_dim)))
+        side_length = int(np.ceil(world_count ** (1.0 / num_dim)))
         spacings = []
 
         if num_dim == 1:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 spacings.append(i * spacing)
         elif num_dim == 2:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 d0 = i // side_length
                 d1 = i % side_length
                 offset = np.zeros(3)
@@ -91,7 +91,7 @@ def compute_world_offsets(num_worlds: int, spacing: tuple[float, float, float], 
                 offset[nonzeros[1]] = d1 * spacing[nonzeros[1]]
                 spacings.append(offset)
         elif num_dim == 3:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 d0 = i // (side_length * side_length)
                 d1 = (i // side_length) % side_length
                 d2 = i % side_length
@@ -103,7 +103,7 @@ def compute_world_offsets(num_worlds: int, spacing: tuple[float, float, float], 
 
         spacings = np.array(spacings, dtype=np.float32)
     else:
-        spacings = np.zeros((num_worlds, 3), dtype=np.float32)
+        spacings = np.zeros((world_count, 3), dtype=np.float32)
 
     # Center the grid
     min_offsets = np.min(spacings, axis=0)
