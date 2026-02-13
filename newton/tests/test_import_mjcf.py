@@ -5831,3 +5831,45 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
             )
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent_xform", str(ctx.exception))
+
+
+class TestZeroMassBodies(unittest.TestCase):
+    """Test that ensure_nonstatic_links handles zero-mass bodies correctly."""
+
+    def test_ensure_nonstatic_links_default_false(self):
+        """ensure_nonstatic_links defaults to False — zero-mass bodies keep zero mass."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="empty_body" pos="0.5 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        empty_idx = next(i for i in range(builder.body_count) if builder.body_key[i] == "empty_body")
+        self.assertEqual(builder.body_mass[empty_idx], 0.0)
+
+    def test_ensure_nonstatic_links_opt_in(self):
+        """ensure_nonstatic_links=True gives zero-mass bodies a small mass."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="empty_body" pos="0.5 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ensure_nonstatic_links=True)
+
+        empty_idx = next(i for i in range(builder.body_count) if builder.body_key[i] == "empty_body")
+        self.assertGreater(builder.body_mass[empty_idx], 0.0)
