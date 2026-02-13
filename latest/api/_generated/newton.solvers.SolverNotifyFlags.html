@@ -856,12 +856,12 @@ allowing the solver to efficiently update only the necessary components.</p>
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.solvers.SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES">
-<span class="sig-name descname"><span class="pre">EQUALITY_CONSTRAINT_PROPERTIES</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">64</span></em><a class="headerlink" href="#newton.solvers.SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES" title="Link to this definition">#</a></dt>
-<dd><p>equality_constraint_anchor, equality_constraint_relpose, equality_constraint_polycoef, equality_constraint_torquescale, equality_constraint_enabled, and mujoco.eq_solref, mujoco.eq_solimp custom attributes.</p>
+<dt class="sig sig-object py" id="newton.solvers.SolverNotifyFlags.CONSTRAINT_PROPERTIES">
+<span class="sig-name descname"><span class="pre">CONSTRAINT_PROPERTIES</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">64</span></em><a class="headerlink" href="#newton.solvers.SolverNotifyFlags.CONSTRAINT_PROPERTIES" title="Link to this definition">#</a></dt>
+<dd><p>equality constraints (equality_constraint_anchor, equality_constraint_relpose, equality_constraint_polycoef, equality_constraint_torquescale, equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled).</p>
 <dl class="field-list simple">
 <dt class="field-odd">Type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>Indicates equality constraint property updates</p>
+<dd class="field-odd"><p>Indicates constraint property updates</p>
 </dd>
 </dl>
 </dd></dl>
@@ -953,7 +953,7 @@ allowing the solver to efficiently update only the necessary components.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.ALL"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.ALL</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.BODY_INERTIAL_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.BODY_INERTIAL_PROPERTIES</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.BODY_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.BODY_PROPERTIES</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.CONSTRAINT_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.CONSTRAINT_PROPERTIES</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.JOINT_DOF_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.JOINT_DOF_PROPERTIES</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.JOINT_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.JOINT_PROPERTIES</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverNotifyFlags.MODEL_PROPERTIES"><code class="docutils literal notranslate"><span class="pre">SolverNotifyFlags.MODEL_PROPERTIES</span></code></a></li>
