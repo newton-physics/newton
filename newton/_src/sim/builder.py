@@ -4927,6 +4927,8 @@ class ModelBuilder:
         Returns:
             int: The index of the newly added shape.
         """
+        if heightfield is None:
+            raise ValueError("add_shape_heightfield() requires a Heightfield instance.")
         if cfg is None:
             cfg = self.default_shape_cfg
 

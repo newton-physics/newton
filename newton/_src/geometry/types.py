@@ -473,8 +473,8 @@ class Heightfield:
                 accepted and will be normalized to [0, 1] internally.
             nrow: Number of rows in the heightfield grid.
             ncol: Number of columns in the heightfield grid.
-            hx: Half-extent in X direction (meters). The heightfield spans [-hx, +hx].
-            hy: Half-extent in Y direction (meters). The heightfield spans [-hy, +hy].
+            hx: Half-extent in X direction. The heightfield spans [-hx, +hx].
+            hy: Half-extent in Y direction. The heightfield spans [-hy, +hy].
             min_z: World-space Z value corresponding to data minimum. Must be provided
                 together with ``max_z``, or both omitted to auto-derive from data.
             max_z: World-space Z value corresponding to data maximum. Must be provided

@@ -106,7 +106,7 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | Heightfie
         else:
             return 1.0e6
     elif geo_type == GeoType.HFIELD:
-        # Heightfield bounding sphere from half-extents
+        # Heightfield bounding sphere — hx/hy are already half-extents
         if src is not None:
             half_x = src.hx * scale[0]
             half_y = src.hy * scale[1]
