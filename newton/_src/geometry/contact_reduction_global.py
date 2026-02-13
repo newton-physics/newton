@@ -878,7 +878,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     # Define vector type for tracking exported contact IDs
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def export_reduced_contacts_kernel(
         # Hashtable arrays
         ht_keys: wp.array(dtype=wp.uint64),
@@ -982,7 +982,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     return export_reduced_contacts_kernel
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel(enable_backward=False, module="unique")
 def mesh_triangle_contacts_to_reducer_kernel(
     shape_types: wp.array(dtype=int),
     shape_data: wp.array(dtype=wp.vec4),

@@ -682,7 +682,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     writer_func: Any,
     contact_reduction_funcs: ContactReductionFunctions | None = None,
 ):
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def mesh_sdf_collision_kernel(
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
@@ -896,7 +896,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     get_smem_slots_plus_1 = contact_reduction_funcs.get_smem_slots_plus_1
     get_smem_slots_contacts = contact_reduction_funcs.get_smem_slots_contacts
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def mesh_sdf_collision_reduce_kernel(
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
