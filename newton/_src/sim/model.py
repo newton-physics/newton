@@ -712,6 +712,9 @@ class Model:
         self.attribute_frequency["shape_scale"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
 
+        self.actuators = []
+        """List of actuator instances for this model."""
+
     def state(self, requires_grad: bool | None = None) -> State:
         """
         Create and return a new :class:`State` object for this model.

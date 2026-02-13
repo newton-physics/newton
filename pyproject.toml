@@ -30,6 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Actuator support
+actuators = [
+    "newton-actuators",
+]
+
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
@@ -133,7 +138,7 @@ warp-lang = { index = "nvidia" }
 torch = [{ index = "pytorch-cu128", extra = "torch-cu12" }]
 
 [dependency-groups]
-dev = ["asv>=0.6.4"]
+dev = ["asv>=0.6.4", "newton-actuators"]
 
 [tool.ruff]
 cache-dir = ".cache/ruff"
