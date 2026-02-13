@@ -83,15 +83,18 @@ These are changes/workarounds made to get tests passing that should be revisited
    - mujoco_warp shows non-deterministic behavior when using two separate data objects
      with the same model and >8 worlds (even with identical initial state and control)
    - This is NOT a Newton bug - it reproduces with pure mujoco_warp code
-   - ROOT CAUSE: wp.atomic_add() in broadphase collision detection allocates contact
-     pair IDs non-deterministically. Same contacts get stored at different array indices.
-     Different index ordering → different floating-point accumulation order in solver
-     → divergent qfrc_constraint and qacc.
-   - Verified: 8 worlds = deterministic (0.00 diff), 9+ worlds = non-deterministic (~1e-2)
-   - Verified: Contact data (geom, pos, frame) matches when aligned by position
-   - Verified: Same data object run twice is deterministic (diffs ~1e-8)
-   - Workaround: Accept looser tolerances (1e-4 to 1e-2) when constraints are active
-   - TODO: Report upstream to mujoco_warp team - need deterministic contact ordering
+   - ROOT CAUSE (two layers):
+     a) wp.atomic_add() in broadphase collision allocates contact pair IDs
+        non-deterministically. Same contacts stored at different array indices.
+     b) wp.atomic_add() in make_constraint allocates efc row indices
+        non-deterministically. Same constraints stored at different row order.
+        Different ordering → different float accumulation in solver → divergent qacc.
+   - Verified: Contact data (geom, pos, frame) matches when sorted by key
+   - Verified: Constraint rows (J, D, aref) match when sorted by (type, id)
+   - Verified: With contact + constraint injection, results are bit-identical
+   - Workaround: Inject contacts AND constraints from Newton → native to bypass both
+     sources of non-determinism. Compare sorted rows to verify equivalence.
+   - TODO: Report upstream to mujoco_warp team - need deterministic ordering
 
 10. BODY_POS/BODY_QUAT RECOMPUTATION
    - Newton recomputes body_pos/body_quat from joint transforms during SolverMuJoCo
@@ -785,7 +788,7 @@ def run_native_step1_rest(
 ) -> None:
     """Run rest of step1 after fwd_position: sensors + fwd_velocity.
 
-    Call this after run_native_fwd_position_post_constraint().
+    Call this after run_native_make_constraint() or run_native_transmission().
     """
     from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
     from mujoco_warp._src import sensor  # noqa: PLC0415
@@ -838,19 +841,24 @@ def run_native_fwd_position_pre_constraint(
         collision_driver.collision(m, d)
 
 
-def run_native_fwd_position_post_constraint(
+def run_native_make_constraint(
     native_model: Any,
     native_data: Any,
 ) -> None:
-    """Run mujoco_warp fwd_position after contact injection: make_constraint + transmission."""
-    from mujoco_warp._src import (  # noqa: PLC0415
-        constraint,
-        smooth,
-    )
+    """Run mujoco_warp make_constraint only."""
+    from mujoco_warp._src import constraint  # noqa: PLC0415
 
-    m, d = native_model, native_data
-    constraint.make_constraint(m, d)
-    smooth.transmission(m, d)
+    constraint.make_constraint(native_model, native_data)
+
+
+def run_native_transmission(
+    native_model: Any,
+    native_data: Any,
+) -> None:
+    """Run mujoco_warp transmission only (after constraint injection)."""
+    from mujoco_warp._src import smooth  # noqa: PLC0415
+
+    smooth.transmission(native_model, native_data)
 
 
 def run_native_step2(
@@ -988,7 +996,124 @@ def compare_contacts_sorted(
         f"OK (sig={len(common_contacts)}, boundary: newton={boundary_only_newton}, native={boundary_only_native})",
     )
 
-    return True, f"OK ({nacon_newton} contacts)"
+
+def compare_constraints_sorted(
+    newton_data: Any,
+    native_data: Any,
+    tol: float = 1e-5,
+) -> tuple[bool, str]:
+    """Compare constraint rows between Newton and native, allowing reordering.
+
+    mujoco_warp's make_constraint allocates efc row indices via wp.atomic_add(),
+    so identical contacts produce identical constraint rows but in non-deterministic
+    order. This function verifies the rows match by sorting each world's constraints
+    by a deterministic key (type, id, J-hash).
+
+    Args:
+        newton_data: Newton's MjWarpData
+        native_data: Native MuJoCo's MjWarpData
+        tol: Tolerance for numeric comparisons (D, aref, pos, vel)
+
+    Returns:
+        (matches, message) - True if constraint rows match modulo ordering.
+    """
+    wp.synchronize()
+
+    nefc_newton = newton_data.nefc.numpy()
+    nefc_native = native_data.nefc.numpy()
+
+    # Constraint counts per world must match
+    if not np.array_equal(nefc_newton, nefc_native):
+        diff_worlds = np.where(nefc_newton != nefc_native)[0]
+        return False, (
+            f"nefc mismatch in {len(diff_worlds)} worlds, "
+            f"e.g. world {diff_worlds[0]}: newton={nefc_newton[diff_worlds[0]]} native={nefc_native[diff_worlds[0]]}"
+        )
+
+    nworld = len(nefc_newton)
+
+    # Get constraint arrays
+    newton_type = newton_data.efc.type.numpy()  # (nworld, njmax)
+    native_type = native_data.efc.type.numpy()
+    newton_id = newton_data.efc.id.numpy()
+    native_id = native_data.efc.id.numpy()
+    newton_D = newton_data.efc.D.numpy()
+    native_D = native_data.efc.D.numpy()
+    newton_J = newton_data.efc.J.numpy()
+    native_J = native_data.efc.J.numpy()
+    newton_aref = newton_data.efc.aref.numpy()
+    native_aref = native_data.efc.aref.numpy()
+
+    max_D_diff = 0.0
+    max_J_diff = 0.0
+    max_aref_diff = 0.0
+
+    for w in range(nworld):
+        n = int(nefc_newton[w])
+        if n == 0:
+            continue
+
+        # Build sort keys: (type, id) for each row — deterministic per constraint
+        newton_keys = [(int(newton_type[w, i]), int(newton_id[w, i])) for i in range(n)]
+        native_keys = [(int(native_type[w, i]), int(native_id[w, i])) for i in range(n)]
+
+        newton_order = sorted(range(n), key=lambda i: newton_keys[i])
+        native_order = sorted(range(n), key=lambda i: native_keys[i])
+
+        # Verify keys match after sorting
+        sorted_newton_keys = [newton_keys[i] for i in newton_order]
+        sorted_native_keys = [native_keys[i] for i in native_order]
+        if sorted_newton_keys != sorted_native_keys:
+            # Find first mismatch
+            for k in range(n):
+                if sorted_newton_keys[k] != sorted_native_keys[k]:
+                    return False, (
+                        f"world {w}: constraint key mismatch at sorted pos {k}: "
+                        f"newton={sorted_newton_keys[k]} native={sorted_native_keys[k]}"
+                    )
+
+        # Compare numeric fields in sorted order
+        for k in range(n):
+            ni, nai = newton_order[k], native_order[k]
+            max_D_diff = max(max_D_diff, abs(float(newton_D[w, ni] - native_D[w, nai])))
+            max_J_diff = max(max_J_diff, float(np.max(np.abs(newton_J[w, ni] - native_J[w, nai]))))
+            max_aref_diff = max(max_aref_diff, abs(float(newton_aref[w, ni] - native_aref[w, nai])))
+
+    if max_D_diff > tol:
+        return False, f"efc.D diff: {max_D_diff:.2e} > tol {tol:.0e}"
+    if max_J_diff > tol:
+        return False, f"efc.J diff: {max_J_diff:.2e} > tol {tol:.0e}"
+    if max_aref_diff > tol:
+        return False, f"efc.aref diff: {max_aref_diff:.2e} > tol {tol:.0e}"
+
+    total = int(nefc_newton.sum())
+    return True, f"OK ({total} constraints, max D diff={max_D_diff:.2e}, J diff={max_J_diff:.2e})"
+
+
+def inject_constraints(src_data: Any, dst_data: Any) -> None:
+    """Copy all constraint (efc) arrays from src_data to dst_data.
+
+    This ensures both Newton and native use identical constraint data for solving,
+    bypassing the non-deterministic constraint row ordering from wp.atomic_add()
+    in make_constraint.
+    """
+    # Constraint counts
+    dst_data.ne.assign(src_data.ne)
+    dst_data.nf.assign(src_data.nf)
+    dst_data.nl.assign(src_data.nl)
+    dst_data.nefc.assign(src_data.nefc)
+    # Constraint arrays
+    dst_data.efc.type.assign(src_data.efc.type)
+    dst_data.efc.id.assign(src_data.efc.id)
+    dst_data.efc.J.assign(src_data.efc.J)
+    dst_data.efc.pos.assign(src_data.efc.pos)
+    dst_data.efc.margin.assign(src_data.efc.margin)
+    dst_data.efc.D.assign(src_data.efc.D)
+    dst_data.efc.vel.assign(src_data.efc.vel)
+    dst_data.efc.aref.assign(src_data.efc.aref)
+    dst_data.efc.frictionloss.assign(src_data.efc.frictionloss)
+    dst_data.efc.state.assign(src_data.efc.state)
+    wp.synchronize()
 
 
 def compare_mjdata_field(
@@ -1483,21 +1608,23 @@ class TestMenagerieBase(unittest.TestCase):
     backfill_model: bool = False
     backfill_fields: list[str] | None = None  # None = use MODEL_BACKFILL_FIELDS
 
-    # Contact injection mode: When True, uses a split pipeline for native mujoco_warp:
+    # Split pipeline mode: When True, uses a split pipeline for native mujoco_warp:
     #   1. Newton runs full step (forward + euler)
-    #   2. Native runs kinematics + collision only
-    #   3. Verify contacts match (sorted comparison)
-    #   4. Inject Newton's contacts into native
-    #   5. Native runs constraint + solve + euler
-    #   6. Compare post-euler states
+    #   2. Native runs kinematics + collision
+    #   3. Verify contacts match (sorted), inject Newton's contacts
+    #   4. Native runs make_constraint
+    #   5. Verify constraints match (sorted), inject Newton's constraints
+    #   6. Native runs transmission + step1_rest + step2
     #
-    # This bypasses the mujoco_warp non-determinism issue with >8 worlds by ensuring
-    # both sides use identical contact data. Enables tight tolerances (1e-6) even with
-    # 32+ worlds and active constraints.
+    # This bypasses two layers of mujoco_warp non-determinism:
+    #   a) wp.atomic_add() in broadphase → non-deterministic contact ordering
+    #   b) wp.atomic_add() in make_constraint → non-deterministic constraint row ordering
+    # By injecting both contacts and constraints, both sides use identical data for
+    # the solver, enabling bit-identical results even with 34+ worlds.
     #
     # When False (default), runs both full pipelines and compares (may need looser
     # tolerances for >8 worlds with constraints).
-    use_contact_injection: bool = False
+    use_split_pipeline: bool = False
 
     @classmethod
     def setUpClass(cls):
@@ -1729,16 +1856,19 @@ class TestMenagerieBase(unittest.TestCase):
             step_num: int,
             newton_graph: Any = None,
             pre_constraint_graph: Any = None,
+            make_constraint_graph: Any = None,
             post_constraint_graph: Any = None,
         ):
             """
-            Split pipeline that injects Newton's contacts into native to bypass non-determinism.
+            Split pipeline that injects contacts and constraints to bypass non-determinism.
 
             Flow:
             1. Newton: full step (forward + integrate)
-            2. Native: fwd_position_pre_constraint (kinematics through collision)
-            3. Sync, verify contacts match (sorted), inject Newton's contacts
-            4. Native: fwd_position_post_constraint + step1_rest + step2
+            2. Native: kinematics through collision
+            3. Verify contacts match (sorted), inject Newton's contacts
+            4. Native: make_constraint
+            5. Verify constraints match (sorted), inject Newton's constraints
+            6. Native: transmission + step1_rest + step2
             """
             t = step_num * dt
             self.control_strategy.fill_control(t)  # type: ignore[union-attr]
@@ -1749,26 +1879,39 @@ class TestMenagerieBase(unittest.TestCase):
             else:
                 newton_solver.step(newton_state, newton_state, newton_control, None, dt)
 
-            # 2. Native: fwd_position_pre_constraint (kinematics through collision)
+            # 2. Native: kinematics through collision
             if pre_constraint_graph:
                 wp.capture_launch(pre_constraint_graph)
             else:
                 run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
             wp.synchronize()
 
-            # 3. Verify contacts match (sorted comparison)
+            # 3. Verify contacts match (sorted), inject
             contacts_match, contact_msg = compare_contacts_sorted(newton_solver.mjw_data, native_mjw_data, tol=1e-5)
             if not contacts_match:
                 raise AssertionError(f"Step {step_num}: Contact mismatch - {contact_msg}")
-
-            # 4. Inject Newton's contacts into native
             inject_contacts(newton_solver.mjw_data, native_mjw_data)
 
-            # 5. Native: fwd_position_post_constraint + step1_rest + step2
+            # 4. Native: make_constraint
+            if make_constraint_graph:
+                wp.capture_launch(make_constraint_graph)
+            else:
+                run_native_make_constraint(native_mjw_model, native_mjw_data)
+            wp.synchronize()
+
+            # 5. Verify constraints match (sorted), inject
+            constraints_match, constraint_msg = compare_constraints_sorted(
+                newton_solver.mjw_data, native_mjw_data, tol=1e-5
+            )
+            if not constraints_match:
+                raise AssertionError(f"Step {step_num}: Constraint mismatch - {constraint_msg}")
+            inject_constraints(newton_solver.mjw_data, native_mjw_data)
+
+            # 6. Native: transmission + step1_rest + step2
             if post_constraint_graph:
                 wp.capture_launch(post_constraint_graph)
             else:
-                run_native_fwd_position_post_constraint(native_mjw_model, native_mjw_data)
+                run_native_transmission(native_mjw_model, native_mjw_data)
                 run_native_step1_rest(native_mjw_model, native_mjw_data)
                 run_native_step2(native_mjw_model, native_mjw_data)
             wp.synchronize()
@@ -1790,6 +1933,7 @@ class TestMenagerieBase(unittest.TestCase):
         native_graph = None
         # For contact injection mode:
         pre_constraint_graph = None
+        make_constraint_graph = None
         post_constraint_graph = None
 
         # Compare/print initial state
@@ -1806,8 +1950,8 @@ class TestMenagerieBase(unittest.TestCase):
             if viewer and not viewer.is_running():
                 break
 
-            if self.use_contact_injection:
-                # Contact injection: capture graphs on step 0, use thereafter
+            if self.use_split_pipeline:
+                # Contact+constraint injection: capture graphs on step 0, use thereafter
                 if step == 0 and use_cuda_graph:
                     self.control_strategy.fill_control(0.0)  # type: ignore[union-attr]
 
@@ -1816,7 +1960,7 @@ class TestMenagerieBase(unittest.TestCase):
                         newton_solver.step(newton_state, newton_state, newton_control, None, dt)
                     newton_graph = capture.graph
 
-                    # Capture native fwd_position_pre_constraint (kinematics through collision)
+                    # Capture native kinematics through collision
                     with wp.ScopedCapture() as capture:
                         run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
                     pre_constraint_graph = capture.graph
@@ -1830,16 +1974,32 @@ class TestMenagerieBase(unittest.TestCase):
                         raise AssertionError(f"Step {step}: Contact mismatch - {contact_msg}")
                     inject_contacts(newton_solver.mjw_data, native_mjw_data)
 
-                    # Capture native post-constraint + step1_rest + step2
+                    # Capture native make_constraint
                     with wp.ScopedCapture() as capture:
-                        run_native_fwd_position_post_constraint(native_mjw_model, native_mjw_data)
+                        run_native_make_constraint(native_mjw_model, native_mjw_data)
+                    make_constraint_graph = capture.graph
+                    wp.synchronize()
+
+                    # Compare and inject constraints (not in graph - data-dependent)
+                    constraints_match, constraint_msg = compare_constraints_sorted(
+                        newton_solver.mjw_data, native_mjw_data, tol=1e-5
+                    )
+                    if not constraints_match:
+                        raise AssertionError(f"Step {step}: Constraint mismatch - {constraint_msg}")
+                    inject_constraints(newton_solver.mjw_data, native_mjw_data)
+
+                    # Capture native transmission + step1_rest + step2
+                    with wp.ScopedCapture() as capture:
+                        run_native_transmission(native_mjw_model, native_mjw_data)
                         run_native_step1_rest(native_mjw_model, native_mjw_data)
                         run_native_step2(native_mjw_model, native_mjw_data)
                     post_constraint_graph = capture.graph
                     wp.synchronize()
                 else:
                     # Use captured graphs (or fallback if not available)
-                    step_with_contact_injection(step, newton_graph, pre_constraint_graph, post_constraint_graph)
+                    step_with_contact_injection(
+                        step, newton_graph, pre_constraint_graph, make_constraint_graph, post_constraint_graph
+                    )
             elif step == 0 and use_cuda_graph:
                 # Step 0: capture CUDA graphs if available (full pipeline mode only)
                 self.control_strategy.fill_control(0.0)  # type: ignore[union-attr]
@@ -2186,40 +2346,12 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     num_worlds = 34
     num_steps = 500
 
-    # Structured control causes correlated errors that compound over time.
-    # Backfill eliminates model compilation differences, contact injection
-    # bypasses mujoco_warp non-determinism with >8 worlds.
+    # Backfill eliminates model compilation differences (inertia re-diagonalization).
+    # Contact injection bypasses non-deterministic contact ordering in broadphase.
+    # Constraint injection bypasses non-deterministic efc row ordering in make_constraint.
+    # Together these give bit-identical results, so no tolerance overrides needed.
     backfill_model = True
-    use_contact_injection = True
-
-    # Tolerance overrides: structured control needs looser tolerances than random
-    # because errors compound coherently rather than canceling statistically.
-    tolerance_overrides: ClassVar[dict[str, float]] = {
-        # Kinematics: 1e-5 (small drift from integration + solver non-determinism)
-        "qpos": 1e-5,
-        "xpos": 1e-5,
-        "xquat": 1e-5,
-        "xmat": 1e-5,
-        "geom_xpos": 1e-5,
-        "geom_xmat": 1e-5,
-        "site_xpos": 1e-5,
-        "site_xmat": 1e-5,
-        "subtree_com": 1e-5,
-        "actuator_length": 1e-5,
-        "qfrc_passive": 1e-5,
-        "energy": 1e-5,
-        "qM": 1e-5,
-        # Dynamics: looser (compound over 500 steps)
-        "qvel": 1e-3,
-        "cacc": 1e-3,
-        "cvel": 1e-3,
-        "actuator_velocity": 1e-3,
-        "qfrc_bias": 1e-3,
-        "qacc": 0.5,
-        "qfrc_actuator": 0.05,
-        "actuator_force": 0.05,
-        "cfrc_int": 0.02,
-    }
+    use_split_pipeline = True
 
 
 class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
