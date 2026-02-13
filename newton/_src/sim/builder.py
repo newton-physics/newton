@@ -4922,7 +4922,7 @@ class ModelBuilder:
             narrow_band_range: (inner, outer) distance range for SDF computation in meters.
             contact_margin: Contact detection margin in meters.
         """
-        if max_resolution % 8 != 0:
+        if target_voxel_size is None and max_resolution % 8 != 0:
             raise ValueError(
                 f"max_resolution must be divisible by 8 (got {max_resolution}). "
                 "This is required because SDF volumes are allocated in 8x8x8 tiles."
