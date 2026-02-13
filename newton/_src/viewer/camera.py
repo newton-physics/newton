@@ -32,7 +32,7 @@ class Camera:
             pos (tuple): Initial camera position (if None, uses appropriate default for up_axis)
             up_axis (str): Up axis ("X", "Y", or "Z")
         """
-        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+        from pyglet.math import Vec3 as PyVec3
 
         self.fov = fov
         self.near = near
@@ -64,7 +64,7 @@ class Camera:
 
     def get_front(self):
         """Get the camera front direction vector (read-only)."""
-        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+        from pyglet.math import Vec3 as PyVec3
 
         # Clamp pitch to avoid gimbal lock
         pitch = max(min(self.pitch, 89.0), -89.0)
@@ -95,13 +95,13 @@ class Camera:
 
     def get_right(self):
         """Get the camera right direction vector (read-only)."""
-        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+        from pyglet.math import Vec3 as PyVec3
 
         return PyVec3.cross(self.get_front(), self.get_up()).normalize()
 
     def get_up(self):
         """Get the camera up direction vector (read-only)."""
-        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+        from pyglet.math import Vec3 as PyVec3
 
         # World up vector based on up axis
         if self.up_axis == 0:  # X up
@@ -126,7 +126,7 @@ class Camera:
         Returns:
             np.ndarray: 4x4 view matrix
         """
-        from pyglet.math import Mat4, Vec3  # noqa: PLC0415
+        from pyglet.math import Mat4, Vec3
 
         # Get camera vectors (already transformed for up axis)
         pos = Vec3(*(self.pos / scaling))
@@ -142,7 +142,7 @@ class Camera:
         Returns:
             np.ndarray: 4x4 projection matrix
         """
-        from pyglet.math import Mat4 as PyMat4  # noqa: PLC0415
+        from pyglet.math import Mat4 as PyMat4
 
         if self.height == 0:
             return np.eye(4, dtype=np.float32)
@@ -157,7 +157,7 @@ class Camera:
             p: wp.vec3, ray origin
             d: wp.vec3, ray direction
         """
-        from pyglet.math import Vec3 as PyVec3  # noqa: PLC0415
+        from pyglet.math import Vec3 as PyVec3
 
         aspect_ratio = self.width / self.height
 

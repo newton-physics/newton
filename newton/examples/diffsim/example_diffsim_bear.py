@@ -172,13 +172,14 @@ class Example:
         # initialize control and one-shot contacts (valid for simple collisions against constant plane)
         self.control = self.model.control()
         # Create collision pipeline with soft contact margin (requires_grad for differentiable simulation)
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
             soft_contact_margin=10.0,
             requires_grad=True,
         )
-        self.contacts = self.model.collide(self.states[0], collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
+        self.collision_pipeline.collide(self.states[0], self.contacts)
 
         # initialize the solver.
         self.solver = newton.solvers.SolverSemiImplicit(self.model, enable_tri_contact=False)

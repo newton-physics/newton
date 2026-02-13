@@ -65,7 +65,7 @@ def load_texture_from_file(texture_path: str | None) -> nparray | None:
     if texture_path is None:
         return None
     try:
-        from PIL import Image  # noqa: PLC0415
+        from PIL import Image
 
         if _is_http_url(texture_path):
             data = _download_texture_from_file_bytes(texture_path)

@@ -410,7 +410,7 @@ def init_model(vs, fs, device, record_triangle_contacting_vertices=True, color=F
 
 
 def get_data():
-    from pxr import Usd, UsdGeom  # noqa: PLC0415
+    from pxr import Usd, UsdGeom
 
     usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "bunny.usd"))
     usd_geom = UsdGeom.Mesh(usd_stage.GetPrimAtPath("/root/bunny"))
@@ -780,7 +780,8 @@ def test_mesh_ground_collision_index(test, device):
     model = builder.finalize(device=device)
     test.assertEqual(model.shape_contact_pair_count, 3)
     state = model.state()
-    contacts = model.collide(state)
+    contacts = model.contacts()
+    model.collide(state, contacts)
     contact_count = contacts.rigid_contact_count.numpy()[0]
     # CPU gets 3 contacts (no reduction), CUDA may get more with reduction
     test.assertTrue(contact_count >= 3, f"Expected at least 3 contacts, got {contact_count}")
@@ -820,7 +821,8 @@ def test_avbd_particle_ground_penalty_grows(test, device):
 
     state_in = model.state()
     state_out = model.state()
-    contacts = model.collide(state_in)
+    contacts = model.contacts()
+    model.collide(state_in, contacts)
 
     soft_count = int(contacts.soft_contact_count.numpy()[0])
     test.assertGreater(soft_count, 0)

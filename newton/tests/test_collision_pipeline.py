@@ -22,6 +22,7 @@ import warp.examples
 
 import newton
 from newton import GeoType
+from newton._src.sim.collide import _estimate_rigid_contact_max
 from newton.examples import test_body_state
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
@@ -98,11 +99,11 @@ class CollisionSetup:
         self.control = self.model.control()
 
         # Create collision pipeline with the requested broad phase mode
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             broad_phase_mode=broad_phase_mode,
         )
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.solver = solver_fn(self.model)
 
@@ -111,6 +112,8 @@ class CollisionSetup:
 
         self.graph = None
         if wp.get_device(device).is_cuda:
+            # Warm-up: run once outside capture
+            self.simulate()
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -154,7 +157,7 @@ class CollisionSetup:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -482,12 +485,10 @@ def test_shape_collision_filter_pairs(test, device, broad_phase_mode: newton.Bro
         # Exclude this pair so they must not generate contacts
         builder.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
         model = builder.finalize(device=device)
-        pipeline = newton.CollisionPipeline.from_model(
-            model,
-            broad_phase_mode=broad_phase_mode,
-        )
+        pipeline = newton.CollisionPipeline(model, broad_phase_mode=broad_phase_mode)
         state = model.state()
-        contacts = pipeline.collide(model, state)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
         n = contacts.rigid_contact_count.numpy()[0]
         excluded = (min(shape_a, shape_b), max(shape_a, shape_b))
         for i in range(n):
@@ -544,9 +545,10 @@ def test_collision_filter_consistent_across_broadphases(test, device):
         model = builder.finalize(device=device)
 
         def _contact_pairs(broad_phase_mode):
-            pipeline = newton.CollisionPipeline.from_model(model, broad_phase_mode=broad_phase_mode)
+            pipeline = newton.CollisionPipeline(model, broad_phase_mode=broad_phase_mode)
             state = model.state()
-            contacts = pipeline.collide(model, state)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
             n = contacts.rigid_contact_count.numpy()[0]
             pairs = set()
             for i in range(n):
@@ -590,6 +592,77 @@ add_function_test(
 
 class TestParticleShapeContacts(unittest.TestCase):
     pass
+
+
+class TestContactEstimator(unittest.TestCase):
+    def test_heuristic_caps_large_pair_count(self):
+        """When pair count is huge, the heuristic provides a tighter bound."""
+        model = newton.Model()
+        model.num_worlds = 1
+        model.shape_contact_pair_count = 999999
+
+        # 4 primitives (CPP=5), 3 meshes (CPP=40), 2 planes, all in world 0.
+        # non-plane: (4*20*5 + 3*20*40) // 2 = (400 + 2400) // 2 = 1400
+        # weighted_plane_cpp: (4*5 + 3*40) // 7 = 140 // 7 = 20
+        # plane (per-world): 2*7 pairs * 20 = 280
+        # heuristic = 1680, pair = huge => min = 1680
+        shape_type = np.array(
+            [int(GeoType.BOX)] * 4 + [int(GeoType.MESH)] * 3 + [int(GeoType.PLANE)] * 2,
+            dtype=np.int32,
+        )
+        shape_world = np.zeros(len(shape_type), dtype=np.int32)
+
+        model.shape_type = wp.array(shape_type, dtype=wp.int32)
+        model.shape_world = wp.array(shape_world, dtype=wp.int32)
+
+        estimate = _estimate_rigid_contact_max(model)
+        self.assertEqual(estimate, 1680)
+
+    def test_world_aware_plane_estimate(self):
+        """Per-world plane computation avoids quadratic cross-world overcount."""
+        model = newton.Model()
+        model.num_worlds = 4
+        model.shape_contact_pair_count = 0
+
+        # 4 worlds, each with 10 boxes (CPP=5) and 10 planes.
+        # non-plane: (40*20*5) // 2 = 2000
+        # weighted_plane_cpp: (40*5) // 40 = 5
+        # plane (per-world): 4*(10*10) pairs * 5 = 2000
+        # total = 4000
+        shape_type = np.array(
+            ([int(GeoType.BOX)] * 10 + [int(GeoType.PLANE)] * 10) * 4,
+            dtype=np.int32,
+        )
+        shape_world = np.repeat(np.arange(4, dtype=np.int32), 20)
+
+        model.shape_type = wp.array(shape_type, dtype=wp.int32)
+        model.shape_world = wp.array(shape_world, dtype=wp.int32)
+
+        estimate = _estimate_rigid_contact_max(model)
+        self.assertEqual(estimate, 4000)
+
+    def test_pair_count_tighter_than_heuristic(self):
+        """When precomputed pair count is tighter than the heuristic, it is used."""
+        model = newton.Model()
+        model.num_worlds = 4
+        model.shape_contact_pair_count = 300
+
+        # 40 boxes (CPP=5) across 4 worlds, no planes.
+        # heuristic: (40*20*5) // 2 = 2000
+        # weighted_cpp: max(5, 5) = 5
+        # pair-based: 300 * 5 = 1500
+        # min(2000, 1500) = 1500
+        shape_type = np.array(
+            [int(GeoType.BOX)] * 40,
+            dtype=np.int32,
+        )
+        shape_world = np.repeat(np.arange(4, dtype=np.int32), 10)
+
+        model.shape_type = wp.array(shape_type, dtype=wp.int32)
+        model.shape_world = wp.array(shape_world, dtype=wp.int32)
+
+        estimate = _estimate_rigid_contact_max(model)
+        self.assertEqual(estimate, 1500)
 
 
 def test_particle_shape_contacts(test, device, shape_type: GeoType):
@@ -638,7 +711,7 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         model = builder.finalize(device=device)
 
         # Create collision pipeline
-        collision_pipeline = newton.CollisionPipeline.from_model(
+        collision_pipeline = newton.CollisionPipeline(
             model,
             broad_phase_mode=newton.BroadPhaseMode.NXN,
             soft_contact_margin=soft_contact_margin,
@@ -647,7 +720,8 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         state = model.state()
 
         # Run collision detection
-        contacts = collision_pipeline.collide(model, state)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
 
         # Verify soft contacts were generated
         soft_count = contacts.soft_contact_count.numpy()[0]

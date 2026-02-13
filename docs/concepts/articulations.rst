@@ -276,3 +276,30 @@ Given the parent body's world transform :math:`x_{wp}` and the joint transform :
 
 .. autofunction:: newton.eval_ik
    :noindex:
+
+
+.. _Orphan joints:
+
+Orphan joints
+-------------
+
+An **orphan joint** is a joint that is not part of any articulation. This situation can arise when:
+
+* The USD asset does not define a ``PhysicsArticulationRootAPI`` on any prim, so no articulations are discovered during parsing.
+* A joint connects two bodies that are not under any ``PhysicsArticulationRootAPI`` prim, even though other articulations exist in the scene.
+
+When orphan joints are detected during USD parsing (:meth:`~newton.ModelBuilder.add_usd`), Newton issues a warning with the affected joint paths.
+
+**Validation and finalization**
+
+By default, :meth:`~newton.ModelBuilder.finalize` validates that every joint belongs to an articulation and raises a :class:`ValueError` if orphan joints are found.
+To proceed with orphan joints, skip this validation:
+
+.. code-block:: python
+
+   model = builder.finalize(skip_validation_joints=True)
+
+**Solver compatibility**
+
+Only maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`) support orphan joints.
+Generalized-coordinate solvers (:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverMuJoCo`) require every joint to belong to an articulation.
