@@ -4605,6 +4605,134 @@ class ModelBuilder:
             key=key,
         )
 
+    def enable_sdf(
+        self,
+        *,
+        max_resolution: int = 64,
+        narrow_band_range: tuple[float, float] = (-0.01, 0.01),
+        contact_margin: float = 0.01,
+    ) -> None:
+        """Enable SDF-based collision detection for this ModelBuilder.
+        
+        Must be called BEFORE importing USD assets or adding shapes.
+        All subsequently added shapes will use SDF collision detection.
+        
+        Args:
+            max_resolution: Maximum SDF grid dimension (must be divisible by 8). Common: 32, 64, 128, 256
+            narrow_band_range: (inner, outer) distance range for SDF computation in meters
+            contact_margin: Contact detection margin in meters
+        """
+        if max_resolution % 8 != 0:
+            raise ValueError(
+                f"max_resolution must be divisible by 8 (got {max_resolution}). "
+                "This is required because SDF volumes are allocated in 8x8x8 tiles."
+            )
+        if narrow_band_range[0] >= narrow_band_range[1]:
+            raise ValueError(
+                f"narrow_band_range must have inner < outer (got {narrow_band_range})"
+            )
+        
+        self.default_shape_cfg.sdf_max_resolution = max_resolution
+        self.default_shape_cfg.sdf_narrow_band_range = narrow_band_range
+        self.default_shape_cfg.contact_margin = contact_margin
+
+    def disable_sdf(self) -> None:
+        """Disable SDF-based collision detection for this ModelBuilder.
+        
+        Shapes will use BVH-based collision detection instead.
+        """
+        self.default_shape_cfg.sdf_max_resolution = None
+        self.default_shape_cfg.sdf_target_voxel_size = None
+
+    def override_shape_sdf(
+        self,
+        shape_key: str | int,
+        *,
+        sdf_max_resolution: int | None = None,
+        sdf_narrow_band_range: tuple[float, float] | None = None,
+        sdf_target_voxel_size: float | None = None,
+        is_hydroelastic: bool | None = None,
+        k_hydro: float | None = None,
+    ) -> None:
+        """Override SDF properties for a shape after it has been added to the builder.
+
+        This allows modifying SDF parameters for individual shapes that were imported from USD
+        or added with default settings. Must be called after the shape is added but before
+        :meth:`finalize()`.
+
+        Args:
+            shape_key: Shape key (str) or index (int) to modify. If a string, searches for
+                the shape with that key. If an integer, uses it directly as the shape index.
+            sdf_max_resolution: Override maximum SDF grid dimension (must be divisible by 8).
+                If None, the existing value is unchanged.
+            sdf_narrow_band_range: Override narrow band distance range (inner, outer) in meters.
+                If None, the existing value is unchanged.
+            sdf_target_voxel_size: Override target voxel size for SDF grid. If None, the existing
+                value is unchanged.
+            is_hydroelastic: Override hydroelastic collision flag. If None, the existing value
+                is unchanged.
+            k_hydro: Override hydroelastic stiffness. If None, the existing value is unchanged.
+
+        Raises:
+            ValueError: If shape_key is not found, or if sdf_max_resolution is not divisible by 8.
+            IndexError: If shape_key is an integer index that is out of range.
+
+        Example:
+            Override SDF resolution for a specific shape after USD import::
+
+                builder = newton.ModelBuilder()
+                builder.add_usd("robot.usd")
+                builder.override_shape_sdf("robot_hand", sdf_max_resolution=128)
+                model = builder.finalize()
+        """
+        # Find shape index
+        if isinstance(shape_key, str):
+            if shape_key not in self.shape_key:
+                raise ValueError(f"Shape with key '{shape_key}' not found. Available keys: {self.shape_key}")
+            shape_idx = self.shape_key.index(shape_key)
+        else:
+            shape_idx = shape_key
+            if shape_idx < 0 or shape_idx >= len(self.shape_key):
+                raise IndexError(f"Shape index {shape_idx} is out of range [0, {len(self.shape_key)})")
+
+        # Validate and apply sdf_max_resolution
+        if sdf_max_resolution is not None:
+            if sdf_max_resolution % 8 != 0:
+                raise ValueError(
+                    f"sdf_max_resolution must be divisible by 8 (got {sdf_max_resolution}). "
+                    "This is required because SDF volumes are allocated in 8x8x8 tiles."
+                )
+            self.shape_sdf_max_resolution[shape_idx] = sdf_max_resolution
+
+        # Validate and apply sdf_narrow_band_range
+        if sdf_narrow_band_range is not None:
+            if len(sdf_narrow_band_range) != 2:
+                raise ValueError(f"sdf_narrow_band_range must be a tuple of length 2 (got {sdf_narrow_band_range})")
+            inner, outer = sdf_narrow_band_range
+            if inner >= outer:
+                raise ValueError(
+                    f"sdf_narrow_band_range must have inner < outer (got {sdf_narrow_band_range})"
+                )
+            self.shape_sdf_narrow_band_range[shape_idx] = sdf_narrow_band_range
+
+        # Apply sdf_target_voxel_size
+        if sdf_target_voxel_size is not None:
+            self.shape_sdf_target_voxel_size[shape_idx] = sdf_target_voxel_size
+
+        # Apply is_hydroelastic (stored in shape_flags)
+        if is_hydroelastic is not None:
+            current_flags = self.shape_flags[shape_idx]
+            if is_hydroelastic:
+                # Set HYDROELASTIC flag
+                self.shape_flags[shape_idx] = current_flags | ShapeFlags.HYDROELASTIC
+            else:
+                # Clear HYDROELASTIC flag
+                self.shape_flags[shape_idx] = current_flags & (~ShapeFlags.HYDROELASTIC)
+
+        # Apply k_hydro
+        if k_hydro is not None:
+            self.shape_material_k_hydro[shape_idx] = k_hydro
+
     def add_site(
         self,
         body: int,

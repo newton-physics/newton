@@ -1501,6 +1501,32 @@ def parse_usd(
                 if contact_margin == float("-inf"):
                     contact_margin = builder.default_shape_cfg.contact_margin
 
+                # Resolve SDF parameters from USD attributes (newton:sdf*)
+                sdf_max_resolution = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose)
+                if sdf_max_resolution is None:
+                    sdf_max_resolution = builder.default_shape_cfg.sdf_max_resolution
+                
+                sdf_narrow_band_inner = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose)
+                if sdf_narrow_band_inner is None:
+                    sdf_narrow_band_inner = builder.default_shape_cfg.sdf_narrow_band_range[0]
+                
+                sdf_narrow_band_outer = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose)
+                if sdf_narrow_band_outer is None:
+                    sdf_narrow_band_outer = builder.default_shape_cfg.sdf_narrow_band_range[1]
+                
+                sdf_target_voxel_size = R.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose)
+                if sdf_target_voxel_size is None:
+                    sdf_target_voxel_size = builder.default_shape_cfg.sdf_target_voxel_size
+                
+                # Resolve hydroelastic parameters
+                is_hydroelastic = R.get_value(prim, prim_type=PrimType.SHAPE, key="is_hydroelastic", verbose=verbose)
+                if is_hydroelastic is None:
+                    is_hydroelastic = builder.default_shape_cfg.is_hydroelastic
+                
+                k_hydro = R.get_value(prim, prim_type=PrimType.SHAPE, key="k_hydro", verbose=verbose)
+                if k_hydro is None:
+                    k_hydro = builder.default_shape_cfg.k_hydro
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,
@@ -1528,6 +1554,13 @@ def parse_usd(
                         density=body_density.get(body_path, default_shape_density),
                         collision_group=collision_group,
                         is_visible=not hide_collision_shapes,
+                        # SDF parameters
+                        sdf_max_resolution=sdf_max_resolution,
+                        sdf_narrow_band_range=(sdf_narrow_band_inner, sdf_narrow_band_outer),
+                        sdf_target_voxel_size=sdf_target_voxel_size,
+                        # Hydroelastic parameters
+                        is_hydroelastic=is_hydroelastic,
+                        k_hydro=k_hydro,
                     ),
                     "key": path,
                     "custom_attributes": shape_custom_attrs,
