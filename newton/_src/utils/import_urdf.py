@@ -555,6 +555,13 @@ def parse_urdf(
         parent_child_joint[(parent, child)] = joint_data
         joints.append(joint_data)
 
+    # Extract the articulation label early so we can build hierarchical labels
+    articulation_label = urdf_root.attrib.get("name")
+
+    def make_label(name: str) -> str:
+        """Build a hierarchical label: ``{articulation_label}/{name}``."""
+        return f"{articulation_label}/{name}" if articulation_label else name
+
     # topological sorting of joints because the FK function will resolve body transforms
     # in joint order and needs the parent link transform to be resolved before the child
     urdf_links = []
@@ -589,7 +596,7 @@ def parse_urdf(
         if name is None:
             raise ValueError("Link has no name")
         link = builder.add_link(
-            label=name,
+            label=make_label(name),
             custom_attributes=parse_custom_attributes(urdf_link.attrib, builder_custom_attr_body, parsing_mode="urdf"),
         )
 
@@ -676,7 +683,7 @@ def parse_urdf(
         base_joint_id = builder._add_base_joint(
             child=root,
             base_joint=base_joint,
-            label="base_joint",
+            label=make_label("base_joint"),
             parent_xform=base_parent_xform,
             child_xform=base_child_xform,
             parent=base_parent,
@@ -687,7 +694,7 @@ def parse_urdf(
         floating_joint_id = builder._add_base_joint(
             child=root,
             floating=True,
-            label="floating_base",
+            label=make_label("floating_base"),
             parent_xform=xform,
             parent=base_parent,
         )
@@ -711,7 +718,7 @@ def parse_urdf(
             builder._add_base_joint(
                 child=root,
                 floating=False,
-                label="fixed_base",
+                label=make_label("fixed_base"),
                 parent_xform=xform,
                 parent=base_parent,
             )
@@ -737,7 +744,7 @@ def parse_urdf(
             "parent": parent,
             "child": child,
             "parent_xform": parent_xform,
-            "label": joint["name"],
+            "label": make_label(joint["name"]),
             "custom_attributes": joint["custom_attributes"],
         }
 
@@ -833,11 +840,10 @@ def parse_urdf(
                 joint1=leader_idx,
                 coef0=joint.get("mimic_coef0", 0.0),
                 coef1=joint.get("mimic_coef1", 1.0),
-                label=f"mimic_{joint['name']}",
+                label=make_label(f"mimic_{joint['name']}"),
             )
 
     # Create articulation from all collected joints
-    articulation_label = urdf_root.attrib.get("name")
     articulation_custom_attrs = parse_custom_attributes(
         urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
     )

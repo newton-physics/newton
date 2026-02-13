@@ -2034,7 +2034,12 @@ class ModelBuilder:
         # Reset to global world
         self.current_world = -1
 
-    def add_world(self, builder: ModelBuilder, xform: Transform | None = None):
+    def add_world(
+        self,
+        builder: ModelBuilder,
+        xform: Transform | None = None,
+        label_prefix: str | None = None,
+    ):
         """Add a builder as a new world.
 
         This is a convenience method that combines :meth:`begin_world`,
@@ -2046,6 +2051,9 @@ class ModelBuilder:
             builder (ModelBuilder): The builder containing entities to add as a new world.
             xform (Transform | None): Optional transform to apply to all root bodies
                 in the builder. Useful for spacing out worlds visually.
+            label_prefix (str | None): Optional prefix prepended to all entity labels
+                from the source builder. Useful for distinguishing multiple instances
+                of the same model (e.g., ``"left_arm"`` vs ``"right_arm"``).
 
         Raises:
             RuntimeError: If called when already in a world context (via begin_world).
@@ -2066,7 +2074,7 @@ class ModelBuilder:
                 scene.add_world(robot)  # Each robot is a separate world
         """
         self.begin_world()
-        self.add_builder(builder, xform=xform)
+        self.add_builder(builder, xform=xform, label_prefix=label_prefix)
         self.end_world()
 
     # endregion
@@ -2075,6 +2083,7 @@ class ModelBuilder:
         self,
         builder: ModelBuilder,
         xform: Transform | None = None,
+        label_prefix: str | None = None,
     ):
         """Copies the data from another `ModelBuilder` into this `ModelBuilder`.
 
@@ -2092,12 +2101,15 @@ class ModelBuilder:
             # Adds all entities from sub_builder to main_builder's current world (-1 by default)
             main_builder.add_builder(sub_builder)
 
-            # With transform
-            main_builder.add_builder(sub_builder, xform=wp.transform((1, 0, 0)))
+            # With transform and label prefix
+            main_builder.add_builder(sub_builder, xform=wp.transform((1, 0, 0)), label_prefix="left")
 
         Args:
             builder (ModelBuilder): The model builder to copy data from.
             xform (Transform): Optional offset transform applied to root bodies.
+            label_prefix (str | None): Optional prefix prepended to all entity labels
+                from the source builder. Labels are joined with ``/``
+                (e.g., ``"left/panda/base_link"``).
         """
 
         if builder.up_axis != self.up_axis:
@@ -2296,7 +2308,12 @@ class ModelBuilder:
                 [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint2]
             )
             self.equality_constraint_polycoef.extend(builder.equality_constraint_polycoef)
-            self.equality_constraint_label.extend(builder.equality_constraint_label)
+            if label_prefix:
+                self.equality_constraint_label.extend(
+                    f"{label_prefix}/{lbl}" if lbl else lbl for lbl in builder.equality_constraint_label
+                )
+            else:
+                self.equality_constraint_label.extend(builder.equality_constraint_label)
             self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
 
         # For mimic constraints
@@ -2314,10 +2331,24 @@ class ModelBuilder:
             self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
             self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
             self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
-            self.constraint_mimic_label.extend(builder.constraint_mimic_label)
+            if label_prefix:
+                self.constraint_mimic_label.extend(
+                    f"{label_prefix}/{lbl}" if lbl else lbl for lbl in builder.constraint_mimic_label
+                )
+            else:
+                self.constraint_mimic_label.extend(builder.constraint_mimic_label)
+
+        # Handle label attributes specially to support label_prefix
+        label_attrs = ["articulation_label", "body_label", "joint_label", "shape_label"]
+        for attr in label_attrs:
+            src = getattr(builder, attr)
+            dst = getattr(self, attr)
+            if label_prefix:
+                dst.extend(f"{label_prefix}/{lbl}" if lbl else lbl for lbl in src)
+            else:
+                dst.extend(src)
 
         more_builder_attrs = [
-            "articulation_label",
             "body_inertia",
             "body_mass",
             "body_inv_inertia",
@@ -2325,14 +2356,12 @@ class ModelBuilder:
             "body_com",
             "body_lock_inertia",
             "body_qd",
-            "body_label",
             "joint_type",
             "joint_enabled",
             "joint_X_c",
             "joint_armature",
             "joint_axis",
             "joint_dof_dim",
-            "joint_label",
             "joint_qd",
             "joint_cts",
             "joint_f",
@@ -2348,7 +2377,6 @@ class ModelBuilder:
             "joint_effort_limit",
             "joint_velocity_limit",
             "joint_friction",
-            "shape_label",
             "shape_flags",
             "shape_type",
             "shape_scale",
