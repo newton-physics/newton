@@ -107,7 +107,7 @@ class Model:
         CONSTRAINT_MIMIC = 14
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
-        """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
+        """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
 
     class AttributeNamespace:
         """
@@ -140,7 +140,7 @@ class Model:
         """
         self.requires_grad = False
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
-        self.num_worlds = 0
+        self.world_count = 0
         """Number of worlds added to the ModelBuilder."""
 
         self.particle_q = None
@@ -176,9 +176,9 @@ class Model:
         self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
         self.particle_world_start = None
-        """Start index of the first particle per world, shape [num_worlds + 2], int.
+        """Start index of the first particle per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the particles belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the particles belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global particles (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total particle count.
 
@@ -251,9 +251,9 @@ class Model:
         self.shape_world = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start = None
-        """Start index of the first shape per world, shape [num_worlds + 2], int.
+        """Start index of the first shape per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the shapes belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the shapes belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global shapes (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total shape count.
 
@@ -360,9 +360,9 @@ class Model:
         self.body_world = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
         self.body_world_start = None
-        """Start index of the first body per world, shape [num_worlds + 2], int.
+        """Start index of the first body per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the bodies belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the bodies belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global bodies (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total body count.
 
@@ -438,9 +438,9 @@ class Model:
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
         self.joint_world_start = None
-        """Start index of the first joint per world, shape [num_worlds + 2], int.
+        """Start index of the first joint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the joints belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the joints belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global joints (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total joint count.
 
@@ -451,9 +451,9 @@ class Model:
             `num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]`.
         """
         self.joint_dof_world_start = None
-        """Start index of the first joint degree of freedom per world, shape [num_worlds + 2], int.
+        """Start index of the first joint degree of freedom per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the joint DOFs belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the joint DOFs belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global joint DOFs (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total joint DOF count.
 
@@ -464,9 +464,9 @@ class Model:
             `num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]`.
         """
         self.joint_coord_world_start = None
-        """Start index of the first joint coordinate per world, shape [num_worlds + 2], int.
+        """Start index of the first joint coordinate per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the joint coordinates belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the joint coordinates belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global joint coordinates (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total joint coordinate count.
 
@@ -477,9 +477,9 @@ class Model:
             `num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]`.
         """
         self.joint_constraint_world_start = None
-        """Start index of the first joint constraint per world, shape [num_worlds + 2], int.
+        """Start index of the first joint constraint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the joint constraints belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the joint constraints belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global joint constraints (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total joint constraint count.
 
@@ -497,9 +497,9 @@ class Model:
         self.articulation_world = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
         self.articulation_world_start = None
-        """Start index of the first articulation per world, shape [num_worlds + 2], int.
+        """Start index of the first articulation per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the articulations belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the articulations belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global articulations (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total articulation count.
 
@@ -558,9 +558,9 @@ class Model:
         self.equality_constraint_world = None
         """World index for each constraint, shape [equality_constraint_count], int."""
         self.equality_constraint_world_start = None
-        """Start index of the first equality constraint per world, shape [num_worlds + 2], int.
+        """Start index of the first equality constraint per world, shape [world_count + 2], int.
 
-        The entries at indices `0` to `num_worlds - 1` store the start index of the equality constraints belonging to that world.
+        The entries at indices `0` to `world_count - 1` store the start index of the equality constraints belonging to that world.
         The second-last element (accessible via index `-2`) stores the start index of the global equality constraints (i.e. with
         world index `-1`) added to the end of the model, and the last element stores the total equality constraint count.
 
@@ -810,7 +810,7 @@ class Model:
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector (3,) or per-world array (num_worlds, 3).
+            gravity: Gravity vector (3,) or per-world array (world_count, 3).
             world: If provided, set gravity only for this world.
 
         Note:
@@ -824,16 +824,16 @@ class Model:
         if world is not None:
             if gravity_np.shape != (3,):
                 raise ValueError("Expected single gravity vector (3,) when world is specified")
-            if world < 0 or world >= self.num_worlds:
-                raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
+            if world < 0 or world >= self.world_count:
+                raise IndexError(f"world {world} out of range [0, {self.world_count})")
             current = self.gravity.numpy()
             current[world] = gravity_np
             self.gravity.assign(current)
         elif gravity_np.ndim == 1:
             self.gravity.fill_(gravity_np)
         else:
-            if len(gravity_np) != self.num_worlds:
-                raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
+            if len(gravity_np) != self.world_count:
+                raise ValueError(f"Expected {self.world_count} gravity vectors, got {len(gravity_np)}")
             self.gravity.assign(gravity_np)
 
     def _init_collision_pipeline(self):

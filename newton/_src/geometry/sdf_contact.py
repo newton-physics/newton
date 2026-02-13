@@ -717,10 +717,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         """
         block_id, t = wp.tid()
 
-        num_pairs = shape_pairs_mesh_mesh_count[0]
+        pair_count = shape_pairs_mesh_mesh_count[0]
 
         # Strided loop over pairs
-        for pair_idx in range(block_id, num_pairs, total_num_blocks):
+        for pair_idx in range(block_id, pair_count, total_num_blocks):
             pair = shape_pairs_mesh_mesh[pair_idx]
 
             # Sum margins for contact detection (needed for all modes)
@@ -890,7 +890,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         return mesh_sdf_collision_kernel
 
     # Extract functions and constants from the contact reduction configuration
-    num_reduction_slots = contact_reduction_funcs.num_reduction_slots
+    reduction_slot_count = contact_reduction_funcs.reduction_slot_count
     store_reduced_contact_func = contact_reduction_funcs.store_reduced_contact
     filter_unique_contacts_func = contact_reduction_funcs.filter_unique_contacts
     get_smem_slots_plus_1 = contact_reduction_funcs.get_smem_slots_plus_1
@@ -912,10 +912,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         total_num_blocks: int,
     ):
         block_id, t = wp.tid()
-        num_pairs = shape_pairs_mesh_mesh_count[0]
+        pair_count = shape_pairs_mesh_mesh_count[0]
 
-        # Grid stride loop over pairs - each block processes multiple pairs if num_pairs > total_num_blocks
-        for pair_idx in range(block_id, num_pairs, total_num_blocks):
+        # Grid stride loop over pairs - each block processes multiple pairs if pair_count > total_num_blocks
+        for pair_idx in range(block_id, pair_count, total_num_blocks):
             pair = shape_pairs_mesh_mesh[pair_idx]
 
             # Sum margins for contact detection (needed for all modes)
@@ -926,20 +926,20 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
             active_contacts_shared_mem = wp.array(
                 ptr=wp.static(get_smem_slots_plus_1)(),
-                shape=(wp.static(num_reduction_slots) + 1,),
+                shape=(wp.static(reduction_slot_count) + 1,),
                 dtype=wp.int32,
             )
             contacts_shared_mem = wp.array(
                 ptr=wp.static(get_smem_slots_contacts)(),
-                shape=(wp.static(num_reduction_slots),),
+                shape=(wp.static(reduction_slot_count),),
                 dtype=ContactStruct,
             )
 
-            for i in range(t, wp.static(num_reduction_slots), wp.block_dim()):
+            for i in range(t, wp.static(reduction_slot_count), wp.block_dim()):
                 contacts_shared_mem[i].projection = empty_marker
 
             if t == 0:
-                active_contacts_shared_mem[wp.static(num_reduction_slots)] = 0
+                active_contacts_shared_mem[wp.static(reduction_slot_count)] = 0
             # Note: No sync needed here - the per-mode buffer reset below provides the barrier
 
             # Test both directions using smart indexing:
@@ -1124,7 +1124,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             filter_unique_contacts_func(t, contacts_shared_mem, active_contacts_shared_mem, empty_marker)
 
             num_contacts_to_keep = wp.min(
-                active_contacts_shared_mem[wp.static(num_reduction_slots)], wp.static(num_reduction_slots)
+                active_contacts_shared_mem[wp.static(reduction_slot_count)], wp.static(reduction_slot_count)
             )
 
             # Compute midpoint for uncentering contacts (same as computed in mode loop)

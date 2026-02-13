@@ -34,18 +34,18 @@ class TestViewerWorldOffsets(unittest.TestCase):
             (4, (5.0, 5.0, 0.0), [[-2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, -2.5, 0.0], [2.5, 2.5, 0.0]]),
         ]
 
-        for num_worlds, spacing, expected in test_cases:
+        for world_count, spacing, expected in test_cases:
             # Test without up_axis
-            offsets = newton.utils.compute_world_offsets(num_worlds, spacing)
+            offsets = newton.utils.compute_world_offsets(world_count, spacing)
             assert_np_equal(offsets, np.array(expected), tol=1e-5)
 
             # Test with up_axis
-            offsets_with_up = newton.utils.compute_world_offsets(num_worlds, spacing, up_axis=newton.Axis.Z)
+            offsets_with_up = newton.utils.compute_world_offsets(world_count, spacing, up_axis=newton.Axis.Z)
             assert_np_equal(offsets_with_up, np.array(expected), tol=1e-5)
 
     def test_auto_compute_world_offsets(self):
         """Test that viewer automatically computes world offsets when not explicitly set."""
-        num_worlds = 4
+        world_count = 4
         builder = newton.ModelBuilder()
 
         # Create a simple world with known extents
@@ -65,7 +65,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         )
 
         # Replicate without spacing
-        builder.replicate(world, num_worlds)
+        builder.replicate(world, world_count)
         model = builder.finalize()
 
         # Create viewer and set model - should auto-compute offsets
@@ -75,12 +75,12 @@ class TestViewerWorldOffsets(unittest.TestCase):
         # Check that world offsets were computed
         assert viewer.world_offsets is not None
         offsets = viewer.world_offsets.numpy()
-        assert len(offsets) == num_worlds
+        assert len(offsets) == world_count
 
         # Verify offsets are reasonable - worlds should be spaced apart
         # The auto-compute should create spacing based on world 0 extents
         # Box has size 2x2x2, so with 1.5x margin, spacing should be around 3.0
-        for i in range(1, num_worlds):
+        for i in range(1, world_count):
             distance = np.linalg.norm(offsets[i] - offsets[0])
             assert distance > 2.0, f"World {i} too close to world 0: distance={distance}"
 
@@ -110,7 +110,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
     def test_auto_compute_with_different_up_axes(self):
         """Test that auto-computed world offsets respect the model's up axis."""
-        num_worlds = 4
+        world_count = 4
 
         # Test with Z-up (default)
         builder_z = newton.ModelBuilder(up_axis="Z")
@@ -122,7 +122,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             key="test_body",
         )
         world_z.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
-        builder_z.replicate(world_z, num_worlds)
+        builder_z.replicate(world_z, world_count)
         model_z = builder_z.finalize()
 
         viewer_z = ViewerNull(num_frames=1)
@@ -145,7 +145,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             key="test_body",
         )
         world_y.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
-        builder_y.replicate(world_y, num_worlds)
+        builder_y.replicate(world_y, world_count)
         model_y = builder_y.finalize()
 
         viewer_y = ViewerNull(num_frames=1)
@@ -160,7 +160,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
     def test_auto_compute_skips_large_collision_radii(self):
         """Test that auto-compute ignores shapes with unreasonably large collision radii."""
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
 
         # Create a world with a normal box and an infinite plane
@@ -179,7 +179,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world.add_ground_plane()
 
         # Replicate
-        builder.replicate(world, num_worlds)
+        builder.replicate(world, world_count)
         model = builder.finalize()
 
         # Create viewer and set model - should auto-compute offsets
@@ -191,14 +191,14 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
         # The spacing should be reasonable (based on box size ~2.0 with margin)
         # Not huge due to the infinite plane
-        for i in range(1, num_worlds):
+        for i in range(1, world_count):
             distance = np.linalg.norm(offsets[i] - offsets[0])
             assert distance < 10.0, f"Spacing too large ({distance}), likely included infinite plane"
             assert distance > 2.0, f"Spacing too small ({distance})"
 
     def test_auto_compute_with_body_attached_shapes(self):
         """Test auto-compute works correctly with shapes attached to bodies at non-zero positions."""
-        num_worlds = 4
+        world_count = 4
         builder = newton.ModelBuilder()
 
         # Create a world with a body at non-zero position
@@ -221,7 +221,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         )
 
         # Replicate without spacing
-        builder.replicate(world, num_worlds)
+        builder.replicate(world, world_count)
         model = builder.finalize()
 
         # Create viewer and let it auto-compute offsets
@@ -236,7 +236,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         # Body at (2, 3, 1), shape local offset (0.5, 0, 0), so shape center at (2.5, 3, 1)
         # With shape radius ~0.866 (for box with half-extents 0.5), bounds extend to about (3.366, 3.866, 1.866)
         # With 1.5x margin, spacing should be reasonable but not necessarily > 3.0
-        for i in range(1, num_worlds):
+        for i in range(1, world_count):
             distance = np.linalg.norm(offsets[i] - offsets[0])
             # Should have reasonable spacing based on actual world bounds
             assert distance > 2.0, f"World {i} spacing too small: {distance}"
@@ -247,7 +247,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
     def test_physics_at_origin(self):
         """Test that physics simulation runs with all worlds at origin."""
-        num_worlds = 4
+        world_count = 4
         builder = newton.ModelBuilder()
 
         # Create a simple body for each world
@@ -260,7 +260,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
         )
 
         # Replicate with zero spacing (new default)
-        builder.replicate(world, num_worlds)
+        builder.replicate(world, world_count)
         builder.add_ground_plane()
 
         model = builder.finalize()
@@ -268,7 +268,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
         # Verify all bodies are at the same position (no physical offset)
         body_positions = state.body_q.numpy()[:, :3]
-        for i in range(1, num_worlds):
+        for i in range(1, world_count):
             assert_np_equal(
                 body_positions[0],
                 body_positions[i],
@@ -335,13 +335,13 @@ class TestViewerWorldOffsets(unittest.TestCase):
             ),
         ]
 
-        for num_worlds, spacing, expected in test_cases:
+        for world_count, spacing, expected in test_cases:
             viewer = ViewerNull(num_frames=1)
             # Set model is required before set_world_offsets
             builder = newton.ModelBuilder()
 
             # Create a simple world to replicate
-            if num_worlds > 0:
+            if world_count > 0:
                 world = newton.ModelBuilder()
                 world.add_body(
                     xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
@@ -349,7 +349,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
                     inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
                     key="test_body",
                 )
-                builder.replicate(world, num_worlds)
+                builder.replicate(world, world_count)
 
             model = builder.finalize()
             viewer.set_model(model)
@@ -371,7 +371,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
     def test_set_world_offsets_input_formats(self):
         """Test that set_world_offsets accepts various input formats."""
-        num_worlds = 4
+        world_count = 4
         expected_offsets = np.array([[-2.5, -2.5, 0.0], [-2.5, 2.5, 0.0], [2.5, -2.5, 0.0], [2.5, 2.5, 0.0]])
 
         # Create a simple model with worlds
@@ -383,7 +383,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             key="test_body",
         )
-        builder.replicate(world, num_worlds)
+        builder.replicate(world, world_count)
         model = builder.finalize()
 
         # Test 1: Tuple (most common)
@@ -406,7 +406,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
 
     def test_global_entities_unaffected(self):
         """Test that global entities (world -1) are not affected by world offsets."""
-        num_worlds = 2
+        world_count = 2
         spacing = (10.0, 0.0, 0.0)
 
         # Create model with both world-specific and global entities
@@ -431,7 +431,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             cfg=cfg,
         )
 
-        builder.replicate(world, num_worlds)
+        builder.replicate(world, world_count)
 
         model = builder.finalize()
         state = model.state()
@@ -466,13 +466,13 @@ class TestViewerWorldOffsets(unittest.TestCase):
         world_xforms = world_instance.world_xforms.numpy()
         expected_offsets = np.array([[-5.0, 0.0, 1.0], [5.0, 0.0, 1.0]])
 
-        for i in range(num_worlds):
+        for i in range(world_count):
             assert_np_equal(world_xforms[i][:3], expected_offsets[i], tol=1e-5)
 
 
 def test_visual_separation(test: TestViewerWorldOffsets, device):
     """Test that viewer offsets provide visual separation without affecting physics."""
-    num_worlds = 4
+    world_count = 4
     spacing = (5.0, 5.0, 0.0)
 
     # Create model
@@ -492,7 +492,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
         cfg=cfg,
     )
 
-    builder.replicate(world, num_worlds)
+    builder.replicate(world, world_count)
     model = builder.finalize(device=device)
     state = model.state()
 
@@ -521,7 +521,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
         ]
     )
 
-    for i in range(num_worlds):
+    for i in range(world_count):
         actual_pos = world_xforms[i][:3]
         expected_pos = expected_offsets[i] + np.array([0.0, 0.0, 1.0])  # body is at (0,0,1)
         assert_np_equal(actual_pos, expected_pos, tol=1e-4)

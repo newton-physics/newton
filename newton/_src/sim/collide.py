@@ -329,15 +329,15 @@ def _estimate_rigid_contact_max(model: Model) -> int:
         has_world_info = (
             hasattr(model, "shape_world")
             and model.shape_world is not None
-            and hasattr(model, "num_worlds")
-            and model.num_worlds > 0
+            and hasattr(model, "world_count")
+            and model.world_count > 0
         )
         shape_world = model.shape_world.numpy() if has_world_info else None
 
         if shape_world is not None and len(shape_world) == len(shape_types):
             global_mask = shape_world == -1
             local_mask = ~global_mask
-            n_worlds = model.num_worlds
+            n_worlds = model.world_count
 
             global_planes = int(np.count_nonzero(global_mask & plane_mask))
             global_non_planes = int(np.count_nonzero(global_mask & non_plane_mask))
@@ -695,7 +695,7 @@ class CollisionPipeline:
             # Run narrow phase with custom contact writer (writes directly to Contacts format)
             self.narrow_phase.launch_custom_write(
                 candidate_pair=self.broad_phase_shape_pairs,
-                num_candidate_pair=self.broad_phase_pair_count,
+                candidate_pair_count=self.broad_phase_pair_count,
                 shape_types=model.shape_type,
                 shape_data=self.geom_data,
                 shape_transform=self.geom_transform,

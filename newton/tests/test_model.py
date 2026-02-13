@@ -252,19 +252,19 @@ class TestModel(unittest.TestCase):
             mass=1.0,
         )
 
-        num_worlds = 2
+        world_count = 2
         world_offsets = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
 
         builder_open_edge_count = np.sum(np.array(builder.edge_indices) == -1)
         world_builder_open_edge_count = np.sum(np.array(world_builder.edge_indices) == -1)
 
-        for i in range(num_worlds):
+        for i in range(world_count):
             xform = wp.transform(world_offsets[i], wp.quat_identity())
             builder.add_world(world_builder, xform)
 
         self.assertEqual(
             np.sum(np.array(builder.edge_indices) == -1),
-            builder_open_edge_count + num_worlds * world_builder_open_edge_count,
+            builder_open_edge_count + world_count * world_builder_open_edge_count,
             "builder does not have the expected number of open edges",
         )
 
@@ -490,7 +490,7 @@ class TestModel(unittest.TestCase):
         model = main_builder.finalize()
 
         # Verify counts
-        self.assertEqual(model.num_worlds, 3)
+        self.assertEqual(model.world_count, 3)
         self.assertEqual(model.particle_count, 9)  # 3 global + 2*3 = 9
         self.assertEqual(model.body_count, 12)  # 3 global + 3*3 = 12
         self.assertEqual(model.shape_count, 12)  # 3 global + 3*3 = 12
@@ -585,16 +585,16 @@ class TestModel(unittest.TestCase):
             print(f"joint_coord_world_start: {joint_coord_world_start}")
             print(f"joint_constraint_world_start: {joint_constraint_world_start}")
 
-        # Check that sizes match num_worlds + 2, i.e. conforms to spec
-        self.assertEqual(particle_world_start.size, model.num_worlds + 2)
-        self.assertEqual(body_world_start.size, model.num_worlds + 2)
-        self.assertEqual(shape_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_world_start.size, model.num_worlds + 2)
-        self.assertEqual(articulation_world_start.size, model.num_worlds + 2)
-        self.assertEqual(equality_constraint_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_dof_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_coord_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_constraint_world_start.size, model.num_worlds + 2)
+        # Check that sizes match world_count + 2, i.e. conforms to spec
+        self.assertEqual(particle_world_start.size, model.world_count + 2)
+        self.assertEqual(body_world_start.size, model.world_count + 2)
+        self.assertEqual(shape_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_world_start.size, model.world_count + 2)
+        self.assertEqual(articulation_world_start.size, model.world_count + 2)
+        self.assertEqual(equality_constraint_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_dof_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_coord_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_constraint_world_start.size, model.world_count + 2)
 
         # Check that the last elements match total counts
         self.assertEqual(particle_world_start[-1], model.particle_count)
@@ -608,7 +608,7 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
 
         # Check that world starts are non-decreasing
-        for i in range(model.num_worlds + 1):
+        for i in range(model.world_count + 1):
             self.assertLessEqual(particle_world_start[i], particle_world_start[i + 1])
             self.assertLessEqual(body_world_start[i], body_world_start[i + 1])
             self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
@@ -631,24 +631,24 @@ class TestModel(unittest.TestCase):
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
 
     def test_num_worlds_tracking(self):
-        """Test that num_worlds is properly tracked when using add_world."""
+        """Test that world_count is properly tracked when using add_world."""
         main_builder = ModelBuilder()
 
         # Create a simple sub-builder
         sub_builder = ModelBuilder()
         sub_builder.add_body(mass=1.0)
 
-        # Test 1: Global entities should not increment num_worlds
-        self.assertEqual(main_builder.num_worlds, 0)
+        # Test 1: Global entities should not increment world_count
+        self.assertEqual(main_builder.world_count, 0)
         main_builder.add_builder(sub_builder)  # Adds to global world (-1)
-        self.assertEqual(main_builder.num_worlds, 0)  # Should still be 0
+        self.assertEqual(main_builder.world_count, 0)  # Should still be 0
 
         # Test 2: Using add_world() for automatic world management
         main_builder.add_world(sub_builder)
-        self.assertEqual(main_builder.num_worlds, 1)
+        self.assertEqual(main_builder.world_count, 1)
 
         main_builder.add_world(sub_builder)
-        self.assertEqual(main_builder.num_worlds, 2)
+        self.assertEqual(main_builder.world_count, 2)
 
         # Test 3: Using begin_world/end_world
         main_builder2 = ModelBuilder()
@@ -657,19 +657,19 @@ class TestModel(unittest.TestCase):
         main_builder2.begin_world()
         main_builder2.add_builder(sub_builder)
         main_builder2.end_world()
-        self.assertEqual(main_builder2.num_worlds, 1)
+        self.assertEqual(main_builder2.world_count, 1)
 
         main_builder2.begin_world()
         main_builder2.add_builder(sub_builder)
         main_builder2.end_world()
-        self.assertEqual(main_builder2.num_worlds, 2)
+        self.assertEqual(main_builder2.world_count, 2)
 
         # Test 4: Adding to same world using begin_world with existing index
         main_builder2.begin_world()
         main_builder2.add_builder(sub_builder)  # Adds to world 2
         main_builder2.add_builder(sub_builder)  # Also adds to world 2
         main_builder2.end_world()
-        self.assertEqual(main_builder2.num_worlds, 3)  # Should now be 3
+        self.assertEqual(main_builder2.world_count, 3)  # Should now be 3
 
     def test_world_validation_errors(self):
         """Test that world validation catches non-contiguous and non-monotonic world indices."""
@@ -681,8 +681,8 @@ class TestModel(unittest.TestCase):
         # Create world 0 and world 2, skipping world 1
         # We need to manually manipulate world indices to create invalid cases
         builder1.add_world(sub_builder)  # Creates world 0
-        # Manually skip world 1 by incrementing num_worlds
-        builder1.num_worlds = 2
+        # Manually skip world 1 by incrementing world_count
+        builder1.world_count = 2
         builder1.begin_world()  # This will be world 2
         builder1.add_builder(sub_builder)
         builder1.end_world()
@@ -729,15 +729,15 @@ class TestModel(unittest.TestCase):
         builder3.add_body()
         builder3.end_world()
         model = builder3.finalize()
-        self.assertEqual(model.num_worlds, 1)
+        self.assertEqual(model.world_count, 1)
 
-        # Test world index out of range (above num_worlds-1)
+        # Test world index out of range (above world_count-1)
         builder4 = ModelBuilder()
         builder4.begin_world()  # Creates world 0
         builder4.add_body()
         builder4.end_world()
         # Manually set world index above valid range
-        builder4.body_world[0] = 5  # num_worlds=1, so valid range is -1 to 0
+        builder4.body_world[0] = 5  # world_count=1, so valid range is -1 to 0
         with self.assertRaises(ValueError) as cm:
             builder4.finalize()
         self.assertIn("Invalid world index", str(cm.exception))
@@ -915,16 +915,16 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_coord_world_start[-1], builder.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], builder.joint_constraint_count)
 
-        # Check that sizes match num_worlds + 2, i.e. conforms to spec
-        self.assertEqual(particle_world_start.size, model.num_worlds + 2)
-        self.assertEqual(body_world_start.size, model.num_worlds + 2)
-        self.assertEqual(shape_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_world_start.size, model.num_worlds + 2)
-        self.assertEqual(articulation_world_start.size, model.num_worlds + 2)
-        self.assertEqual(equality_constraint_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_dof_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_coord_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_constraint_world_start.size, model.num_worlds + 2)
+        # Check that sizes match world_count + 2, i.e. conforms to spec
+        self.assertEqual(particle_world_start.size, model.world_count + 2)
+        self.assertEqual(body_world_start.size, model.world_count + 2)
+        self.assertEqual(shape_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_world_start.size, model.world_count + 2)
+        self.assertEqual(articulation_world_start.size, model.world_count + 2)
+        self.assertEqual(equality_constraint_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_dof_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_coord_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_constraint_world_start.size, model.world_count + 2)
 
         # Check that the last elements match total counts
         self.assertEqual(particle_world_start[-1], model.particle_count)
@@ -938,7 +938,7 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
 
         # Check that world starts are non-decreasing
-        for i in range(model.num_worlds + 1):
+        for i in range(model.world_count + 1):
             self.assertLessEqual(particle_world_start[i], particle_world_start[i + 1])
             self.assertLessEqual(body_world_start[i], body_world_start[i + 1])
             self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
