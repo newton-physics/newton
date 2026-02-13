@@ -3950,6 +3950,7 @@ class SolverMuJoCo(SolverBase):
             "geom_solref",
             "geom_solimp",
             "geom_size",
+            "geom_rbound",
             "geom_pos",
             "geom_quat",
             "geom_friction",
