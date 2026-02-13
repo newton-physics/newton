@@ -3200,16 +3200,35 @@ class SolverMuJoCo(SolverBase):
                     name = f"{name}_{body_name_counts[name]}"
 
             inertia = body_inertia[child]
-            body = mj_bodies[body_mapping[parent]].add_body(
-                name=name,
-                pos=tf.p,
-                quat=quat_to_mjc(tf.q),
-                mass=body_mass[child],
-                ipos=body_com[child, :],
-                fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
-                explicitinertial=True,
-                mocap=fixed_base,
-            )
+            mass = body_mass[child]
+            # MuJoCo's compiler requires positive-definite inertia. For zero-mass
+            # bodies (e.g. sensor frames, reference links), omit explicit inertia
+            # and let MuJoCo handle them natively.
+            if mass > 0.0:
+                body = mj_bodies[body_mapping[parent]].add_body(
+                    name=name,
+                    pos=tf.p,
+                    quat=quat_to_mjc(tf.q),
+                    mass=mass,
+                    ipos=body_com[child, :],
+                    fullinertia=[
+                        inertia[0, 0],
+                        inertia[1, 1],
+                        inertia[2, 2],
+                        inertia[0, 1],
+                        inertia[0, 2],
+                        inertia[1, 2],
+                    ],
+                    explicitinertial=True,
+                    mocap=fixed_base,
+                )
+            else:
+                body = mj_bodies[body_mapping[parent]].add_body(
+                    name=name,
+                    pos=tf.p,
+                    quat=quat_to_mjc(tf.q),
+                    mocap=fixed_base,
+                )
             mj_bodies.append(body)
             if fixed_base:
                 newton_body_to_mocap_index[child] = next_mocap_index

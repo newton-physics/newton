@@ -507,6 +507,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_sizes() which understands type-specific semantics
     "geom_size",
+    # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
+    # re-diagonalization. Backfilled instead.
+    "actuator_acc0",
 }
 
 
@@ -1251,6 +1254,7 @@ MODEL_BACKFILL_FIELDS: list[str] = [
     "body_invweight0",
     "body_pos",
     "body_quat",
+    "actuator_acc0",
 ]
 
 
@@ -1274,24 +1278,35 @@ def expand_mjw_model_to_match(target_mjw: Any, reference_mjw: Any) -> None:
         _expand_batched_fields(target_mjw.opt, reference_mjw.opt, MJWARP_OPT_BATCHED_FIELDS)
 
 
-def backfill_model_from_native(newton_mjw: Any, native_mjw: Any, fields: list[str] | None = None) -> None:
+def backfill_model_from_native(
+    newton_mjw: Any,
+    native_mjw: Any,
+    fields: list[str] | None = None,
+    tol: float = 1e-3,
+) -> None:
     """Copy computed model fields from native MuJoCo to Newton's mjw_model.
 
     This eliminates numerical differences caused by Newton's model compilation
     differing from MuJoCo's mj_setConst(). Useful for isolating simulation
     differences from model compilation differences during testing.
 
-    Note: This only copies fields with matching shapes. For multi-world scenarios
-    where Newton has shape (N, ...) and native has (1, ...), the fields won't be
-    copied. This is a known limitation when testing with num_worlds > 1.
+    Before copying, each field is verified to be within ``tol`` of the native value.
+    Fields that are expected to have large relative differences (body_inertia,
+    body_iquat — verified separately via compare_inertia_tensors) are exempt.
+    This catches real parser bugs (e.g. body_pos off by 1.0) while allowing
+    expected small compilation differences (e.g. body_pos off by 3e-8).
 
     Args:
         newton_mjw: Newton's MjWarpModel to update
         native_mjw: Native MuJoCo's MjWarpModel to copy from
         fields: List of field names to copy (defaults to MODEL_BACKFILL_FIELDS)
+        tol: Maximum allowed absolute difference before backfill (default 1e-3)
     """
     if fields is None:
         fields = MODEL_BACKFILL_FIELDS
+
+    # Fields verified separately (inertia re-diag gives large but physics-equivalent diffs)
+    skip_verification = {"body_inertia", "body_iquat"}
 
     for field in fields:
         native_arr = getattr(native_mjw, field, None)
@@ -1304,6 +1319,13 @@ def backfill_model_from_native(newton_mjw: Any, native_mjw: Any, fields: list[st
 
         # Only copy if shapes match exactly
         if native_arr.shape == newton_arr.shape:
+            # Verify diff is within tolerance (catch parser bugs)
+            if field not in skip_verification:
+                diff = float(np.max(np.abs(native_arr.numpy().astype(float) - newton_arr.numpy().astype(float))))
+                assert diff <= tol, (
+                    f"Backfill field '{field}' has diff {diff:.6e} > tol {tol:.0e}. "
+                    f"This likely indicates a parser bug, not a compilation difference."
+                )
             newton_arr.assign(native_arr)
 
     wp.synchronize()
@@ -2511,7 +2533,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
-    skip_reason = "Zero-mass world_link body causes inertia error in SolverMuJoCo spec compilation"
+    skip_reason = "Not yet verified"
 
 
 class TestMenagerie_ApptronikApollo_USD(TestMenagerieUSD):
