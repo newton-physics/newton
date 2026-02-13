@@ -983,6 +983,24 @@ per-joint compliance settings and have decided to remove this feature for memory
 <p>The <a class="reference internal" href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_joint_free" title="newton.ModelBuilder.add_joint_free"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.ModelBuilder.add_joint_free()</span></code></a> method now initializes the positional dofs of the free joint with the child body’s transform (<code class="docutils literal notranslate"><span class="pre">body_q</span></code>).</p>
 <p>The universal and compound joints have been removed in favor of the more general D6 joint.</p>
 </section>
+<section id="collisions">
+<h2>Collisions<a class="headerlink" href="#collisions" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<tbody>
+<tr class="row-odd"><td><p><strong>warp.sim</strong></p></td>
+<td><p><strong>Newton</strong></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">contacts</span> <span class="pre">=</span> <span class="pre">model.collide(state)</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">contacts</span> <span class="pre">=</span> <span class="pre">model.contacts()</span></code></p>
+<p><code class="docutils literal notranslate"><span class="pre">model.collide(state,</span> <span class="pre">contacts)</span></code></p>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><a class="reference internal" href="api/_generated/newton.Model.html#newton.Model.contacts" title="newton.Model.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">contacts()</span></code></a> allocates the contacts buffer and <a class="reference internal" href="api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> populates it in place.
+The buffer can be reused across steps. For more control, create a <a class="reference internal" href="api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> directly.</p>
+</section>
 <section id="renderers">
 <h2>Renderers<a class="headerlink" href="#renderers" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1031,6 +1049,7 @@ per-joint compliance settings and have decided to remove this feature for memory
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#forward-and-inverse-kinematics">Forward and Inverse Kinematics</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#control"><code class="docutils literal notranslate"><span class="pre">Control</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#modelbuilder"><code class="docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collisions">Collisions</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#renderers">Renderers</a></li>
 </ul>
   </nav></div>

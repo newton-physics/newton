@@ -1036,27 +1036,26 @@ If specified, attribute is added to a namespace object (e.g., model.namespace_na
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.Model.collide">
-<span class="sig-name descname"><span class="pre">collide</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">collision_pipeline</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.collide" title="Link to this definition">#</a></dt>
-<dd><p>Generate contact points for the particles and rigid bodies in the model.</p>
-<p>This method produces a <a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> object containing collision/contact information
-for use in contact-dynamics kernels.</p>
+<span class="sig-name descname"><span class="pre">collide</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.collide" title="Link to this definition">#</a></dt>
+<dd><p>Generate contact points for the particles and rigid bodies in the model using the default collision
+pipeline.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a>) – The current state of the model.</p></li>
-<li><p><strong>collision_pipeline</strong> (<a class="reference internal" href="newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><em>CollisionPipeline</em></a><em>, </em><em>optional</em>) – Collision pipeline to use for contact generation.
-If not provided, a default <a class="reference internal" href="newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> is created automatically
-(and cached for subsequent calls). For more control, create one explicitly via
-<a class="reference internal" href="newton.CollisionPipeline.html#newton.CollisionPipeline.from_model" title="newton.CollisionPipeline.from_model"><code class="xref py py-meth docutils literal notranslate"><span class="pre">CollisionPipeline.from_model()</span></code></a>.</p></li>
+<li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a>) – The current simulation state.</p></li>
+<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><em>Contacts</em></a>) – The contacts buffer to populate (will be cleared first).</p></li>
 </ul>
 </dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>The contact object containing collision information.</p>
-</dd>
-<dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p><a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts">Contacts</a></p>
-</dd>
 </dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.Model.contacts">
+<span class="sig-name descname"><span class="pre">contacts</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.contacts" title="Link to this definition">#</a></dt>
+<dd><p>Create and return a <a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> object for this model.</p>
+<p>This method initializes a collision pipeline with default arguments (when not already
+cached) and allocates a contacts buffer suitable for storing collision detection results.
+Call <a class="reference internal" href="#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> to run the collision detection and populate the contacts object.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Rigid contact margins are controlled per-shape via <a class="reference internal" href="#newton.Model.shape_contact_margin" title="newton.Model.shape_contact_margin"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Model.shape_contact_margin</span></code></a>, which is populated
@@ -1064,6 +1063,14 @@ from <code class="docutils literal notranslate"><span class="pre">ShapeConfig.co
 it defaults to <code class="docutils literal notranslate"><span class="pre">builder.rigid_contact_margin</span></code>. To adjust contact margins, set them before calling
 <a class="reference internal" href="newton.ModelBuilder.html#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ModelBuilder.finalize()</span></code></a>.</p>
 </div>
+<dl class="field-list simple">
+<dt class="field-odd">Returns<span class="colon">:</span></dt>
+<dd class="field-odd"><p>The contact object containing collision information.</p>
+</dd>
+<dt class="field-even">Return type<span class="colon">:</span></dt>
+<dd class="field-even"><p><a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts">Contacts</a></p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
@@ -1264,14 +1271,14 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.attribute_assignment">
-<span class="sig-name descname"><span class="pre">attribute_assignment</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><span class="pre">dict</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#newton.Model.AttributeAssignment" title="newton._src.sim.model.Model.AttributeAssignment"><span class="pre">AttributeAssignment</span></a><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.Model.attribute_assignment" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">attribute_assignment</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><span class="pre">dict</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#newton.Model.AttributeAssignment" title="newton.Model.AttributeAssignment"><span class="pre">Model.AttributeAssignment</span></a><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.Model.attribute_assignment" title="Link to this definition">#</a></dt>
 <dd><p>Assignment for custom attributes using Model.AttributeAssignment enum values.
 If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=Model.AttributeAssignment.MODEL).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.attribute_frequency">
-<span class="sig-name descname"><span class="pre">attribute_frequency</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><span class="pre">dict</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#newton.Model.AttributeFrequency" title="newton._src.sim.model.Model.AttributeFrequency"><span class="pre">AttributeFrequency</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.Model.attribute_frequency" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">attribute_frequency</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><span class="pre">dict</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference internal" href="#newton.Model.AttributeFrequency" title="newton.Model.AttributeFrequency"><span class="pre">Model.AttributeFrequency</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.Model.attribute_frequency" title="Link to this definition">#</a></dt>
 <dd><p>Classifies each attribute using Model.AttributeFrequency enum values (per body, per joint, per DOF, etc.)
 or custom frequencies for custom entity types (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:pair&quot;</span></code>).</p>
 </dd></dl>
@@ -1926,13 +1933,13 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_flags">
-<span class="sig-name descname"><span class="pre">particle_flags</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.particle_flags" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">particle_flags</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.particle_flags" title="Link to this definition">#</a></dt>
 <dd><p>Particle enabled state, shape [particle_count], int.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_grid">
-<span class="sig-name descname"><span class="pre">particle_grid</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.HashGrid.html#warp.HashGrid" title="(in Warp v1.11.1)"><span class="pre">HashGrid</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.particle_grid" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">particle_grid</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.HashGrid</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.particle_grid" title="Link to this definition">#</a></dt>
 <dd><p>HashGrid instance for accelerated simulation of particle interactions.</p>
 </dd></dl>
 
@@ -2004,7 +2011,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_world">
-<span class="sig-name descname"><span class="pre">particle_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.particle_world" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">particle_world</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="pre">wp.array</span><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Model.particle_world" title="Link to this definition">#</a></dt>
 <dd><p>World index for each particle, shape [particle_count], int. -1 for global.</p>
 </dd></dl>
 
@@ -2473,6 +2480,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.__init__"><code class="docutils literal notranslate"><span class="pre">Model.__init__()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.add_attribute"><code class="docutils literal notranslate"><span class="pre">Model.add_attribute()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.collide"><code class="docutils literal notranslate"><span class="pre">Model.collide()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.contacts"><code class="docutils literal notranslate"><span class="pre">Model.contacts()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.control"><code class="docutils literal notranslate"><span class="pre">Model.control()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.get_attribute_frequency"><code class="docutils literal notranslate"><span class="pre">Model.get_attribute_frequency()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.get_custom_frequency_count"><code class="docutils literal notranslate"><span class="pre">Model.get_custom_frequency_count()</span></code></a></li>

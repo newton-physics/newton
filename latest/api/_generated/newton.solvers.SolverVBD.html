@@ -850,11 +850,11 @@ for joints and contacts. Hard constraints are not currently enforced.</p>
 <span class="n">state_in</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
 <span class="n">state_out</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
 <span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
-<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_in</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
 
 <span class="c1"># Simulation loop</span>
 <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">100</span><span class="p">):</span>
-    <span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_in</span><span class="p">)</span>  <span class="c1"># Update contacts</span>
+    <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>  <span class="c1"># Update contacts</span>
     <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
     <span class="n">state_in</span><span class="p">,</span> <span class="n">state_out</span> <span class="o">=</span> <span class="n">state_out</span><span class="p">,</span> <span class="n">state_in</span>
 </pre></div>

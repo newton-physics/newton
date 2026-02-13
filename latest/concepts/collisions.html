@@ -810,16 +810,15 @@
 <p>Newton’s collision pipeline implementation supports multiple broad phase algorithms and advanced contact models (SDF-based, hydroelastic, cylinder/cone primitives). See <a class="reference internal" href="#collision-pipeline-details"><span class="std std-ref">Broad Phase and Shape Compatibility</span></a> for details.</p>
 <p>Basic usage:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Default: creates CollisionPipeline with EXPLICIT broad phase (precomputed pairs)</span>
-<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
 
-<span class="c1"># Or create a pipeline explicitly to choose broad phase mode</span>
+<span class="c1"># Or create a pipeline explicitly for more control</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
 
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span>
-    <span class="n">model</span><span class="p">,</span>
-    <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">,</span>
-<span class="p">)</span>
-<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -1138,15 +1137,16 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
 
 <span class="c1"># Default: EXPLICIT (precomputed pairs)</span>
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 
 <span class="c1"># NxN for small scenes</span>
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">NXN</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">NXN</span><span class="p">)</span>
 
 <span class="c1"># SAP for larger scenes</span>
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">)</span>
 
-<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
 </pre></div>
 </div>
 <section id="shape-compatibility">
@@ -1299,7 +1299,7 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 <p><strong>MPR (Minkowski Portal Refinement)</strong></p>
 <p>The primary algorithm for convex shape pairs. Uses support mapping functions to find the closest points between shapes via Minkowski difference sampling. Works with all convex primitives (sphere, box, capsule, cylinder, cone, ellipsoid) and convex meshes.</p>
 <p><strong>Multi-contact Generation</strong></p>
-<p>For shape pairs, multiple contact points are generated for stable stacking and resting contacts. The collision pipeline estimates buffer sizes based on the model; you can override with <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> when creating the pipeline via <code class="xref py py-meth docutils literal notranslate"><span class="pre">CollisionPipeline.from_model()</span></code>.</p>
+<p>For shape pairs, multiple contact points are generated for stable stacking and resting contacts. The collision pipeline estimates buffer sizes based on the model; you can override this value with <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> when instantiating the pipeline.</p>
 <section id="mesh-collision-handling">
 <span id="mesh-collisions"></span><h3>Mesh Collision Handling<a class="headerlink" href="#mesh-collision-handling" title="Link to this heading">#</a></h3>
 <p>Mesh collisions use different strategies depending on the pair type:</p>
@@ -1350,7 +1350,7 @@ via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolut
     <span class="n">moment_matching</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>          <span class="c1"># Match friction moments (experimental)</span>
 <span class="p">)</span>
 
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="o">.</span><span class="n">from_model</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sdf_hydroelastic_config</span><span class="o">=</span><span class="n">config</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sdf_hydroelastic_config</span><span class="o">=</span><span class="n">config</span><span class="p">)</span>
 </pre></div>
 </div>
 <p><strong>Understanding betas:</strong></p>
@@ -1538,7 +1538,7 @@ so objects at rest settle with surfaces separated by <code class="docutils liter
 <span class="k">for</span> <span class="n">frame</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_frames</span><span class="p">):</span>
     <span class="k">for</span> <span class="n">substep</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">sim_substeps</span><span class="p">):</span>
         <span class="k">if</span> <span class="n">substep</span> <span class="o">%</span> <span class="n">collide_every_n_substeps</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
+            <span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
         <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="n">sim_dt</span><span class="p">)</span>
         <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
 </pre></div>
@@ -1548,8 +1548,10 @@ so objects at rest settle with surfaces separated by <code class="docutils liter
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Add particles</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">add_particle</span><span class="p">(</span><span class="n">pos</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="n">vel</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
 
-<span class="c1"># Soft contact margin is set at collision time</span>
-<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">soft_contact_margin</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+<span class="c1"># Set soft contact margin</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">soft_contact_margin</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
 
 <span class="c1"># Access soft contact data</span>
 <span class="n">n_soft</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">soft_contact_count</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
@@ -1562,11 +1564,6 @@ so objects at rest settle with surfaces separated by <code class="docutils liter
 <span id="contact-generation"></span><h2>Contact Data<a class="headerlink" href="#contact-data" title="Link to this heading">#</a></h2>
 <p>The <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> class stores the results from the collision detection step
 and is consumed by the solver <a class="reference internal" href="../api/_generated/newton.solvers.SolverBase.html#newton.solvers.SolverBase.step" title="newton.solvers.SolverBase.step"><code class="xref py py-meth docutils literal notranslate"><span class="pre">step()</span></code></a> method for contact handling.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>Contact forces are not part of the <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> class - it only stores geometric
-contact information. See <code class="xref py py-class docutils literal notranslate"><span class="pre">SensorContact</span></code> for computing contact forces.</p>
-</div>
 <p><strong>Rigid contacts:</strong></p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
@@ -1630,8 +1627,27 @@ contact information. See <code class="xref py py-class docutils literal notransl
 </tbody>
 </table>
 </div>
+<p><strong>Extended contact attributes</strong> (see <a class="reference internal" href="extended_attributes.html#extended-contact-attributes"><span class="std std-ref">Extended Contact Attributes</span></a>):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 22.0%" />
+<col style="width: 78.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Attribute</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts.force" title="newton.Contacts.force"><code class="xref py py-attr docutils literal notranslate"><span class="pre">force</span></code></a></p></td>
+<td><p>Contact spatial forces (used by <a class="reference internal" href="../api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact" title="newton.sensors.SensorContact"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorContact</span></code></a>)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 <p>Example usage:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
 
 <span class="n">n</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_count</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
 <span class="n">points0</span> <span class="o">=</span> <span class="n">contacts</span><span class="o">.</span><span class="n">rigid_contact_point0</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n</span><span class="p">]</span>
@@ -1644,28 +1660,28 @@ contact information. See <code class="xref py py-class docutils literal notransl
 </pre></div>
 </div>
 </section>
-<section id="model-collide-parameters">
-<span id="collide-method"></span><h2>Model.collide() Parameters<a class="headerlink" href="#model-collide-parameters" title="Link to this heading">#</a></h2>
-<p>The <code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.collide()</span></code> method accepts the following parameters:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<colgroup>
-<col style="width: 30.0%" />
-<col style="width: 70.0%" />
-</colgroup>
-<thead>
-<tr class="row-odd"><th class="head"><p>Parameter</p></th>
-<th class="head"><p>Description</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">state</span></code></p></td>
-<td><p>Current simulation state (required).</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collision_pipeline</span></code></p></td>
-<td><p>Optional <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a>. If None, creates/reuses a default pipeline (EXPLICIT broad phase). For options like <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code>, <code class="docutils literal notranslate"><span class="pre">soft_contact_margin</span></code>, <code class="docutils literal notranslate"><span class="pre">requires_grad</span></code>, create the pipeline via <code class="xref py py-meth docutils literal notranslate"><span class="pre">CollisionPipeline.from_model()</span></code> and pass it here.</p></td>
-</tr>
-</tbody>
-</table>
+<section id="creating-and-populating-contacts">
+<span id="creating-contacts"></span><h2>Creating and Populating Contacts<a class="headerlink" href="#creating-and-populating-contacts" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.contacts" title="newton.Model.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">contacts()</span></code></a> creates a <a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> buffer using a default
+<a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> (EXPLICIT broad phase, cached on first call).
+<a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> populates it:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The contacts buffer can be reused across steps — <code class="docutils literal notranslate"><span class="pre">collide</span></code> clears it each time.</p>
+<p>For control over broad phase mode, contact limits, or hydroelastic configuration, create a
+<a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> directly:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">,</span>
+    <span class="n">rigid_contact_max</span><span class="o">=</span><span class="mi">50000</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+</pre></div>
 </div>
 </section>
 <section id="hydroelastic-contacts">
@@ -1820,7 +1836,7 @@ contact information. See <code class="xref py py-class docutils literal notransl
 <li><p>Use positive collision groups to reduce candidate pairs</p></li>
 <li><p>Use world indices for parallel simulations (essential for RL with many environments)</p></li>
 <li><p>Contact reduction is enabled by default for mesh-heavy scenes</p></li>
-<li><p>Pass <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> to <code class="xref py py-meth docutils literal notranslate"><span class="pre">CollisionPipeline.from_model()</span></code> to limit memory in complex scenes</p></li>
+<li><p>Pass <code class="docutils literal notranslate"><span class="pre">rigid_contact_max</span></code> to <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> to limit memory in complex scenes</p></li>
 </ul>
 </section>
 <section id="see-also">
@@ -1838,12 +1854,14 @@ contact information. See <code class="xref py py-class docutils literal notransl
 </div>
 <p><strong>API Reference:</strong></p>
 <ul class="simple">
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.contacts" title="newton.Model.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">contacts()</span></code></a> - Create a contacts buffer (default pipeline)</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> - Run collision detection (default pipeline)</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> - Collision pipeline with configurable broad phase</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline.contacts" title="newton.CollisionPipeline.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">contacts()</span></code></a> - Allocate a contacts buffer for a custom pipeline</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.BroadPhaseMode.html#newton.BroadPhaseMode" title="newton.BroadPhaseMode"><code class="xref py py-class docutils literal notranslate"><span class="pre">BroadPhaseMode</span></code></a> - Broad phase algorithm selection</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> - Contact data container</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType" title="newton.GeoType"><code class="xref py py-class docutils literal notranslate"><span class="pre">GeoType</span></code></a> - Shape geometry types</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShapeConfig</span></code></a> - Shape configuration options</p></li>
-<li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> - Collision detection method</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.geometry.SDFHydroelasticConfig.html#newton.geometry.SDFHydroelasticConfig" title="newton.geometry.SDFHydroelasticConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">SDFHydroelasticConfig</span></code></a> - Hydroelastic contact configuration</p></li>
 </ul>
 <p><strong>Model attributes:</strong></p>
@@ -1907,7 +1925,7 @@ contact information. See <code class="xref py py-class docutils literal notransl
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shape-configuration">Shape Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-patterns">Common Patterns</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-data">Contact Data</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-collide-parameters">Model.collide() Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#creating-and-populating-contacts">Creating and Populating Contacts</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hydroelastic-contacts">Hydroelastic Contacts</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#contact-materials">Contact Materials</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usd-integration">USD Integration</a></li>

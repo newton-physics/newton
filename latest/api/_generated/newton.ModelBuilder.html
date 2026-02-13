@@ -835,10 +835,11 @@ Call <a class="reference internal" href="#newton.ModelBuilder.finalize" title="n
 <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">(),</span> <span class="n">model</span><span class="o">.</span><span class="n">state</span><span class="p">()</span>
 <span class="n">control</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">control</span><span class="p">()</span>
 <span class="n">solver</span> <span class="o">=</span> <span class="n">SolverXPBD</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
 
 <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">10</span><span class="p">):</span>
     <span class="n">state_0</span><span class="o">.</span><span class="n">clear_forces</span><span class="p">()</span>
-    <span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_0</span><span class="p">)</span>
+    <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
     <span class="n">solver</span><span class="o">.</span><span class="n">step</span><span class="p">(</span><span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">control</span><span class="p">,</span> <span class="n">contacts</span><span class="p">,</span> <span class="n">dt</span><span class="o">=</span><span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span><span class="p">)</span>
     <span class="n">state_0</span><span class="p">,</span> <span class="n">state_1</span> <span class="o">=</span> <span class="n">state_1</span><span class="p">,</span> <span class="n">state_0</span>
 </pre></div>
