@@ -35,7 +35,7 @@ devices = get_test_devices()
 class TestImportUsd(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_raises_on_stage_errors(self):
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_text = """#usda 1.0
 def Xform "Root" (
@@ -104,7 +104,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_disabled_joints_create_free_joints(self):
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -151,7 +151,7 @@ def Xform "Root" (
         This test creates a stage with an articulation and a separate revolute joint outside it,
         and verifies that both are parsed correctly.
         """
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -238,7 +238,7 @@ def Xform "Root" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_text = """#usda 1.0
 (
@@ -302,7 +302,7 @@ def "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_scale_ops_units_resolve(self):
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_text = """#usda 1.0
 (
@@ -345,7 +345,7 @@ def Xform "World"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_scale_ops_nested_xforms(self):
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_text = """#usda 1.0
 (
@@ -517,7 +517,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joints_in_articulation_raise(self):
         """Ensure reversed joints are reported when encountered in articulations."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -569,7 +569,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_fixed_root_joint_to_world_is_allowed(self):
         """Ensure a fixed root joint to world (body1 unset) does not raise."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -628,7 +628,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_d6_raises(self):
         """Reversing a D6 joint should raise an error."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -672,7 +672,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joint_unsupported_spherical_raises(self):
         """Reversing a spherical joint should raise an error."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -856,7 +856,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_loop_joint(self):
         """Test that an articulation with a loop joint denoted with excludeFromArticulation is correctly parsed from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -955,7 +955,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solimp_friction_parsing(self):
         """Test that solimp_friction attribute is parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         # Create USD stage with multiple single-DOF revolute joints
         usd_content = """#usda 1.0
@@ -1126,7 +1126,7 @@ def Xform "Articulation" (
                 )
 
     def test_mesh_approximation(self):
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
             vertices, indices = create_box_mesh(scale)
@@ -1227,7 +1227,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_non_symmetric_inertia(self):
         """Test importing USD with inertia specified in principal axes that don't align with body frame."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         # Create USD stage
         stage = Usd.Stage.CreateInMemory()
@@ -1288,7 +1288,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_force_limits(self):
         """Test importing USD with force limits specified."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -1385,7 +1385,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         # Create USD stage with multiple single-DOF revolute joints
         usd_content = """#usda 1.0
@@ -1503,7 +1503,7 @@ def Xform "Articulation" (
 
     def test_limit_margin_parsing(self):
         """Test importing limit_margin from USD with mjc:margin on joint."""
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -1564,7 +1564,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_solreffriction_parsing(self):
         """Test that solreffriction attribute is parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         # Create USD stage with multiple single-DOF revolute joints
         usd_content = """#usda 1.0
@@ -1683,7 +1683,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_geom_solimp_parsing(self):
         """Test that geom_solimp attribute is parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -1800,7 +1800,7 @@ def PhysicsRevoluteJoint "Joint2"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_geom_solmix_parsing(self):
         """Test that geom_solmix attribute is parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -1917,7 +1917,7 @@ def PhysicsRevoluteJoint "Joint2"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_geom_gap_parsing(self):
         """Test that geom_gap attribute is parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -2034,7 +2034,7 @@ def PhysicsRevoluteJoint "Joint2"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_actuator_mode_inference_from_drive(self):
         """Test that ActuatorMode is correctly inferred from USD joint drives."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         from newton._src.sim.joints import ActuatorMode  # noqa: PLC0415
 
@@ -2440,7 +2440,7 @@ class TestImportSampleAssets(unittest.TestCase):
     def verify_usdphysics_parser(self, file, model, compare_min_max_coords, floating):
         """Verify model based on the UsdPhysics Parsing Utils"""
         # [1] https://openusd.org/release/api/usd_physics_page_front.html
-        from pxr import Sdf, Usd, UsdPhysics  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdPhysics
 
         stage = Usd.Stage.Open(file)
         parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
@@ -2870,7 +2870,7 @@ class TestImportSampleAssets(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_granular_loading_flags(self):
         """Test the granular control over sites and visual shapes loading."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         # Create USD stage in memory with sites, collision, and visual shapes
         usd_content = """#usda 1.0
@@ -2957,7 +2957,7 @@ def Xform "TestBody" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_granular_loading_with_sites(self):
         """Test loading control specifically for files with sites."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         # Create USD stage in memory with sites (MjcSiteAPI)
         usd_content = """#usda 1.0
@@ -3056,7 +3056,7 @@ def Xform "TestBody" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_usd_gravcomp(self):
         """Test parsing of gravcomp from USD"""
-        from pxr import Sdf, Usd, UsdPhysics  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -3094,7 +3094,7 @@ def Xform "TestBody" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_stiffness_damping(self):
         """Test that joint stiffness and damping are parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -3254,7 +3254,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_geom_priority_parsing(self):
         """Test that geom_priority attribute is parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -3346,7 +3346,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_jnt_actgravcomp_parsing(self):
         """Test that jnt_actgravcomp attribute is parsed correctly from USD."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -3441,7 +3441,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_scalar_world_parsing(self):
         """Test parsing of WORLD frequency scalar options from USD PhysicsScene (6 options)."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         test_cases = [
             ("impratio", "1.5", 1.5, 6),
@@ -3516,7 +3516,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_vector_world_parsing(self):
         """Test parsing of WORLD frequency vector options from USD PhysicsScene (2 options)."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         test_cases = [
             ("wind", "(1, 0.5, -0.5)", [1.0, 0.5, -0.5]),
@@ -3587,7 +3587,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_numeric_once_parsing(self):
         """Test parsing of ONCE frequency numeric options from USD PhysicsScene (5 options)."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         test_cases = [
             ("iterations", "30", 30),
@@ -3661,7 +3661,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_option_enum_once_parsing(self):
         """Test parsing of ONCE frequency enum options from USD PhysicsScene (4 options)."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         test_cases = [
             ("integrator", "0", 0),  # Euler
@@ -3734,7 +3734,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_parse_mujoco_options_disabled(self):
         """Test that MuJoCo options from PhysicsScene are not parsed when parse_mujoco_options=False."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """
 #usda 1.0
@@ -3785,7 +3785,7 @@ def Xform "World"
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_ref_attribute_parsing(self):
         """Test that 'mjc:ref' attribute is parsed."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -3842,7 +3842,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
         """Test that 'mjc:springref' attribute is parsed for revolute and prismatic joints."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (
@@ -3939,7 +3939,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_parsing(self):
         """Test that material attributes are parsed correctly from USD."""
-        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -3999,7 +3999,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_margin_parsing(self):
         """Test that contact_margin is parsed correctly from USD."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4047,7 +4047,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_enabled_parsing(self):
         """Test that gravity_enabled is parsed correctly from USD scene."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         # Test with gravity enabled (default)
         stage = Usd.Stage.CreateInMemory()
@@ -4087,7 +4087,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_time_steps_per_second_parsing(self):
         """Test that time_steps_per_second is parsed correctly from USD scene."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4121,7 +4121,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_max_solver_iterations_parsing(self):
         """Test that max_solver_iterations is parsed correctly from USD scene."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4148,7 +4148,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mesh_max_hull_vertices_parsing(self):
         """Test that max_hull_vertices is parsed correctly from mesh collision."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4188,7 +4188,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4209,7 +4209,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_false_creates_fixed_joint(self):
         """Test that floating=False creates a fixed joint for the root body."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4230,7 +4230,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_creates_d6_joint(self):
         """Test that base_joint dict with linear and angular axes creates a D6 joint."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4261,7 +4261,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_creates_custom_joint(self):
         """Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with custom axis."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4288,7 +4288,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_and_base_joint_mutually_exclusive(self):
         """Test that specifying both floating and base_joint raises an error."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4340,7 +4340,7 @@ def Xform "Articulation" (
             - Position should reflect import position + rotated offset
             - Orientation should reflect import rotation
         """
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4407,7 +4407,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_parent_body_attaches_to_existing_body(self):
         """Test that parent_body attaches the USD root to an existing body."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         # Create first stage: a simple robot arm
         robot_stage = Usd.Stage.CreateInMemory()
@@ -4484,7 +4484,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_parent_body_with_base_joint_creates_d6(self):
         """Test that parent_body with base_joint creates a D6 joint to parent."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         # Create robot stage
         robot_stage = Usd.Stage.CreateInMemory()
@@ -4536,7 +4536,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_parent_body_creates_joint_to_parent(self):
         """Test that parent_body creates a joint connecting to the parent body."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         robot_stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(robot_stage, UsdGeom.Tokens.z)
@@ -4582,7 +4582,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_true_with_parent_body_raises_error(self):
         """Test that floating=True with parent_body raises an error."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         # Create robot stage
         robot_stage = Usd.Stage.CreateInMemory()
@@ -4622,7 +4622,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_false_with_parent_body_succeeds(self):
         """Test that floating=False with parent_body is explicitly allowed."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         # Create robot stage
         robot_stage = Usd.Stage.CreateInMemory()
@@ -4664,7 +4664,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_non_sequential_articulation_attachment(self):
         """Test that attaching to a non-sequential articulation raises an error."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         def create_robot_stage():
             stage = Usd.Stage.CreateInMemory()
@@ -4696,7 +4696,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_parent_body_not_in_articulation_raises_error(self):
         """Test that attaching to a body not in any articulation raises an error."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         builder = newton.ModelBuilder()
 
@@ -4726,7 +4726,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_three_level_hierarchical_composition(self):
         """Test attaching multiple levels: arm → gripper → sensor."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         def create_simple_articulation(name, num_links):
             """Helper to create a simple chain articulation."""
@@ -4784,7 +4784,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_xform_relative_to_parent_body(self):
         """Test that xform is interpreted relative to parent_body when attaching."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         def create_simple_body_stage(name):
             """Create a stage with a single rigid body."""
@@ -4840,7 +4840,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_many_independent_articulations(self):
         """Test creating many (5) independent articulations and verifying indexing."""
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         def create_robot_stage():
             """Helper to create a simple 2-link robot."""
@@ -4891,7 +4891,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_conflicting_keys_fails(self):
         """Test that base_joint dict with conflicting keys raises ValueError."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4929,7 +4929,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_valid_dict_variations(self):
         """Test that various valid base_joint dict formats work correctly."""
-        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         def create_stage():
             stage = Usd.Stage.CreateInMemory()

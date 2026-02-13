@@ -34,7 +34,7 @@ def save_depth_image_as_grayscale(depth_image: np.ndarray, filename: str):
         filename: Name of the file (without extension)
     """
     try:
-        from PIL import Image  # noqa: PLC0415
+        from PIL import Image
     except ImportError:
         return  # Skip if PIL not available
 

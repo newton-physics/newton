@@ -107,10 +107,11 @@ class ModelBuilder:
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         solver = SolverXPBD(model)
+        contacts = model.contacts()
 
         for i in range(10):
             state_0.clear_forces()
-            contacts = model.collide(state_0)
+            model.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt=1.0 / 60.0)
             state_0, state_1 = state_1, state_0
 
@@ -3711,8 +3712,8 @@ class ModelBuilder:
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
-        import matplotlib.pyplot as plt  # noqa: PLC0415
-        import networkx as nx  # noqa: PLC0415
+        import matplotlib.pyplot as plt
+        import networkx as nx
 
         def joint_type_str(type):
             if type == JointType.FREE:
@@ -5089,10 +5090,10 @@ class ModelBuilder:
             try:
                 if method == "coacd":
                     # convex decomposition using CoACD
-                    import coacd  # noqa: PLC0415
+                    import coacd
                 else:
                     # convex decomposition using V-HACD
-                    import trimesh  # noqa: PLC0415
+                    import trimesh
 
                 decompositions = {}
 
