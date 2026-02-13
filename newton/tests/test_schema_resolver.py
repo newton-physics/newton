@@ -540,14 +540,14 @@ class TestSchemaResolver(unittest.TestCase):
         # Joint custom property materialization and defaults
         self.assertEqual(model.get_attribute_frequency("testJointScalar"), AttributeFrequency.JOINT)
         # Authored joint value
-        self.assertIn(joint_name, builder.joint_key)
-        joint_idx = builder.joint_key.index(joint_name)
+        self.assertIn(joint_name, builder.joint_label)
+        joint_idx = builder.joint_label.index(joint_name)
         joint_arr = model.testJointScalar.numpy()
         self.assertAlmostEqual(float(joint_arr[joint_idx]), 2.25, places=6)
         # Non-authored joint should be default 0.0
         other_joint = "/ant/joints/front_right_leg"
-        self.assertIn(other_joint, builder.joint_key)
-        other_joint_idx = builder.joint_key.index(other_joint)
+        self.assertIn(other_joint, builder.joint_label)
+        other_joint_idx = builder.joint_label.index(other_joint)
         self.assertAlmostEqual(float(joint_arr[other_joint_idx]), 0.0, places=6)
 
         # Validate vec2 and quat custom properties are materialized with expected shapes
@@ -774,8 +774,8 @@ class TestSchemaResolver(unittest.TestCase):
         for i in range(model.joint_count):
             joint_type = joint_types[i]
             if joint_type == 1:  # JointType.REVOLUTE
-                joint_key = builder.joint_key[i] if i < len(builder.joint_key) else None
-                if joint_key not in expected_joint_values:
+                joint_label = builder.joint_label[i] if i < len(builder.joint_label) else None
+                if joint_label not in expected_joint_values:
                     continue
 
                 q_start = int(joint_q_start[i])
@@ -784,20 +784,20 @@ class TestSchemaResolver(unittest.TestCase):
                 actual_pos = joint_q[q_start]
                 actual_vel = joint_qd[qd_start]
 
-                expected_pos_deg, expected_vel = expected_joint_values[joint_key]
+                expected_pos_deg, expected_vel = expected_joint_values[joint_label]
                 expected_pos_rad = expected_pos_deg * (3.14159 / 180.0)
 
                 self.assertAlmostEqual(
                     actual_pos,
                     expected_pos_rad,
                     places=4,
-                    msg=f"Joint {joint_key} position mismatch: expected {expected_pos_deg}°, got {actual_pos * 180 / 3.14159:.1f}°",
+                    msg=f"Joint {joint_label} position mismatch: expected {expected_pos_deg}°, got {actual_pos * 180 / 3.14159:.1f}°",
                 )
                 self.assertAlmostEqual(
                     actual_vel,
                     expected_vel,
                     places=4,
-                    msg=f"Joint {joint_key} velocity mismatch: expected {expected_vel}, got {actual_vel}",
+                    msg=f"Joint {joint_label} velocity mismatch: expected {expected_vel}, got {actual_vel}",
                 )
                 revolute_joints_found += 1
 
@@ -1144,8 +1144,8 @@ class TestSchemaResolver(unittest.TestCase):
         body_idx = body_map[body_path]
 
         joint_name = "/ant/joints/front_left_leg"
-        self.assertIn(joint_name, builder.joint_key)
-        joint_idx = builder.joint_key.index(joint_name)
+        self.assertIn(joint_name, builder.joint_label)
+        joint_idx = builder.joint_label.index(joint_name)
 
         # Test 1: Verify that testBodyScalar exists in both default and namespace_a
         # Default namespace: newton:testBodyScalar = 1.5 (model assignment)

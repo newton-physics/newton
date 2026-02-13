@@ -4414,7 +4414,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create shapes for world 1 at normal scale
         env1 = newton.ModelBuilder()
-        body1 = env1.add_body(key="body1", mass=1.0)  # Add mass to make it dynamic
+        body1 = env1.add_body(label="body1", mass=1.0)  # Add mass to make it dynamic
 
         # Add two spheres - one at origin, one offset
         env1.add_shape_sphere(
@@ -4433,7 +4433,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create shapes for world 2 at 0.5x scale
         env2 = newton.ModelBuilder()
-        body2 = env2.add_body(key="body2", mass=1.0)  # Add mass to make it dynamic
+        body2 = env2.add_body(label="body2", mass=1.0)  # Add mass to make it dynamic
 
         # Add two spheres with manually scaled properties
         env2.add_shape_sphere(
@@ -4563,7 +4563,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create shapes for world 0
         env1 = newton.ModelBuilder()
-        body1 = env1.add_body(key="mesh_body1", mass=1.0)
+        body1 = env1.add_body(label="mesh_body1", mass=1.0)
 
         # Add mesh shape at specific position
         env1.add_shape_mesh(
@@ -4577,7 +4577,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create shapes for world 1
         env2 = newton.ModelBuilder()
-        body2 = env2.add_body(key="mesh_body2", mass=1.0)
+        body2 = env2.add_body(label="mesh_body2", mass=1.0)
 
         # Add mesh shape at different position
         env2.add_shape_mesh(
@@ -5062,7 +5062,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
 
         for body_name in ["child1", "child2"]:
-            newton_body_idx = model.body_key.index(body_name)
+            newton_body_idx = next(i for i, lbl in enumerate(model.body_label) if lbl.endswith(f"/{body_name}"))
             mjc_body_idx = np.where(mjc_body_to_newton[0] == newton_body_idx)[0][0]
 
             # Get Newton body position and quaternion (populated from MuJoCo via update_newton_state)

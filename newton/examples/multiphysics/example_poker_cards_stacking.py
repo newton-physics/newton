@@ -81,7 +81,7 @@ class Example:
                 p=wp.vec3(0.0, 0.0, self.cube_height),
                 q=wp.quat_identity(),
             ),
-            key="cube",
+            label="cube",
         )
         cube_cfg = newton.ModelBuilder.ShapeConfig()
         cube_cfg.density = 0.0  # Static body (infinite mass)
@@ -110,7 +110,7 @@ class Example:
                 p=wp.vec3(self.sphere_start_x, 0.0, self.sphere_height),
                 q=wp.quat_identity(),
             ),
-            key="sphere",
+            label="sphere",
         )
         sphere_cfg = newton.ModelBuilder.ShapeConfig()
         sphere_cfg.density = 0.0  # Kinematic body (not affected by gravity)

@@ -1738,7 +1738,7 @@ class SolverMuJoCo(SolverBase):
                     if wp.config.verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
                     continue
-                target_name = model.body_label[target_idx]
+                target_name = model.body_label[target_idx].replace("/", "_")
             else:
                 # TODO: Support site, slidercrank, and jointinparent transmission types
                 if wp.config.verbose:
@@ -3190,7 +3190,7 @@ class SolverMuJoCo(SolverBase):
             joint_rot = child_xform.q
 
             # ensure unique body name
-            name = model.body_label[child]
+            name = model.body_label[child].replace("/", "_")
             if name not in body_name_counts:
                 body_name_counts[name] = 1
             else:
@@ -3217,7 +3217,7 @@ class SolverMuJoCo(SolverBase):
             # add joint
             j_type = joint_type[j]
             qd_start = joint_qd_start[j]
-            name = model.joint_label[j]
+            name = model.joint_label[j].replace("/", "_")
             if name not in joint_names:
                 joint_names[name] = 1
             else:
@@ -3534,7 +3534,7 @@ class SolverMuJoCo(SolverBase):
             """Get body name, handling world body (-1) correctly."""
             if body_idx == -1:
                 return "world"
-            return model.body_label[body_idx]
+            return model.body_label[body_idx].replace("/", "_")
 
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
@@ -3552,8 +3552,10 @@ class SolverMuJoCo(SolverBase):
                 eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_JOINT)
                 eq.type = mujoco.mjtEq.mjEQ_JOINT
                 eq.active = eq_constraint_enabled[i]
-                eq.name1 = model.joint_label[eq_constraint_joint1[i]]
-                eq.name2 = model.joint_label[eq_constraint_joint2[i]]
+                j1_idx = int(eq_constraint_joint1[i])
+                j2_idx = int(eq_constraint_joint2[i])
+                eq.name1 = joint_mapping.get(j1_idx, model.joint_label[j1_idx].replace("/", "_"))
+                eq.name2 = joint_mapping.get(j2_idx, model.joint_label[j2_idx].replace("/", "_"))
                 eq.data[0:5] = eq_constraint_polycoef[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]

@@ -98,7 +98,7 @@ class Example:
             stretch_damping=stretch_damping,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,
-            key="y_graph",
+            label="y_graph",
             wrap_in_articulation=True,
         )
 

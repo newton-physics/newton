@@ -63,7 +63,7 @@ def add_mesh_object(
     mesh_file: str,
     transform: wp.transform,
     shape_cfg: newton.ModelBuilder.ShapeConfig | None = None,
-    key: str | None = None,
+    label: str | None = None,
     center_origin: bool = True,
     scale: float = 1.0,
 ) -> int:
@@ -83,7 +83,7 @@ def add_mesh_object(
     mesh = newton.Mesh(vertices, indices)
 
     # Apply scale to the mesh shape
-    body = builder.add_body(key=key, xform=transform)
+    body = builder.add_body(label=label, xform=transform)
     builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), cfg=shape_cfg)
     return body
 
@@ -140,7 +140,7 @@ class Example:
             plane=(0.0, 0.0, 1.0, -self.ground_plane_offset),
             width=0.0,
             length=0.0,
-            key="ground_plane",
+            label="ground_plane",
         )
         main_scene.replicate(world_builder, num_worlds=self.num_worlds)
 
@@ -237,7 +237,7 @@ class Example:
                     bolt_file,
                     bolt_xform,
                     SHAPE_CFG,
-                    key=f"bolt_{i}_{j}",
+                    label=f"bolt_{i}_{j}",
                     center_origin=True,
                     scale=self.scene_scale,
                 )
@@ -252,7 +252,7 @@ class Example:
                     nut_file,
                     nut_xform,
                     SHAPE_CFG,
-                    key=f"nut_{i}_{j}",
+                    label=f"nut_{i}_{j}",
                     center_origin=True,
                     scale=self.scene_scale,
                 )
@@ -277,7 +277,7 @@ class Example:
                 gear_file,
                 gear_xform,
                 SHAPE_CFG,
-                key=gear_key,
+                label=gear_key,
                 center_origin=True,
                 scale=self.scene_scale,
             )
@@ -336,10 +336,10 @@ class Example:
                 bolt_key = f"bolt_{i}_{j}"
                 nut_key = f"nut_{i}_{j}"
 
-                if bolt_key in self.model.body_key:
-                    self.bolt_body_indices.append(self.model.body_key.index(bolt_key))
-                if nut_key in self.model.body_key:
-                    self.nut_body_indices.append(self.model.body_key.index(nut_key))
+                if bolt_key in self.model.body_label:
+                    self.bolt_body_indices.append(self.model.body_label.index(bolt_key))
+                if nut_key in self.model.body_label:
+                    self.nut_body_indices.append(self.model.body_label.index(nut_key))
 
         # Store initial transforms
         body_q = self.state_0.body_q.numpy()

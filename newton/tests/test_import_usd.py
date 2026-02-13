@@ -63,9 +63,9 @@ def Xform "Root" (
         )
         self.assertEqual(builder.body_count, 9)
         self.assertEqual(builder.shape_count, 26)
-        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
-        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
-        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
+        self.assertEqual(len(builder.shape_label), len(set(builder.shape_label)))
+        self.assertEqual(len(builder.body_label), len(set(builder.body_label)))
+        self.assertEqual(len(builder.joint_label), len(set(builder.joint_label)))
         # 8 joints + 1 free joint for the root body
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
@@ -221,11 +221,11 @@ def Xform "Root" (
         self.assertIn("PhysicsArticulationRootAPI", warn_msg)
         self.assertIn("skip_validation_joints=True", warn_msg)
 
-        self.assertIn("/World/Arm/RevoluteJoint", builder.joint_key)
-        self.assertIn("/World/OrphanJoint", builder.joint_key)
+        self.assertIn("/World/Arm/RevoluteJoint", builder.joint_label)
+        self.assertIn("/World/OrphanJoint", builder.joint_label)
 
-        art_idx = builder.joint_key.index("/World/Arm/RevoluteJoint")
-        orphan_idx = builder.joint_key.index("/World/OrphanJoint")
+        art_idx = builder.joint_label.index("/World/Arm/RevoluteJoint")
+        orphan_idx = builder.joint_label.index("/World/OrphanJoint")
         self.assertEqual(builder.joint_type[art_idx], newton.JointType.REVOLUTE)
         self.assertEqual(builder.joint_type[orphan_idx], newton.JointType.REVOLUTE)
 
@@ -402,9 +402,9 @@ def Xform "World"
         )
         self.assertEqual(builder.body_count, 9)
         self.assertEqual(builder.shape_count, 13)
-        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
-        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
-        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
+        self.assertEqual(len(builder.shape_label), len(set(builder.shape_label)))
+        self.assertEqual(len(builder.body_label), len(set(builder.body_label)))
+        self.assertEqual(len(builder.joint_label), len(set(builder.joint_label)))
         # 8 joints + 1 free joint for the root body
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
@@ -448,7 +448,7 @@ def Xform "World"
 
         # The articulation has 2 bodies
         self.assertEqual(builder.body_count, 2)
-        self.assertEqual(set(builder.body_key), {"/Articulation/Arm", "/Articulation/CenterPivot"})
+        self.assertEqual(set(builder.body_label), {"/Articulation/Arm", "/Articulation/CenterPivot"})
 
         # Should have 2 joints:
         # 1. Fixed joint with only body0 specified (CenterPivot to world)
@@ -456,8 +456,8 @@ def Xform "World"
         self.assertEqual(builder.joint_count, 2)
 
         # Find joints by their keys to make test robust to ordering changes
-        fixed_joint_idx = builder.joint_key.index("/Articulation/CenterPivot/FixedJoint")
-        revolute_joint_idx = builder.joint_key.index("/Articulation/Arm/RevoluteJoint")
+        fixed_joint_idx = builder.joint_label.index("/Articulation/CenterPivot/FixedJoint")
+        revolute_joint_idx = builder.joint_label.index("/Articulation/Arm/RevoluteJoint")
 
         # Verify joint types
         self.assertEqual(builder.joint_type[revolute_joint_idx], newton.JointType.REVOLUTE)
@@ -467,7 +467,7 @@ def Xform "World"
         # because body1 was missing in the USD file
         self.assertEqual(builder.joint_parent[fixed_joint_idx], -1)  # Parent is world (-1)
         # Child should be CenterPivot (which was body0 in the USD)
-        center_pivot_idx = builder.body_key.index("/Articulation/CenterPivot")
+        center_pivot_idx = builder.body_label.index("/Articulation/CenterPivot")
         self.assertEqual(builder.joint_child[fixed_joint_idx], center_pivot_idx)
 
         # Verify the import results mapping
@@ -493,7 +493,7 @@ def Xform "World"
             "right_back_foot",
         ]
         for i in range(8):
-            self.assertTrue(builder_dfs.joint_key[i + 1].endswith(expected[i]))
+            self.assertTrue(builder_dfs.joint_label[i + 1].endswith(expected[i]))
 
         builder_bfs = newton.ModelBuilder()
         builder_bfs.add_usd(
@@ -512,7 +512,7 @@ def Xform "World"
             "right_back_foot",
         ]
         for i in range(8):
-            self.assertTrue(builder_bfs.joint_key[i + 1].endswith(expected[i]))
+            self.assertTrue(builder_bfs.joint_label[i + 1].endswith(expected[i]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joints_in_articulation_raise(self):
@@ -620,8 +620,8 @@ def Xform "World"
         self.assertEqual(builder.body_count, 3)
         self.assertEqual(builder.joint_count, 3)
 
-        fixed_idx = builder.joint_key.index("/World/Articulation/RootToWorld")
-        root_idx = builder.body_key.index("/World/Articulation/Root")
+        fixed_idx = builder.joint_label.index("/World/Articulation/RootToWorld")
+        root_idx = builder.body_label.index("/World/Articulation/Root")
         self.assertEqual(builder.joint_parent[fixed_idx], -1)
         self.assertEqual(builder.joint_child[fixed_idx], root_idx)
 
@@ -746,14 +746,14 @@ def Xform "World"
                 f"Expected {expected_joint_types} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_type}",
             )
             self.assertEqual(
-                builder.body_key,
+                builder.body_label,
                 expected_body_keys,
-                f"Expected {expected_body_keys} bodies after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.body_key}",
+                f"Expected {expected_body_keys} bodies after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.body_label}",
             )
             self.assertEqual(
-                builder.joint_key,
+                builder.joint_label,
                 expected_joint_keys,
-                f"Expected {expected_joint_keys} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_key}",
+                f"Expected {expected_joint_keys} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_label}",
             )
 
         for bodies_follow_joint_ordering in [True, False]:
@@ -948,8 +948,10 @@ def Xform "Articulation" (
         self.assertEqual(
             builder.joint_type, [newton.JointType.REVOLUTE, newton.JointType.REVOLUTE, newton.JointType.FIXED]
         )
-        self.assertEqual(builder.body_key, ["/Articulation/Body1", "/Articulation/Body2"])
-        self.assertEqual(builder.joint_key, ["/Articulation/Joint1", "/Articulation/Joint2", "/Articulation/LoopJoint"])
+        self.assertEqual(builder.body_label, ["/Articulation/Body1", "/Articulation/Body2"])
+        self.assertEqual(
+            builder.joint_label, ["/Articulation/Joint1", "/Articulation/Joint2", "/Articulation/LoopJoint"]
+        )
         self.assertEqual(builder.joint_articulation, [0, 0, -1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1206,13 +1208,13 @@ def Xform "Articulation" (
         builder.add_usd(newton.examples.get_asset("humanoid.usda"))
         self.assertEqual(builder.shape_count, 38)
         self.assertEqual(builder.body_count, 16)
-        visual_shape_keys = [k for k in builder.shape_key if "visuals" in k]
-        collision_shape_keys = [k for k in builder.shape_key if "collisions" in k]
+        visual_shape_keys = [k for k in builder.shape_label if "visuals" in k]
+        collision_shape_keys = [k for k in builder.shape_label if "collisions" in k]
         self.assertEqual(len(visual_shape_keys), 19)
         self.assertEqual(len(collision_shape_keys), 19)
-        visual_shapes = [i for i, k in enumerate(builder.shape_key) if "visuals" in k]
+        visual_shapes = [i for i, k in enumerate(builder.shape_label) if "visuals" in k]
         # corresponding collision shapes
-        collision_shapes = [builder.shape_key.index(k.replace("visuals", "collisions")) for k in visual_shape_keys]
+        collision_shapes = [builder.shape_label.index(k.replace("visuals", "collisions")) for k in visual_shape_keys]
         # ensure that the visual and collision shapes match
         for i in range(len(visual_shapes)):
             vi = visual_shapes[i]
@@ -1263,8 +1265,8 @@ def Xform "Articulation" (
         self.assertEqual(builder.body_count, 1)
         self.assertEqual(builder.shape_count, 1)
         self.assertAlmostEqual(builder.body_mass[0], 1.0, places=6)
-        self.assertEqual(builder.body_key[0], "/World/Box")
-        self.assertEqual(builder.shape_key[0], "/World/Box")
+        self.assertEqual(builder.body_label[0], "/World/Box")
+        self.assertEqual(builder.shape_label[0], "/World/Box")
 
         # Ensure the body has a free joint assigned and is in an articulation
         self.assertEqual(builder.joint_count, 1)
@@ -1272,7 +1274,7 @@ def Xform "Articulation" (
         self.assertEqual(builder.joint_parent[0], -1)
         self.assertEqual(builder.joint_child[0], 0)
         self.assertEqual(builder.articulation_count, 1)
-        self.assertEqual(builder.articulation_key[0], "/World/Box")
+        self.assertEqual(builder.articulation_label[0], "/World/Box")
 
         # Get parsed inertia tensor
         inertia_parsed = np.array(builder.body_inertia[0])
@@ -1365,19 +1367,19 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         # Test revolute joint (A-B)
-        joint_idx = model.joint_key.index("/joint_AB")
+        joint_idx = model.joint_label.index("/joint_AB")
         self.assertEqual(model.joint_type.numpy()[joint_idx], newton.JointType.REVOLUTE)
         joint_dof_idx = model.joint_qd_start.numpy()[joint_idx]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx], 24.0)
 
         # Test prismatic joint (A-C)
-        joint_idx_AC = model.joint_key.index("/joint_AC")
+        joint_idx_AC = model.joint_label.index("/joint_AC")
         self.assertEqual(model.joint_type.numpy()[joint_idx_AC], newton.JointType.PRISMATIC)
         joint_dof_idx_AC = model.joint_qd_start.numpy()[joint_idx_AC]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AC], 15.0)
 
         # Test D6 joint (A-D) - check transX DOF
-        joint_idx_AD = model.joint_key.index("/joint_AD")
+        joint_idx_AD = model.joint_label.index("/joint_AD")
         self.assertEqual(model.joint_type.numpy()[joint_idx_AD], newton.JointType.D6)
         joint_dof_idx_AD = model.joint_qd_start.numpy()[joint_idx_AD]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AD], 30.0)
@@ -2189,7 +2191,7 @@ def Xform "Root" (
         builder.add_usd(stage)
 
         def get_qd_start(b, joint_name):
-            joint_idx = b.joint_key.index(joint_name)
+            joint_idx = b.joint_label.index(joint_name)
             return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
 
         self.assertEqual(
@@ -2430,10 +2432,10 @@ def Xform "Root" (
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
 
-        joint_id = builder._add_base_joint(body0, key="my_custom_joint")
+        joint_id = builder._add_base_joint(body0, label="my_custom_joint")
 
         self.assertEqual(builder.joint_count, 1)
-        self.assertEqual(builder.joint_key[joint_id], "my_custom_joint")
+        self.assertEqual(builder.joint_label[joint_id], "my_custom_joint")
 
 
 class TestImportSampleAssets(unittest.TestCase):
@@ -2445,8 +2447,8 @@ class TestImportSampleAssets(unittest.TestCase):
         stage = Usd.Stage.Open(file)
         parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
         # since the key is generated from USD paths we can assume that keys are unique
-        body_key_to_idx = dict(zip(model.body_key, range(model.body_count), strict=False))
-        shape_key_to_idx = dict(zip(model.shape_key, range(model.shape_count), strict=False))
+        body_key_to_idx = dict(zip(model.body_label, range(model.body_count), strict=False))
+        shape_key_to_idx = dict(zip(model.shape_label, range(model.shape_count), strict=False))
 
         parsed_bodies = list(zip(*parsed[UsdPhysics.ObjectType.RigidBody], strict=False))
 
@@ -2460,7 +2462,7 @@ class TestImportSampleAssets(unittest.TestCase):
         for body_path, body_desc in parsed_bodies:
             body_idx = body_key_to_idx.get(str(body_path), None)
 
-            model_collisions = {model.shape_key[sk] for sk in model.body_shapes[body_idx]}
+            model_collisions = {model.shape_label[sk] for sk in model.body_shapes[body_idx]}
             parsed_collisions = {str(collider) for collider in body_desc.collisions}
             self.assertEqual(parsed_collisions, model_collisions)
 
@@ -2498,7 +2500,7 @@ class TestImportSampleAssets(unittest.TestCase):
             JointType.D6: UsdPhysics.ObjectType.D6Joint,
         }
 
-        joint_key_to_idx = dict(zip(model.joint_key, range(model.joint_count), strict=False))
+        joint_key_to_idx = dict(zip(model.joint_label, range(model.joint_count), strict=False))
         model_joint_type = model.joint_type.numpy()
         joints_found = []
 
@@ -2526,15 +2528,15 @@ class TestImportSampleAssets(unittest.TestCase):
             jt = int(model.joint_type.numpy()[j])
 
             if jt == JointType.REVOLUTE:
-                self.assertEqual((lin, ang), (0, 1), f"{model.joint_key[j]} DOF dim mismatch")
+                self.assertEqual((lin, ang), (0, 1), f"{model.joint_label[j]} DOF dim mismatch")
             elif jt == JointType.FIXED:
-                self.assertEqual((lin, ang), (0, 0), f"{model.joint_key[j]} DOF dim mismatch")
+                self.assertEqual((lin, ang), (0, 0), f"{model.joint_label[j]} DOF dim mismatch")
             elif jt == JointType.FREE:
-                self.assertGreater(lin + ang, 0, f"{model.joint_key[j]} expected nonzero DOFs for free joint")
+                self.assertGreater(lin + ang, 0, f"{model.joint_label[j]} expected nonzero DOFs for free joint")
             elif jt == JointType.PRISMATIC:
-                self.assertEqual((lin, ang), (1, 0), f"{model.joint_key[j]} DOF dim mismatch")
+                self.assertEqual((lin, ang), (1, 0), f"{model.joint_label[j]} DOF dim mismatch")
             elif jt == JointType.BALL:
-                self.assertEqual((lin, ang), (0, 3), f"{model.joint_key[j]} DOF dim mismatch")
+                self.assertEqual((lin, ang), (0, 3), f"{model.joint_label[j]} DOF dim mismatch")
 
         self.assertEqual(int(total_dofs), int(model.joint_axis.numpy().shape[0]))
         joint_enabled = model.joint_enabled.numpy()
@@ -2553,7 +2555,7 @@ class TestImportSampleAssets(unittest.TestCase):
             if attr and attr.HasAuthoredValue():
                 drive_gain_scale = float(attr.Get())
 
-        for j, key in enumerate(model.joint_key):
+        for j, key in enumerate(model.joint_label):
             prim = stage.GetPrimAtPath(key)
             if not prim:
                 continue
@@ -2664,7 +2666,7 @@ class TestImportSampleAssets(unittest.TestCase):
 
                 self.assertTrue(
                     all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)),
-                    f"Joint {j} ({model.joint_key[j]}) position mismatch: expected={rhs_p}, Newton={lhs_p}",
+                    f"Joint {j} ({model.joint_label[j]}) position mismatch: expected={rhs_p}, Newton={lhs_p}",
                 )
 
                 q_diff = lhs_q * wp.quat_inverse(rhs_q)
@@ -2672,7 +2674,7 @@ class TestImportSampleAssets(unittest.TestCase):
                 self.assertLessEqual(
                     angle_diff,
                     3e-3,
-                    f"Joint {j} ({model.joint_key[j]}) rotation mismatch: expected={rhs_q}, Newton={lhs_q}, angle_diff={math.degrees(angle_diff)}°",
+                    f"Joint {j} ({model.joint_label[j]}) rotation mismatch: expected={rhs_q}, Newton={lhs_q}, angle_diff={math.degrees(angle_diff)}°",
                 )
 
         model.shape_body.numpy()
@@ -3217,7 +3219,7 @@ def Xform "Articulation" (
         self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
         self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
 
-        joint_names = model.joint_key
+        joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
         joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
         joint_damping = model.mujoco.dof_passive_damping.numpy()
@@ -3836,7 +3838,7 @@ def Xform "Articulation" (
         dof_ref = model.mujoco.dof_ref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
         self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 90.0, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -3930,10 +3932,10 @@ def Xform "Articulation" (
         springref = model.mujoco.dof_springref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
         self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
 
-        prismatic_joint_idx = model.joint_key.index("/Articulation/prismatic_joint")
+        prismatic_joint_idx = model.joint_label.index("/Articulation/prismatic_joint")
         self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -4383,7 +4385,7 @@ def Xform "Articulation" (
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        body_idx = next(i for i, name in enumerate(model.body_key) if "FloatingBody" in name)
+        body_idx = next(i for i, name in enumerate(model.body_label) if "FloatingBody" in name)
         body_q = state.body_q.numpy()[body_idx]
 
         # Expected position: import_pos + rotate_90z(body_pos)
@@ -4658,7 +4660,7 @@ def Xform "Articulation" (
         model = builder.finalize()
 
         # Verify it worked - gripper should be attached with FIXED joint
-        self.assertTrue(any("GripperBase" in key for key in builder.body_key))
+        self.assertTrue(any("GripperBase" in key for key in builder.body_label))
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -4762,12 +4764,12 @@ def Xform "Articulation" (
         # Level 1: Add arm (3 links)
         arm_stage = create_simple_articulation("Arm", 3)
         builder.add_usd(arm_stage, floating=False)
-        ee_idx = next(i for i, name in enumerate(builder.body_key) if "Link2" in name)
+        ee_idx = next(i for i, name in enumerate(builder.body_label) if "Link2" in name)
 
         # Level 2: Attach gripper to end effector (2 links)
         gripper_stage = create_simple_articulation("Gripper", 2)
         builder.add_usd(gripper_stage, parent_body=ee_idx, floating=False)
-        finger_idx = next(i for i, name in enumerate(builder.body_key) if "Gripper" in name and "Link1" in name)
+        finger_idx = next(i for i, name in enumerate(builder.body_label) if "Gripper" in name and "Link1" in name)
 
         # Level 3: Attach sensor to gripper finger (1 link)
         sensor_stage = create_simple_articulation("Sensor", 1)
@@ -4806,7 +4808,7 @@ def Xform "Articulation" (
         parent_stage = create_simple_body_stage("parent")
         builder.add_usd(parent_stage, xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()), floating=False)
 
-        parent_body_idx = builder.body_key.index("/parent")
+        parent_body_idx = builder.body_label.index("/parent")
 
         # Attach child to parent with xform (0, 0, 0.5) - interpreted as parent-relative offset
         child_stage = create_simple_body_stage("child")
@@ -4814,7 +4816,7 @@ def Xform "Articulation" (
             child_stage, parent_body=parent_body_idx, xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity())
         )
 
-        child_body_idx = builder.body_key.index("/child")
+        child_body_idx = builder.body_label.index("/child")
 
         # Finalize and compute forward kinematics to get world-space positions
         model = builder.finalize()

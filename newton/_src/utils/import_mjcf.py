@@ -1326,6 +1326,10 @@ def parse_mjcf(
                     for mjcf_name, dof_offset in mjcf_joint_dof_offsets:
                         mjcf_joint_name_to_dof[mjcf_name] = qd_start + dof_offset
 
+                # Map raw MJCF joint names to Newton joint index for tendon/actuator resolution
+                for jn in joint_name:
+                    joint_name_to_idx[jn] = joint_idx
+
         # -----------------
         # add shapes (using shared helper for visual/collider partitioning)
 
@@ -1613,12 +1617,8 @@ def parse_mjcf(
                 if verbose:
                     print(f"Joint constraint: {joint1_name} coupled to {joint2_name} with polycoef {polycoef}")
 
-                joint1_idx = (
-                    builder.joint_label.index(joint1_name) if joint1_name and joint1_name in builder.joint_label else -1
-                )
-                joint2_idx = (
-                    builder.joint_label.index(joint2_name) if joint2_name and joint2_name in builder.joint_label else -1
-                )
+                joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
+                joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
 
                 builder.add_equality_constraint_joint(
                     joint1=joint1_idx,
@@ -1651,6 +1651,7 @@ def parse_mjcf(
     # Used to resolve equality constraints and actuators that reference entities by their short name.
     body_name_to_idx: dict[str, int] = {}
     site_name_to_idx: dict[str, int] = {}
+    joint_name_to_idx: dict[str, int] = {}
 
     # Extract articulation label early for hierarchical label construction
     articulation_label = root.attrib.get("model")
@@ -1865,9 +1866,8 @@ def parse_mjcf(
                     continue
 
                 # Look up joint index by name
-                try:
-                    joint_idx = builder.joint_label.index(joint_name)
-                except ValueError:
+                joint_idx = joint_name_to_idx.get(joint_name)
+                if joint_idx is None:
                     if verbose:
                         print(
                             f"Warning: Tendon '{tendon_name}' references unknown joint '{joint_name}', skipping joint"
@@ -1973,9 +1973,9 @@ def parse_mjcf(
                     target_idx = qd_start  # DOF index for joint actuators
                     target_name_for_log = joint_name
                     trntype = 0  # TrnType.JOINT
-                elif joint_name in builder.joint_label:
+                elif joint_name in joint_name_to_idx:
                     # Fallback: combined Newton joint (applies to all DOFs)
-                    joint_idx = builder.joint_label.index(joint_name)
+                    joint_idx = joint_name_to_idx[joint_name]
                     qd_start = builder.joint_qd_start[joint_idx]
                     lin_dofs, ang_dofs = builder.joint_dof_dim[joint_idx]
                     total_dofs = lin_dofs + ang_dofs

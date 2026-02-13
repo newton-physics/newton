@@ -349,7 +349,7 @@ class Drone:
         carbon_fiber_density = 1750.0  # kg / m^3
         for i in range(variation_count):
             # Register the drone as a rigid body in the simulation model.
-            body = builder.add_body(key=f"{name}_{i}")
+            body = builder.add_body(label=f"{name}_{i}")
 
             # Define the shapes making up the drone's rigid body.
             builder.add_shape_box(

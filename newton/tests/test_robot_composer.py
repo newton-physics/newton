@@ -220,8 +220,9 @@ class RobotComposerSim:
         ur5e_with_robotiq_gripper.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
 
         # Find end effector body by searching body names
-        ee_name = "wrist_3_link"
-        ee_body_idx = ur5e_with_robotiq_gripper.body_key.index(ee_name)
+        ee_body_idx = next(
+            i for i, lbl in enumerate(ur5e_with_robotiq_gripper.body_label) if lbl.endswith("/wrist_3_link")
+        )
 
         # Attach Robotiq 2F85 gripper to end effector
         gripper_quat = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi / 2)
@@ -286,8 +287,7 @@ class RobotComposerSim:
         ur5e_with_hand.joint_act_mode[-6:] = [int(ActuatorMode.POSITION)] * 6
 
         # Find end effector body by searching body names
-        ee_name = "wrist_3_link"
-        ee_body_idx = ur5e_with_hand.body_key.index(ee_name)
+        ee_body_idx = next(i for i, lbl in enumerate(ur5e_with_hand.body_label) if lbl.endswith("/wrist_3_link"))
 
         # Attach LEAP hand left to end effector
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), wp.pi / 2)
@@ -350,8 +350,7 @@ class RobotComposerSim:
         franka_with_hand.joint_act_mode[-7:] = [int(ActuatorMode.POSITION)] * 7
 
         # Find end effector body by searching body names
-        franka_ee_name = "fr3_link8"
-        franka_ee_idx = franka_with_hand.body_key.index(franka_ee_name)
+        franka_ee_idx = next(i for i, lbl in enumerate(franka_with_hand.body_label) if lbl.endswith("/fr3_link8"))
 
         # Attach Allegro hand with custom base joint
         quat_z = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -init_q[-1])
