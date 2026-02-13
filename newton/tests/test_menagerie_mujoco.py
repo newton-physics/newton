@@ -21,92 +21,36 @@ when loaded via MJCF into Newton's MuJoCo solver vs native MuJoCo.
 
 Test Architecture:
     - TestMenagerieBase: Abstract base class with all test infrastructure
+    - TestMenagerieMJCF / TestMenagerieUSD: Model source variants
     - TestMenagerie_<RobotName>: One derived class per menagerie robot
 
 Each test:
     1. Downloads the robot from menagerie (cached)
     2. Creates Newton model (via MJCF or USD factory)
     3. Creates native MuJoCo model from same source
-    4. Runs simulation with configurable control strategies
-    5. Compares per-step state values within tolerance
+    4. Compares model fields (with physics-equivalence checks for inertia, solref, etc.)
+    5. Runs simulation with configurable control strategies
+    6. Compares per-step state values within tolerance
 
---------------------------------------------------------------------------------
-FOLLOW-UP ITEMS / KNOWN WORKAROUNDS
---------------------------------------------------------------------------------
+Known limitations and workarounds:
+    - Friction defaults: Newton's MJCF parser must explicitly set MuJoCo friction
+      defaults [slide=1.0, torsion=0.005, roll=0.0001] on the builder. See
+      create_newton_model_from_mjcf().
+    - Model field skips: See DEFAULT_MODEL_SKIP_FIELDS for fields that are skipped
+      in model comparison (with inline comments explaining each).
+    - Model backfill: Newton's model compilation differs from MuJoCo's mj_setConst()
+      (e.g. inertia re-diagonalization, body_pos/quat recomputation from joint transforms).
+      Set backfill_model=True to copy computed fields from native, isolating simulation
+      diffs from model compilation diffs. See MODEL_BACKFILL_FIELDS.
+    - Split pipeline: mujoco_warp uses wp.atomic_add() for contact and constraint
+      allocation, causing non-deterministic ordering with >8 worlds. Set
+      use_split_pipeline=True to inject contacts+constraints from Newton into native,
+      bypassing this. Sorted comparisons verify the rows match modulo ordering.
 
-These are changes/workarounds made to get tests passing that should be revisited:
-
-1. FRICTION DEFAULTS
-   - DONE: Newton's MJCF parser sets friction to match MuJoCo defaults when not specified
-
-2. VISUAL GEOMS
-   - Using <compiler discardvisual="true"/> for native MuJoCo
-   - Using parse_visuals=False for Newton's MJCF parser
-   - TODO: Test with visuals enabled when needed
-
-3. COLLISION EXCLUSIONS (nexclude)
-   - Skipped in model comparison
-   - TODO: Fix parent/child filtering in Newton for collision exclusion equivalence
-
-4. MOCAP BODIES (mocap_*, nmocap, body_mocapid)
-   - Skipped in model comparison
-   - TODO: Newton handles fixed base differently; align mocap body handling
-
-5. CONTROL STRATEGY
-   - Using StructuredControlStrategy (sinusoidal patterns with per-actuator frequencies)
-   - TODO: Add more control strategies for comprehensive testing (random, step inputs)
-
-6. MODEL COMPARISON SKIPS (DEFAULT_MODEL_SKIP_FIELDS)
-   - qM_tiles, qLD_tiles, qLDiagInv_tiles: Matrix tile types not comparable
-   - light_*, nlight: Newton doesn't parse lights from MJCF
-   - geom_group: Newton defaults to 0, native may use other groups
-   - geom_conaffinity, geom_contype: Different representation, equivalent behavior
-   - geom_rgba: Newton uses different default color
-   - geom_size: Compared via compare_geom_sizes() for type-specific semantics
-   - *_solref: Newton uses direct mode (-ke,-kd), compared via physics equivalence
-   - body_inertia, body_iquat: Compared via compare_inertia_tensors()
-   - jnt_actfrclimited, jnt_actfrcrange: Newton sets True with 1e6 range, MuJoCo defaults
-     to False. No numerical effect when limit isn't hit.
-
-7. TIMESTEP FROM MODEL
-   - Newton's MJCF parser doesn't extract timestep from <option> tag yet
-   - Tests extract timestep from native MuJoCo model after loading
-   - TODO: Parse timestep from MJCF <option timestep="..."/> into Newton model
-
-8. JOINT ACTUATOR FORCE LIMITS (jnt_actfrclimited)
-   - Newton sets jnt_actfrclimited=True with effort_limit (default 1e6) unconditionally
-   - MuJoCo defaults to False when no actuatorfrcrange specified in MJCF
-   - Verified: NO numerical impact when limit is never hit (forces << 1e6)
-   - These fields are skipped in model comparison
-
-9. MUJOCO_WARP DETERMINISM LIMITATION (>8 worlds)
-   - mujoco_warp shows non-deterministic behavior when using two separate data objects
-     with the same model and >8 worlds (even with identical initial state and control)
-   - This is NOT a Newton bug - it reproduces with pure mujoco_warp code
-   - ROOT CAUSE (two layers):
-     a) wp.atomic_add() in broadphase collision allocates contact pair IDs
-        non-deterministically. Same contacts stored at different array indices.
-     b) wp.atomic_add() in make_constraint allocates efc row indices
-        non-deterministically. Same constraints stored at different row order.
-        Different ordering → different float accumulation in solver → divergent qacc.
-   - Verified: Contact data (geom, pos, frame) matches when sorted by key
-   - Verified: Constraint rows (J, D, aref) match when sorted by (type, id)
-   - Verified: With contact + constraint injection, results are bit-identical
-   - Workaround: Inject contacts AND constraints from Newton → native to bypass both
-     sources of non-determinism. Compare sorted rows to verify equivalence.
-   - TODO: Report upstream to mujoco_warp team - need deterministic ordering
-
-10. BODY_POS/BODY_QUAT RECOMPUTATION
-   - Newton recomputes body_pos/body_quat from joint transforms during SolverMuJoCo
-     conversion: tf = joint_parent_xform * inverse(joint_child_xform)
-   - MuJoCo stores the original parsed values from MJCF directly
-   - This transform math introduces tiny float differences (~3e-8)
-   - These differences propagate to xpos, xquat, qfrc_bias, qM, and eventually qacc
-   - Workaround: Backfill body_pos/body_quat from native model (MODEL_BACKFILL_FIELDS)
-   - TODO: Store original body_pos/body_quat in Newton model during MJCF parsing
-     to avoid recomputation and eliminate these differences
-
---------------------------------------------------------------------------------
+TODOs:
+    - Parse timestep from MJCF <option timestep="..."/> into Newton model
+    - Fix collision exclusion (nexclude) parent/child filtering in Newton
+    - Align mocap body handling between Newton and MuJoCo
 """
 
 from __future__ import annotations
@@ -579,7 +523,7 @@ def compare_inertia_tensors(
     determinant fix ensures both produce valid quaternions, but eigenvalue ordering
     may differ. Reconstruction verifies physics equivalence: I = R @ diag(d) @ R.T
     """
-    from scipy.spatial.transform import Rotation  # noqa: PLC0415
+    from scipy.spatial.transform import Rotation
 
     newton_inertia = newton_mjw.body_inertia.numpy()  # (nworld, nbody, 3)
     native_inertia = native_mjw.body_inertia.numpy()
@@ -790,9 +734,9 @@ def run_native_step1_rest(
 
     Call this after run_native_make_constraint() or run_native_transmission().
     """
-    from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
-    from mujoco_warp._src import sensor  # noqa: PLC0415
-    from mujoco_warp._src.types import EnableBit  # noqa: PLC0415
+    from mujoco_warp._src import forward as mjw_forward
+    from mujoco_warp._src import sensor
+    from mujoco_warp._src.types import EnableBit
 
     m, d = native_model, native_data
     energy = m.opt.enableflags & EnableBit.ENERGY
@@ -823,7 +767,7 @@ def run_native_fwd_position_pre_constraint(
     This runs: kinematics, com_pos, camlight, flex, tendon, crb, tendon_armature,
     factor_m, and collision. Does NOT run make_constraint or transmission.
     """
-    from mujoco_warp._src import (  # noqa: PLC0415
+    from mujoco_warp._src import (
         collision_driver,
         smooth,
     )
@@ -846,7 +790,7 @@ def run_native_make_constraint(
     native_data: Any,
 ) -> None:
     """Run mujoco_warp make_constraint only."""
-    from mujoco_warp._src import constraint  # noqa: PLC0415
+    from mujoco_warp._src import constraint
 
     constraint.make_constraint(native_model, native_data)
 
@@ -856,7 +800,7 @@ def run_native_transmission(
     native_data: Any,
 ) -> None:
     """Run mujoco_warp transmission only (after constraint injection)."""
-    from mujoco_warp._src import smooth  # noqa: PLC0415
+    from mujoco_warp._src import smooth
 
     smooth.transmission(native_model, native_data)
 
@@ -871,7 +815,7 @@ def run_native_step2(
     Note: fwd_acceleration does NOT re-run collision detection.
     Note: Does NOT call wp.synchronize() - caller should sync if needed.
     """
-    from mujoco_warp._src import forward as mjw_forward  # noqa: PLC0415
+    from mujoco_warp._src import forward as mjw_forward
 
     mjw_forward.step2(native_model, native_data)
 
@@ -1299,21 +1243,10 @@ def _expand_batched_fields(target_obj: Any, reference_obj: Any, field_names: lis
             setattr(target_obj, field_name, new_arr)
 
 
-# Fields to backfill from native MuJoCo model to eliminate numerical differences.
-# These are computed during mj_setConst() and affect forward dynamics.
-# The differences arise from Newton's inertia re-diagonalization and different
-# float accumulation paths during model compilation.
-# Fields needed to eliminate numerical differences from model compilation.
-# body_inertia: Newton re-diagonalizes inertia tensors (diff ~2.7e-3)
-# body_iquat: Different principal axes from re-diagonalization (diff ~1.5)
-# Computed model fields that may differ between Newton and native MuJoCo due to
-# different computation paths during model compilation:
-# - body_inertia, body_iquat: Principal inertia and orientation (eig3 differences)
-# - body_invweight0: Derived from inertia
-# - body_pos, body_quat: Newton recomputes these from joint transforms during
-#   SolverMuJoCo conversion, while MuJoCo stores parsed values directly. The
-#   transform math (tf * transform_inverse) introduces tiny float differences.
-# TODO: Store original body_pos/quat in Newton model to avoid recomputation
+# Model fields to backfill from native MuJoCo to eliminate compilation differences:
+# - body_inertia, body_iquat: Newton re-diagonalizes inertia (different eig3 ordering)
+# - body_invweight0: Derived from inertia, used in make_constraint for efc_D scaling
+# - body_pos, body_quat: Newton recomputes from joint transforms (~3e-8 float diff)
 MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
     "body_iquat",
@@ -1590,40 +1523,18 @@ class TestMenagerieBase(unittest.TestCase):
     debug_visual: bool = False
     debug_view_newton: bool = False  # False=Native, True=Newton
 
-    # Geometry handling: By default, we skip visual-only geoms on BOTH sides to ensure
-    # the physics simulation is comparable. This is controlled by:
-    #   - Newton side: parse_visuals=False in add_mjcf() (default in _create_newton_model)
-    #   - Native MuJoCo side: discardvisual=True compiler option (when discard_visual=True)
-    #
-    # Future work may test other geometry configurations:
-    #   - parse_visuals=True + discardvisual=False: full geometry comparison
-    #   - parse_visuals_as_colliders=True: use visual meshes for collision
-    # For now, we keep it simple: collision-only on both sides.
-    discard_visual: bool = True  # Add <compiler discardvisual="true"/> to native MJCF
+    # Skip visual-only geoms on both sides for physics-only comparison.
+    discard_visual: bool = True
 
-    # Model backfill: Copy computed fields from native MuJoCo to Newton's model.
-    # This eliminates numerical differences from model compilation (inertia re-diagonalization,
-    # different float accumulation paths). Enables tighter tolerances for simulation comparison.
-    # Set to True in subclass to enable, or override backfill_fields for custom field list.
+    # Backfill computed model fields from native to eliminate compilation diffs.
+    # See MODEL_BACKFILL_FIELDS for the default set; override backfill_fields per-robot.
     backfill_model: bool = False
     backfill_fields: list[str] | None = None  # None = use MODEL_BACKFILL_FIELDS
 
-    # Split pipeline mode: When True, uses a split pipeline for native mujoco_warp:
-    #   1. Newton runs full step (forward + euler)
-    #   2. Native runs kinematics + collision
-    #   3. Verify contacts match (sorted), inject Newton's contacts
-    #   4. Native runs make_constraint
-    #   5. Verify constraints match (sorted), inject Newton's constraints
-    #   6. Native runs transmission + step1_rest + step2
-    #
-    # This bypasses two layers of mujoco_warp non-determinism:
-    #   a) wp.atomic_add() in broadphase → non-deterministic contact ordering
-    #   b) wp.atomic_add() in make_constraint → non-deterministic constraint row ordering
-    # By injecting both contacts and constraints, both sides use identical data for
-    # the solver, enabling bit-identical results even with 34+ worlds.
-    #
-    # When False (default), runs both full pipelines and compares (may need looser
-    # tolerances for >8 worlds with constraints).
+    # Use split pipeline to bypass mujoco_warp non-deterministic ordering.
+    # Injects contacts and constraints from Newton → native after verifying they
+    # match (modulo ordering). Enables bit-identical results with 34+ worlds.
+    # When False, runs both full pipelines (may need looser tolerances).
     use_split_pipeline: bool = False
 
     @classmethod
@@ -1819,7 +1730,7 @@ class TestMenagerieBase(unittest.TestCase):
         # Setup viewer if in debug mode
         viewer = None
         if self.debug_visual:
-            import mujoco.viewer  # noqa: PLC0415
+            import mujoco.viewer
 
             view_name = "NEWTON" if self.debug_view_newton else "NATIVE"
             print(f"\n=== VISUAL DEBUG MODE ({view_name}) ===")
