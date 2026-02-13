@@ -986,9 +986,9 @@ Windows (PowerShell)</label><div class="sd-tab-content docutils">
 </div>
 </div>
 <p>Installing dependencies including optional development dependencies:</p>
-<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install mujoco --pre -f https://py.mujoco.org/</span>
+<div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">python -m pip install mujoco</span>
+<span class="go">python -m pip install mujoco-warp</span>
 <span class="go">python -m pip install warp-lang --pre -U -f https://pypi.nvidia.com/warp-lang/</span>
-<span class="go">python -m pip install git+https://github.com/google-deepmind/mujoco_warp.git@main</span>
 <span class="go">python -m pip install -e .[dev]</span>
 </pre></div>
 </div>

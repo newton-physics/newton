@@ -820,10 +820,10 @@
 This can be done by running <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">lock</span> <span class="pre">-P</span> <span class="pre">&lt;package-name&gt;</span></code>:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv lock -P warp-lang --prerelease allow</span>
 
-<span class="go">uv lock -P mujoco-warp --prerelease allow</span>
+<span class="go">uv lock -P mujoco-warp</span>
 </pre></div>
 </div>
-<p>The <code class="docutils literal notranslate"><span class="pre">--prerelease</span> <span class="pre">allow</span></code> flag is used to allow updating to pre-release versions of dependencies.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">--prerelease</span> <span class="pre">allow</span></code> flag is needed for dependencies that use pre-release versions (e.g. <code class="docutils literal notranslate"><span class="pre">warp-lang</span></code>).</p>
 <p>uv also provides a command to update all dependencies in the lockfile:</p>
 <div class="highlight-console notranslate"><div class="highlight"><pre><span></span><span class="go">uv lock -U</span>
 </pre></div>
