@@ -52,8 +52,8 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     sdf_narrow_band_range=(-0.005, 0.005),
     contact_margin=0.005,
     density=8000.0,
-    torsional_friction=0.0,
-    rolling_friction=0.0,
+    mu_torsional=0.0,
+    mu_rolling=0.0,
     is_hydroelastic=False,
 )
 
@@ -122,7 +122,7 @@ class Example:
         self.rigid_contact_max = 100000
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
-        self.broad_phase_mode = newton.BroadPhaseMode.SAP
+        self.broad_phase = "sap"
 
         if scene == "nut_bolt":
             world_builder = self._build_nut_bolt_scene()
@@ -152,7 +152,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
-            broad_phase_mode=self.broad_phase_mode,
+            broad_phase=self.broad_phase,
         )
 
         # Create solver based on user choice

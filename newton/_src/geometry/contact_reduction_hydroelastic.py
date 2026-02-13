@@ -136,8 +136,8 @@ def export_hydroelastic_contact_to_buffer(
 def reduce_hydroelastic_contacts_kernel(
     reducer_data: GlobalContactReducerData,
     shape_transform: wp.array(dtype=wp.transform),
-    shape_local_aabb_lower: wp.array(dtype=wp.vec3),
-    shape_local_aabb_upper: wp.array(dtype=wp.vec3),
+    shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
+    shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
     shape_voxel_resolution: wp.array(dtype=wp.vec3i),
     total_num_threads: int,
 ):
@@ -179,8 +179,8 @@ def reduce_hydroelastic_contacts_kernel(
         shape_a = pair[0]  # First shape
         shape_b = pair[1]  # Second shape
 
-        aabb_lower = shape_local_aabb_lower[shape_b]
-        aabb_upper = shape_local_aabb_upper[shape_b]
+        aabb_lower = shape_collision_aabb_lower[shape_b]
+        aabb_upper = shape_collision_aabb_upper[shape_b]
 
         ht_capacity = reducer_data.ht_capacity
 
@@ -801,8 +801,8 @@ class HydroelasticContactReduction:
     def reduce(
         self,
         shape_transform: wp.array,
-        shape_local_aabb_lower: wp.array,
-        shape_local_aabb_upper: wp.array,
+        shape_collision_aabb_lower: wp.array,
+        shape_collision_aabb_upper: wp.array,
         shape_voxel_resolution: wp.array,
         grid_size: int,
     ):
@@ -817,8 +817,8 @@ class HydroelasticContactReduction:
 
         Args:
             shape_transform: Per-shape world transforms (dtype: wp.transform).
-            shape_local_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
-            shape_local_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
+            shape_collision_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
+            shape_collision_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
             shape_voxel_resolution: Per-shape voxel grid resolution (dtype: wp.vec3i).
             grid_size: Number of threads for the kernel launch.
         """
@@ -829,8 +829,8 @@ class HydroelasticContactReduction:
             inputs=[
                 reducer_data,
                 shape_transform,
-                shape_local_aabb_lower,
-                shape_local_aabb_upper,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
                 shape_voxel_resolution,
                 grid_size,
             ],
@@ -906,8 +906,8 @@ class HydroelasticContactReduction:
     def reduce_and_export(
         self,
         shape_transform: wp.array,
-        shape_local_aabb_lower: wp.array,
-        shape_local_aabb_upper: wp.array,
+        shape_collision_aabb_lower: wp.array,
+        shape_collision_aabb_upper: wp.array,
         shape_voxel_resolution: wp.array,
         shape_contact_margin: wp.array,
         writer_data: Any,
@@ -920,14 +920,16 @@ class HydroelasticContactReduction:
 
         Args:
             shape_transform: Per-shape world transforms (dtype: wp.transform).
-            shape_local_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
-            shape_local_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
+            shape_collision_aabb_lower: Per-shape local AABB lower bounds (dtype: wp.vec3).
+            shape_collision_aabb_upper: Per-shape local AABB upper bounds (dtype: wp.vec3).
             shape_voxel_resolution: Per-shape voxel grid resolution (dtype: wp.vec3i).
             shape_contact_margin: Per-shape contact margin (dtype: float).
             writer_data: Data struct for the writer function.
             grid_size: Number of threads for the kernel launch.
         """
-        self.reduce(shape_transform, shape_local_aabb_lower, shape_local_aabb_upper, shape_voxel_resolution, grid_size)
+        self.reduce(
+            shape_transform, shape_collision_aabb_lower, shape_collision_aabb_upper, shape_voxel_resolution, grid_size
+        )
 
         if self.config.moment_matching:
             self.reduce_moments(grid_size)

@@ -36,8 +36,8 @@ import warp as wp
 
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.narrow_phase import NarrowPhase
+from newton._src.geometry.sdf_utils import SDFData
 from newton._src.geometry.types import GeoType
-from newton.geometry import SDFData
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -267,8 +267,8 @@ class TestNarrowPhase(unittest.TestCase):
             wp.full(
                 len(geom_list), ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32
             ),  # shape_flags - collision enabled, no hydroelastic
-            wp.zeros(len(geom_list), dtype=wp.vec3),  # shape_local_aabb_lower - dummy for non-mesh tests
-            wp.ones(len(geom_list), dtype=wp.vec3),  # shape_local_aabb_upper - dummy for non-mesh tests
+            wp.zeros(len(geom_list), dtype=wp.vec3),  # shape_collision_aabb_lower - dummy for non-mesh tests
+            wp.ones(len(geom_list), dtype=wp.vec3),  # shape_collision_aabb_upper - dummy for non-mesh tests
             wp.full(len(geom_list), wp.vec3i(4, 4, 4), dtype=wp.vec3i),  # shape_voxel_resolution - dummy
         )
 
@@ -291,8 +291,8 @@ class TestNarrowPhase(unittest.TestCase):
             geom_collision_radius,
             shape_sdf_data,
             shape_flags,
-            shape_local_aabb_lower,
-            shape_local_aabb_upper,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
             shape_voxel_resolution,
         ) = self._create_geometry_arrays(geom_list)
 
@@ -321,8 +321,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,
@@ -1296,8 +1296,8 @@ class TestNarrowPhase(unittest.TestCase):
         shape_contact_margin = wp.array([0.01, 0.02, 0.06], dtype=wp.float32)
 
         # Dummy AABB arrays (not used for primitive tests)
-        shape_local_aabb_lower = wp.zeros(3, dtype=wp.vec3)
-        shape_local_aabb_upper = wp.ones(3, dtype=wp.vec3)
+        shape_collision_aabb_lower = wp.zeros(3, dtype=wp.vec3)
+        shape_collision_aabb_upper = wp.ones(3, dtype=wp.vec3)
         shape_voxel_resolution = wp.full(3, wp.vec3i(4, 4, 4), dtype=wp.vec3i)
 
         # Allocate output arrays
@@ -1333,8 +1333,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,
@@ -1368,8 +1368,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,
@@ -1404,8 +1404,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,

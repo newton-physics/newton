@@ -34,7 +34,6 @@ newton
 
    ActuatorMode
    Axis
-   BroadPhaseMode
    CollisionPipeline
    Contacts
    Control

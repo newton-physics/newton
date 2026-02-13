@@ -149,7 +149,7 @@ class ModelBuilder:
         desired.
     """
 
-    @dataclass
+    @dataclass(init=False)
     class ShapeConfig:
         """
         Represents the properties of a collision shape used in simulation.
@@ -169,9 +169,9 @@ class ModelBuilder:
         """The coefficient of friction. Used by all solvers."""
         restitution: float = 0.0
         """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
-        torsional_friction: float = 0.25
+        mu_torsional: float = 0.25
         """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
-        rolling_friction: float = 0.0005
+        mu_rolling: float = 0.0005
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
         thickness: float = 1e-5
         """Outward offset from the shape's surface for collision detection.
@@ -195,31 +195,150 @@ class ModelBuilder:
         """Indicates whether the shape is visible in the simulation. Defaults to True."""
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
-        sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
+        _sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
         """The narrow band distance range (inner, outer) for SDF computation. Only used for mesh shapes when SDF is enabled."""
-        sdf_target_voxel_size: float | None = None
+        _sdf_target_voxel_size: float | None = None
         """Target voxel size for sparse SDF grid.
         If provided, enables SDF generation and takes precedence over sdf_max_resolution.
         Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
-        sdf_max_resolution: int | None = None
+        _sdf_max_resolution: int | None = None
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
         If provided (and sdf_target_voxel_size is None), enables SDF-based mesh-mesh collision.
         Set to None (default) to disable SDF generation for this shape (uses BVH-based collision for mesh-mesh instead).
         Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
-        is_hydroelastic: bool = False
+        _is_hydroelastic: bool = False
         """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False.
 
         .. note::
             Hydroelastic collision handling only works with volumetric shapes and in particular will not work for shapes like flat meshes or cloth.
             This flag will be automatically set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
         """
-        k_hydro: float = 1.0e10
+        _kh: float = 1.0e10
         """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
 
         .. note::
             For MuJoCo, stiffness values will internally be scaled by masses.
-            Users should choose k_hydro to match their desired force-to-penetration ratio.
+            Users should choose kh to match their desired force-to-penetration ratio.
         """
+
+        def __init__(
+            self,
+            density: float = 1000.0,
+            ke: float = 2.5e3,
+            kd: float = 100.0,
+            kf: float = 1000.0,
+            ka: float = 0.0,
+            mu: float = 0.5,
+            restitution: float = 0.0,
+            mu_torsional: float = 0.25,
+            mu_rolling: float = 0.0005,
+            thickness: float = 1e-5,
+            contact_margin: float | None = None,
+            is_solid: bool = True,
+            collision_group: int = 1,
+            collision_filter_parent: bool = True,
+            has_shape_collision: bool = True,
+            has_particle_collision: bool = True,
+            is_visible: bool = True,
+            is_site: bool = False,
+            sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1),
+            sdf_target_voxel_size: float | None = None,
+            sdf_max_resolution: int | None = None,
+            is_hydroelastic: bool = False,
+            kh: float = 1.0e10,
+        ) -> None:
+            self.density = density
+            self.ke = ke
+            self.kd = kd
+            self.kf = kf
+            self.ka = ka
+            self.mu = mu
+            self.restitution = restitution
+            self.mu_torsional = mu_torsional
+            self.mu_rolling = mu_rolling
+            self.thickness = thickness
+            self.contact_margin = contact_margin
+            self.is_solid = is_solid
+            self.collision_group = collision_group
+            self.collision_filter_parent = collision_filter_parent
+            self.has_shape_collision = has_shape_collision
+            self.has_particle_collision = has_particle_collision
+            self.is_visible = is_visible
+            self.is_site = is_site
+            self.sdf_narrow_band_range = sdf_narrow_band_range
+            self.sdf_target_voxel_size = sdf_target_voxel_size
+            self.sdf_max_resolution = sdf_max_resolution
+            self.is_hydroelastic = is_hydroelastic
+            self.kh = kh
+
+        @property
+        def sdf_narrow_band_range(self) -> tuple[float, float]:
+            return self._sdf_narrow_band_range
+
+        @sdf_narrow_band_range.setter
+        def sdf_narrow_band_range(self, value: tuple[float, float]) -> None:
+            self._sdf_narrow_band_range = value
+
+        @property
+        def sdf_target_voxel_size(self) -> float | None:
+            return self._sdf_target_voxel_size
+
+        @sdf_target_voxel_size.setter
+        def sdf_target_voxel_size(self, value: float | None) -> None:
+            self._sdf_target_voxel_size = value
+
+        @property
+        def sdf_max_resolution(self) -> int | None:
+            return self._sdf_max_resolution
+
+        @sdf_max_resolution.setter
+        def sdf_max_resolution(self, value: int | None) -> None:
+            self._sdf_max_resolution = value
+
+        @property
+        def is_hydroelastic(self) -> bool:
+            return self._is_hydroelastic
+
+        @is_hydroelastic.setter
+        def is_hydroelastic(self, value: bool) -> None:
+            self._is_hydroelastic = value
+
+        @property
+        def kh(self) -> float:
+            return self._kh
+
+        @kh.setter
+        def kh(self, value: float) -> None:
+            self._kh = value
+
+        def configure_sdf(
+            self,
+            *,
+            max_resolution: int | None = None,
+            target_voxel_size: float | None = None,
+            is_hydroelastic: bool = False,
+            kh: float = 1.0e10,
+        ) -> None:
+            """Enable SDF-based collision for this shape.
+
+            Sets SDF and hydroelastic options in one place. Call this when the shape
+            should use SDF mesh-mesh collision and optionally hydroelastic contacts.
+
+            Args:
+                max_resolution: Maximum dimension for sparse SDF grid (must be divisible by 8).
+                    If provided (and target_voxel_size is None), enables SDF-based mesh-mesh collision.
+                target_voxel_size: Target voxel size for sparse SDF grid. If provided, enables
+                    SDF generation and takes precedence over max_resolution.
+                is_hydroelastic: Whether to use SDF-based hydroelastic contacts. Both shapes
+                    in a pair must have this enabled.
+                kh: Contact stiffness coefficient for hydroelastic collisions.
+            """
+            if max_resolution is not None:
+                self.sdf_max_resolution = max_resolution
+            if target_voxel_size is not None:
+                self.sdf_target_voxel_size = target_voxel_size
+            self.is_hydroelastic = is_hydroelastic
+            self.kh = kh
 
         def validate(self) -> None:
             """Validate ShapeConfig parameters."""
@@ -637,9 +756,9 @@ class ModelBuilder:
         self.shape_material_ka = []
         self.shape_material_mu = []
         self.shape_material_restitution = []
-        self.shape_material_torsional_friction = []
-        self.shape_material_rolling_friction = []
-        self.shape_material_k_hydro = []
+        self.shape_material_mu_torsional = []
+        self.shape_material_mu_rolling = []
+        self.shape_material_kh = []
         self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
@@ -2362,9 +2481,9 @@ class ModelBuilder:
             "shape_material_ka",
             "shape_material_mu",
             "shape_material_restitution",
-            "shape_material_torsional_friction",
-            "shape_material_rolling_friction",
-            "shape_material_k_hydro",
+            "shape_material_mu_torsional",
+            "shape_material_mu_rolling",
+            "shape_material_kh",
             "shape_collision_radius",
             "shape_contact_margin",
             "shape_sdf_narrow_band_range",
@@ -4367,9 +4486,9 @@ class ModelBuilder:
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
-        self.shape_material_torsional_friction.append(cfg.torsional_friction)
-        self.shape_material_rolling_friction.append(cfg.rolling_friction)
-        self.shape_material_k_hydro.append(cfg.k_hydro)
+        self.shape_material_mu_torsional.append(cfg.mu_torsional)
+        self.shape_material_mu_rolling.append(cfg.mu_rolling)
+        self.shape_material_kh.append(cfg.kh)
         self.shape_contact_margin.append(
             cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
         )
@@ -5110,8 +5229,9 @@ class ModelBuilder:
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
                             restitution=self.shape_material_restitution[shape],
-                            torsional_friction=self.shape_material_torsional_friction[shape],
-                            rolling_friction=self.shape_material_rolling_friction[shape],
+                            mu_torsional=self.shape_material_mu_torsional[shape],
+                            mu_rolling=self.shape_material_mu_rolling[shape],
+                            kh=self.shape_material_kh[shape],
                             thickness=self.shape_thickness[shape],
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
@@ -8301,15 +8421,13 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
-            m.shape_material_torsional_friction = wp.array(
-                self.shape_material_torsional_friction, dtype=wp.float32, requires_grad=requires_grad
+            m.shape_material_mu_torsional = wp.array(
+                self.shape_material_mu_torsional, dtype=wp.float32, requires_grad=requires_grad
             )
-            m.shape_material_rolling_friction = wp.array(
-                self.shape_material_rolling_friction, dtype=wp.float32, requires_grad=requires_grad
+            m.shape_material_mu_rolling = wp.array(
+                self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
             )
-            m.shape_material_k_hydro = wp.array(
-                self.shape_material_k_hydro, dtype=wp.float32, requires_grad=requires_grad
-            )
+            m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = {
@@ -8464,9 +8582,9 @@ class ModelBuilder:
                 local_aabb_upper.append(aabb_upper)
                 voxel_resolution.append([nx, ny, nz])
 
-            m.shape_local_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
-            m.shape_local_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
-            m.shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
+            m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
+            m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
