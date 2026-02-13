@@ -125,7 +125,7 @@ class Example:
         builder.joint_q[:9] = [*init_q, 0.05, 0.05]
         builder.joint_target_pos[:9] = [*init_q, 1.0, 1.0]
 
-        builder.joint_target_ke[:9] = [500.0] * 9
+        builder.joint_target_ke[:9] = [650.0] * 9
         builder.joint_target_kd[:9] = [100.0] * 9
         builder.joint_effort_limit[:7] = [80.0] * 7
         builder.joint_effort_limit[7:9] = [20.0] * 2
