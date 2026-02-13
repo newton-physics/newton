@@ -613,7 +613,7 @@ class SolverMuJoCo(SolverBase):
                 frequency=AttributeFrequency.ONCE,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=50,
+                default=35,  # MuJoCo default
                 namespace="mujoco",
                 usd_attribute_name="mjc:option:ccd_iterations",
                 mjcf_attribute_name="ccd_iterations",
@@ -1866,7 +1866,7 @@ class SolverMuJoCo(SolverBase):
             nconmax (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             iterations (int | None): Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations (int | None): Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
-            ccd_iterations (int | None): Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (50).
+            ccd_iterations (int | None): Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
             sdf_iterations (int | None): Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints (int | None): Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
             solver (int | str): Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
