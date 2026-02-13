@@ -522,7 +522,7 @@ add_example_test(
 add_example_test(
     TestIKExamples,
     name="ik.example_ik_cube_stacking",
-    test_options_cuda={"num-worlds": 16, "cube-count": 2, "num-frames": 1400},  # "cube-count": 3, "num-frames": 2000
+    test_options_cuda={"world-count": 16, "cube-count": 2, "num-frames": 1400},  # "cube-count": 3, "num-frames": 2000
     devices=cuda_test_devices,
     use_viewer=True,
 )
@@ -699,7 +699,7 @@ add_example_test(
     TestContactsExamples,
     name="contacts.example_sdf",
     devices=cuda_test_devices,
-    test_options={"num-frames": 120, "num-worlds": 1, "scene": "nut_bolt"},
+    test_options={"num-frames": 120, "world-count": 1, "scene": "nut_bolt"},
     use_viewer=True,
 )
 
