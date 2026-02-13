@@ -68,6 +68,14 @@ class SchemaResolverNewton(SchemaResolver):
             "max_hull_vertices": SchemaAttribute("newton:maxHullVertices", -1),
             # Collisions
             "contact_margin": SchemaAttribute("newton:contactMargin", float("-inf")),
+            # SDF (Signed Distance Field) configuration
+            "sdf_max_resolution": SchemaAttribute("newton:sdfMaxResolution", None),
+            "sdf_narrow_band_inner": SchemaAttribute("newton:sdfNarrowBandInner", None),
+            "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", None),
+            "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", None),
+            # Hydroelastic contacts
+            "is_hydroelastic": SchemaAttribute("newton:isHydroelastic", None),
+            "k_hydro": SchemaAttribute("newton:kHydro", None),
         },
         PrimType.BODY: {},
         PrimType.MATERIAL: {
