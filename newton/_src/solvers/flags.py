@@ -48,9 +48,6 @@ class SolverNotifyFlags(IntEnum):
     CONSTRAINT_PROPERTIES = 1 << 6
     """Indicates constraint property updates: equality constraints (equality_constraint_anchor, equality_constraint_relpose, equality_constraint_polycoef, equality_constraint_torquescale, equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic constraints (constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled)."""
 
-    EQUALITY_CONSTRAINT_PROPERTIES = CONSTRAINT_PROPERTIES
-    """Deprecated alias for :attr:`CONSTRAINT_PROPERTIES`."""
-
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
 

@@ -2891,7 +2891,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         model.mujoco.eq_solref.assign(updated_values)
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_solref_updated = solver.mjw_model.eq_solref.numpy()
@@ -3007,7 +3007,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         model.mujoco.eq_solimp.assign(wp.array(updated_values, dtype=vec5, device=model.device))
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_solimp_updated = solver.mjw_model.eq_solimp.numpy()
@@ -3209,7 +3209,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         model.equality_constraint_polycoef.assign(new_polycoef)
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_data_updated = solver.mjw_model.eq_data.numpy()
@@ -3352,7 +3352,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         model.equality_constraint_enabled.assign(new_enabled)
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_active_updated = solver.mjw_data.eq_active.numpy()
@@ -3375,7 +3375,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         new_enabled = np.array([True, True], dtype=bool)
         model.equality_constraint_enabled.assign(new_enabled)
 
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         mjw_eq_active_reenabled = solver.mjw_data.eq_active.numpy()
 
@@ -3433,7 +3433,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         initial_eq_data = solver.mjw_model.eq_data.numpy().copy()
 
         # Notify solver to trigger the update kernel
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify data[3:6] (second anchor) was NOT overwritten
         updated_eq_data = solver.mjw_model.eq_data.numpy()
