@@ -74,8 +74,8 @@ class SchemaResolverNewton(SchemaResolver):
             "sdf_narrow_band_outer": SchemaAttribute("newton:sdfNarrowBandOuter", None),
             "sdf_target_voxel_size": SchemaAttribute("newton:sdfTargetVoxelSize", None),
             # Hydroelastic contacts
-            "is_hydroelastic": SchemaAttribute("newton:isHydroelastic", False),
-            "k_hydro": SchemaAttribute("newton:kHydro", 1.0e10),
+            "is_hydroelastic": SchemaAttribute("newton:isHydroelastic", None),
+            "k_hydro": SchemaAttribute("newton:kHydro", None),
         },
         PrimType.BODY: {},
         PrimType.MATERIAL: {

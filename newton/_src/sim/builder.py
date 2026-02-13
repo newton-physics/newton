@@ -4627,6 +4627,8 @@ class ModelBuilder:
                 f"max_resolution must be divisible by 8 (got {max_resolution}). "
                 "This is required because SDF volumes are allocated in 8x8x8 tiles."
             )
+        if not hasattr(narrow_band_range, "__len__") or len(narrow_band_range) != 2:
+            raise ValueError(f"narrow_band_range must be a 2-tuple (inner, outer), got {narrow_band_range}")
         if narrow_band_range[0] >= narrow_band_range[1]:
             raise ValueError(f"narrow_band_range must have inner < outer (got {narrow_band_range})")
 
@@ -4715,14 +4717,29 @@ class ModelBuilder:
         if sdf_target_voxel_size is not None:
             self.shape_sdf_target_voxel_size[shape_idx] = sdf_target_voxel_size
 
-        # Apply is_hydroelastic (stored in shape_flags)
+        # Apply is_hydroelastic (stored in shape_flags).
+        # Planes and heightfields can never have HYDROELASTIC — always clear for those types.
         if is_hydroelastic is not None:
             current_flags = self.shape_flags[shape_idx]
+            shape_type = self.shape_type[shape_idx]
             if is_hydroelastic:
-                # Set HYDROELASTIC flag
-                self.shape_flags[shape_idx] = current_flags | ShapeFlags.HYDROELASTIC
+                if shape_type in (GeoType.PLANE, GeoType.HFIELD):
+                    # Silently clear the flag; planes and heightfields do not support hydroelastic contact.
+                    self.shape_flags[shape_idx] = current_flags & (~ShapeFlags.HYDROELASTIC)
+                else:
+                    has_resolution = (sdf_max_resolution is not None) or (
+                        self.shape_sdf_max_resolution[shape_idx] is not None
+                    )
+                    has_voxel_size = (sdf_target_voxel_size is not None) or (
+                        self.shape_sdf_target_voxel_size[shape_idx] is not None
+                    )
+                    if not has_resolution and not has_voxel_size:
+                        raise ValueError(
+                            "Cannot enable hydroelastic contact without an SDF source. "
+                            "Set sdf_max_resolution or sdf_target_voxel_size before enabling is_hydroelastic."
+                        )
+                    self.shape_flags[shape_idx] = current_flags | ShapeFlags.HYDROELASTIC
             else:
-                # Clear HYDROELASTIC flag
                 self.shape_flags[shape_idx] = current_flags & (~ShapeFlags.HYDROELASTIC)
 
         # Apply k_hydro
