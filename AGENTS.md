@@ -137,6 +137,10 @@ Follow conventional commit message practices.
   ```
 - Do not change the year in existing file headers.
 
+## Sandbox & Networking
+
+- Network access (e.g., `git push`) is blocked by the sandbox. Use `dangerouslyDisableSandbox: true` so the user gets an approval prompt — don't ask them to run it manually.
+
 ## GitHub Actions and CI/CD
 
 - IMPORTANT: Pin actions by SHA hash. Use `action@<sha>  # vX.Y.Z` format for supply-chain security. Check existing workflows in `.github/workflows/` for the allowlisted hashes. New actions or versions require repo admin approval to be added to the allowlist.
