@@ -3922,8 +3922,8 @@ class SolverMuJoCo(SolverBase):
 
             # Create mjc_eq_to_newton_mimic: MuJoCo[world, eq] -> Newton mimic constraint
             mimic_per_world = (
-                model.constraint_mimic_count // model.num_worlds
-                if model.num_worlds > 0
+                model.constraint_mimic_count // model.world_count
+                if model.world_count > 0
                 else model.constraint_mimic_count
             )
             mjc_eq_to_newton_mimic_np = np.full((nworld, neq), -1, dtype=np.int32)
@@ -4618,11 +4618,11 @@ class SolverMuJoCo(SolverBase):
         if neq == 0:
             return
 
-        num_worlds = self.mjc_eq_to_newton_mimic.shape[0]
+        world_count = self.mjc_eq_to_newton_mimic.shape[0]
 
         wp.launch(
             update_mimic_eq_data_and_active_kernel,
-            dim=(num_worlds, neq),
+            dim=(world_count, neq),
             inputs=[
                 self.mjc_eq_to_newton_mimic,
                 self.model.constraint_mimic_coef0,

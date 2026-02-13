@@ -6053,20 +6053,20 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template_builder.add_articulation([j1, j2])
         template_builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
-        num_worlds = 3
+        world_count = 3
         builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
         # Verify initial state
-        self.assertEqual(model.constraint_mimic_count, num_worlds)
+        self.assertEqual(model.constraint_mimic_count, world_count)
         self.assertEqual(solver.mj_model.neq, 1)
 
         # Randomize coefficients per world
         rng = np.random.default_rng(42)
-        new_coef0 = rng.uniform(-1.0, 1.0, size=num_worlds).astype(np.float32)
-        new_coef1 = rng.uniform(0.5, 3.0, size=num_worlds).astype(np.float32)
+        new_coef0 = rng.uniform(-1.0, 1.0, size=world_count).astype(np.float32)
+        new_coef1 = rng.uniform(0.5, 3.0, size=world_count).astype(np.float32)
         model.constraint_mimic_coef0.assign(new_coef0)
         model.constraint_mimic_coef1.assign(new_coef1)
 
@@ -6074,7 +6074,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
 
         # Verify each world got its own coefficients
         eq_data = solver.mjw_model.eq_data.numpy()
-        for w in range(num_worlds):
+        for w in range(world_count):
             np.testing.assert_allclose(
                 eq_data[w, 0, 0], new_coef0[w], rtol=1e-5, err_msg=f"coef0 mismatch in world {w}"
             )
