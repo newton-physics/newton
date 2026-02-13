@@ -376,6 +376,7 @@ def collide_plane_box(
     box_pos: wp.vec3,
     box_rot: wp.mat33,
     box_size: wp.vec3,
+    margin: float = 0.0,
 ) -> tuple[wp.vec4, wp.types.matrix((4, 3), wp.float32), wp.vec3]:
     """Core contact geometry calculation for plane-box collision.
 
@@ -385,6 +386,7 @@ def collide_plane_box(
       box_pos: Center position of the box
       box_rot: Rotation matrix of the box
       box_size: Half-extents of the box along each axis
+      margin: Contact margin for early contact generation (default: 0.0)
 
     Returns:
       Tuple containing:
@@ -399,8 +401,10 @@ def collide_plane_box(
     dist = wp.vec4(MAXVAL)
     pos = _mat43f()
 
-    # test all corners, pick bottom 4
+    # Test all corners and keep up to 4 deepest (most negative) contacts.
+    # Track the current worst kept contact by index for O(1) replacement checks.
     ncontact = wp.int32(0)
+    worst_idx = wp.int32(0)
     for i in range(8):
         # get corner in local coordinates
         corner.x = wp.where((i & 1) != 0, box_size.x, -box_size.x)
@@ -410,19 +414,33 @@ def collide_plane_box(
         # get corner in global coordinates relative to box center
         corner = box_rot @ corner
 
-        # compute distance to plane, skip if too far or pointing up
+        # Compute distance to plane and skip corners beyond margin.
         ldist = wp.dot(plane_normal, corner)
-        if center_dist + ldist > 0 or ldist > 0:
+        cdist = center_dist + ldist
+        if cdist > margin:
             continue
 
-        cdist = center_dist + ldist
+        cpos = corner + box_pos - 0.5 * plane_normal * cdist
 
-        dist[ncontact] = cdist
-        pos[ncontact] = corner + box_pos - 0.5 * plane_normal * cdist
-        ncontact += 1
+        if ncontact < 4:
+            dist[ncontact] = cdist
+            pos[ncontact] = cpos
+            if ncontact == 0 or cdist > dist[worst_idx]:
+                worst_idx = ncontact
+            ncontact += 1
+        else:
+            if cdist < dist[worst_idx]:
+                dist[worst_idx] = cdist
+                pos[worst_idx] = cpos
 
-        if ncontact >= 4:
-            break
+                # Recompute worst index (largest distance among kept contacts).
+                worst_idx = 0
+                if dist[1] > dist[worst_idx]:
+                    worst_idx = 1
+                if dist[2] > dist[worst_idx]:
+                    worst_idx = 2
+                if dist[3] > dist[worst_idx]:
+                    worst_idx = 3
 
     return dist, pos, plane_normal
 
@@ -577,24 +595,26 @@ def collide_plane_cylinder(
     contact_pos[contact_count] = pos2
     contact_count = contact_count + 1
 
-    # Try triangle contact points on side closer to plane
+    # Try two additional side contacts on the end cap closer to plane.
+    # For degenerate configurations (cross product near zero), keep these as MAXVAL.
     prjvec1 = -prjvec * 0.5
     dist3 = dist0 + prjaxis + prjvec1
-    # Compute sideways vector scaled by radius*sqrt(3)/2
     vec1 = wp.cross(vec, axis)
-    vec1 = wp.normalize(vec1) * (cylinder_radius * wp.sqrt(3.0) * 0.5)
+    vec1_len_sqr = wp.dot(vec1, vec1)
+    if vec1_len_sqr >= 1e-12:
+        vec1 = vec1 * safe_div(cylinder_radius * wp.sqrt(3.0) * 0.5, wp.sqrt(vec1_len_sqr))
 
-    # Add contact point A - adjust to closest side
-    pos3 = cylinder_center + vec1 + axis - vec * 0.5 - n * (dist3 * 0.5)
-    contact_dist[contact_count] = dist3
-    contact_pos[contact_count] = pos3
-    contact_count = contact_count + 1
+        # Add contact point A - adjust to closest side
+        pos3 = cylinder_center + vec1 + axis - vec * 0.5 - n * (dist3 * 0.5)
+        contact_dist[contact_count] = dist3
+        contact_pos[contact_count] = pos3
+        contact_count = contact_count + 1
 
-    # Add contact point B - adjust to closest side
-    pos4 = cylinder_center - vec1 + axis - vec * 0.5 - n * (dist3 * 0.5)
-    contact_dist[contact_count] = dist3
-    contact_pos[contact_count] = pos4
-    contact_count = contact_count + 1
+        # Add contact point B - adjust to closest side
+        pos4 = cylinder_center - vec1 + axis - vec * 0.5 - n * (dist3 * 0.5)
+        contact_dist[contact_count] = dist3
+        contact_pos[contact_count] = pos4
+        contact_count = contact_count + 1
 
     return contact_dist, contact_pos, n
 
