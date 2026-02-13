@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .articulation import eval_fk, eval_ik
+from .articulation import eval_fk, eval_ik, eval_jacobian, eval_mass_matrix
 from .builder import ModelBuilder
 from .collide import BroadPhaseMode, CollisionPipeline
 from .contacts import Contacts
@@ -39,4 +39,6 @@ __all__ = [
     "State",
     "eval_fk",
     "eval_ik",
+    "eval_jacobian",
+    "eval_mass_matrix",
 ]

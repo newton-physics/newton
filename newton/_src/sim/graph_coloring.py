@@ -388,8 +388,8 @@ def plot_graph(
         node_colors: A list of node colors.
         layout: The layout of the graph. Can be "spring" or "kamada_kawai".
     """
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    import networkx as nx  # noqa: PLC0415
+    import matplotlib.pyplot as plt
+    import networkx as nx
 
     if edge_labels is None:
         edge_labels = []

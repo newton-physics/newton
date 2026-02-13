@@ -34,7 +34,6 @@ from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_shape_inertia, compute_sphere_inertia, transform_inertia
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
 from .types import (
-    MESH_MAXHULLVERT,
     SDF,
     GeoType,
     Mesh,
@@ -42,7 +41,6 @@ from .types import (
 from .utils import compute_shape_radius
 
 __all__ = [
-    "MESH_MAXHULLVERT",
     "SDF",
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
