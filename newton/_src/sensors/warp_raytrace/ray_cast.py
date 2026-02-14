@@ -180,9 +180,10 @@ def closest_hit_particles(
             bounds_nr = wp.int32(0)
 
             while wp.bvh_query_next(query, bounds_nr, closest_hit.distance):
-                gi_global = bounds_nr
-                gi_bvh_local = gi_global - (world_index * bvh_particles_size)
-                si = gi_bvh_local
+                # The BVH is built over the *global* particle arrays (position/radius), and the query
+                # is restricted to a world/group via the group_root. Therefore, the index returned by
+                # wp.bvh_query_next() is already a valid index into particles_position/particles_radius.
+                si = bounds_nr
 
                 hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
                     particles_position[si],
@@ -420,9 +421,8 @@ def first_hit_particles(
             bounds_nr = wp.int32(0)
 
             while wp.bvh_query_next(query, bounds_nr, max_dist):
-                gi_global = bounds_nr
-                gi_bvh_local = gi_global - (world_index * bvh_particles_size)
-                si = gi_bvh_local
+                # See closest_hit_particles(): BVH indices are global indices into particle arrays.
+                si = bounds_nr
 
                 hit, hit_dist, _hit_normal = ray.ray_sphere_with_normal(
                     particles_position[si],
