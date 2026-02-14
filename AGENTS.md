@@ -132,6 +132,7 @@ Follow conventional commit message practices.
   - **Never commit first and run pre-commit after** - this requires amending commits and creates messy history
 - Keep commits focused and atomic—one logical change per commit.
 - Reference related issues in commit messages when applicable.
+- **When iterating on PR feedback**, prefer adding new commits over amending existing ones. This avoids force-pushing and lets the reviewer easily verify each change request was addressed.
 - **Do not include AI attribution or co-authorship lines** (e.g., "Co-Authored-By: Claude...") in commit messages. Commits should represent human contributions without explicit AI attribution.
 - **Commit message format**:
   - Separate subject from body with a blank line

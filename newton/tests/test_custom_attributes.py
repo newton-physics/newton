@@ -1757,7 +1757,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # Create an articulation
         body = builder.add_link(mass=1.0)
         joint = builder.add_joint_free(child=body)
-        builder.add_articulation([joint], key="robot")
+        builder.add_articulation([joint], label="robot")
 
         # Add a custom string frequency attribute (no namespace for simpler access)
         builder.add_custom_attribute(

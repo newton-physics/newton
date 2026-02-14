@@ -33,8 +33,8 @@ class TestSensorFrameTransform(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
-        site1 = builder.add_site(body, key="site1")
-        site2 = builder.add_site(body, key="site2")
+        site1 = builder.add_site(body, label="site1")
+        site2 = builder.add_site(body, label="site2")
 
         model = builder.finalize()
 
@@ -58,10 +58,10 @@ class TestSensorFrameTransform(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
-        site1 = builder.add_site(body, key="site1")
-        site2 = builder.add_site(body, key="site2")
-        site3 = builder.add_site(body, key="site3")
-        ref_site = builder.add_site(body, key="ref")
+        site1 = builder.add_site(body, label="site1")
+        site2 = builder.add_site(body, label="site2")
+        site3 = builder.add_site(body, label="site3")
+        ref_site = builder.add_site(body, label="ref")
 
         model = builder.finalize()
 
@@ -152,14 +152,16 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Reference site at body origin, rotated 30° around Y
         ref_site = builder.add_site(
-            body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 1, 0), np.pi / 6)), key="ref"
+            body,
+            xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 1, 0), np.pi / 6)),
+            label="ref",
         )
 
         # Target site offset and rotated 60° around X
         target_site = builder.add_site(
             body,
             xform=wp.transform(wp.vec3(0.5, 0.3, 0), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), np.pi / 3)),
-            key="target",
+            label="target",
         )
 
         model = builder.finalize()
@@ -203,7 +205,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         ref_site = builder.add_site(
             body1,
             xform=wp.transform(wp.vec3(0.2, 0.1, 0), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), np.pi / 6)),
-            key="ref",
+            label="ref",
         )
 
         # Target body at (1, 2, 3), rotated 60° around Y
@@ -216,7 +218,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         target_site = builder.add_site(
             body2,
             xform=wp.transform(wp.vec3(0.3, 0, 0.2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
-            key="target",
+            label="target",
         )
 
         model = builder.finalize()
@@ -268,7 +270,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         body1 = builder.add_body(
             mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity())
         )
-        ref_site = builder.add_site(body1, key="ref")
+        ref_site = builder.add_site(body1, label="ref")
 
         body2 = builder.add_body(
             mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
@@ -295,11 +297,11 @@ class TestSensorFrameTransform(unittest.TestCase):
         body = builder.add_body(
             mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity())
         )
-        ref_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="ref")
+        ref_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), label="ref")
 
-        site_a = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="site_a")
-        site_b = builder.add_site(body, xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()), key="site_b")
-        site_c = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()), key="site_c")
+        site_a = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), label="site_a")
+        site_b = builder.add_site(body, xform=wp.transform(wp.vec3(0, 1, 0), wp.quat_identity()), label="site_b")
+        site_c = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 1), wp.quat_identity()), label="site_c")
 
         model = builder.finalize()
         state = model.state()
@@ -331,13 +333,13 @@ class TestSensorFrameTransform(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # World site at (5, 6, 7)
-        world_site = builder.add_site(-1, xform=wp.transform(wp.vec3(5, 6, 7), wp.quat_identity()), key="world")
+        world_site = builder.add_site(-1, xform=wp.transform(wp.vec3(5, 6, 7), wp.quat_identity()), label="world")
 
         # Moving site
         body = builder.add_body(
             mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_identity())
         )
-        moving_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="moving")
+        moving_site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), label="moving")
 
         model = builder.finalize()
         state = model.state()
@@ -363,13 +365,13 @@ class TestSensorFrameTransform(unittest.TestCase):
             inertia=wp.mat33(np.eye(3)),
             xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)),
         )
-        ref_site = builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="ref")
+        ref_site = builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), label="ref")
 
         # Target at (1, 0, 0) in world frame
         body2 = builder.add_body(
             mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
         )
-        target_site = builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="target")
+        target_site = builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), label="target")
 
         model = builder.finalize()
         state = model.state()
@@ -393,14 +395,16 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Reference site rotated 45° around Z
         ref_site = builder.add_site(
-            body, xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 4)), key="ref"
+            body,
+            xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 4)),
+            label="ref",
         )
 
         # Target site at (2, 0, 0), rotated 90° around Y
         target_site = builder.add_site(
             body,
             xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 1, 0), np.pi / 2)),
-            key="target",
+            label="target",
         )
 
         model = builder.finalize()
@@ -428,11 +432,11 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Root body at origin
         root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        ref_site = builder.add_site(root, key="ref")
+        ref_site = builder.add_site(root, label="ref")
 
         # Link 1: connected by revolute joint, extends 1m in +X from joint
         link1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        site1 = builder.add_site(link1, key="site1")
+        site1 = builder.add_site(link1, label="site1")
         joint1 = builder.add_joint_revolute(
             parent=root,
             child=link1,
@@ -442,7 +446,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Link 2: connected to link1, extends another 1m in +X
         link2 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        site2 = builder.add_site(link2, key="site2")
+        site2 = builder.add_site(link2, label="site2")
         joint2 = builder.add_joint_revolute(
             parent=link1,
             child=link2,
@@ -493,7 +497,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         # Create reference site
         base = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        ref_site = builder.add_site(base, key="ref")
+        ref_site = builder.add_site(base, label="ref")
 
         # Create multiple bodies with multiple sites to get many shapes
         all_sites = []
@@ -502,36 +506,42 @@ class TestSensorFrameTransform(unittest.TestCase):
         body1 = builder.add_body(
             mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity())
         )
-        all_sites.append(builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b1_s0"))
         all_sites.append(
-            builder.add_site(body1, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b1_s1")
+            builder.add_site(body1, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), label="b1_s0")
         )
         all_sites.append(
-            builder.add_site(body1, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b1_s2")
+            builder.add_site(body1, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), label="b1_s1")
+        )
+        all_sites.append(
+            builder.add_site(body1, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), label="b1_s2")
         )
 
         # Body 2 with 3 sites at different positions
         body2 = builder.add_body(
             mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(2, 0, 0), wp.quat_identity())
         )
-        all_sites.append(builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b2_s0"))
         all_sites.append(
-            builder.add_site(body2, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b2_s1")
+            builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), label="b2_s0")
         )
         all_sites.append(
-            builder.add_site(body2, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b2_s2")
+            builder.add_site(body2, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), label="b2_s1")
+        )
+        all_sites.append(
+            builder.add_site(body2, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), label="b2_s2")
         )
 
         # Body 3 with 3 sites at different positions
         body3 = builder.add_body(
             mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity())
         )
-        all_sites.append(builder.add_site(body3, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), key="b3_s0"))
         all_sites.append(
-            builder.add_site(body3, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="b3_s1")
+            builder.add_site(body3, xform=wp.transform(wp.vec3(0, 0, 0), wp.quat_identity()), label="b3_s0")
         )
         all_sites.append(
-            builder.add_site(body3, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), key="b3_s2")
+            builder.add_site(body3, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), label="b3_s1")
+        )
+        all_sites.append(
+            builder.add_site(body3, xform=wp.transform(wp.vec3(0.2, 0, 0), wp.quat_identity()), label="b3_s2")
         )
 
         model = builder.finalize()

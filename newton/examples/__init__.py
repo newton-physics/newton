@@ -94,13 +94,13 @@ def test_body_state(
         )
         failures_np = failures.numpy()
         if np.any(failures_np):
-            body_key = np.array(model.body_key)[indices]
+            body_label = np.array(model.body_label)[indices]
             body_q = body_q.numpy()[indices]
             body_qd = body_qd.numpy()[indices]
             failed_indices = np.where(failures_np)[0]
             failed_details = []
             for index in failed_indices:
-                detail = body_key[index]
+                detail = body_label[index]
                 extras = []
                 if show_body_q:
                     extras.append(f"q={body_q[index]}")

@@ -127,10 +127,10 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
         """Test that add_world correctly assigns world groups."""
         # Create a robot builder
         robot_builder = ModelBuilder()
-        robot_builder.add_body(key="base")
+        robot_builder.add_body(label="base")
         cfg1 = ModelBuilder.ShapeConfig(collision_group=1)
         robot_builder.add_shape_box(body=0, hx=0.5, hy=0.5, hz=0.5, cfg=cfg1)
-        robot_builder.add_body(key="link1")
+        robot_builder.add_body(label="link1")
         cfg2 = ModelBuilder.ShapeConfig(collision_group=2)
         robot_builder.add_shape_capsule(body=1, radius=0.1, half_height=0.5, cfg=cfg2)
 

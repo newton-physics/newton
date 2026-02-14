@@ -35,22 +35,22 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         # SPHERE
         sphere_pos = wp.vec3(0.0, -2.0, 0.5)
-        body_sphere = builder.add_body(xform=wp.transform(p=sphere_pos, q=wp.quat_identity()), key="sphere")
+        body_sphere = builder.add_body(xform=wp.transform(p=sphere_pos, q=wp.quat_identity()), label="sphere")
         builder.add_shape_sphere(body_sphere, radius=0.5)
 
         # CAPSULE
         capsule_pos = wp.vec3(0.0, 0.0, 0.75)
-        body_capsule = builder.add_body(xform=wp.transform(p=capsule_pos, q=wp.quat_identity()), key="capsule")
+        body_capsule = builder.add_body(xform=wp.transform(p=capsule_pos, q=wp.quat_identity()), label="capsule")
         builder.add_shape_capsule(body_capsule, radius=0.25, half_height=0.5)
 
         # CYLINDER
         cylinder_pos = wp.vec3(0.0, -4.0, 0.5)
-        body_cylinder = builder.add_body(xform=wp.transform(p=cylinder_pos, q=wp.quat_identity()), key="cylinder")
+        body_cylinder = builder.add_body(xform=wp.transform(p=cylinder_pos, q=wp.quat_identity()), label="cylinder")
         builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.5)
 
         # BOX
         box_pos = wp.vec3(0.0, 2.0, 0.5)
-        body_box = builder.add_body(xform=wp.transform(p=box_pos, q=wp.quat_identity()), key="box")
+        body_box = builder.add_body(xform=wp.transform(p=box_pos, q=wp.quat_identity()), label="box")
         builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.5)
 
         # MESH (bunny)
@@ -65,7 +65,7 @@ class TestSensorTiledCamera(unittest.TestCase):
         demo_mesh = newton.Mesh(mesh_vertices, mesh_indices)
 
         mesh_pos = wp.vec3(0.0, 4.0, 0.0)
-        body_mesh = builder.add_body(xform=wp.transform(p=mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key="mesh")
+        body_mesh = builder.add_body(xform=wp.transform(p=mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), label="mesh")
         builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
 
         return builder.finalize()

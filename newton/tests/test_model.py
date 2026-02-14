@@ -1162,7 +1162,7 @@ class TestModel(unittest.TestCase):
         body = builder.add_link()
 
         # Add joint but do NOT add it to an articulation
-        builder.add_joint_revolute(parent=-1, child=body, key="orphan_joint")
+        builder.add_joint_revolute(parent=-1, child=body, label="orphan_joint")
 
         # finalize() should raise ValueError about orphan joints
         with self.assertRaises(ValueError) as context:
@@ -1178,8 +1178,8 @@ class TestModel(unittest.TestCase):
         body2 = builder.add_link()
 
         # Add multiple joints without articulations
-        builder.add_joint_revolute(parent=-1, child=body1, key="first_joint")
-        builder.add_joint_revolute(parent=body1, child=body2, key="second_joint")
+        builder.add_joint_revolute(parent=-1, child=body1, label="first_joint")
+        builder.add_joint_revolute(parent=body1, child=body2, label="second_joint")
 
         with self.assertRaises(ValueError) as context:
             builder.finalize()
@@ -1198,7 +1198,7 @@ class TestModel(unittest.TestCase):
         cfg = ModelBuilder.ShapeConfig()
         cfg.thickness = 0.01
         cfg.contact_margin = 0.005  # Less than thickness
-        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg, key="bad_sphere")
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg, label="bad_sphere")
 
         # Should warn about thickness > contact_margin
         with self.assertWarns(UserWarning) as cm:
@@ -1238,14 +1238,14 @@ class TestModel(unittest.TestCase):
         cfg_bad.thickness = 0.02
         cfg_bad.contact_margin = 0.01
 
-        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg_bad, key="sphere1")
-        builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_bad, key="box1")
+        builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg_bad, label="sphere1")
+        builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_bad, label="box1")
 
         # One good shape that should not be in the warning
         cfg_good = ModelBuilder.ShapeConfig()
         cfg_good.thickness = 0.005
         cfg_good.contact_margin = 0.01
-        builder.add_shape_capsule(body=body, radius=0.2, half_height=0.5, cfg=cfg_good, key="good_capsule")
+        builder.add_shape_capsule(body=body, radius=0.2, half_height=0.5, cfg=cfg_good, label="good_capsule")
 
         with self.assertWarns(UserWarning) as cm:
             builder.finalize()
@@ -1287,7 +1287,7 @@ class TestModel(unittest.TestCase):
         """Test that _validate_structure catches invalid shape_body references."""
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0)
-        builder.add_shape_sphere(body=body, radius=0.5, key="test_shape")
+        builder.add_shape_sphere(body=body, radius=0.5, label="test_shape")
 
         # Manually set invalid body reference
         builder.shape_body[0] = 999  # Invalid body index
@@ -1305,7 +1305,7 @@ class TestModel(unittest.TestCase):
         """Test that _validate_structure catches invalid joint_parent references."""
         builder = ModelBuilder()
         body = builder.add_link(mass=1.0)
-        joint = builder.add_joint_revolute(parent=-1, child=body, key="test_joint")
+        joint = builder.add_joint_revolute(parent=-1, child=body, label="test_joint")
         builder.add_articulation([joint])
 
         # Manually set invalid parent body reference
@@ -1323,7 +1323,7 @@ class TestModel(unittest.TestCase):
         """Test that _validate_structure catches invalid joint_child references."""
         builder = ModelBuilder()
         body = builder.add_link(mass=1.0)
-        joint = builder.add_joint_revolute(parent=-1, child=body, key="test_joint")
+        joint = builder.add_joint_revolute(parent=-1, child=body, label="test_joint")
         builder.add_articulation([joint])
 
         # Manually set invalid child body reference (child cannot be -1)
@@ -1341,7 +1341,7 @@ class TestModel(unittest.TestCase):
         """Test that _validate_structure catches self-referential joints."""
         builder = ModelBuilder()
         body = builder.add_link(mass=1.0)
-        joint = builder.add_joint_revolute(parent=-1, child=body, key="self_ref_joint")
+        joint = builder.add_joint_revolute(parent=-1, child=body, label="self_ref_joint")
         builder.add_articulation([joint])
 
         # Manually set parent == child (self-referential)
@@ -1363,7 +1363,7 @@ class TestModel(unittest.TestCase):
         builder.add_equality_constraint_weld(
             body1=body1,
             body2=body2,
-            key="test_constraint",
+            label="test_constraint",
         )
 
         # Manually set invalid body reference
@@ -1390,7 +1390,7 @@ class TestModel(unittest.TestCase):
         builder.add_equality_constraint_joint(
             joint1=joint1,
             joint2=joint2,
-            key="joint_constraint",
+            label="joint_constraint",
         )
 
         # Manually set invalid joint reference
@@ -1471,7 +1471,7 @@ class TestModel(unittest.TestCase):
         """Test that skip_all_validations skips all validation checks."""
         builder = ModelBuilder()
         body = builder.add_link(mass=1.0)
-        builder.add_joint_revolute(parent=-1, child=body, key="orphan_joint")
+        builder.add_joint_revolute(parent=-1, child=body, label="orphan_joint")
         # Don't add articulation - this would normally fail _validate_joints
 
         # Without skip_all_validations, should raise ValueError about orphan joint
@@ -1483,7 +1483,7 @@ class TestModel(unittest.TestCase):
         # Create a fresh builder for clean test
         builder2 = ModelBuilder()
         body2 = builder2.add_link(mass=1.0)
-        builder2.add_joint_revolute(parent=-1, child=body2, key="orphan_joint2")
+        builder2.add_joint_revolute(parent=-1, child=body2, label="orphan_joint2")
         # This should succeed (validation skipped)
         model = builder2.finalize(skip_all_validations=True)
         self.assertIsNotNone(model)
@@ -1574,19 +1574,19 @@ class TestModel(unittest.TestCase):
             parent=-1,
             child=b0,
             axis=(0, 0, 1),
-            key="j1",
+            label="j1",
         )
         j2 = builder.add_joint_revolute(
             parent=-1,
             child=b1,
             axis=(0, 0, 1),
-            key="j2",
+            label="j2",
         )
         j3 = builder.add_joint_revolute(
             parent=-1,
             child=b2,
             axis=(0, 0, 1),
-            key="j3",
+            label="j3",
         )
 
         # Add mimic constraints
@@ -1595,7 +1595,7 @@ class TestModel(unittest.TestCase):
             joint1=j1,
             coef0=-0.25,
             coef1=1.5,
-            key="mimic1",
+            label="mimic1",
         )
         _c2 = builder.add_constraint_mimic(
             joint0=j3,
@@ -1603,7 +1603,7 @@ class TestModel(unittest.TestCase):
             coef0=0.0,
             coef1=-1.0,
             enabled=False,
-            key="mimic2",
+            label="mimic2",
         )
 
         model = builder.finalize()
@@ -1616,7 +1616,7 @@ class TestModel(unittest.TestCase):
         self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
         self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
         self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
-        self.assertEqual(model.constraint_mimic_key[0], "mimic1")
+        self.assertEqual(model.constraint_mimic_label[0], "mimic1")
 
         # Check second constraint
         self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
@@ -1624,7 +1624,7 @@ class TestModel(unittest.TestCase):
         self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
         self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
         self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
-        self.assertEqual(model.constraint_mimic_key[1], "mimic2")
+        self.assertEqual(model.constraint_mimic_label[1], "mimic2")
 
     def test_control_clear(self):
         """Test that Control.clear() works without errors."""

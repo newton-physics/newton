@@ -54,7 +54,7 @@ def test_jacobian_simple_pendulum(test, device):
         parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
     )
-    builder.add_articulation([j1, j2], key="pendulum")
+    builder.add_articulation([j1, j2], label="pendulum")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -98,7 +98,7 @@ def test_jacobian_numerical_verification(test, device):
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
     )
-    builder.add_articulation([j1], key="pendulum")
+    builder.add_articulation([j1], label="pendulum")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -152,7 +152,7 @@ def test_mass_matrix_symmetry(test, device):
         parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
     )
-    builder.add_articulation([j1, j2], key="pendulum")
+    builder.add_articulation([j1, j2], label="pendulum")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -201,7 +201,7 @@ def test_mass_matrix_positive_definite(test, device):
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
     )
-    builder.add_articulation([j1], key="pendulum")
+    builder.add_articulation([j1], label="pendulum")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -234,7 +234,7 @@ def test_jacobian_multiple_articulations(test, device):
             parent_xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1], key=f"pendulum_{i}")
+        builder.add_articulation([j1], label=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -266,7 +266,7 @@ def test_jacobian_with_mask(test, device):
             parent_xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1], key=f"pendulum_{i}")
+        builder.add_articulation([j1], label=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -313,7 +313,7 @@ def test_mass_matrix_with_mask(test, device):
             parent_xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1], key=f"pendulum_{i}")
+        builder.add_articulation([j1], label=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -357,7 +357,7 @@ def test_prismatic_joint_jacobian(test, device):
         parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
     )
-    builder.add_articulation([j1], key="slider")
+    builder.add_articulation([j1], label="slider")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -409,7 +409,7 @@ def test_articulation_view_api(test, device):
             parent_xform=wp.transform(wp.vec3(i * 2.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1], key=key)
+        builder.add_articulation([j1], label=key)
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -504,7 +504,7 @@ def test_floating_base_jacobian(test, device):
         parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_identity()),
         child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
     )
-    builder.add_articulation([j_free, j_rev], key="floating_robot")
+    builder.add_articulation([j_free, j_rev], label="floating_robot")
 
     model = builder.finalize(device=device)
     state = model.state()

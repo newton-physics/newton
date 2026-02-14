@@ -32,7 +32,7 @@ class TestSensorIMU(unittest.TestCase):
         """Test basic sensor creation."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        site = builder.add_site(body, key="imu_site")
+        site = builder.add_site(body, label="imu_site")
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site])
@@ -45,9 +45,9 @@ class TestSensorIMU(unittest.TestCase):
         """Test sensor with multiple sites."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        site1 = builder.add_site(body, key="site1")
-        site2 = builder.add_site(body, key="site2")
-        site3 = builder.add_site(body, key="site3")
+        site1 = builder.add_site(body, label="site1")
+        site2 = builder.add_site(body, label="site2")
+        site3 = builder.add_site(body, label="site3")
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site1, site2, site3])
@@ -103,7 +103,7 @@ class TestSensorIMU(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(2, 4, 6)), 4.0)
-        site = builder.add_site(body, key="imu", xform=wp.transform(wp.vec3(0, 0, 0), rot))
+        site = builder.add_site(body, label="imu", xform=wp.transform(wp.vec3(0, 0, 0), rot))
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site])
@@ -124,7 +124,7 @@ class TestSensorIMU(unittest.TestCase):
         """Test IMU on static body measures gravity."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        site = builder.add_site(body, key="imu")
+        site = builder.add_site(body, label="imu")
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site])
@@ -144,7 +144,7 @@ class TestSensorIMU(unittest.TestCase):
     def test_sensor_world_frame_site(self):
         """Test IMU on site attached to world frame (body=-1)."""
         builder = newton.ModelBuilder()
-        world_site = builder.add_site(-1, key="world_imu")
+        world_site = builder.add_site(-1, label="world_imu")
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[world_site])
@@ -166,7 +166,7 @@ class TestSensorIMU(unittest.TestCase):
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
 
         rot_90_z = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), np.pi / 2)
-        site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), rot_90_z), key="imu")
+        site = builder.add_site(body, xform=wp.transform(wp.vec3(0, 0, 0), rot_90_z), label="imu")
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites=[site])

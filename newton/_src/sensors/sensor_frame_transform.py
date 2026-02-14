@@ -154,7 +154,7 @@ class SensorFrameTransform:
         shape_flags = model.shape_flags.numpy()
         for idx in reference_sites:
             if not (shape_flags[idx] & ShapeFlags.SITE):
-                raise ValueError(f"Reference index {idx} (key: {model.shape_key[idx]}) is not a site")
+                raise ValueError(f"Reference index {idx} (label: {model.shape_label[idx]}) is not a site")
 
         # Handle reference site matching
         if len(reference_sites) == 1:

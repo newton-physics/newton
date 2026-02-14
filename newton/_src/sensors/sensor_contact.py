@@ -211,20 +211,20 @@ class SensorContact:
             match_fn = fnmatch
 
         if sensing_obj_bodies is not None:
-            s_bodies = self._match_elem_key(match_fn, model, model.body_key, sensing_obj_bodies)
+            s_bodies = self._match_elem_label(match_fn, model, model.body_label, sensing_obj_bodies)
             s_shapes = []
         else:
             s_bodies = []
-            s_shapes = self._match_elem_key(match_fn, model, model.shape_key, sensing_obj_shapes)
+            s_shapes = self._match_elem_label(match_fn, model, model.shape_label, sensing_obj_shapes)
 
         if counterpart_bodies is not None:
-            c_bodies = self._match_elem_key(match_fn, model, model.body_key, counterpart_bodies)
+            c_bodies = self._match_elem_label(match_fn, model, model.body_label, counterpart_bodies)
             c_shapes = []
             if include_total:
                 c_bodies = [MatchAny, *c_bodies]
         elif counterpart_shapes is not None:
             c_bodies = []
-            c_shapes = self._match_elem_key(match_fn, model, model.shape_key, counterpart_shapes)
+            c_shapes = self._match_elem_label(match_fn, model, model.shape_label, counterpart_shapes)
             if include_total:
                 c_shapes = [MatchAny, *c_shapes]
         else:
@@ -367,11 +367,11 @@ class SensorContact:
         )
 
     @classmethod
-    def _match_elem_key(
+    def _match_elem_label(
         cls,
         match_fn: Callable[[str, str], bool],
         model: Model,
-        elem_key: dict[str, Any],
+        elem_label: dict[str, Any],
         pattern: str | list[str],
     ) -> list[int]:
         """Find the indices of elements matching the pattern."""
@@ -379,10 +379,10 @@ class SensorContact:
 
         if isinstance(pattern, list):
             for single_pattern in pattern:
-                matches.extend(cls._match_elem_key(match_fn, model, elem_key, single_pattern))
+                matches.extend(cls._match_elem_label(match_fn, model, elem_label, single_pattern))
             return matches
 
-        for idx, elem in enumerate(elem_key):
+        for idx, elem in enumerate(elem_label):
             if match_fn(elem, pattern):
                 matches.append(idx)
 

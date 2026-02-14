@@ -102,7 +102,7 @@ class Example:
             builder.add_shape_box(
                 body, hx=scale, hy=scale, hz=scale, cfg=newton.ModelBuilder.ShapeConfig(is_visible=False, density=200)
             )
-            imu_site = builder.add_site(body, key=f"imu_site_{cube_idx}")
+            imu_site = builder.add_site(body, label=f"imu_site_{cube_idx}")
 
             self.visual_cubes.append(visual_cube)
             self.visual_fillers.append(visual_filler)

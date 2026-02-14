@@ -620,7 +620,7 @@ class ModelBuilder:
         self.particle_world = []  # world index for each particle
 
         # shapes (each shape has an entry in these arrays)
-        self.shape_key = []  # shape keys
+        self.shape_label = []  # shape labels
         # transform from shape to body
         self.shape_transform = []
         # maps from shape index to body index
@@ -701,7 +701,7 @@ class ModelBuilder:
         self.body_com = []
         self.body_q = []
         self.body_qd = []
-        self.body_key = []
+        self.body_label = []
         self.body_lock_inertia = []
         self.body_shapes = {-1: []}  # mapping from body to shapes
         self.body_world = []  # world index for each body
@@ -721,7 +721,7 @@ class ModelBuilder:
         self.joint_f = []
 
         self.joint_type = []
-        self.joint_key = []
+        self.joint_label = []
         self.joint_armature = []
         self.joint_act_mode = []  # Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3, EFFORT=4)
         self.joint_target_ke = []
@@ -749,7 +749,7 @@ class ModelBuilder:
         self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
 
         self.articulation_start = []
-        self.articulation_key = []
+        self.articulation_label = []
         self.articulation_world = []  # world index for each articulation
 
         self.joint_dof_count = 0
@@ -785,7 +785,7 @@ class ModelBuilder:
         self.equality_constraint_joint1 = []
         self.equality_constraint_joint2 = []
         self.equality_constraint_polycoef = []
-        self.equality_constraint_key = []
+        self.equality_constraint_label = []
         self.equality_constraint_enabled = []
         self.equality_constraint_world = []
 
@@ -795,7 +795,7 @@ class ModelBuilder:
         self.constraint_mimic_coef0 = []
         self.constraint_mimic_coef1 = []
         self.constraint_mimic_enabled = []
-        self.constraint_mimic_key = []
+        self.constraint_mimic_label = []
         self.constraint_mimic_world = []
 
         # per-world entity start indices
@@ -1315,7 +1315,7 @@ class ModelBuilder:
             self.add_world(builder, xform=xform)
 
     def add_articulation(
-        self, joints: list[int], key: str | None = None, custom_attributes: dict[str, Any] | None = None
+        self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
     ):
         """
         Adds an articulation to the model from a list of joint indices.
@@ -1325,7 +1325,7 @@ class ModelBuilder:
 
         Args:
             joints: List of joint indices to include in the articulation. Must be contiguous and monotonic.
-            key: The key of the articulation. If None, a default key will be created.
+            label: The label of the articulation. If None, a default label will be created.
             custom_attributes: Dictionary of custom attribute values for ARTICULATION frequency attributes.
 
         Raises:
@@ -1375,8 +1375,8 @@ class ModelBuilder:
             if self.joint_articulation[joint_idx] >= 0:
                 existing_art = self.joint_articulation[joint_idx]
                 raise ValueError(
-                    f"Joint {joint_idx} ('{self.joint_key[joint_idx]}') already belongs to articulation {existing_art} "
-                    f"('{self.articulation_key[existing_art]}'). Each joint can only belong to one articulation."
+                    f"Joint {joint_idx} ('{self.joint_label[joint_idx]}') already belongs to articulation {existing_art} "
+                    f"('{self.articulation_label[existing_art]}'). Each joint can only belong to one articulation."
                 )
 
         # Validate all joints belong to the same world (current world)
@@ -1403,7 +1403,7 @@ class ModelBuilder:
         # Store the articulation using the first joint's index as the start
         articulation_idx = self.articulation_count
         self.articulation_start.append(sorted_joints[0])
-        self.articulation_key.append(key or f"articulation_{articulation_idx}")
+        self.articulation_label.append(label or f"articulation_{articulation_idx}")
         self.articulation_world.append(self.current_world)
 
         # Mark all joints as belonging to this articulation
@@ -1948,7 +1948,7 @@ class ModelBuilder:
 
     def begin_world(
         self,
-        key: str | None = None,
+        label: str | None = None,
         attributes: dict[str, Any] | None = None,
         gravity: Vec3 | None = None,
     ):
@@ -1962,8 +1962,8 @@ class ModelBuilder:
         calling :meth:`begin_world` again.
 
         Args:
-            key (str | None): Optional unique identifier for this world. If None,
-                a default key "world_{index}" will be generated.
+            label (str | None): Optional unique identifier for this world. If None,
+                a default label "world_{index}" will be generated.
             attributes (dict[str, Any] | None): Optional custom attributes to associate
                 with this world for later use.
             gravity (Vec3 | None): Optional gravity vector for this world. If None,
@@ -1981,13 +1981,13 @@ class ModelBuilder:
             builder.add_ground_plane()  # Added to world -1 (global)
 
             # Create world 0 with default gravity
-            builder.begin_world(key="robot_0")
+            builder.begin_world(label="robot_0")
             builder.add_body(...)  # Added to world 0
             builder.add_shape_box(...)  # Added to world 0
             builder.end_world()
 
             # Create world 1 with custom zero gravity
-            builder.begin_world(key="robot_1", gravity=(0.0, 0.0, 0.0))
+            builder.begin_world(label="robot_1", gravity=(0.0, 0.0, 0.0))
             builder.add_body(...)  # Added to world 1
             builder.add_shape_box(...)  # Added to world 1
             builder.end_world()
@@ -2003,7 +2003,7 @@ class ModelBuilder:
         self.num_worlds += 1
 
         # Store world metadata if needed (for future use)
-        # Note: We might want to add world_key and world_attributes lists in __init__ if needed
+        # Note: We might want to add world_label and world_attributes lists in __init__ if needed
         # For now, we just track the world index
 
         # Initialize this world's gravity
@@ -2035,7 +2035,12 @@ class ModelBuilder:
         # Reset to global world
         self.current_world = -1
 
-    def add_world(self, builder: ModelBuilder, xform: Transform | None = None):
+    def add_world(
+        self,
+        builder: ModelBuilder,
+        xform: Transform | None = None,
+        label_prefix: str | None = None,
+    ):
         """Add a builder as a new world.
 
         This is a convenience method that combines :meth:`begin_world`,
@@ -2047,6 +2052,9 @@ class ModelBuilder:
             builder (ModelBuilder): The builder containing entities to add as a new world.
             xform (Transform | None): Optional transform to apply to all root bodies
                 in the builder. Useful for spacing out worlds visually.
+            label_prefix (str | None): Optional prefix prepended to all entity labels
+                from the source builder. Useful for distinguishing multiple instances
+                of the same model (e.g., ``"left_arm"`` vs ``"right_arm"``).
 
         Raises:
             RuntimeError: If called when already in a world context (via begin_world).
@@ -2067,7 +2075,7 @@ class ModelBuilder:
                 scene.add_world(robot)  # Each robot is a separate world
         """
         self.begin_world()
-        self.add_builder(builder, xform=xform)
+        self.add_builder(builder, xform=xform, label_prefix=label_prefix)
         self.end_world()
 
     # endregion
@@ -2076,6 +2084,7 @@ class ModelBuilder:
         self,
         builder: ModelBuilder,
         xform: Transform | None = None,
+        label_prefix: str | None = None,
     ):
         """Copies the data from another `ModelBuilder` into this `ModelBuilder`.
 
@@ -2093,12 +2102,15 @@ class ModelBuilder:
             # Adds all entities from sub_builder to main_builder's current world (-1 by default)
             main_builder.add_builder(sub_builder)
 
-            # With transform
-            main_builder.add_builder(sub_builder, xform=wp.transform((1, 0, 0)))
+            # With transform and label prefix
+            main_builder.add_builder(sub_builder, xform=wp.transform((1, 0, 0)), label_prefix="left")
 
         Args:
             builder (ModelBuilder): The model builder to copy data from.
             xform (Transform): Optional offset transform applied to root bodies.
+            label_prefix (str | None): Optional prefix prepended to all entity labels
+                from the source builder. Labels are joined with ``/``
+                (e.g., ``"left/panda/base_link"``).
         """
 
         if builder.up_axis != self.up_axis:
@@ -2297,7 +2309,12 @@ class ModelBuilder:
                 [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint2]
             )
             self.equality_constraint_polycoef.extend(builder.equality_constraint_polycoef)
-            self.equality_constraint_key.extend(builder.equality_constraint_key)
+            if label_prefix:
+                self.equality_constraint_label.extend(
+                    f"{label_prefix}/{lbl}" if lbl else lbl for lbl in builder.equality_constraint_label
+                )
+            else:
+                self.equality_constraint_label.extend(builder.equality_constraint_label)
             self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
 
         # For mimic constraints
@@ -2315,10 +2332,24 @@ class ModelBuilder:
             self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
             self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
             self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
-            self.constraint_mimic_key.extend(builder.constraint_mimic_key)
+            if label_prefix:
+                self.constraint_mimic_label.extend(
+                    f"{label_prefix}/{lbl}" if lbl else lbl for lbl in builder.constraint_mimic_label
+                )
+            else:
+                self.constraint_mimic_label.extend(builder.constraint_mimic_label)
+
+        # Handle label attributes specially to support label_prefix
+        label_attrs = ["articulation_label", "body_label", "joint_label", "shape_label"]
+        for attr in label_attrs:
+            src = getattr(builder, attr)
+            dst = getattr(self, attr)
+            if label_prefix:
+                dst.extend(f"{label_prefix}/{lbl}" if lbl else lbl for lbl in src)
+            else:
+                dst.extend(src)
 
         more_builder_attrs = [
-            "articulation_key",
             "body_inertia",
             "body_mass",
             "body_inv_inertia",
@@ -2326,14 +2357,12 @@ class ModelBuilder:
             "body_com",
             "body_lock_inertia",
             "body_qd",
-            "body_key",
             "joint_type",
             "joint_enabled",
             "joint_X_c",
             "joint_armature",
             "joint_axis",
             "joint_dof_dim",
-            "joint_key",
             "joint_qd",
             "joint_cts",
             "joint_f",
@@ -2349,7 +2378,6 @@ class ModelBuilder:
             "joint_effort_limit",
             "joint_velocity_limit",
             "joint_friction",
-            "shape_key",
             "shape_flags",
             "shape_type",
             "shape_scale",
@@ -2560,7 +2588,7 @@ class ModelBuilder:
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
         mass: float = 0.0,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
     ) -> int:
@@ -2578,7 +2606,7 @@ class ModelBuilder:
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
-            key: Key of the body (optional).
+            label: Label of the body (optional).
             custom_attributes: Dictionary of custom attribute names to values.
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
@@ -2629,7 +2657,7 @@ class ModelBuilder:
         self.body_q.append(xform)
         self.body_qd.append(wp.spatial_vector())
 
-        self.body_key.append(key or f"body_{body_id}")
+        self.body_label.append(label or f"body_{body_id}")
         self.body_shapes[body_id] = []
         self.body_world.append(self.current_world)
         # Process custom attributes
@@ -2649,7 +2677,7 @@ class ModelBuilder:
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
         mass: float = 0.0,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
     ) -> int:
@@ -2671,8 +2699,8 @@ class ModelBuilder:
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
-            key: Key of the body. When provided, the auto-created free joint and articulation
-                are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
+            label: Label of the body. When provided, the auto-created free joint and articulation
+                are assigned labels ``{label}_free_joint`` and ``{label}_articulation`` respectively.
             custom_attributes: Dictionary of custom attribute names to values.
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
@@ -2692,7 +2720,7 @@ class ModelBuilder:
             com=com,
             inertia=inertia,
             mass=mass,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
             lock_inertia=lock_inertia,
         )
@@ -2700,12 +2728,12 @@ class ModelBuilder:
         # Add a free joint to make it float
         joint_id = self.add_joint_free(
             child=body_id,
-            key=f"{key}_free_joint" if key else None,
+            label=f"{label}_free_joint" if label else None,
         )
 
         # Create an articulation from the joint
-        articulation_key = f"{key}_articulation" if key else None
-        self.add_articulation([joint_id], key=articulation_key)
+        articulation_label = f"{label}_articulation" if label else None
+        self.add_articulation([joint_id], label=articulation_label)
 
         return body_id
 
@@ -2718,7 +2746,7 @@ class ModelBuilder:
         child: int,
         linear_axes: list[JointDofConfig] | None = None,
         angular_axes: list[JointDofConfig] | None = None,
-        key: str | None = None,
+        label: str | None = None,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
@@ -2736,7 +2764,7 @@ class ModelBuilder:
                 defined in the joint parent anchor frame.
             angular_axes (list(:class:`JointDofConfig`)): The angular axes (see :class:`JointDofConfig`) of the joint,
                 defined in the joint parent anchor frame.
-            key (str): The key of the joint (optional).
+            label (str): The label of the joint (optional).
             parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
                 If None, the identity transform is used.
             child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
@@ -2793,7 +2821,7 @@ class ModelBuilder:
         self.joint_child.append(child)
         self.joint_X_p.append(wp.transform(parent_xform))
         self.joint_X_c.append(wp.transform(child_xform))
-        self.joint_key.append(key or f"joint_{self.joint_count}")
+        self.joint_label.append(label or f"joint_{self.joint_count}")
         self.joint_dof_dim.append((len(linear_axes), len(angular_axes)))
         self.joint_enabled.append(enabled)
         self.joint_world.append(self.current_world)
@@ -2900,7 +2928,7 @@ class ModelBuilder:
         velocity_limit: float | None = None,
         friction: float | None = None,
         actuator_mode: ActuatorMode | None = None,
-        key: str | None = None,
+        label: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
@@ -2928,7 +2956,7 @@ class ModelBuilder:
             effort_limit: Maximum effort (force/torque) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
-            key: The key of the joint.
+            label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
@@ -2966,7 +2994,7 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             angular_axes=[ax],
-            key=key,
+            label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
             custom_attributes=custom_attributes,
@@ -2993,7 +3021,7 @@ class ModelBuilder:
         velocity_limit: float | None = None,
         friction: float | None = None,
         actuator_mode: ActuatorMode | None = None,
-        key: str | None = None,
+        label: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
@@ -3020,7 +3048,7 @@ class ModelBuilder:
             effort_limit: Maximum effort (force) the joint axis can exert. If None, the default value from :attr:`default_joint_cfg.effort_limit` is used.
             velocity_limit: Maximum velocity the joint axis can achieve. If None, the default value from :attr:`default_joint_cfg.velocity_limit` is used.
             friction: Friction coefficient for the joint axis. If None, the default value from :attr:`default_joint_cfg.friction` is used.
-            key: The key of the joint.
+            label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
@@ -3058,7 +3086,7 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             linear_axes=[ax],
-            key=key,
+            label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
             custom_attributes=custom_attributes,
@@ -3072,7 +3100,7 @@ class ModelBuilder:
         child_xform: Transform | None = None,
         armature: float | None = None,
         friction: float | None = None,
-        key: str | None = None,
+        label: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
@@ -3087,7 +3115,7 @@ class ModelBuilder:
             child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
             friction: Friction coefficient for the joint axes. If None, the default value from :attr:`default_joint_cfg.friction` is used.
-            key: The key of the joint.
+            label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
@@ -3131,7 +3159,7 @@ class ModelBuilder:
             parent_xform=parent_xform,
             child_xform=child_xform,
             angular_axes=[x, y, z],
-            key=key,
+            label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
             custom_attributes=custom_attributes,
@@ -3143,7 +3171,7 @@ class ModelBuilder:
         child: int,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
-        key: str | None = None,
+        label: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
@@ -3156,7 +3184,7 @@ class ModelBuilder:
             child: The index of the child body.
             parent_xform (Transform): The transform of the joint in the parent body's local frame.
             child_xform (Transform): The transform of the joint in the child body's local frame.
-            key: The key of the joint.
+            label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT frequency attributes.
@@ -3172,7 +3200,7 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            key=key,
+            label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
         )
@@ -3189,7 +3217,7 @@ class ModelBuilder:
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         parent: int = -1,
-        key: str | None = None,
+        label: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
@@ -3203,7 +3231,7 @@ class ModelBuilder:
             parent_xform (Transform): The transform of the joint in the parent body's local frame.
             child_xform (Transform): The transform of the joint in the child body's local frame.
             parent: The index of the parent body (-1 by default to use the world frame, e.g. to make the child body and its children a floating-base mechanism).
-            key: The key of the joint.
+            label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
@@ -3219,7 +3247,7 @@ class ModelBuilder:
             child,
             parent_xform=parent_xform,
             child_xform=child_xform,
-            key=key,
+            label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
             linear_axes=[
@@ -3304,7 +3332,7 @@ class ModelBuilder:
         child: int,
         linear_axes: Sequence[JointDofConfig] | None = None,
         angular_axes: Sequence[JointDofConfig] | None = None,
-        key: str | None = None,
+        label: str | None = None,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         collision_filter_parent: bool = True,
@@ -3319,7 +3347,7 @@ class ModelBuilder:
             child: The index of the child body.
             linear_axes: A list of linear axes.
             angular_axes: A list of angular axes.
-            key: The key of the joint.
+            label: The label of the joint.
             parent_xform (Transform): The transform from the parent body frame to the joint parent anchor frame.
             child_xform (Transform): The transform from the child body frame to the joint child anchor frame.
             armature: Artificial inertia added around the joint axes. If None, the default value from :attr:`default_joint_armature` is used.
@@ -3344,7 +3372,7 @@ class ModelBuilder:
             child_xform=child_xform,
             linear_axes=list(linear_axes),
             angular_axes=list(angular_axes),
-            key=key,
+            label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
             custom_attributes=custom_attributes,
@@ -3361,7 +3389,7 @@ class ModelBuilder:
         stretch_damping: float | None = None,
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
-        key: str | None = None,
+        label: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
@@ -3394,7 +3422,7 @@ class ModelBuilder:
             bend_damping: Cable bend/twist damping (stored as ``target_kd``). In :class:`newton.solvers.SolverVBD`
                 this is a dimensionless (Rayleigh-style) coefficient. If None,
                 defaults to 0.0.
-            key: The key of the joint.
+            label: The label of the joint.
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD
@@ -3422,7 +3450,7 @@ class ModelBuilder:
             child_xform=child_xform,
             linear_axes=[ax_lin],
             angular_axes=[ax_ang],
-            key=key,
+            label=label,
             collision_filter_parent=collision_filter_parent,
             enabled=enabled,
             custom_attributes=custom_attributes,
@@ -3440,7 +3468,7 @@ class ModelBuilder:
         joint1: int = -1,
         joint2: int = -1,
         polycoef: list[float] | None = None,
-        key: str | None = None,
+        label: str | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -3456,7 +3484,7 @@ class ModelBuilder:
             joint1 (int): Index of the first joint for joint coupling
             joint2 (int): Index of the second joint for joint coupling
             polycoef (list[float]): Polynomial coefficients for joint coupling
-            key (str): Optional constraint name
+            label (str): Optional constraint label
             enabled (bool): Whether constraint is active
             custom_attributes (dict): Custom attributes to set on the constraint
 
@@ -3473,7 +3501,7 @@ class ModelBuilder:
         self.equality_constraint_joint1.append(joint1)
         self.equality_constraint_joint2.append(joint2)
         self.equality_constraint_polycoef.append(polycoef or [0.0, 0.0, 0.0, 0.0, 0.0])
-        self.equality_constraint_key.append(key)
+        self.equality_constraint_label.append(label)
         self.equality_constraint_enabled.append(enabled)
         self.equality_constraint_world.append(self.current_world)
 
@@ -3494,7 +3522,7 @@ class ModelBuilder:
         body1: int = -1,
         body2: int = -1,
         anchor: Vec3 | None = None,
-        key: str | None = None,
+        label: str | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -3505,7 +3533,7 @@ class ModelBuilder:
             body1: Index of the first body participating in the constraint (-1 for world)
             body2: Index of the second body participating in the constraint (-1 for world)
             anchor: Anchor point on body1
-            key: Optional constraint name
+            label: Optional constraint label
             enabled: Whether constraint is active
             custom_attributes: Custom attributes to set on the constraint
 
@@ -3518,7 +3546,7 @@ class ModelBuilder:
             body1=body1,
             body2=body2,
             anchor=anchor,
-            key=key,
+            label=label,
             enabled=enabled,
             custom_attributes=custom_attributes,
         )
@@ -3528,7 +3556,7 @@ class ModelBuilder:
         joint1: int = -1,
         joint2: int = -1,
         polycoef: list[float] | None = None,
-        key: str | None = None,
+        label: str | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -3539,7 +3567,7 @@ class ModelBuilder:
             joint1: Index of the first joint
             joint2: Index of the second joint
             polycoef: Polynomial coefficients for joint coupling
-            key: Optional constraint name
+            label: Optional constraint label
             enabled: Whether constraint is active
             custom_attributes: Custom attributes to set on the constraint
 
@@ -3552,7 +3580,7 @@ class ModelBuilder:
             joint1=joint1,
             joint2=joint2,
             polycoef=polycoef,
-            key=key,
+            label=label,
             enabled=enabled,
             custom_attributes=custom_attributes,
         )
@@ -3564,7 +3592,7 @@ class ModelBuilder:
         anchor: Vec3 | None = None,
         torquescale: float | None = None,
         relpose: Transform | None = None,
-        key: str | None = None,
+        label: str | None = None,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -3577,7 +3605,7 @@ class ModelBuilder:
             anchor: Coordinates of the weld point relative to body2
             torquescale: Scales the angular residual for weld
             relpose (Transform): Relative pose of body2 relative to body1. If None, the identity transform is used
-            key: Optional constraint name
+            label: Optional constraint label
             enabled: Whether constraint is active
             custom_attributes: Custom attributes to set on the constraint
 
@@ -3593,7 +3621,7 @@ class ModelBuilder:
             torquescale=torquescale,
             relpose=relpose,
             custom_attributes=custom_attributes,
-            key=key,
+            label=label,
             enabled=enabled,
         )
 
@@ -3604,7 +3632,7 @@ class ModelBuilder:
         coef0: float = 0.0,
         coef1: float = 1.0,
         enabled: bool = True,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a mimic constraint to the model.
@@ -3620,7 +3648,7 @@ class ModelBuilder:
             coef0: Offset added after scaling
             coef1: Scale factor applied to joint1's position/angle
             enabled: Whether constraint is active
-            key: Optional constraint name
+            label: Optional constraint label
             custom_attributes: Custom attributes to set on the constraint
 
         Returns:
@@ -3643,7 +3671,7 @@ class ModelBuilder:
         self.constraint_mimic_coef0.append(coef0)
         self.constraint_mimic_coef1.append(coef1)
         self.constraint_mimic_enabled.append(enabled)
-        self.constraint_mimic_key.append(key)
+        self.constraint_mimic_label.append(label)
         self.constraint_mimic_world.append(self.current_world)
 
         constraint_idx = len(self.constraint_mimic_joint0) - 1
@@ -3662,11 +3690,11 @@ class ModelBuilder:
 
     def plot_articulation(
         self,
-        show_body_keys=True,
-        show_joint_keys=True,
+        show_body_labels=True,
+        show_joint_labels=True,
         show_joint_types=True,
         plot_shapes=True,
-        show_shape_keys=True,
+        show_shape_labels=True,
         show_shape_types=True,
         show_legend=True,
     ):
@@ -3676,11 +3704,11 @@ class ModelBuilder:
         Bodies are shown as orange squares, shapes are shown as blue circles.
 
         Args:
-            show_body_keys (bool): Whether to show the body keys or indices
-            show_joint_keys (bool): Whether to show the joint keys or indices
+            show_body_labels (bool): Whether to show the body labels or indices
+            show_joint_labels (bool): Whether to show the joint labels or indices
             show_joint_types (bool): Whether to show the joint types
             plot_shapes (bool): Whether to render the shapes connected to the rigid bodies
-            show_shape_keys (bool): Whether to show the shape keys or indices
+            show_shape_labels (bool): Whether to show the shape labels or indices
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
@@ -3729,15 +3757,15 @@ class ModelBuilder:
                 return "none"
             return "unknown"
 
-        if show_body_keys:
-            vertices = ["world", *self.body_key]
+        if show_body_labels:
+            vertices = ["world", *self.body_label]
         else:
             vertices = ["-1"] + [str(i) for i in range(self.body_count)]
         if plot_shapes:
             for i in range(self.shape_count):
                 shape_label = []
-                if show_shape_keys:
-                    shape_label.append(self.shape_key[i])
+                if show_shape_labels:
+                    shape_label.append(self.shape_label[i])
                 if show_shape_types:
                     shape_label.append(f"({shape_type_str(self.shape_type[i])})")
                 vertices.append("\n".join(shape_label))
@@ -3747,8 +3775,8 @@ class ModelBuilder:
         for i in range(self.joint_count):
             edge = (self.joint_child[i] + 1, self.joint_parent[i] + 1)
             edges.append(edge)
-            if show_joint_keys:
-                joint_label = self.joint_key[i]
+            if show_joint_labels:
+                joint_label = self.joint_label[i]
             else:
                 joint_label = str(i)
             if show_joint_types:
@@ -3762,7 +3790,7 @@ class ModelBuilder:
 
         if plot_shapes:
             for i in range(self.shape_count):
-                edges.append((len(self.body_key) + i + 1, self.shape_body[i] + 1))
+                edges.append((len(self.body_label) + i + 1, self.shape_body[i] + 1))
 
         # plot graph
         G = nx.DiGraph()
@@ -3808,7 +3836,7 @@ class ModelBuilder:
         visited = {}
         merged_body_data = {}
         for i in range(self.body_count):
-            key = self.body_key[i]
+            body_lbl = self.body_label[i]
             inertia_i = self._coerce_mat33(self.body_inertia[i])
             body_data[i] = {
                 "shapes": self.body_shapes[i],
@@ -3820,7 +3848,7 @@ class ModelBuilder:
                 "inv_inertia": self.body_inv_inertia[i],
                 "com": wp.vec3(*self.body_com[i]),
                 "lock_inertia": self.body_lock_inertia[i],
-                "key": key,
+                "label": body_lbl,
                 "original_id": i,
             }
             visited[i] = False
@@ -3828,7 +3856,7 @@ class ModelBuilder:
 
         joint_data = {}
         for i in range(self.joint_count):
-            key = self.joint_key[i]
+            joint_lbl = self.joint_label[i]
             parent = self.joint_parent[i]
             child = self.joint_child[i]
             body_children[parent].append(child)
@@ -3854,7 +3882,7 @@ class ModelBuilder:
                 "q_start": q_start,
                 "qd_start": qd_start,
                 "cts_start": cts_start,
-                "key": key,
+                "label": joint_lbl,
                 "parent_xform": wp.transform_expand(self.joint_X_p[i]),
                 "child_xform": wp.transform_expand(self.joint_X_c[i]),
                 "enabled": self.joint_enabled[i],
@@ -3919,29 +3947,29 @@ class ModelBuilder:
             if should_skip_merge and joint["type"] == JointType.FIXED:
                 # Skip merging this fixed joint because the body is referenced in an equality constraint
                 if verbose:
-                    parent_key = self.body_key[parent_body] if parent_body > -1 else "world"
-                    child_key = self.body_key[child_body]
+                    parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
+                    child_lbl = self.body_label[child_body]
                     print(
-                        f"Skipping collapse of fixed joint {joint['key']} between {parent_key} and {child_key}: "
-                        f"{child_key} is referenced in an equality constraint and cannot be merged into world"
+                        f"Skipping collapse of fixed joint {joint['label']} between {parent_lbl} and {child_lbl}: "
+                        f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
                     )
 
             if joint["type"] == JointType.FIXED and not should_skip_merge:
                 joint_xform = joint["parent_xform"] * wp.transform_inverse(joint["child_xform"])
                 incoming_xform = incoming_xform * joint_xform
-                parent_key = self.body_key[parent_body] if parent_body > -1 else "world"
-                child_key = self.body_key[child_body]
-                last_dynamic_body_key = self.body_key[last_dynamic_body] if last_dynamic_body > -1 else "world"
+                parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
+                child_lbl = self.body_label[child_body]
+                last_dynamic_body_label = self.body_label[last_dynamic_body] if last_dynamic_body > -1 else "world"
                 if verbose:
                     print(
-                        f"Remove fixed joint {joint['key']} between {parent_key} and {child_key}, "
-                        f"merging {child_key} into {last_dynamic_body_key}"
+                        f"Remove fixed joint {joint['label']} between {parent_lbl} and {child_lbl}, "
+                        f"merging {child_lbl} into {last_dynamic_body_label}"
                     )
                 child_id = body_data[child_body]["original_id"]
                 relative_xform = incoming_xform
-                merged_body_data[self.body_key[child_body]] = {
+                merged_body_data[self.body_label[child_body]] = {
                     "relative_xform": relative_xform,
-                    "parent_body": self.body_key[parent_body],
+                    "parent_body": self.body_label[parent_body],
                 }
                 body_merged_parent[child_body] = last_dynamic_body
                 body_merged_transform[child_body] = incoming_xform
@@ -3949,7 +3977,7 @@ class ModelBuilder:
                     self.shape_transform[shape] = incoming_xform * self.shape_transform[shape]
                     if verbose:
                         print(
-                            f"  Shape {shape} moved to body {last_dynamic_body_key} with transform {self.shape_transform[shape]}"
+                            f"  Shape {shape} moved to body {last_dynamic_body_label} with transform {self.shape_transform[shape]}"
                         )
                     if last_dynamic_body > -1:
                         self.shape_body[shape] = body_data[last_dynamic_body]["id"]
@@ -3999,7 +4027,7 @@ class ModelBuilder:
         # save original body groups before clearing
         original_body_group = self.body_world[:] if self.body_world else []
 
-        self.body_key.clear()
+        self.body_label.clear()
         self.body_q.clear()
         self.body_qd.clear()
         self.body_mass.clear()
@@ -4015,9 +4043,9 @@ class ModelBuilder:
         self.body_shapes[-1] = static_shapes
         for i in retained_bodies:
             body = body_data[i]
-            new_id = len(self.body_key)
+            new_id = len(self.body_label)
             body_remap[body["original_id"]] = new_id
-            self.body_key.append(body["key"])
+            self.body_label.append(body["label"])
             self.body_q.append(body["q"])
             self.body_qd.append(body["qd"])
             m = body["mass"]
@@ -4066,7 +4094,7 @@ class ModelBuilder:
         original_ = self.joint_world[:] if self.joint_world else []
         original_articulation = self.joint_articulation[:] if self.joint_articulation else []
 
-        self.joint_key.clear()
+        self.joint_label.clear()
         self.joint_type.clear()
         self.joint_parent.clear()
         self.joint_child.clear()
@@ -4095,7 +4123,7 @@ class ModelBuilder:
         self.joint_world.clear()
         self.joint_articulation.clear()
         for joint in retained_joints:
-            self.joint_key.append(joint["key"])
+            self.joint_label.append(joint["label"])
             self.joint_type.append(joint["type"])
             self.joint_parent.append(body_remap[joint["parent"]])
             self.joint_child.append(body_remap[joint["child"]])
@@ -4280,7 +4308,7 @@ class ModelBuilder:
         scale: Vec3 | None = None,
         src: SDF | Mesh | Any | None = None,
         is_static: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a generic collision shape to the model.
@@ -4295,7 +4323,7 @@ class ModelBuilder:
             scale (Vec3 | None): The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
             src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH` or an :class:`SDF` object for `GeoType.SDF`. Defaults to `None`.
             is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -4313,12 +4341,12 @@ class ModelBuilder:
 
         # Validate site invariants
         if cfg.is_site:
-            shape_key = key or f"shape_{self.shape_count}"
+            shape_label = label or f"shape_{self.shape_count}"
 
             # Sites must not have collision enabled
             if cfg.has_shape_collision or cfg.has_particle_collision:
                 raise ValueError(
-                    f"Site shape '{shape_key}' cannot have collision enabled. "
+                    f"Site shape '{shape_label}' cannot have collision enabled. "
                     f"Sites must be non-colliding reference points. "
                     f"has_shape_collision={cfg.has_shape_collision}, "
                     f"has_particle_collision={cfg.has_particle_collision}"
@@ -4327,7 +4355,7 @@ class ModelBuilder:
             # Sites must have zero density (no mass contribution)
             if cfg.density != 0.0:
                 raise ValueError(
-                    f"Site shape '{shape_key}' must have zero density. "
+                    f"Site shape '{shape_label}' must have zero density. "
                     f"Sites do not contribute to body mass. "
                     f"Got density={cfg.density}"
                 )
@@ -4335,7 +4363,7 @@ class ModelBuilder:
             # Sites must have collision group 0 (no collision filtering)
             if cfg.collision_group != 0:
                 raise ValueError(
-                    f"Site shape '{shape_key}' must have collision_group=0. "
+                    f"Site shape '{shape_label}' must have collision_group=0. "
                     f"Sites do not participate in collision detection. "
                     f"Got collision_group={cfg.collision_group}"
                 )
@@ -4347,7 +4375,7 @@ class ModelBuilder:
             for same_body_shape in self.body_shapes[body]:
                 self.add_shape_collision_filter_pair(same_body_shape, shape)
         self.body_shapes[body].append(shape)
-        self.shape_key.append(key or f"shape_{shape}")
+        self.shape_label.append(label or f"shape_{shape}")
         self.shape_transform.append(xform)
         # Get flags and clear HYDROELASTIC for unsupported shape types (PLANE, HFIELD)
         shape_flags = cfg.flags
@@ -4414,7 +4442,7 @@ class ModelBuilder:
         length: float = 10.0,
         body: int = -1,
         cfg: ShapeConfig | None = None,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """
@@ -4433,7 +4461,7 @@ class ModelBuilder:
             length (float): The visual/collision extent of the plane along its local Y-axis. If `0.0`, considered infinite for collision. Defaults to `10.0`.
             body (int): The index of the parent body this shape belongs to. Use -1 for world-static planes. Defaults to `-1`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
@@ -4462,7 +4490,7 @@ class ModelBuilder:
             cfg=cfg,
             scale=scale,
             is_static=True,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -4470,14 +4498,14 @@ class ModelBuilder:
         self,
         height: float = 0.0,
         cfg: ShapeConfig | None = None,
-        key: str | None = None,
+        label: str | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
 
         Args:
             height (float): The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
 
         Returns:
             int: The index of the newly added shape.
@@ -4487,7 +4515,7 @@ class ModelBuilder:
             width=0.0,
             length=0.0,
             cfg=cfg,
-            key=key or "ground_plane",
+            label=label or "ground_plane",
         )
 
     def add_shape_sphere(
@@ -4497,7 +4525,7 @@ class ModelBuilder:
         radius: float = 1.0,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a sphere collision shape or site to a body.
@@ -4508,7 +4536,7 @@ class ModelBuilder:
             radius (float): The radius of the sphere. Defaults to `1.0`.
             cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -4527,7 +4555,7 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             scale=scale,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -4540,7 +4568,7 @@ class ModelBuilder:
         c: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds an ellipsoid collision shape or site to a body.
@@ -4560,7 +4588,7 @@ class ModelBuilder:
             c (float): The semi-axis of the ellipsoid along its local Z-axis. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -4598,7 +4626,7 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             scale=scale,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -4611,7 +4639,7 @@ class ModelBuilder:
         hz: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a box collision shape or site to a body.
@@ -4626,7 +4654,7 @@ class ModelBuilder:
             hz (float): The half-extent of the box along its local Z-axis. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -4640,7 +4668,13 @@ class ModelBuilder:
 
         scale = wp.vec3(hx, hy, hz)
         return self.add_shape(
-            body=body, type=GeoType.BOX, xform=xform, cfg=cfg, scale=scale, key=key, custom_attributes=custom_attributes
+            body=body,
+            type=GeoType.BOX,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            label=label,
+            custom_attributes=custom_attributes,
         )
 
     def add_shape_capsule(
@@ -4651,7 +4685,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a capsule collision shape or site to a body.
@@ -4665,7 +4699,7 @@ class ModelBuilder:
             half_height (float): The half-length of the capsule's central cylindrical segment (excluding the hemispherical ends). Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
 
         Returns:
@@ -4689,7 +4723,7 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             scale=scale,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -4701,7 +4735,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a cylinder collision shape or site to a body.
@@ -4715,7 +4749,7 @@ class ModelBuilder:
             half_height (float): The half-length of the cylinder along the Z-axis. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's properties. If `None`, uses :attr:`default_shape_cfg` (or :attr:`default_site_cfg` when `as_site=True`). If `as_site=True` and `cfg` is provided, a copy is made and site invariants are enforced via `mark_as_site()`. Defaults to `None`.
             as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
@@ -4739,7 +4773,7 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             scale=scale,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -4751,7 +4785,7 @@ class ModelBuilder:
         half_height: float = 0.5,
         cfg: ShapeConfig | None = None,
         as_site: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a cone collision shape to a body.
@@ -4766,7 +4800,7 @@ class ModelBuilder:
             half_height (float): The half-height of the cone (distance from the geometric center to either the base or apex). The total height is 2*half_height. Defaults to `0.5`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             as_site (bool): If `True`, creates a site (non-colliding reference point) instead of a collision shape. Defaults to `False`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
@@ -4790,7 +4824,7 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             scale=scale,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -4801,7 +4835,7 @@ class ModelBuilder:
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a triangle mesh collision shape to a body.
@@ -4812,7 +4846,7 @@ class ModelBuilder:
             mesh (Mesh | None): The :class:`Mesh` object containing the vertex and triangle data. Defaults to `None`.
             scale (Vec3 | None): The scale of the mesh. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
@@ -4828,7 +4862,7 @@ class ModelBuilder:
             cfg=cfg,
             scale=scale,
             src=mesh,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -4838,7 +4872,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         sdf: SDF | None = None,
         cfg: ShapeConfig | None = None,
-        key: str | None = None,
+        label: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
         """Adds a signed distance field (SDF) collision shape to a body.
@@ -4848,7 +4882,7 @@ class ModelBuilder:
             xform (Transform | None): The transform of the SDF in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             sdf (SDF | None): The :class:`SDF` object representing the signed distance field. Defaults to `None`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
             custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
 
         Returns:
@@ -4862,7 +4896,7 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             src=sdf,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -4873,7 +4907,7 @@ class ModelBuilder:
         mesh: Mesh | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
-        key: str | None = None,
+        label: str | None = None,
     ) -> int:
         """Adds a convex hull collision shape to a body.
 
@@ -4883,7 +4917,7 @@ class ModelBuilder:
             mesh (Mesh | None): The :class:`Mesh` object containing the vertex data for the convex hull. Defaults to `None`.
             scale (Vec3 | None): The scale of the convex hull. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the shape. If `None`, a default label is automatically generated. Defaults to `None`.
 
         Returns:
             int: The index of the newly added shape.
@@ -4898,7 +4932,7 @@ class ModelBuilder:
             cfg=cfg,
             scale=scale,
             src=mesh,
-            key=key,
+            label=label,
         )
 
     def add_site(
@@ -4907,7 +4941,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         type: int = GeoType.SPHERE,
         scale: Vec3 = (0.01, 0.01, 0.01),
-        key: str | None = None,
+        label: str | None = None,
         visible: bool = False,
         custom_attributes: dict[str, Any] | None = None,
     ) -> int:
@@ -4925,7 +4959,7 @@ class ModelBuilder:
             xform (Transform | None): The transform of the site in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             type (int): The geometry type for visualization (e.g., `GeoType.SPHERE`, `GeoType.BOX`). Defaults to `GeoType.SPHERE`.
             scale (Vec3): The scale/size of the site for visualization. Defaults to `(0.01, 0.01, 0.01)`.
-            key (str | None): An optional unique key for identifying the site. If `None`, a default key is automatically generated. Defaults to `None`.
+            label (str | None): An optional unique label for identifying the site. If `None`, a default label is automatically generated. Defaults to `None`.
             visible (bool): If True, the site will be visible for debugging. If False (default), the site is hidden.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -4939,7 +4973,7 @@ class ModelBuilder:
                 imu_site = builder.add_site(
                     body,
                     xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()),
-                    key="imu_sensor",
+                    label="imu_sensor",
                     visible=True,  # Show for debugging
                 )
         """
@@ -4953,7 +4987,7 @@ class ModelBuilder:
             xform=xform,
             cfg=cfg,
             scale=scale,
-            key=key,
+            label=label,
             custom_attributes=custom_attributes,
         )
 
@@ -5042,7 +5076,7 @@ class ModelBuilder:
                     xform=xform,
                     cfg=cfg,
                     mesh=self.shape_source[shape],
-                    key=f"{self.shape_key[shape]}_visual",
+                    label=f"{self.shape_label[shape]}_visual",
                     scale=self.shape_scale[shape],
                 )
 
@@ -5126,7 +5160,7 @@ class ModelBuilder:
                                 mesh=Mesh(decomposition[i][0], decomposition[i][1]),
                                 scale=scale,
                                 cfg=cfg,
-                                key=f"{self.shape_key[shape]}_convex_{i}",
+                                label=f"{self.shape_label[shape]}_convex_{i}",
                             )
                     remeshed_shapes.add(shape)
             except Exception as e:
@@ -5212,7 +5246,7 @@ class ModelBuilder:
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
         closed: bool = False,
-        key: str | None = None,
+        label: str | None = None,
         wrap_in_articulation: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by cable joints.
@@ -5246,7 +5280,7 @@ class ModelBuilder:
                 defaults to 0.0.
             closed: If True, connects the last segment back to the first to form a closed loop. If False,
                 creates an open chain. Note: rods require at least 2 segments.
-            key: Optional key prefix for bodies, shapes, and joints.
+            label: Optional label prefix for bodies, shapes, and joints.
             wrap_in_articulation: If True, the created joints are automatically wrapped into a single
                 articulation. Defaults to True to ensure valid simulation models.
 
@@ -5331,15 +5365,15 @@ class ModelBuilder:
             stretch_damping=stretch_damping,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,
-            key=key,
+            label=label,
             wrap_in_articulation=False,
             quaternions=quaternions,
         )
 
         # Wrap all joints into an articulation if requested.
         if wrap_in_articulation and link_joints:
-            rod_art_key = f"{key}_articulation" if key else None
-            self.add_articulation(link_joints, key=rod_art_key)
+            rod_art_label = f"{label}_articulation" if label else None
+            self.add_articulation(link_joints, label=rod_art_label)
 
         # For closed loops, add one extra loop-closing cable joint that is intentionally
         # *not* part of an articulation (articulations must be trees/forests).
@@ -5370,7 +5404,7 @@ class ModelBuilder:
                 stretch_ke_eff = stretch_stiffness / L_last
                 bend_ke_eff = bend_stiffness / L_last
 
-                loop_joint_key = f"{key}_cable_{len(link_joints) + 1}" if key else None
+                loop_joint_label = f"{label}_cable_{len(link_joints) + 1}" if label else None
                 j_loop = self.add_joint_cable(
                     parent=last_body,
                     child=first_body,
@@ -5380,7 +5414,7 @@ class ModelBuilder:
                     bend_damping=bend_damping,
                     stretch_stiffness=stretch_ke_eff,
                     stretch_damping=stretch_damping,
-                    key=loop_joint_key,
+                    label=loop_joint_label,
                     collision_filter_parent=True,
                     enabled=True,
                 )
@@ -5398,7 +5432,7 @@ class ModelBuilder:
         stretch_damping: float | None = None,
         bend_stiffness: float | None = None,
         bend_damping: float | None = None,
-        key: str | None = None,
+        label: str | None = None,
         wrap_in_articulation: bool = True,
         quaternions: list[Quat] | None = None,
         junction_collision_filter: bool = True,
@@ -5439,7 +5473,7 @@ class ModelBuilder:
             bend_stiffness: Material-like bend/twist stiffness (EI) [N*m^2], normalized by edge
                 length into an effective joint stiffness [N*m]. Defaults to 0.0.
             bend_damping: Bend/twist damping (per joint). Defaults to 0.0.
-            key: Optional key prefix for bodies, shapes, joints, and articulations.
+            label: Optional label prefix for bodies, shapes, joints, and articulations.
             wrap_in_articulation: If True, wraps the generated joint forest into one articulation
                 per connected component.
             quaternions: Optional per-edge orientations in world space. If provided, must have
@@ -5539,10 +5573,10 @@ class ModelBuilder:
             body_q = wp.transform(p0, q)
             com_offset = wp.vec3(0.0, 0.0, half_height)
 
-            body_key = f"{key}_edge_body_{e_idx}" if key else None
-            shape_key = f"{key}_edge_capsule_{e_idx}" if key else None
+            body_label = f"{label}_edge_body_{e_idx}" if label else None
+            shape_label = f"{label}_edge_capsule_{e_idx}" if label else None
 
-            body_id = self.add_link(xform=body_q, com=com_offset, key=body_key)
+            body_id = self.add_link(xform=body_q, com=com_offset, label=body_label)
 
             # Place capsule so it spans from start to end along +Z
             capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
@@ -5553,7 +5587,7 @@ class ModelBuilder:
                 radius=radius,
                 half_height=half_height,
                 cfg=cfg,
-                key=shape_key,
+                label=shape_label,
             )
 
             edge_u.append(u)
@@ -5620,7 +5654,7 @@ class ModelBuilder:
                     bend_ke_eff = bend_stiffness / L_sym
 
                     joint_counter += 1
-                    joint_key = f"{key}_cable_{joint_counter}" if key else None
+                    joint_label = f"{label}_cable_{joint_counter}" if label else None
 
                     j = self.add_joint_cable(
                         parent=parent_body,
@@ -5631,7 +5665,7 @@ class ModelBuilder:
                         bend_damping=bend_damping,
                         stretch_stiffness=stretch_ke_eff,
                         stretch_damping=stretch_damping,
-                        key=joint_key,
+                        label=joint_label,
                         collision_filter_parent=True,
                         enabled=True,
                     )
@@ -5683,7 +5717,7 @@ class ModelBuilder:
                             bend_ke_eff = bend_stiffness / L_sym
 
                             joint_counter += 1
-                            joint_key = f"{key}_cable_{joint_counter}" if key else None
+                            joint_label = f"{label}_cable_{joint_counter}" if label else None
 
                             j = self.add_joint_cable(
                                 parent=parent_body,
@@ -5694,7 +5728,7 @@ class ModelBuilder:
                                 bend_damping=bend_damping,
                                 stretch_stiffness=stretch_ke_eff,
                                 stretch_damping=stretch_damping,
-                                key=joint_key,
+                                label=joint_label,
                                 collision_filter_parent=True,
                                 enabled=True,
                             )
@@ -5727,13 +5761,15 @@ class ModelBuilder:
 
                 # Wrap the connected component into an articulation.
                 if component_joints:
-                    if key:
-                        art_key = (
-                            f"{key}_articulation_{component_index}" if component_index > 0 else f"{key}_articulation"
+                    if label:
+                        art_label = (
+                            f"{label}_articulation_{component_index}"
+                            if component_index > 0
+                            else f"{label}_articulation"
                         )
                     else:
-                        art_key = None
-                    self.add_articulation(component_joints, key=art_key)
+                        art_label = None
+                    self.add_articulation(component_joints, label=art_label)
 
                 component_index += 1
 
@@ -7184,7 +7220,7 @@ class ModelBuilder:
         if is_sequential:
             return parent_articulation
         else:
-            body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
+            body_name = self.body_label[parent_body] if parent_body < len(self.body_label) else f"#{parent_body}"
             raise ValueError(
                 f"Cannot attach to parent_body {body_name} in articulation #{parent_articulation} "
                 f"(most recent is #{num_articulations - 1}). "
@@ -7195,7 +7231,7 @@ class ModelBuilder:
         self,
         joint_indices: list[int],
         parent_body: int,
-        articulation_key: str | None = None,
+        articulation_label: str | None = None,
         custom_attributes: dict | None = None,
     ) -> None:
         """
@@ -7207,7 +7243,7 @@ class ModelBuilder:
         Args:
             joint_indices: List of joint indices from the imported model.
             parent_body: The parent body index (-1 for world, or a body index for hierarchical composition).
-            articulation_key: Optional key for the articulation (e.g., model name).
+            articulation_label: Optional label for the articulation (e.g., model name).
             custom_attributes: Optional custom attributes for the articulation.
 
         Note:
@@ -7234,7 +7270,7 @@ class ModelBuilder:
             else:
                 # Parent body exists but is not in any articulation - this is an error
                 # because user explicitly specified parent_body but it can't be used
-                body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
+                body_name = self.body_label[parent_body] if parent_body < len(self.body_label) else f"#{parent_body}"
                 raise ValueError(
                     f"Cannot attach to parent_body '{body_name}': body is not part of any articulation. "
                     f"Only bodies within articulations can be used as parent_body. "
@@ -7244,7 +7280,7 @@ class ModelBuilder:
             # No parent_body specified, create a new articulation
             self.add_articulation(
                 joints=joint_indices,
-                key=articulation_key,
+                label=articulation_label,
                 custom_attributes=custom_attributes,
             )
 
@@ -7253,7 +7289,7 @@ class ModelBuilder:
         child: int,
         floating: bool | None = None,
         base_joint: dict | None = None,
-        key: str | None = None,
+        label: str | None = None,
         parent_xform: Transform | None = None,
         child_xform: Transform | None = None,
         parent: int = -1,
@@ -7271,7 +7307,7 @@ class ModelBuilder:
                 If False, always creates a fixed joint.
             base_joint: Dict with joint parameters passed to :meth:`add_joint`.
                 Cannot be specified together with ``floating``.
-            key: A unique key for the joint.
+            label: A unique label for the joint.
             parent_xform: The transform of the joint in the parent frame.
                 If None, defaults to ``body_q[child]`` when parent is world (-1),
                 or identity when parent is another body.
@@ -7295,7 +7331,7 @@ class ModelBuilder:
         if parent != -1:
             parent_articulation = self._find_articulation_for_body(parent)
             if parent_articulation is None:
-                body_name = self.body_key[parent] if parent < len(self.body_key) else f"#{parent}"
+                body_name = self.body_label[parent] if parent < len(self.body_label) else f"#{parent}"
                 raise ValueError(
                     f"Cannot attach to parent_body '{body_name}': body is not part of any articulation. "
                     f"Only bodies within articulations can be used as parent_body. "
@@ -7316,17 +7352,17 @@ class ModelBuilder:
             joint_params["child"] = child
             joint_params["parent_xform"] = parent_xform
             joint_params["child_xform"] = child_xform
-            if "key" not in joint_params and key is not None:
-                joint_params["key"] = key
+            if "label" not in joint_params and label is not None:
+                joint_params["label"] = label
             return self.add_joint(**joint_params)
         elif floating is True or (floating is None and parent == -1):
             # FREE joint (floating=True always requires parent==-1, validated above)
             # Note: We don't pass parent_xform here because add_joint_free initializes joint_q from body_q[child]
             # and the caller (e.g., URDF importer) will set the correct joint_q values afterward
-            return self.add_joint_free(child, key=key)
+            return self.add_joint_free(child, label=label)
         else:
             # FIXED joint (floating=False or floating=None with parent body)
-            return self.add_joint_fixed(parent, child, parent_xform, child_xform, key=key)
+            return self.add_joint_fixed(parent, child, parent_xform, child_xform, label=label)
 
     def _add_base_joints_to_floating_bodies(
         self,
@@ -7361,8 +7397,8 @@ class ModelBuilder:
                 continue
 
             joint = self._add_base_joint(body_id, floating=floating, base_joint=base_joint)
-            # Use body key as articulation key for single-body articulations
-            self.add_articulation([joint], key=self.body_key[body_id])
+            # Use body label as articulation label for single-body articulations
+            self.add_articulation([joint], label=self.body_label[body_id])
 
     def request_contact_attributes(self, *attributes: str) -> None:
         """
@@ -7631,10 +7667,10 @@ class ModelBuilder:
                     # else: this is a loop joint - child is already reachable, so it's allowed
 
             if orphan_joints:
-                joint_keys = [self.joint_key[i] for i in orphan_joints[:5]]  # Show first 5
+                joint_labels = [self.joint_label[i] for i in orphan_joints[:5]]  # Show first 5
                 raise ValueError(
                     f"Found {len(orphan_joints)} joint(s) not belonging to any articulation. "
-                    f"Call add_articulation() for all joints. Orphan joints: {joint_keys}"
+                    f"Call add_articulation() for all joints. Orphan joints: {joint_labels}"
                     + ("..." if len(orphan_joints) > 5 else "")
                 )
 
@@ -7665,7 +7701,7 @@ class ModelBuilder:
             margin = self.shape_contact_margin[i]
             if thickness > margin:
                 shapes_with_bad_margin.append(
-                    f"{self.shape_key[i] or f'shape_{i}'} (thickness={thickness:.6g}, margin={margin:.6g})"
+                    f"{self.shape_label[i] or f'shape_{i}'} (thickness={thickness:.6g}, margin={margin:.6g})"
                 )
         if shapes_with_bad_margin:
             example_shapes = shapes_with_bad_margin[:5]
@@ -7703,9 +7739,9 @@ class ModelBuilder:
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
                 idx = invalid_indices[0]
-                shape_key = self.shape_key[idx] or f"shape_{idx}"
+                shape_label = self.shape_label[idx] or f"shape_{idx}"
                 raise ValueError(
-                    f"Invalid body reference in shape_body: shape {idx} ('{shape_key}') references body {shape_body[idx]}, "
+                    f"Invalid body reference in shape_body: shape {idx} ('{shape_label}') references body {shape_body[idx]}, "
                     f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
                 )
 
@@ -7716,9 +7752,9 @@ class ModelBuilder:
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
                 idx = invalid_indices[0]
-                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                joint_label = self.joint_label[idx] or f"joint_{idx}"
                 raise ValueError(
-                    f"Invalid body reference in joint_parent: joint {idx} ('{joint_key}') references parent body {joint_parent[idx]}, "
+                    f"Invalid body reference in joint_parent: joint {idx} ('{joint_label}') references parent body {joint_parent[idx]}, "
                     f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
                 )
 
@@ -7728,9 +7764,9 @@ class ModelBuilder:
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
                 idx = invalid_indices[0]
-                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                joint_label = self.joint_label[idx] or f"joint_{idx}"
                 raise ValueError(
-                    f"Invalid body reference in joint_child: joint {idx} ('{joint_key}') references child body {joint_child[idx]}, "
+                    f"Invalid body reference in joint_child: joint {idx} ('{joint_label}') references child body {joint_child[idx]}, "
                     f"but valid range is [0, {body_count - 1}] (body_count={body_count}). Child cannot be the world (-1)."
                 )
 
@@ -7739,9 +7775,9 @@ class ModelBuilder:
             if np.any(self_ref_mask):
                 invalid_indices = np.where(self_ref_mask)[0]
                 idx = invalid_indices[0]
-                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                joint_label = self.joint_label[idx] or f"joint_{idx}"
                 raise ValueError(
-                    f"Self-referential joint: joint {idx} ('{joint_key}') has parent and child both set to body {joint_parent[idx]}."
+                    f"Self-referential joint: joint {idx} ('{joint_label}') has parent and child both set to body {joint_parent[idx]}."
                 )
 
         # Validate equality constraint body references
@@ -7752,7 +7788,7 @@ class ModelBuilder:
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
                 idx = invalid_indices[0]
-                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                eq_key = self.equality_constraint_label[idx] or f"equality_constraint_{idx}"
                 raise ValueError(
                     f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{eq_key}') references body {eq_body1[idx]}, "
                     f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
@@ -7763,7 +7799,7 @@ class ModelBuilder:
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
                 idx = invalid_indices[0]
-                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                eq_key = self.equality_constraint_label[idx] or f"equality_constraint_{idx}"
                 raise ValueError(
                     f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{eq_key}') references body {eq_body2[idx]}, "
                     f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
@@ -7775,7 +7811,7 @@ class ModelBuilder:
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
                 idx = invalid_indices[0]
-                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                eq_key = self.equality_constraint_label[idx] or f"equality_constraint_{idx}"
                 raise ValueError(
                     f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{eq_key}') references joint {eq_joint1[idx]}, "
                     f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
@@ -7786,7 +7822,7 @@ class ModelBuilder:
             if np.any(invalid_mask):
                 invalid_indices = np.where(invalid_mask)[0]
                 idx = invalid_indices[0]
-                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                eq_key = self.equality_constraint_label[idx] or f"equality_constraint_{idx}"
                 raise ValueError(
                     f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{eq_key}') references joint {eq_joint2[idx]}, "
                     f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
@@ -7921,8 +7957,8 @@ class ModelBuilder:
                 # Check if current order matches expected DFS order
                 if any(joint_order[i] != art_joints[i] for i in range(len(joints_simple))):
                     art_key = (
-                        self.articulation_key[art_id]
-                        if art_id < len(self.articulation_key)
+                        self.articulation_label[art_id]
+                        if art_id < len(self.articulation_label)
                         else f"articulation_{art_id}"
                     )
                     warnings.warn(
@@ -7935,7 +7971,9 @@ class ModelBuilder:
             except ValueError as e:
                 # Topological sort failed (e.g., cycle detected)
                 art_key = (
-                    self.articulation_key[art_id] if art_id < len(self.articulation_key) else f"articulation_{art_id}"
+                    self.articulation_label[art_id]
+                    if art_id < len(self.articulation_label)
+                    else f"articulation_{art_id}"
                 )
                 warnings.warn(
                     f"Failed to validate joint ordering for articulation '{art_key}' (id={art_id}): {e}",
@@ -8259,7 +8297,7 @@ class ModelBuilder:
             # ---------------------
             # collision geometry
 
-            m.shape_key = self.shape_key
+            m.shape_label = self.shape_label
             m.shape_transform = wp.array(self.shape_transform, dtype=wp.transform, requires_grad=requires_grad)
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
@@ -8687,10 +8725,10 @@ class ModelBuilder:
                     for i in range(len(self.body_mass)):
                         mass = self.body_mass[i]
                         inertia = self.body_inertia[i]
-                        body_key = self.body_key[i] if i < len(self.body_key) else f"body_{i}"
+                        body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
 
                         corrected_mass, corrected_inertia, was_corrected = verify_and_correct_inertia(
-                            mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia, body_key
+                            mass, inertia, self.balance_inertia, self.bound_mass, self.bound_inertia, body_label
                         )
 
                         if was_corrected:
@@ -8764,7 +8802,7 @@ class ModelBuilder:
             m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
             m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
-            m.body_key = self.body_key
+            m.body_label = self.body_label
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
             # body colors
@@ -8785,7 +8823,7 @@ class ModelBuilder:
             m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_key = self.joint_key
+            m.joint_label = self.joint_label
             m.joint_world = wp.array(self.joint_world, dtype=wp.int32)
             # compute joint ancestors
             child_to_joint = {}
@@ -8840,7 +8878,7 @@ class ModelBuilder:
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
-            m.articulation_key = self.articulation_key
+            m.articulation_label = self.articulation_label
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
@@ -8858,7 +8896,7 @@ class ModelBuilder:
             m.equality_constraint_joint1 = wp.array(self.equality_constraint_joint1, dtype=wp.int32)
             m.equality_constraint_joint2 = wp.array(self.equality_constraint_joint2, dtype=wp.int32)
             m.equality_constraint_polycoef = wp.array(self.equality_constraint_polycoef, dtype=wp.float32)
-            m.equality_constraint_key = self.equality_constraint_key
+            m.equality_constraint_label = self.equality_constraint_label
             m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
             m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
 
@@ -8868,7 +8906,7 @@ class ModelBuilder:
             m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
             m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
             m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
-            m.constraint_mimic_key = self.constraint_mimic_key
+            m.constraint_mimic_label = self.constraint_mimic_label
             m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)
 
             # ---------------------

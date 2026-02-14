@@ -96,7 +96,7 @@ class Example:
                 bend_damping=1.0e-2,
                 stretch_stiffness=1.0e9,
                 stretch_damping=0.0,
-                key=f"cable_{i}",
+                label=f"cable_{i}",
             )
 
             # Fix the first body to make it kinematic

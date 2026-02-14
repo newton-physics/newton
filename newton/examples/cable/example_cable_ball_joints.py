@@ -241,7 +241,7 @@ class Example:
                 key_prefix = f"{_label}_{kind}_{i}"
                 if kind == "sphere":
                     r = 0.18
-                    builder.add_shape_sphere(body=body, radius=r, key=f"drv_{key_prefix}")
+                    builder.add_shape_sphere(body=body, radius=r, label=f"drv_{key_prefix}")
                     attach_offset = r
                 elif kind == "capsule":
                     r = 0.12
@@ -253,12 +253,12 @@ class Example:
                         radius=r,
                         half_height=hh,
                         xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0), q=capsule_q),
-                        key=f"drv_{key_prefix}",
+                        label=f"drv_{key_prefix}",
                     )
                     attach_offset = r
                 elif kind == "box":
                     hx, hy, hz = 0.18, 0.12, 0.10
-                    builder.add_shape_box(body=body, hx=hx, hy=hy, hz=hz, key=f"drv_{key_prefix}")
+                    builder.add_shape_box(body=body, hx=hx, hy=hy, hz=hz, label=f"drv_{key_prefix}")
                     attach_offset = hz
                 else:
                     mesh, scale = mesh_info
@@ -267,7 +267,7 @@ class Example:
                         mesh=mesh,
                         scale=(scale, scale, scale),
                         xform=wp.transform(p=wp.vec3(0.0, 0.0, bear_mesh_pz), q=wp.quat_identity()),
-                        key=f"drv_{key_prefix}",
+                        label=f"drv_{key_prefix}",
                     )
 
                 # Make the driver strictly kinematic (override any mass/inertia contributed by shapes).
@@ -331,7 +331,7 @@ class Example:
                     bend_damping=bend_damping,
                     stretch_stiffness=stretch_stiffness,
                     stretch_damping=stretch_damping,
-                    key=f"cable_{key_prefix}",
+                    label=f"cable_{key_prefix}",
                     # Build one articulation including both the ball joint and all rod joints.
                     wrap_in_articulation=False,
                 )
@@ -348,7 +348,7 @@ class Example:
                     child=rod_bodies[0],
                     parent_xform=wp.transform(parent_anchor_local, wp.quat_identity()),
                     child_xform=wp.transform(child_anchor_local, wp.quat_identity()),
-                    key=f"attach_{key_prefix}",
+                    label=f"attach_{key_prefix}",
                 )
                 # Put all joints (rod cable joints + the ball attachment) into one articulation.
                 # Builder requires joint indices be monotonically increasing and contiguous.

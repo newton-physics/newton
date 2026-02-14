@@ -139,7 +139,7 @@ class Example:
                 bend_damping=1.0e-2,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=1.0e-4,
-                key=f"helix_{i}",
+                label=f"helix_{i}",
             )
 
             # Record the body indices for this cable for robust testing
