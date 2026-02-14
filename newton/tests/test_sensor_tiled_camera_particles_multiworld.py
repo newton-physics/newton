@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -47,7 +47,7 @@ def _build_multiworld_particle_model(*, worlds: int, spacing: float):
     blueprint.default_particle_radius = radius
     blueprint.add_particle_grid(
         pos=wp.vec3(-0.4, -0.4, 0.1),
-        rot=wp.quatf(0.0, 0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
         vel=wp.vec3(0.0, 0.0, 0.0),
         dim_x=8,
         dim_y=8,
@@ -73,6 +73,11 @@ def _build_multiworld_particle_model(*, worlds: int, spacing: float):
 
 
 def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.TestCase, device):
+    """Regression test: multi-world particle depth should be consistent across worlds.
+
+    This catches incorrect BVH particle index mapping across worlds, which can cause
+    wrong depth images and, on CUDA, illegal memory accesses.
+    """
     wp.init()
 
     worlds = 4
@@ -95,7 +100,7 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
     sensor.render_context.options.max_distance = max_distance
     camera_rays = sensor.compute_pinhole_camera_rays(width, height, fov)
 
-    cam_quat = wp.quatf(0.0, 0.0, 0.0, 1.0)
+    cam_quat = wp.quat_identity()
     camera_transforms = wp.array(
         [
             [
@@ -128,6 +133,8 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
 
 
 class TestSensorTiledCameraParticlesMultiworld(unittest.TestCase):
+    """Unittest harness for device-parametrized SensorTiledCamera particle regression tests."""
+
     pass
 
 
