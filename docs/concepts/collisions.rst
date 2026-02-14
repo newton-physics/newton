@@ -556,6 +556,7 @@ For hydroelastic and SDF-based contacts, use :class:`~newton.SDFHydroelasticConf
 
     config = SDFHydroelasticConfig(
         reduce_contacts=True,           # Enable contact reduction
+        buffer_fraction=0.2,            # Reduce hydroelastic GPU buffer allocations
         betas=(10.0, -0.5),             # Scoring thresholds (default)
         sticky_contacts=0.0,            # Temporal persistence (0 = disabled)
         normal_matching=True,           # Align reduced normals with aggregate force
@@ -902,6 +903,21 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 The ``k_hydro`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
 
 Contact reduction options for hydroelastic contacts are configured via :class:`~newton.SDFHydroelasticConfig` (see :ref:`Contact Reduction`).
+
+Hydroelastic memory can be tuned with ``buffer_fraction`` on
+:class:`~newton.SDFHydroelasticConfig`. This scales broadphase, iso-refinement,
+and hydroelastic face-contact buffer allocations as a fraction of the worst-case
+size. Lower values reduce memory usage but also reduce overflow headroom.
+
+.. code-block:: python
+
+    config = SDFHydroelasticConfig(
+        reduce_contacts=True,
+        buffer_fraction=0.2,  # 20% of worst-case hydroelastic buffers
+    )
+
+If runtime overflow warnings appear, increase ``buffer_fraction`` (or stage-specific
+``buffer_mult_*`` values) until warnings disappear in your target scenes.
 
 .. _Contact Material Properties:
 

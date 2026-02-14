@@ -81,7 +81,12 @@ def simulate(solver, model, state_0, state_1, control, contacts, collision_pipel
 
 
 def build_stacked_cubes_scene(
-    device, solver_fn, shape_type: ShapeType, cube_half: float = CUBE_HALF_LARGE, reduce_contacts: bool = True
+    device,
+    solver_fn,
+    shape_type: ShapeType,
+    cube_half: float = CUBE_HALF_LARGE,
+    reduce_contacts: bool = True,
+    sdf_hydroelastic_config: SDFHydroelasticConfig | None = None,
 ):
     """Build the stacked cubes scene and return all components for simulation."""
     cube_mesh = None
@@ -126,9 +131,13 @@ def build_stacked_cubes_scene(
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_hydroelastic_config = SDFHydroelasticConfig(
-        output_contact_surface=True, reduce_contacts=reduce_contacts, anchor_contact=True
-    )
+    if sdf_hydroelastic_config is None:
+        sdf_hydroelastic_config = SDFHydroelasticConfig(
+            output_contact_surface=True,
+            reduce_contacts=reduce_contacts,
+            anchor_contact=True,
+            buffer_fraction=1.0,
+        )
 
     # Hydroelastic without contact reduction can generate many contacts
     rigid_contact_max = 6000 if not reduce_contacts else 100
@@ -147,11 +156,17 @@ def build_stacked_cubes_scene(
 
 
 def run_stacked_cubes_hydroelastic_test(
-    test, device, solver_fn, shape_type: ShapeType, cube_half: float = CUBE_HALF_LARGE, reduce_contacts: bool = True
+    test,
+    device,
+    solver_fn,
+    shape_type: ShapeType,
+    cube_half: float = CUBE_HALF_LARGE,
+    reduce_contacts: bool = True,
+    config: SDFHydroelasticConfig | None = None,
 ):
     """Shared test for stacking 3 cubes using hydroelastic contacts."""
     model, solver, state_0, state_1, control, collision_pipeline, initial_positions, cube_half = (
-        build_stacked_cubes_scene(device, solver_fn, shape_type, cube_half, reduce_contacts)
+        build_stacked_cubes_scene(device, solver_fn, shape_type, cube_half, reduce_contacts, config)
     )
 
     contacts = collision_pipeline.contacts()
@@ -205,17 +220,83 @@ def test_stacked_mesh_cubes_hydroelastic(test, device, solver_fn):
 
 def test_stacked_small_primitive_cubes_hydroelastic(test, device, solver_fn):
     """Test 3 small primitive cubes (1cm) stacked on each other remain stable for 1 second using hydroelastic contacts."""
-    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.PRIMITIVE, CUBE_HALF_SMALL)
+    # This scene can exceed the default pre-pruned face-contact budget on CI GPUs,
+    # which emits overflow warnings and can perturb stability assertions.
+    # Keep defaults unchanged and increase capacity only for this stress test.
+    config = SDFHydroelasticConfig(buffer_mult_contact=2)
+    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.PRIMITIVE, CUBE_HALF_SMALL, config=config)
 
 
 def test_stacked_small_mesh_cubes_hydroelastic(test, device, solver_fn):
     """Test 3 small mesh cubes (1cm) stacked on each other remain stable for 1 second using hydroelastic contacts."""
-    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.MESH, CUBE_HALF_SMALL)
+    # This scene can exceed the default pre-pruned face-contact budget on CI GPUs,
+    # which emits overflow warnings that fail check_output-enabled tests.
+    # Keep defaults unchanged and increase capacity only for this stress test.
+    config = SDFHydroelasticConfig(buffer_mult_contact=2)
+    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.MESH, CUBE_HALF_SMALL, config=config)
 
 
 def test_stacked_primitive_cubes_hydroelastic_no_reduction(test, device, solver_fn):
     """Test 3 primitive cubes (1m) stacked without contact reduction using hydroelastic contacts."""
     run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.PRIMITIVE, CUBE_HALF_LARGE, False)
+
+
+def test_buffer_fraction_no_crash(test, device):
+    """Validate reduced buffer_fraction runs and still returns contacts."""
+    cube_half = 0.5
+    narrow_band = cube_half * 0.2
+    contact_margin = cube_half * 0.2
+    num_cubes = 3
+
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=32,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        contact_margin=contact_margin,
+    )
+    builder.add_ground_plane()
+
+    for i in range(num_cubes):
+        z_pos = cube_half + i * cube_half * 2.0
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, z_pos), q=wp.quat_identity()))
+        builder.add_shape_box(body=body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    # Reduced allocation with moderate headroom.
+    config_reduced = SDFHydroelasticConfig(buffer_fraction=0.8)
+    pipeline_reduced = newton.CollisionPipeline(
+        model,
+        broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+        sdf_hydroelastic_config=config_reduced,
+    )
+
+    contacts_reduced = pipeline_reduced.contacts()
+    pipeline_reduced.collide(state, contacts_reduced)
+    wp.synchronize()
+    reduced_count = int(contacts_reduced.rigid_contact_count.numpy()[0])
+    test.assertGreater(reduced_count, 0, "Expected non-zero contacts with reduced buffer_fraction")
+
+    # Full allocation should not produce fewer contacts.
+    config_full = SDFHydroelasticConfig(buffer_fraction=1.0)
+    pipeline_full = newton.CollisionPipeline(
+        model,
+        broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+        sdf_hydroelastic_config=config_full,
+    )
+    contacts_full = pipeline_full.contacts()
+    pipeline_full.collide(state, contacts_full)
+    wp.synchronize()
+    full_count = int(contacts_full.rigid_contact_count.numpy()[0])
+
+    test.assertGreaterEqual(
+        full_count,
+        reduced_count,
+        f"Expected full buffers ({full_count}) to produce >= reduced buffers ({reduced_count}) contacts",
+    )
 
 
 def test_mujoco_hydroelastic_penetration_depth(test, device):
@@ -331,7 +412,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_config = SDFHydroelasticConfig(output_contact_surface=True)
+    sdf_config = SDFHydroelasticConfig(output_contact_surface=True, buffer_fraction=1.0)
     collision_pipeline = newton.CollisionPipeline(
         model,
         broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
@@ -512,6 +593,14 @@ add_function_test(
     "test_mujoco_hydroelastic_penetration_depth",
     test_mujoco_hydroelastic_penetration_depth,
     devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_buffer_fraction_no_crash",
+    test_buffer_fraction_no_crash,
+    devices=cuda_devices,
+    check_output=False,
 )
 
 
