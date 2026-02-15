@@ -276,6 +276,7 @@ class SolverXPBD(SolverBase):
                             model.joint_parent,
                             model.joint_child,
                             model.joint_X_p,
+                            model.joint_X_c,
                             model.joint_qd_start,
                             model.joint_dof_dim,
                             model.joint_axis,
