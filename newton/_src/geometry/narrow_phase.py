@@ -1375,6 +1375,8 @@ def create_heightfield_triangle_contacts_kernel(writer_func: Any):
 
 @wp.kernel(enable_backward=False)
 def verify_narrow_phase_buffers(
+    broad_phase_count: wp.array(dtype=int),
+    max_broad_phase: int,
     gjk_count: wp.array(dtype=int),
     max_gjk: int,
     mesh_count: wp.array(dtype=int),
@@ -1391,8 +1393,16 @@ def verify_narrow_phase_buffers(
     max_hf_cells: int,
     sdf_sdf_count: wp.array(dtype=int),
     max_sdf_sdf: int,
+    contact_count: wp.array(dtype=int),
+    max_contacts: int,
 ):
-    """Check for buffer overflows in narrow-phase collision pipeline."""
+    """Check for buffer overflows in the collision pipeline."""
+    if broad_phase_count[0] > max_broad_phase:
+        wp.printf(
+            "Warning: Broad phase pair buffer overflowed %d > %d.\n",
+            broad_phase_count[0],
+            max_broad_phase,
+        )
     if gjk_count[0] > max_gjk:
         wp.printf(
             "Warning: GJK candidate pair buffer overflowed %d > %d.\n",
@@ -1446,6 +1456,12 @@ def verify_narrow_phase_buffers(
                 sdf_sdf_count[0],
                 max_sdf_sdf,
             )
+    if contact_count[0] > max_contacts:
+        wp.printf(
+            "Warning: Contact buffer overflowed %d > %d.\n",
+            contact_count[0],
+            max_contacts,
+        )
 
 
 class NarrowPhase:
@@ -1992,11 +2008,13 @@ class NarrowPhase:
                 writer_data,
             )
 
-        # Verify no intermediate buffers overflowed
+        # Verify no collision pipeline buffers overflowed
         wp.launch(
             kernel=verify_narrow_phase_buffers,
             dim=[1],
             inputs=[
+                num_candidate_pair,
+                candidate_pair.shape[0],
                 self.gjk_candidate_pairs_count,
                 self.gjk_candidate_pairs.shape[0],
                 self.shape_pairs_mesh_count,
@@ -2013,6 +2031,8 @@ class NarrowPhase:
                 self.heightfield_cell_pairs.shape[0],
                 self.shape_pairs_sdf_sdf_count,
                 self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
+                writer_data.contact_count,
+                writer_data.contact_max,
             ],
             device=device,
         )
