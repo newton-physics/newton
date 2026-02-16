@@ -89,7 +89,7 @@ def add_mesh_object(
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=1, num_per_world=1, scene="nut_bolt", solver="xpbd", test_mode=False):
+    def __init__(self, viewer, world_count=1, num_per_world=1, scene="nut_bolt", solver="xpbd", test_mode=False):
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -97,7 +97,7 @@ class Example:
         self.sim_substeps = 50 if scene == "gears" else 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
         self.viewer = viewer
         self.scene = scene
         self.solver_type = solver
@@ -142,7 +142,7 @@ class Example:
             length=0.0,
             key="ground_plane",
         )
-        main_scene.replicate(world_builder, num_worlds=self.num_worlds)
+        main_scene.replicate(world_builder, world_count=self.world_count)
 
         self.model = main_scene.finalize()
 
@@ -163,7 +163,7 @@ class Example:
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
             )
         elif self.solver_type == "mujoco":
-            num_per_world = self.rigid_contact_max // self.num_worlds
+            num_per_world = self.rigid_contact_max // self.world_count
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_contacts=False,
@@ -420,7 +420,7 @@ class Example:
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--num-worlds",
+        "--world-count",
         type=int,
         default=100,
         help="Total number of simulated worlds.",
@@ -450,7 +450,7 @@ if __name__ == "__main__":
 
     example = Example(
         viewer,
-        num_worlds=args.num_worlds,
+        world_count=args.world_count,
         num_per_world=args.num_per_world,
         scene=args.scene,
         solver=args.solver,

@@ -154,7 +154,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
     @wp.kernel(enable_backward=False)
     def narrow_phase_primitive_kernel(
         candidate_pair: wp.array(dtype=wp.vec2i),
-        num_candidate_pair: wp.array(dtype=int),
+        candidate_pair_count: wp.array(dtype=int),
         shape_types: wp.array(dtype=int),
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
@@ -193,7 +193,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
         """
         tid = wp.tid()
 
-        num_work_items = wp.min(candidate_pair.shape[0], num_candidate_pair[0])
+        num_work_items = wp.min(candidate_pair.shape[0], candidate_pair_count[0])
 
         # Early exit if no work
         if num_work_items == 0:
@@ -609,7 +609,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
     @wp.kernel(enable_backward=False)
     def narrow_phase_kernel_gjk_mpr(
         candidate_pair: wp.array(dtype=wp.vec2i),
-        num_candidate_pair: wp.array(dtype=int),
+        candidate_pair_count: wp.array(dtype=int),
         shape_types: wp.array(dtype=int),
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
@@ -629,7 +629,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
         """
         tid = wp.tid()
 
-        num_work_items = wp.min(candidate_pair.shape[0], num_candidate_pair[0])
+        num_work_items = wp.min(candidate_pair.shape[0], candidate_pair_count[0])
 
         # Early exit if no work (fast path for primitive-only scenes)
         if num_work_items == 0:
@@ -953,10 +953,10 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         """
         tid = wp.tid()
 
-        num_pairs = shape_pairs_mesh_plane_count[0]
+        pair_count = shape_pairs_mesh_plane_count[0]
 
         # Iterate over all mesh-plane pairs
-        for pair_idx in range(num_pairs):
+        for pair_idx in range(pair_count):
             pair = shape_pairs_mesh_plane[pair_idx]
             mesh_shape = pair[0]
             plane_shape = pair[1]
@@ -1039,7 +1039,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
     # Extract functions and constants from the contact reduction configuration
 
-    num_reduction_slots = contact_reduction_funcs.num_reduction_slots
+    reduction_slot_count = contact_reduction_funcs.reduction_slot_count
     store_reduced_contact_func = contact_reduction_funcs.store_reduced_contact
     get_smem_slots_plus_1 = contact_reduction_funcs.get_smem_slots_plus_1
     get_smem_slots_contacts = contact_reduction_funcs.get_smem_slots_contacts
@@ -1068,23 +1068,23 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         """
         block_id, t = wp.tid()
 
-        num_pairs = shape_pairs_mesh_plane_count[0]
+        pair_count = shape_pairs_mesh_plane_count[0]
 
         # Initialize shared memory buffers for contact reduction (reused across pairs)
         empty_marker = -1000000000.0
         active_contacts_shared_mem = wp.array(
             ptr=wp.static(get_smem_slots_plus_1)(),
-            shape=(wp.static(num_reduction_slots) + 1,),
+            shape=(wp.static(reduction_slot_count) + 1,),
             dtype=wp.int32,
         )
         contacts_shared_mem = wp.array(
             ptr=wp.static(get_smem_slots_contacts)(),
-            shape=(wp.static(num_reduction_slots),),
+            shape=(wp.static(reduction_slot_count),),
             dtype=ContactStruct,
         )
 
         # Grid stride loop over mesh-plane pairs
-        for pair_idx in range(block_id, num_pairs, total_num_blocks):
+        for pair_idx in range(block_id, pair_count, total_num_blocks):
             # Get the mesh-plane pair
             pair = shape_pairs_mesh_plane[pair_idx]
             mesh_shape = pair[0]
@@ -1130,11 +1130,11 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             margin = margin_mesh + margin_plane
 
             # Reset contact buffer for this pair
-            for i in range(t, wp.static(num_reduction_slots), wp.block_dim()):
+            for i in range(t, wp.static(reduction_slot_count), wp.block_dim()):
                 contacts_shared_mem[i].projection = empty_marker
 
             if t == 0:
-                active_contacts_shared_mem[wp.static(num_reduction_slots)] = 0
+                active_contacts_shared_mem[wp.static(reduction_slot_count)] = 0
 
             synchronize()
 
@@ -1189,7 +1189,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
             # Write reduced contacts to output (store_reduced_contact ends with sync)
             num_contacts_to_keep = wp.min(
-                active_contacts_shared_mem[wp.static(num_reduction_slots)], wp.static(num_reduction_slots)
+                active_contacts_shared_mem[wp.static(reduction_slot_count)], wp.static(reduction_slot_count)
             )
 
             for i in range(t, num_contacts_to_keep, wp.block_dim()):
@@ -1520,10 +1520,10 @@ class NarrowPhase:
         # Contact reduction requires GPU for shared memory operations and is only used for mesh contacts
         if reduce_contacts and is_gpu_device and has_meshes:
             self.contact_reduction_funcs = ContactReductionFunctions()
-            self.num_reduction_slots = self.contact_reduction_funcs.num_reduction_slots
+            self.reduction_slot_count = self.contact_reduction_funcs.reduction_slot_count
         else:
             self.contact_reduction_funcs = None
-            self.num_reduction_slots = 0
+            self.reduction_slot_count = 0
             self.reduce_contacts = False
 
         # Determine if we're using external AABBs
@@ -1677,7 +1677,7 @@ class NarrowPhase:
         self,
         *,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
-        num_candidate_pair: wp.array(dtype=wp.int32, ndim=1),  # Size one array
+        candidate_pair_count: wp.array(dtype=wp.int32, ndim=1),  # Size one array
         shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
         shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
         shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
@@ -1699,7 +1699,7 @@ class NarrowPhase:
 
         Args:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
-            num_candidate_pair: Single-element array containing the number of candidate pairs
+            candidate_pair_count: Single-element array containing the number of candidate pairs
             shape_types: Array of geometry types for all shapes
             shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
             shape_transform: Array of world-space transforms for each shape
@@ -1728,7 +1728,7 @@ class NarrowPhase:
             dim=self.total_num_threads,
             inputs=[
                 candidate_pair,
-                num_candidate_pair,
+                candidate_pair_count,
                 shape_types,
                 shape_data,
                 shape_transform,
@@ -2041,7 +2041,7 @@ class NarrowPhase:
         self,
         *,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
-        num_candidate_pair: wp.array(dtype=wp.int32, ndim=1),  # Size one array
+        candidate_pair_count: wp.array(dtype=wp.int32, ndim=1),  # Size one array
         shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
         shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
         shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
@@ -2070,7 +2070,7 @@ class NarrowPhase:
 
         Args:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
-            num_candidate_pair: Single-element array containing the number of candidate pairs
+            candidate_pair_count: Single-element array containing the number of candidate pairs
             shape_types: Array of geometry types for all shapes
             shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
             shape_transform: Array of world-space transforms for each shape
@@ -2114,7 +2114,7 @@ class NarrowPhase:
         # Delegate to launch_custom_write
         self.launch_custom_write(
             candidate_pair=candidate_pair,
-            num_candidate_pair=num_candidate_pair,
+            candidate_pair_count=candidate_pair_count,
             shape_types=shape_types,
             shape_data=shape_data,
             shape_transform=shape_transform,

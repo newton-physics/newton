@@ -1507,12 +1507,12 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        # Newton hard-codes spec.compiler.automlimits=1.
-        # 1) With automlimits=1 we should not have to specify limited="true" on each tendon. It should be sufficient
+        # MuJoCo defaults spec.compiler.autolimits=true (Newton now parses this from <compiler>).
+        # 1) With autolimits=true we should not have to specify limited="true" on each tendon. It should be sufficient
         # just to set the range. coupling_tendon1 is the test for this.
-        # 2) With compiler.autolimits=1 it shouldn't matter if we do specify limited="true.  We should still end up
+        # 2) With compiler.autolimits=true it shouldn't matter if we do specify limited="true". We should still end up
         # with an active limit with limited="true". coupling_tendon2 is the test for this.
-        # 3) With compiler.autolimits=1  and limited="false" we should end up with an inactive limit. coupling_tendon3
+        # 3) With compiler.autolimits=true and limited="false" we should end up with an inactive limit. coupling_tendon3
         # is the test for this.
         # 4) repeat the test with actuatorfrclimited.
 
@@ -1577,6 +1577,184 @@ class TestImportMjcf(unittest.TestCase):
                 expected,
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
+
+    def test_autolimits_false_tendon(self):
+        """Tests autolimits=false handling for tendon limit flags.
+
+        Verifies that explicit limited/actuatorfrclimited values are respected:
+            - explicit ``limited="true"`` -> limited=1
+            - explicit ``limited="false"`` -> limited=0
+            - same logic applies to ``actuatorfrclimited``
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+      <body name="link2" pos="0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <fixed limited="true" range="-10.0 11.0"
+           actuatorfrclimited="true" actuatorfrcrange="-2.2 2.2"
+           name="tendon_explicit_true">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="-1"/>
+    </fixed>
+  </tendon>
+
+  <tendon>
+    <fixed limited="false" range="-12.0 13.0"
+           actuatorfrclimited="false" actuatorfrcrange="-3.3 3.3"
+           name="tendon_explicit_false">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+"""
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_world(individual_builder)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # Tendon with explicit limited="true" -> limited=1
+        self.assertEqual(
+            solver.mjw_model.tendon_limited.numpy()[0],
+            1,
+            msg="Tendon with explicit limited='true' should have limited=1",
+        )
+        # Tendon with explicit limited="false" -> limited=0
+        self.assertEqual(
+            solver.mjw_model.tendon_limited.numpy()[1],
+            0,
+            msg="Tendon with explicit limited='false' should have limited=0",
+        )
+        # Same for actuatorfrclimited
+        self.assertEqual(
+            solver.mjw_model.tendon_actfrclimited.numpy()[0],
+            1,
+            msg="Tendon with explicit actuatorfrclimited='true' should have actfrclimited=1",
+        )
+        self.assertEqual(
+            solver.mjw_model.tendon_actfrclimited.numpy()[1],
+            0,
+            msg="Tendon with explicit actuatorfrclimited='false' should have actfrclimited=0",
+        )
+
+    def test_autolimits_false_actuator(self):
+        """Test that autolimits=false is respected for actuator ctrllimited."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5" limited="true"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="act_explicit_true" joint="joint1"
+              ctrllimited="true" ctrlrange="-1 1"/>
+    <position name="act_explicit_false" joint="joint1"
+              ctrllimited="false" ctrlrange="-1 1"/>
+  </actuator>
+
+</mujoco>
+"""
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf, ctrl_direct=True)
+        builder = newton.ModelBuilder()
+        builder.add_world(individual_builder)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # MuJoCo stores ctrllimited as boolean after compilation
+        # Actuator with explicit ctrllimited="true" -> True
+        self.assertTrue(
+            solver.mjw_model.actuator_ctrllimited.numpy()[0],
+            msg="Actuator with explicit ctrllimited='true' should be limited",
+        )
+        # Actuator with explicit ctrllimited="false" -> False
+        self.assertFalse(
+            solver.mjw_model.actuator_ctrllimited.numpy()[1],
+            msg="Actuator with explicit ctrllimited='false' should not be limited",
+        )
+
+    def test_autolimits_false_joint_effort_limit(self):
+        """Test that autolimits=false prevents auto-applying effort_limit from actuatorfrcrange."""
+        mjcf_autolimits_true = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-1 1"
+               actuatorfrcrange="-100 100"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+        mjcf_autolimits_false = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-1 1" limited="true"
+               actuatorfrcrange="-100 100"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+        # With autolimits=true (default), actuatorfrclimited="auto" resolves to true
+        builder_true = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder_true)
+        builder_true.add_mjcf(mjcf_autolimits_true)
+        model_true = newton.ModelBuilder()
+        model_true.add_world(builder_true)
+        model_true = model_true.finalize()
+        effort_limit_true = model_true.joint_effort_limit.numpy()[0]
+        self.assertAlmostEqual(effort_limit_true, 100.0, places=4)
+
+        # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
+        builder_false = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder_false)
+        builder_false.add_mjcf(mjcf_autolimits_false)
+        model_false = newton.ModelBuilder()
+        model_false.add_world(builder_false)
+        model_false = model_false.finalize()
+        effort_limit_false = model_false.joint_effort_limit.numpy()[0]
+        # Should use default effort limit, not 100.0 from actuatorfrcrange
+        self.assertNotAlmostEqual(effort_limit_false, 100.0, places=4)
 
     def test_single_mujoco_fixed_tendon_auto_springlength(self):
         """Test that springlength=-1 auto-computes the spring length from initial joint positions.
@@ -5488,8 +5666,11 @@ class TestMjcfMultipleWorldbody(unittest.TestCase):
 class TestMjcfActuatorAutoLimited(unittest.TestCase):
     """Test auto-enabling of actuator *limited flags when *range is specified."""
 
-    def test_ctrllimited_auto_enabled_when_ctrlrange_specified(self):
-        """Test that ctrllimited is auto-enabled when ctrlrange is specified."""
+    def test_ctrllimited_auto_when_ctrlrange_specified(self):
+        """Test that ctrllimited is auto (2) when ctrlrange is specified but ctrllimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -5508,12 +5689,15 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
-        # ctrllimited should be auto-enabled (1) because ctrlrange was specified
+        # ctrllimited should be auto (2) — MuJoCo resolves it during compilation
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
-        self.assertEqual(ctrllimited[0], 1)
+        self.assertEqual(ctrllimited[0], 2)
 
-    def test_ctrllimited_not_auto_enabled_without_ctrlrange(self):
-        """Test that ctrllimited stays disabled when ctrlrange is not specified."""
+    def test_ctrllimited_auto_without_ctrlrange(self):
+        """Test that ctrllimited defaults to auto (2) when ctrlrange is not specified.
+
+        MuJoCo resolves auto to false during model.compile() when no ctrlrange is present.
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -5532,9 +5716,9 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
-        # ctrllimited should be disabled (0) because ctrlrange was not specified
+        # ctrllimited should be auto (2) — MuJoCo resolves it during compilation
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
-        self.assertEqual(ctrllimited[0], 0)
+        self.assertEqual(ctrllimited[0], 2)
 
     def test_ctrllimited_explicit_false_not_overridden(self):
         """Test that explicit ctrllimited=false is not overridden."""
@@ -5560,8 +5744,11 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
         self.assertEqual(ctrllimited[0], 0)
 
-    def test_forcelimited_auto_enabled_when_forcerange_specified(self):
-        """Test that forcelimited is auto-enabled when forcerange is specified."""
+    def test_forcelimited_auto_when_forcerange_specified(self):
+        """Test that forcelimited is auto (2) when forcerange is specified but forcelimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -5579,11 +5766,15 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
+        # forcelimited should be auto (2) — MuJoCo resolves it during compilation
         forcelimited = model.mujoco.actuator_forcelimited.numpy()
-        self.assertEqual(forcelimited[0], 1)
+        self.assertEqual(forcelimited[0], 2)
 
-    def test_actlimited_auto_enabled_when_actrange_specified(self):
-        """Test that actlimited is auto-enabled when actrange is specified."""
+    def test_actlimited_auto_when_actrange_specified(self):
+        """Test that actlimited is auto (2) when actrange is specified but actlimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -5601,8 +5792,9 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
+        # actlimited should be auto (2) — MuJoCo resolves it during compilation
         actlimited = model.mujoco.actuator_actlimited.numpy()
-        self.assertEqual(actlimited[0], 1)
+        self.assertEqual(actlimited[0], 2)
 
 
 class TestMjcfDefaultCustomAttributes(unittest.TestCase):

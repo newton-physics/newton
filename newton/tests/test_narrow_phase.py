@@ -299,7 +299,7 @@ class TestNarrowPhase(unittest.TestCase):
 
         # Create candidate pairs
         candidate_pair = wp.array(np.array(pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
-        num_candidate_pair = wp.array([len(pairs)], dtype=wp.int32)
+        candidate_pair_count = wp.array([len(pairs)], dtype=wp.int32)
 
         # Allocate output arrays
         max_contacts = len(pairs) * 10  # Allow multiple contacts per pair
@@ -313,7 +313,7 @@ class TestNarrowPhase(unittest.TestCase):
         # Launch narrow phase
         self.narrow_phase.launch(
             candidate_pair=candidate_pair,
-            num_candidate_pair=num_candidate_pair,
+            candidate_pair_count=candidate_pair_count,
             shape_types=geom_types,
             shape_data=geom_data,
             shape_transform=geom_transform,
@@ -1320,12 +1320,12 @@ class TestNarrowPhase(unittest.TestCase):
             dtype=wp.transform,
         )
         pairs = wp.array([wp.vec2i(0, 1)], dtype=wp.vec2i)
-        num_pairs = wp.array([1], dtype=wp.int32)
+        pair_count = wp.array([1], dtype=wp.int32)
 
         contact_count.zero_()
         self.narrow_phase.launch(
             candidate_pair=pairs,
-            num_candidate_pair=num_pairs,
+            candidate_pair_count=pair_count,
             shape_types=geom_types,
             shape_data=geom_data,
             shape_transform=geom_transform,
@@ -1360,7 +1360,7 @@ class TestNarrowPhase(unittest.TestCase):
         contact_count.zero_()
         self.narrow_phase.launch(
             candidate_pair=pairs,
-            num_candidate_pair=num_pairs,
+            candidate_pair_count=pair_count,
             shape_types=geom_types,
             shape_data=geom_data,
             shape_transform=geom_transform,
@@ -1396,7 +1396,7 @@ class TestNarrowPhase(unittest.TestCase):
         contact_count.zero_()
         self.narrow_phase.launch(
             candidate_pair=pairs,
-            num_candidate_pair=num_pairs,
+            candidate_pair_count=pair_count,
             shape_types=geom_types,
             shape_data=geom_data,
             shape_transform=geom_transform,

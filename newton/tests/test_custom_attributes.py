@@ -1803,7 +1803,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         model = main.finalize(device=self.device)
         arr = model.test.world_data.numpy()
 
-        self.assertEqual(model.num_worlds, 2)
+        self.assertEqual(model.world_count, 2)
         self.assertEqual(len(arr), 2)
         self.assertEqual(arr[0], 42)
         self.assertEqual(arr[1], 42)

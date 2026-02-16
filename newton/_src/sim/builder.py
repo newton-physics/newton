@@ -556,7 +556,7 @@ class ModelBuilder:
             gravity (float, optional): The magnitude of gravity to apply along the up axis.
                 Defaults to -9.81.
         """
-        self.num_worlds = 0
+        self.world_count = 0
 
         # region defaults
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
@@ -1286,7 +1286,7 @@ class ModelBuilder:
     def replicate(
         self,
         builder: ModelBuilder,
-        num_worlds: int,
+        world_count: int,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ):
         """
@@ -1303,14 +1303,14 @@ class ModelBuilder:
 
         Args:
             builder (ModelBuilder): The builder to replicate. All entities from this builder will be copied.
-            num_worlds (int): The number of worlds to create.
+            world_count (int): The number of worlds to create.
             spacing (tuple[float, float, float], optional): The spacing between each copy along each axis.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
         """
-        offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
+        offsets = compute_world_offsets(world_count, spacing, self.up_axis)
         xform = wp.transform_identity()
-        for i in range(num_worlds):
+        for i in range(world_count):
             xform[:3] = offsets[i]
             self.add_world(builder, xform=xform)
 
@@ -1999,8 +1999,8 @@ class ModelBuilder:
             )
 
         # Set the current world to the next available world index
-        self.current_world = self.num_worlds
-        self.num_worlds += 1
+        self.current_world = self.world_count
+        self.world_count += 1
 
         # Store world metadata if needed (for future use)
         # Note: We might want to add world_key and world_attributes lists in __init__ if needed
@@ -7545,7 +7545,7 @@ class ModelBuilder:
         1. World indices are monotonic (non-decreasing after first non-negative)
         2. World indices are contiguous (no gaps in sequence)
         3. Global entities (world -1) only appear at beginning or end of arrays
-        4. All world indices are in valid range [-1, num_worlds-1]
+        4. All world indices are in valid range [-1, world_count-1]
 
         Raises:
             ValueError: If any validation check fails.
@@ -7569,14 +7569,14 @@ class ModelBuilder:
 
             arr = np.array(world_array, dtype=np.int32)
 
-            # Check for invalid world indices (must be in range [-1, num_worlds-1])
-            max_valid = self.num_worlds - 1
+            # Check for invalid world indices (must be in range [-1, world_count-1])
+            max_valid = self.world_count - 1
             invalid_indices = np.where((arr < -1) | (arr > max_valid))[0]
             if len(invalid_indices) > 0:
                 invalid_values = arr[invalid_indices]
                 raise ValueError(
                     f"Invalid world index in {array_name}: found value(s) {invalid_values.tolist()} "
-                    f"at indices {invalid_indices.tolist()}. Valid range is -1 to {max_valid} (num_worlds={self.num_worlds})."
+                    f"at indices {invalid_indices.tolist()}. Valid range is -1 to {max_valid} (world_count={self.world_count})."
                 )
 
             # Check for global entity positioning (world -1)
@@ -8042,7 +8042,7 @@ class ModelBuilder:
 
             # Initialize world_entity_start with zeros
             world_entity_start.clear()
-            world_entity_start.extend([0] * (self.num_worlds + 2))
+            world_entity_start.extend([0] * (self.world_count + 2))
 
             # Count global entities at the front of the entity_world array
             front_global_entity_count = 0
@@ -8055,8 +8055,8 @@ class ModelBuilder:
 
             # Compute per-world cumulative counts
             entity_world_np = np.asarray(entity_world, dtype=np.int32)
-            world_counts = np.bincount(entity_world_np[entity_world_np >= 0], minlength=self.num_worlds)
-            for w in range(self.num_worlds):
+            world_counts = np.bincount(entity_world_np[entity_world_np >= 0], minlength=self.world_count)
+            for w in range(self.world_count):
                 world_entity_start[w + 1] = world_entity_start[w] + int(world_counts[w])
 
             # Set the last element to the total entity counts over all worlds in the model
@@ -8067,8 +8067,8 @@ class ModelBuilder:
             # First build the start lists by appending tail-end global and total entity counts
             build_entity_start_array(total_count, entity_world_array, world_start_array, name)
 
-            # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
-            expected_length = self.num_worlds + 2
+            # Ensure the world_start array has length world_count + 2 (for global entities at start/end)
+            expected_length = self.world_count + 2
             if len(world_start_array) != expected_length:
                 raise ValueError(
                     f"World start indices for {name}s have incorrect length: "
@@ -8077,7 +8077,7 @@ class ModelBuilder:
 
             # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
             sum_of_counts = world_start_array[0]
-            for w in range(self.num_worlds + 1):
+            for w in range(self.world_count + 1):
                 start_idx = world_start_array[w]
                 end_idx = world_start_array[w + 1]
                 count = end_idx - start_idx
@@ -8121,7 +8121,7 @@ class ModelBuilder:
 
             # Initialize world_space_start with zeros
             world_space_start.clear()
-            world_space_start.extend([0] * (self.num_worlds + 2))
+            world_space_start.extend([0] * (self.world_count + 2))
 
             # Extend joint_space_start with total count to enable computing per-world counts
             joint_space_start_ext = copy.copy(joint_space_start)
@@ -8142,7 +8142,7 @@ class ModelBuilder:
 
             # Convert per-world counts to cumulative start indices
             world_space_start[0] += front_global_space_count
-            for w in range(self.num_worlds):
+            for w in range(self.world_count):
                 world_space_start[w + 1] += world_space_start[w]
 
             # Add total (i.e. final) entity counts to the per-world start indices
@@ -8153,8 +8153,8 @@ class ModelBuilder:
             # First finalize the start array by appending tail-end global and total entity counts
             build_joint_space_start_array(total_count, space_start_array, world_start_array, name)
 
-            # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
-            expected_length = self.num_worlds + 2
+            # Ensure the world_start array has length world_count + 2 (for global entities at start/end)
+            expected_length = self.world_count + 2
             if len(world_start_array) != expected_length:
                 raise ValueError(
                     f"World start indices for {name}s have incorrect length: "
@@ -8163,7 +8163,7 @@ class ModelBuilder:
 
             # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
             sum_of_counts = world_start_array[0]
-            for w in range(self.num_worlds + 1):
+            for w in range(self.world_count + 1):
                 start_idx = world_start_array[w]
                 end_idx = world_start_array[w + 1]
                 count = end_idx - start_idx
@@ -8230,7 +8230,7 @@ class ModelBuilder:
         """
 
         # ensure the world count is set correctly
-        self.num_worlds = max(1, self.num_worlds)
+        self.world_count = max(1, self.world_count)
 
         # validate world ordering and contiguity
         if not skip_all_validations and not skip_validation_worlds:
@@ -8271,7 +8271,7 @@ class ModelBuilder:
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
 
-            m.num_worlds = self.num_worlds
+            m.world_count = self.world_count
 
             # ---------------------
             # particles
@@ -8986,7 +8986,7 @@ class ModelBuilder:
             else:
                 # Fallback: use scalar gravity for all worlds
                 gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
-                gravity_vecs = [gravity_vec] * self.num_worlds
+                gravity_vecs = [gravity_vec] * self.world_count
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
@@ -9062,7 +9062,7 @@ class ModelBuilder:
                 elif freq_key == Model.AttributeFrequency.ARTICULATION:
                     count = m.articulation_count
                 elif freq_key == Model.AttributeFrequency.WORLD:
-                    count = m.num_worlds
+                    count = m.world_count
                 elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
                 elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:

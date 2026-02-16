@@ -233,8 +233,8 @@ def estimate_world_extents(
     shape_collision_radius: wp.array(dtype=float),
     shape_world: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
-    num_worlds: int,
-    # outputs (num_worlds x 3 arrays for min/max xyz per world)
+    world_count: int,
+    # outputs (world_count x 3 arrays for min/max xyz per world)
     world_bounds_min: wp.array(dtype=float, ndim=2),
     world_bounds_max: wp.array(dtype=float, ndim=2),
 ):
@@ -244,7 +244,7 @@ def estimate_world_extents(
     world_idx = shape_world[tid]
 
     # Skip global shapes (world -1) or invalid world indices
-    if world_idx < 0 or world_idx >= num_worlds:
+    if world_idx < 0 or world_idx >= world_count:
         return
 
     # Get collision radius and skip shapes with unreasonably large radii
