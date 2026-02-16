@@ -5834,10 +5834,15 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
 
 
 class TestZeroMassBodies(unittest.TestCase):
-    """Test that ensure_nonstatic_links handles zero-mass bodies correctly."""
+    """Verify that ``ensure_nonstatic_links`` correctly handles zero-mass bodies.
+
+    Models may contain zero-mass bodies (sensor frames, reference links).
+    These tests ensure the default (False) preserves zero mass and that
+    opting in (True) assigns a small surrogate mass.
+    """
 
     def test_ensure_nonstatic_links_default_false(self):
-        """ensure_nonstatic_links defaults to False — zero-mass bodies keep zero mass."""
+        """Verify zero-mass bodies keep zero mass with the default setting."""
         mjcf = """
         <mujoco>
             <worldbody>
@@ -5856,7 +5861,7 @@ class TestZeroMassBodies(unittest.TestCase):
         self.assertEqual(builder.body_mass[empty_idx], 0.0)
 
     def test_ensure_nonstatic_links_opt_in(self):
-        """ensure_nonstatic_links=True gives zero-mass bodies a small mass."""
+        """Verify zero-mass bodies receive surrogate mass when opted in."""
         mjcf = """
         <mujoco>
             <worldbody>
