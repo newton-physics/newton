@@ -2263,24 +2263,6 @@ class SolverMuJoCo(SolverBase):
             mj_data.ctrl[:] = ctrl.numpy().flatten()
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
-    @staticmethod
-    def _get_dof_ref(model: Model) -> wp.array:
-        """Get dof_ref array from model, returning zeros if not available."""
-        mujoco_attrs = getattr(model, "mujoco", None)
-        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
-        if dof_ref is None:
-            dof_ref = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
-        return dof_ref
-
-    @staticmethod
-    def _get_dof_springref(model: Model) -> wp.array:
-        """Get dof_springref array from model, returning zeros if not available."""
-        mujoco_attrs = getattr(model, "mujoco", None)
-        dof_springref = getattr(mujoco_attrs, "dof_springref", None) if mujoco_attrs is not None else None
-        if dof_springref is None:
-            dof_springref = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
-        return dof_springref
-
     def update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
@@ -2300,7 +2282,8 @@ class SolverMuJoCo(SolverBase):
             joint_q = state.joint_q
             joint_qd = state.joint_qd
         joints_per_world = model.joint_count // nworld
-        dof_ref = self._get_dof_ref(model)
+        mujoco_attrs = getattr(model, "mujoco", None)
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         wp.launch(
             convert_warp_coords_to_mj_kernel,
             dim=(nworld, joints_per_world),
@@ -2341,7 +2324,8 @@ class SolverMuJoCo(SolverBase):
             qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
             nworld = 1
         joints_per_world = model.joint_count // nworld
-        dof_ref = self._get_dof_ref(model)
+        mujoco_attrs = getattr(model, "mujoco", None)
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         wp.launch(
             convert_mj_coords_to_warp_kernel,
             dim=(nworld, joints_per_world),
@@ -4377,8 +4361,8 @@ class SolverMuJoCo(SolverBase):
         # Sync qpos0 and qpos_spring from Newton model data before set_const.
         # set_const copies qpos0 → d.qpos and runs FK to compute derived fields,
         # so qpos0 must be correct before calling it.
-        dof_ref = self._get_dof_ref(self.model)
-        dof_springref = self._get_dof_springref(self.model)
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
+        dof_springref = getattr(mujoco_attrs, "dof_springref", None) if mujoco_attrs is not None else None
         joints_per_world = self.model.joint_count // nworld
         bodies_per_world = self.model.body_count // self.model.num_worlds
         wp.launch(

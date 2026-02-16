@@ -461,8 +461,10 @@ def convert_mj_coords_to_warp_kernel(
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
-            # subtract ref offset: joint_q = qpos - ref
-            joint_q[wq_i + i] = qpos[worldid, q_i + i] - dof_ref[wqd_i + i]
+            ref = float(0.0)
+            if dof_ref:
+                ref = dof_ref[wqd_i + i]
+            joint_q[wq_i + i] = qpos[worldid, q_i + i] - ref
         for i in range(axis_count):
             # convert velocity components
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
@@ -550,8 +552,10 @@ def convert_warp_coords_to_mj_kernel(
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
-            # add ref offset: qpos = joint_q + ref
-            qpos[worldid, q_i + i] = joint_q[wq_i + i] + dof_ref[wqd_i + i]
+            ref = float(0.0)
+            if dof_ref:
+                ref = dof_ref[wqd_i + i]
+            qpos[worldid, q_i + i] = joint_q[wq_i + i] + ref
         for i in range(axis_count):
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
@@ -619,8 +623,14 @@ def sync_qpos0_kernel(
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
-            qpos0[worldid, q_i + i] = dof_ref[wqd_i + i]
-            qpos_spring[worldid, q_i + i] = dof_springref[wqd_i + i]
+            ref = float(0.0)
+            springref = float(0.0)
+            if dof_ref:
+                ref = dof_ref[wqd_i + i]
+            if dof_springref:
+                springref = dof_springref[wqd_i + i]
+            qpos0[worldid, q_i + i] = ref
+            qpos_spring[worldid, q_i + i] = springref
 
 
 @wp.kernel
