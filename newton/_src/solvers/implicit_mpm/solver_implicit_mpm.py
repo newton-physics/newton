@@ -1414,7 +1414,7 @@ class SolverImplicitMPM(SolverBase):
         )
 
         if self._mpm_model.collider_body_q is not None:
-            self._last_step_data.body_q_prev.assign(self._mpm_model.collider_body_q)
+            self._last_step_data.body_q_prev = wp.clone(self._mpm_model.collider_body_q)
 
     @property
     def voxel_size(self) -> float:
