@@ -21,7 +21,7 @@ import sys
 import numpy as np
 import warp as wp
 
-from newton.utils import create_sphere_mesh
+from newton import Mesh
 
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
@@ -1311,7 +1311,15 @@ class RendererGL:
         gl.glGenVertexArrays(1, self._sky_vao)
         gl.glBindVertexArray(self._sky_vao)
 
-        vertices, indices = create_sphere_mesh(1.0, 32, 32, reverse_winding=True)
+        sky_mesh = Mesh.create_sphere(
+            1.0,
+            num_latitudes=32,
+            num_longitudes=32,
+            reverse_winding=True,
+            compute_inertia=False,
+        )
+        vertices = np.hstack([sky_mesh.vertices, sky_mesh.normals, sky_mesh.uvs]).astype(np.float32, copy=False)
+        indices = sky_mesh.indices.astype(np.uint32, copy=False)
         self._sky_tri_count = len(indices)
 
         self._sky_vbo = gl.GLuint()

@@ -21,7 +21,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.utils import create_box_mesh
 from newton.geometry import SDFHydroelasticConfig
 from newton.tests.unittest_utils import (
     add_function_test,
@@ -86,8 +85,15 @@ def build_stacked_cubes_scene(
     """Build the stacked cubes scene and return all components for simulation."""
     cube_mesh = None
     if shape_type == ShapeType.MESH:
-        vertices, indices = create_box_mesh((cube_half, cube_half, cube_half))
-        cube_mesh = newton.Mesh(vertices, indices)
+        cube_mesh = newton.Mesh.create_box(
+            cube_half,
+            cube_half,
+            cube_half,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
 
     # Scale SDF parameters proportionally to cube size
     narrow_band = cube_half * 0.2

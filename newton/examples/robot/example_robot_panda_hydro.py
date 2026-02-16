@@ -36,7 +36,7 @@ import newton.examples
 import newton.ik as ik
 import newton.usd
 import newton.utils
-from newton.geometry import SDFHydroelasticConfig, create_box_mesh
+from newton.geometry import SDFHydroelasticConfig
 
 
 class SceneType(Enum):
@@ -157,8 +157,15 @@ class Example:
         # Table
         box_size = 0.05
         table_half_extents = (box_size * 2, box_size * 2, box_size)  # half-extents
-        table_vertices, table_indices = create_box_mesh(table_half_extents, duplicate_vertices=True)
-        table_mesh = newton.Mesh(table_vertices, table_indices)
+        table_mesh = newton.Mesh.create_box(
+            table_half_extents[0],
+            table_half_extents[1],
+            table_half_extents[2],
+            duplicate_vertices=True,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=True,
+        )
         builder.add_shape_mesh(
             body=-1,
             mesh=table_mesh,

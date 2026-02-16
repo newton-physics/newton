@@ -22,7 +22,6 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.utils
 
 from .rasterized_collisions import Collider
 
@@ -142,29 +141,75 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
         # Handle "infinite" planes encoded with non-positive scales
         width = geo_scale[0] if len(geo_scale) > 0 and geo_scale[0] > 0.0 else 1000.0
         length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 1000.0
-        return newton.utils.create_plane_mesh(width, length)
+        mesh = newton.Mesh.create_plane(
+            width,
+            length,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        return mesh.vertices, mesh.indices
     elif geo_type == newton.GeoType.SPHERE:
         radius = geo_scale[0]
-        return newton.utils.create_sphere_mesh(radius)
+        mesh = newton.Mesh.create_sphere(
+            radius,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        return mesh.vertices, mesh.indices
 
     elif geo_type == newton.GeoType.CAPSULE:
         radius, half_height = geo_scale[:2]
-        return newton.utils.create_capsule_mesh(radius, half_height, up_axis=2)
+        mesh = newton.Mesh.create_capsule(
+            radius,
+            half_height,
+            up_axis=2,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        return mesh.vertices, mesh.indices
 
     elif geo_type == newton.GeoType.CYLINDER:
         radius, half_height = geo_scale[:2]
-        return newton.utils.create_cylinder_mesh(radius, half_height, up_axis=2)
+        mesh = newton.Mesh.create_cylinder(
+            radius,
+            half_height,
+            up_axis=2,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        return mesh.vertices, mesh.indices
 
     elif geo_type == newton.GeoType.CONE:
         radius, half_height = geo_scale[:2]
-        return newton.utils.create_cone_mesh(radius, half_height, up_axis=2)
+        mesh = newton.Mesh.create_cone(
+            radius,
+            half_height,
+            up_axis=2,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        return mesh.vertices, mesh.indices
 
     elif geo_type == newton.GeoType.BOX:
         if len(geo_scale) == 1:
             ext = (geo_scale[0],) * 3
         else:
             ext = tuple(geo_scale[:3])
-        return newton.utils.create_box_mesh(ext)
+        mesh = newton.Mesh.create_box(
+            ext[0],
+            ext[1],
+            ext[2],
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
+        return mesh.vertices, mesh.indices
 
     raise NotImplementedError(f"Shape type {geo_type} not supported")
 

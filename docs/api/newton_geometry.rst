@@ -35,9 +35,6 @@ newton.geometry
    collide_sphere_sphere
    compute_sdf
    compute_shape_inertia
-   create_box_mesh
    create_empty_sdf_data
-   create_mesh_heightfield
-   create_mesh_terrain
    remesh_mesh
    transform_inertia

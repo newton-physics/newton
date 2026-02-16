@@ -17,6 +17,7 @@ import unittest
 
 import numpy as np
 
+from newton import Mesh
 from newton._src.geometry.terrain_generator import (
     _box_terrain,
     _flat_terrain,
@@ -25,10 +26,18 @@ from newton._src.geometry.terrain_generator import (
     _pyramid_stairs_terrain,
     _random_grid_terrain,
     _wave_terrain,
-    create_mesh_heightfield,
-    create_mesh_terrain,
 )
 from newton.tests.unittest_utils import assert_np_equal
+
+
+def create_mesh_heightfield(*args, **kwargs):
+    mesh = Mesh.create_heightfield(*args, compute_inertia=False, **kwargs)
+    return mesh.vertices, mesh.indices
+
+
+def create_mesh_terrain(*args, **kwargs):
+    mesh = Mesh.create_terrain(*args, compute_inertia=False, **kwargs)
+    return mesh.vertices, mesh.indices
 
 
 class TestTerrainGenerator(unittest.TestCase):

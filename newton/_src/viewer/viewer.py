@@ -23,17 +23,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.utils import (
-    compute_world_offsets,
-    create_box_mesh,
-    create_capsule_mesh,
-    create_cone_mesh,
-    create_cylinder_mesh,
-    create_ellipsoid_mesh,
-    create_plane_mesh,
-    create_sphere_mesh,
-    solidify_mesh,
-)
+from newton.utils import compute_world_offsets, solidify_mesh
 
 from ..core.types import MAXVAL, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
@@ -634,20 +624,20 @@ class ViewerBase:
         if geo_type == newton.GeoType.HFIELD:
             if geo_src is None:
                 raise ValueError(f"log_geo requires geo_src for HFIELD (name={name})")
-            from ..geometry.terrain_generator import create_mesh_heightfield  # noqa: PLC0415
 
             # Denormalize elevation data to actual Z heights.
             # Transpose because create_mesh_heightfield uses ij indexing (i=X, j=Y)
             # while Heightfield uses row-major (row=Y, col=X).
             actual_heights = geo_src.min_z + geo_src.data * (geo_src.max_z - geo_src.min_z)
-            vertices, indices = create_mesh_heightfield(
+            mesh = newton.Mesh.create_heightfield(
                 heightfield=actual_heights.T,
                 extent_x=geo_src.hx * 2.0,
                 extent_y=geo_src.hy * 2.0,
                 ground_z=geo_src.min_z,
+                compute_inertia=False,
             )
-            points = wp.array(vertices, dtype=wp.vec3, device=self.device)
-            indices = wp.array(indices, dtype=wp.int32, device=self.device)
+            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
             self.log_mesh(name, points, indices, hidden=hidden)
             return
 
@@ -694,45 +684,45 @@ class ViewerBase:
             # Handle "infinite" planes encoded with non-positive scales
             width = geo_scale[0] if geo_scale and geo_scale[0] > 0.0 else 1000.0
             length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 1000.0
-            vertices, indices = create_plane_mesh(width, length)
+            mesh = newton.Mesh.create_plane(width, length, compute_inertia=False)
 
         elif geo_type == newton.GeoType.SPHERE:
             radius = geo_scale[0]
-            vertices, indices = create_sphere_mesh(radius)
+            mesh = newton.Mesh.create_sphere(radius, compute_inertia=False)
 
         elif geo_type == newton.GeoType.CAPSULE:
             radius, half_height = geo_scale[:2]
-            vertices, indices = create_capsule_mesh(radius, half_height, up_axis=2)
+            mesh = newton.Mesh.create_capsule(radius, half_height, up_axis=2, compute_inertia=False)
 
         elif geo_type == newton.GeoType.CYLINDER:
             radius, half_height = geo_scale[:2]
-            vertices, indices = create_cylinder_mesh(radius, half_height, up_axis=2)
+            mesh = newton.Mesh.create_cylinder(radius, half_height, up_axis=2, compute_inertia=False)
 
         elif geo_type == newton.GeoType.CONE:
             radius, half_height = geo_scale[:2]
-            vertices, indices = create_cone_mesh(radius, half_height, up_axis=2)
+            mesh = newton.Mesh.create_cone(radius, half_height, up_axis=2, compute_inertia=False)
 
         elif geo_type == newton.GeoType.BOX:
             if len(geo_scale) == 1:
                 ext = (geo_scale[0],) * 3
             else:
                 ext = tuple(geo_scale[:3])
-            vertices, indices = create_box_mesh(ext)
+            mesh = newton.Mesh.create_box(ext[0], ext[1], ext[2], duplicate_vertices=True, compute_inertia=False)
 
         elif geo_type == newton.GeoType.ELLIPSOID:
             # geo_scale contains (rx, ry, rz) semi-axes
             rx = geo_scale[0] if len(geo_scale) > 0 else 1.0
             ry = geo_scale[1] if len(geo_scale) > 1 else rx
             rz = geo_scale[2] if len(geo_scale) > 2 else rx
-            vertices, indices = create_ellipsoid_mesh(rx, ry, rz)
+            mesh = newton.Mesh.create_ellipsoid(rx, ry, rz, compute_inertia=False)
         else:
             raise ValueError(f"log_geo does not support geo_type={geo_type} (name={name})")
 
         # Convert to Warp arrays and forward to log_mesh
-        points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
-        normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
-        uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.int32, device=self.device)
+        points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+        normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+        uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+        indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
 
         self.log_mesh(name, points, indices, normals, uvs, hidden=hidden, texture=None)
 

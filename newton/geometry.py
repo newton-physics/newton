@@ -29,13 +29,11 @@ from ._src.geometry import (
     collide_sphere_capsule,
     collide_sphere_cylinder,
     collide_sphere_sphere,
-    create_mesh_heightfield,
-    create_mesh_terrain,
 )
 from ._src.geometry.inertia import compute_shape_inertia, transform_inertia
 from ._src.geometry.sdf_hydroelastic import SDFHydroelasticConfig
 from ._src.geometry.sdf_utils import SDFData, compute_sdf, create_empty_sdf_data
-from ._src.geometry.utils import create_box_mesh, remesh_mesh
+from ._src.geometry.utils import remesh_mesh
 
 __all__ = [
     "BroadPhaseAllPairs",
@@ -57,10 +55,7 @@ __all__ = [
     "collide_sphere_sphere",
     "compute_sdf",
     "compute_shape_inertia",
-    "create_box_mesh",
     "create_empty_sdf_data",
-    "create_mesh_heightfield",
-    "create_mesh_terrain",
     "remesh_mesh",
     "transform_inertia",
 ]
