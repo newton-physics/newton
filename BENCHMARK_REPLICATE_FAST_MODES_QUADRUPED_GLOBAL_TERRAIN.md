@@ -13,9 +13,9 @@ This benchmark is fully self-contained and uses:
 - Repeats per point: `5` (reported below as median)
 - Spacing: `(0.0, 0.0, 0.0)` (homogeneous co-located worlds)
 - Command:
-  - `uv run python scripts/benchmarks/bench_quadruped_replicate_global_terrain.py --num-worlds 256 2048 4096 --mode all --spacing 0.0 0.0 0.0 --runs 5 --device cuda:0 --terrain-seed 42 --out-dir benchmark_quadruped_replicate_global_terrain_20260216_224715_w256_2048_4096`
+  - `uv run python scripts/benchmarks/bench_quadruped_replicate_global_terrain.py --num-worlds 256 2048 4096 --mode all --spacing 0.0 0.0 0.0 --runs 5 --device cuda:0 --terrain-seed 42 --out-dir benchmark_quadruped_replicate_global_terrain_20260216_231128_effects`
 - Artifact root:
-  - `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_224715_w256_2048_4096`
+  - `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_231128_effects`
 
 ## Isolation Scope
 
@@ -37,33 +37,44 @@ Timed phases per run:
 
 ### `num_worlds = 256`
 
-| mode | robot_build | replicate | terrain_build_once | finalize | replicate_path_only | total_startup | Δ total vs legacy | Δ replicate_path_only vs legacy |
+| mode | robot_build | replicate | terrain_build_once | finalize | replicate_path_only | total_startup | Δ total vs legacy | speedup vs legacy |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `legacy` | 0.0060 | 0.0076 | 0.0096 | 0.0413 | 0.0550 | 0.0646 | +0.0% | +0.0% |
-| `auto` | 0.0060 | 0.0067 | 0.0095 | 0.0318 | 0.0447 | 0.0543 | -15.9% | -18.6% |
-| `fast` | 0.0061 | 0.0065 | 0.0095 | 0.0314 | 0.0439 | 0.0534 | -17.3% | -20.1% |
+| `legacy` | 0.0060 | 0.0075 | 0.0096 | 0.0416 | 0.0555 | 0.0652 | +0.0% | 1.000x |
+| `auto` | 0.0060 | 0.0066 | 0.0096 | 0.0317 | 0.0440 | 0.0536 | -17.8% | 1.216x |
+| `fast` | 0.0060 | 0.0065 | 0.0097 | 0.0315 | 0.0441 | 0.0539 | -17.3% | 1.209x |
 
 ### `num_worlds = 2048`
 
-| mode | robot_build | replicate | terrain_build_once | finalize | replicate_path_only | total_startup | Δ total vs legacy | Δ replicate_path_only vs legacy |
+| mode | robot_build | replicate | terrain_build_once | finalize | replicate_path_only | total_startup | Δ total vs legacy | speedup vs legacy |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `legacy` | 0.0063 | 0.1282 | 0.0099 | 0.5921 | 0.7126 | 0.7227 | +0.0% | +0.0% |
-| `auto` | 0.0063 | 0.1186 | 0.0101 | 0.4544 | 0.5794 | 0.5895 | -18.4% | -18.7% |
-| `fast` | 0.0062 | 0.1147 | 0.0104 | 0.4570 | 0.5750 | 0.5969 | -17.4% | -19.3% |
+| `legacy` | 0.0062 | 0.0764 | 0.0101 | 0.5797 | 0.7016 | 0.7117 | +0.0% | 1.000x |
+| `auto` | 0.0064 | 0.1154 | 0.0105 | 0.4503 | 0.5737 | 0.5838 | -18.0% | 1.219x |
+| `fast` | 0.0063 | 0.0630 | 0.0105 | 0.4593 | 0.5813 | 0.5918 | -16.8% | 1.203x |
 
 ### `num_worlds = 4096`
 
-| mode | robot_build | replicate | terrain_build_once | finalize | replicate_path_only | total_startup | Δ total vs legacy | Δ replicate_path_only vs legacy |
+| mode | robot_build | replicate | terrain_build_once | finalize | replicate_path_only | total_startup | Δ total vs legacy | speedup vs legacy |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `legacy` | 0.0063 | 0.2339 | 0.0098 | 1.3136 | 1.5720 | 1.5818 | +0.0% | +0.0% |
-| `auto` | 0.0063 | 0.2008 | 0.0098 | 1.1127 | 1.2771 | 1.2868 | -18.6% | -18.8% |
-| `fast` | 0.0063 | 0.2078 | 0.0102 | 1.0420 | 1.2574 | 1.2676 | -19.9% | -20.0% |
+| `legacy` | 0.0062 | 0.2414 | 0.0099 | 1.2701 | 1.5172 | 1.5271 | +0.0% | 1.000x |
+| `auto` | 0.0062 | 0.1892 | 0.0098 | 0.9748 | 1.1594 | 1.1903 | -22.1% | 1.283x |
+| `fast` | 0.0062 | 0.1866 | 0.0100 | 1.0181 | 1.1987 | 1.2140 | -20.5% | 1.258x |
 
-## Interpretation
+## Effect Decomposition (Vs `legacy`)
 
-- Shared global terrain adds a mostly constant startup cost (~10 ms median) and does not dominate build time.
-- At `2048` and `4096` worlds, startup bottlenecks remain in replication/finalization.
-- For the RL-like `4096` case, `auto/fast` reduce median startup by roughly `19-20%` vs `legacy`.
+This section reports the **effect of mode changes by phase**, not only overall totals. Values come from `summary_effects_vs_legacy.csv`.
+
+| worlds | mode | replicate Δ% | finalize Δ% | total Δ% | replicate contribution to total Δ | finalize contribution to total Δ |
+|---|---|---:|---:|---:|---:|---:|
+| `256` | `auto` | -13.0% | -23.9% | -17.8% | 8.5% | 86.1% |
+| `256` | `fast` | -14.2% | -24.2% | -17.3% | 9.5% | 89.6% |
+| `2048` | `auto` | +50.9% | -22.3% | -18.0% | -30.4% | 101.2% |
+| `2048` | `fast` | -17.6% | -20.8% | -16.8% | 11.2% | 100.4% |
+| `4096` | `auto` | -21.6% | -23.2% | -22.1% | 15.5% | 87.7% |
+| `4096` | `fast` | -22.7% | -19.8% | -20.5% | 17.5% | 80.5% |
+
+Notes:
+- Positive contribution means that phase helped reduce startup time.
+- Negative contribution means that phase moved in the opposite direction (for example `2048/auto` replicate phase regressed while finalize improved enough to dominate net speedup).
 
 ## Reference: Internal Excavation (M445, Not Public-Self-Contained)
 
@@ -89,7 +100,9 @@ This section is reference-only and intentionally excluded from self-contained te
 
 ## Raw Artifacts
 
-- Quadruped summary CSV: `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_224715_w256_2048_4096/summary.csv`
-- Quadruped summary JSON: `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_224715_w256_2048_4096/summary.json`
-- Quadruped per-run records: `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_224715_w256_2048_4096/run_records.json`
+- Quadruped summary CSV: `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_231128_effects/summary.csv`
+- Quadruped summary JSON: `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_231128_effects/summary.json`
+- Quadruped effects CSV: `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_231128_effects/summary_effects_vs_legacy.csv`
+- Quadruped effects JSON: `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_231128_effects/summary_effects_vs_legacy.json`
+- Quadruped per-run records: `/home/lorenzo/moleworks/newton/benchmark_quadruped_replicate_global_terrain_20260216_231128_effects/run_records.json`
 - Excavation reference run: `/home/lorenzo/moleworks/moleworks_newton/outputs/benchmark_w_cabin_analytic_throughput/pr_ref_20260216_224801_newton_replicate_modes/benchmark_results.json`
