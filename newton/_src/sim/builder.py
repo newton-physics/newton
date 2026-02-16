@@ -2559,7 +2559,7 @@ class ModelBuilder:
         armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
-        mass: float = 0.0,
+        mass: float | None = None,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
@@ -2577,7 +2577,9 @@ class ModelBuilder:
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
-            mass: Mass of the body.
+            mass: Mass of the body. If ``None``, mass/inertia are inferred from attached
+                shapes. If ``0.0``, the body is treated as kinematic and shape density
+                will not contribute to mass/inertia.
             key: Key of the body (optional).
             custom_attributes: Dictionary of custom attribute names to values.
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
@@ -2588,7 +2590,8 @@ class ModelBuilder:
             The index of the body in the model.
 
         Note:
-            If the mass is zero then the body is treated as kinematic with no dynamics.
+            Passing ``mass=0.0`` creates a kinematic body with no rigid-body dynamics.
+            To infer mass from shape density, pass ``mass=None``.
 
         """
 
@@ -2607,17 +2610,25 @@ class ModelBuilder:
 
         body_id = len(self.body_mass)
 
-        # body data
-        if armature is None:
-            armature = self.default_body_armature
-        inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
+        # Explicit mass=0 means kinematic. Keep its inertia zero and prevent shape
+        # density from mutating the body's inertial properties.
+        is_kinematic = mass == 0.0
+        mass_value = 0.0 if mass is None else float(mass)
+        if is_kinematic:
+            inertia = wp.mat33()
+            lock_inertia = True
+        else:
+            if armature is None:
+                armature = self.default_body_armature
+            inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
+
         self.body_inertia.append(inertia)
-        self.body_mass.append(mass)
+        self.body_mass.append(mass_value)
         self.body_com.append(com)
         self.body_lock_inertia.append(lock_inertia)
 
-        if mass > 0.0:
-            self.body_inv_mass.append(1.0 / mass)
+        if mass_value > 0.0:
+            self.body_inv_mass.append(1.0 / mass_value)
         else:
             self.body_inv_mass.append(0.0)
 
@@ -2648,7 +2659,7 @@ class ModelBuilder:
         armature: float | None = None,
         com: Vec3 | None = None,
         inertia: Mat33 | None = None,
-        mass: float = 0.0,
+        mass: float | None = None,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
@@ -2670,7 +2681,9 @@ class ModelBuilder:
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
-            mass: Mass of the body.
+            mass: Mass of the body. If ``None``, mass/inertia are inferred from attached
+                shapes. If ``0.0``, the body is treated as kinematic and shape density
+                will not contribute to mass/inertia.
             key: Key of the body. When provided, the auto-created free joint and articulation
                 are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
             custom_attributes: Dictionary of custom attribute names to values.
@@ -2682,7 +2695,8 @@ class ModelBuilder:
             The index of the body in the model.
 
         Note:
-            If the mass is zero then the body is treated as kinematic with no dynamics.
+            Passing ``mass=0.0`` creates a kinematic body with no rigid-body dynamics.
+            To infer mass from shape density, pass ``mass=None``.
 
         """
         # Create the link

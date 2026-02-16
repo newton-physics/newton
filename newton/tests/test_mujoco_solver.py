@@ -3981,6 +3981,26 @@ class TestMuJoCoValidation(unittest.TestCase):
 
 
 class TestMuJoCoConversion(unittest.TestCase):
+    def test_zero_mass_free_body_converts_as_kinematic(self):
+        """A zero-mass free body should export as a MuJoCo mocap (kinematic) body."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=0.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(
+            body=body,
+            hx=0.25,
+            hy=0.25,
+            hz=0.25,
+            cfg=newton.ModelBuilder.ShapeConfig(density=1000.0),
+        )
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(float(model.body_mass.numpy()[body]), 0.0)
+        self.assertEqual(solver.mj_model.nmocap, 1)
+        self.assertEqual(solver.mj_model.njnt, 0)
+        self.assertEqual(solver.mjc_mocap_to_newton_jnt.numpy()[0, 0], 0)
+
     def test_no_shapes_separate_worlds_false(self):
         """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=False."""
         builder = newton.ModelBuilder()

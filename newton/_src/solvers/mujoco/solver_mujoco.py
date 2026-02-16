@@ -3305,10 +3305,14 @@ class SolverMuJoCo(SolverBase):
             # add body
             body_mapping[child] = len(mj_bodies)
 
-            # check if fixed-base articulation
-            fixed_base = False
-            if parent == -1 and joint_type[j] == JointType.FIXED:
-                fixed_base = True
+            j_type = joint_type[j]
+
+            # fixed-base articulations are exported as mocap bodies
+            fixed_base = parent == -1 and j_type == JointType.FIXED
+            # explicit kinematic free bodies (mass=0) are also exported as mocap to
+            # avoid invalid MuJoCo inertial requirements on free joints.
+            kinematic_free_body = parent == -1 and j_type == JointType.FREE and body_mass[child] <= 0.0
+            use_mocap_body = fixed_base or kinematic_free_body
 
             # this assumes that the joint position is 0
             tf = wp.transform(*joint_parent_xform[j])
@@ -3328,23 +3332,36 @@ class SolverMuJoCo(SolverBase):
                     name = f"{name}_{body_name_counts[name]}"
 
             inertia = body_inertia[child]
-            body = mj_bodies[body_mapping[parent]].add_body(
-                name=name,
-                pos=tf.p,
-                quat=quat_to_mjc(tf.q),
-                mass=body_mass[child],
-                ipos=body_com[child, :],
-                fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
-                explicitinertial=True,
-                mocap=fixed_base,
-            )
+            body_params: dict[str, Any] = {
+                "name": name,
+                "pos": tf.p,
+                "quat": quat_to_mjc(tf.q),
+                "mocap": use_mocap_body,
+            }
+            if not kinematic_free_body:
+                body_params.update(
+                    {
+                        "mass": body_mass[child],
+                        "ipos": body_com[child, :],
+                        "fullinertia": [
+                            inertia[0, 0],
+                            inertia[1, 1],
+                            inertia[2, 2],
+                            inertia[0, 1],
+                            inertia[0, 2],
+                            inertia[1, 2],
+                        ],
+                        "explicitinertial": True,
+                    }
+                )
+
+            body = mj_bodies[body_mapping[parent]].add_body(**body_params)
             mj_bodies.append(body)
-            if fixed_base:
+            if use_mocap_body:
                 newton_body_to_mocap_index[child] = next_mocap_index
                 next_mocap_index += 1
 
             # add joint
-            j_type = joint_type[j]
             qd_start = joint_qd_start[j]
             name = model.joint_key[j]
             if name not in joint_names:
@@ -3354,12 +3371,17 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            # Store mapping from Newton joint index to MuJoCo joint name
-            joint_mapping[j] = name
+            adds_mujoco_joint = not kinematic_free_body and j_type != JointType.FIXED
+            if adds_mujoco_joint:
+                # Store mapping from Newton joint index to MuJoCo joint name
+                joint_mapping[j] = name
+                joint_mjc_dof_start[j] = num_dofs
 
-            joint_mjc_dof_start[j] = num_dofs
-
-            if j_type == JointType.FREE:
+            if kinematic_free_body:
+                # Kinematic free bodies are represented as mocap bodies in MuJoCo.
+                # Their transforms are synchronized from Newton in update_mocap_transforms_kernel.
+                pass
+            elif j_type == JointType.FREE:
                 body.add_joint(
                     name=name,
                     type=mujoco.mjtJoint.mjJNT_FREE,

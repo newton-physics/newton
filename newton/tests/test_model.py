@@ -220,6 +220,51 @@ class TestModel(unittest.TestCase):
         assert_np_equal(np.array(builder.body_inertia[locked_body]), np.array(locked_inertia))
         self.assertNotEqual(builder.body_mass[unlocked_body], unlocked_mass)
 
+    def test_add_body_mass_zero_is_kinematic(self):
+        """Explicit mass=0 should create a kinematic body regardless of shape density."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=0.0)
+        builder.add_shape_box(
+            body=body,
+            hx=0.25,
+            hy=0.25,
+            hz=0.25,
+            cfg=ModelBuilder.ShapeConfig(density=1000.0),
+        )
+
+        self.assertEqual(builder.body_mass[body], 0.0)
+        self.assertEqual(builder.body_inv_mass[body], 0.0)
+        self.assertTrue(np.allclose(np.array(builder.body_inertia[body]).reshape(3, 3), 0.0))
+
+    def test_add_body_mass_none_accumulates_shape_mass(self):
+        """mass=None should keep the legacy 'infer mass from shapes' behavior."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=None)
+        builder.add_shape_box(
+            body=body,
+            hx=0.25,
+            hy=0.25,
+            hz=0.25,
+            cfg=ModelBuilder.ShapeConfig(density=1000.0),
+        )
+
+        self.assertGreater(builder.body_mass[body], 0.0)
+        self.assertGreater(builder.body_inv_mass[body], 0.0)
+
+    def test_zero_mass_body_suppresses_inertia_warning(self):
+        """Explicitly kinematic bodies should not emit confusing zero-mass inertia warnings."""
+        builder = ModelBuilder()
+        builder.validate_inertia_detailed = True
+        body = builder.add_body(mass=0.0, inertia=wp.mat33(np.eye(3)))
+
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            model = builder.finalize()
+
+        warning_messages = [str(w.message) for w in captured]
+        self.assertFalse(any("Zero mass body" in msg for msg in warning_messages))
+        self.assertTrue(np.allclose(model.body_inertia.numpy()[body], 0.0))
+
     def test_collapse_fixed_joints_with_locked_inertia(self):
         builder = ModelBuilder()
         b0 = builder.add_link(mass=1.0, lock_inertia=True)
