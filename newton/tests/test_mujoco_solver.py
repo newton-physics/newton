@@ -6048,7 +6048,12 @@ class TestMuJoCoSolverFreeJointBodyPos(unittest.TestCase):
     """Verify free joint bodies preserve their initial position in qpos0."""
 
     def test_free_joint_body_pos(self):
-        """Free joint body at non-origin position should have correct qpos0."""
+        """Verify free joint qpos0 contains the MJCF body position.
+
+        A free joint body placed at pos="0 0 1.5" should produce
+        ``solver.mj_model.qpos0`` whose first three elements match
+        the body's initial z-offset ``[0, 0, 1.5]``.
+        """
         mjcf = """
         <mujoco>
             <worldbody>
