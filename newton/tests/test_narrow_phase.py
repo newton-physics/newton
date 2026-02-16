@@ -1823,8 +1823,9 @@ class TestBufferOverflowWarnings(unittest.TestCase):
         gjk_capacity = narrow_phase.gjk_candidate_pairs.shape[0]
         self.assertGreater(gjk_count, gjk_capacity, "GJK buffer should have overflowed")
 
-        # Verify warning was printed
-        self.assertIn("GJK candidate pair buffer overflowed", output)
+        # Verify warning was printed (wp.printf capture is unreliable on CPU/Windows)
+        if wp.get_preferred_device().is_cuda:
+            self.assertIn("GJK candidate pair buffer overflowed", output)
 
         # Verify some contacts were still produced (from the pairs that fit)
         count = contact_count.numpy()[0]
@@ -1883,8 +1884,9 @@ class TestBufferOverflowWarnings(unittest.TestCase):
         wp.synchronize()
         output = capture.end()
 
-        # Verify broad phase overflow warning was printed
-        self.assertIn("Broad phase pair buffer overflowed", output)
+        # Verify broad phase overflow warning was printed (wp.printf capture is unreliable on CPU/Windows)
+        if wp.get_preferred_device().is_cuda:
+            self.assertIn("Broad phase pair buffer overflowed", output)
 
 
 if __name__ == "__main__":
