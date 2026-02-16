@@ -1021,11 +1021,11 @@ pixel in each camera based on the specified field-of-view angles.</p>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Width of the image these rays are computed for.</p></li>
 <li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Height of the image these rays are computed for.</p></li>
-<li><p><strong>camera_fovs</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>np.ndarray</em><em> | </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>)</em>) – Array of vertical FOV angles in radians, shape (num_cameras,).</p></li>
+<li><p><strong>camera_fovs</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>np.ndarray</em><em> | </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>)</em>) – Array of vertical FOV angles in radians, shape (camera_count,).</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>Array of camera rays in camera space, shape (num_cameras, height, width, 2).</p>
+<dd class="field-even"><p>Array of camera rays in camera space, shape (camera_count, height, width, 2).</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>camera_rays</p>
@@ -1035,18 +1035,18 @@ pixel in each camera based on the specified field-of-view angles.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_albedo_image_output">
-<span class="sig-name descname"><span class="pre">create_albedo_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_cameras</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_albedo_image_output" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">create_albedo_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_albedo_image_output" title="Link to this definition">#</a></dt>
 <dd><p>Create a Warp array for albedo image output.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
 <li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
-<li><p><strong>num_cameras</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
+<li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (num_worlds, num_cameras, height, width) with dtype uint32.</p>
+<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype uint32.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=uint32)</p>
@@ -1056,18 +1056,18 @@ pixel in each camera based on the specified field-of-view angles.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_color_image_output">
-<span class="sig-name descname"><span class="pre">create_color_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_cameras</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_color_image_output" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">create_color_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_color_image_output" title="Link to this definition">#</a></dt>
 <dd><p>Create a Warp array for color image output.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
 <li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
-<li><p><strong>num_cameras</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
+<li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (num_worlds, num_cameras, height, width) with dtype uint32.</p>
+<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype uint32.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=uint32)</p>
@@ -1086,18 +1086,18 @@ pixel in each camera based on the specified field-of-view angles.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_depth_image_output">
-<span class="sig-name descname"><span class="pre">create_depth_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_cameras</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_depth_image_output" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">create_depth_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_depth_image_output" title="Link to this definition">#</a></dt>
 <dd><p>Create a Warp array for depth image output.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
 <li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
-<li><p><strong>num_cameras</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
+<li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (num_worlds, num_cameras, height, width) with dtype float32.</p>
+<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype float32.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=float32)</p>
@@ -1107,18 +1107,18 @@ pixel in each camera based on the specified field-of-view angles.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_normal_image_output">
-<span class="sig-name descname"><span class="pre">create_normal_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_cameras</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_normal_image_output" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">create_normal_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_normal_image_output" title="Link to this definition">#</a></dt>
 <dd><p>Create a Warp array for normal image output.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
 <li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
-<li><p><strong>num_cameras</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
+<li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (num_worlds, num_cameras, height, width) with dtype vec3f.</p>
+<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype vec3f.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=vec3f)</p>
@@ -1128,18 +1128,18 @@ pixel in each camera based on the specified field-of-view angles.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.create_shape_index_image_output">
-<span class="sig-name descname"><span class="pre">create_shape_index_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_cameras</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_shape_index_image_output" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">create_shape_index_image_output</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_count</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.create_shape_index_image_output" title="Link to this definition">#</a></dt>
 <dd><p>Create a Warp array for shape index image output.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image width.</p></li>
 <li><p><strong>height</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Image height.</p></li>
-<li><p><strong>num_cameras</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
+<li><p><strong>camera_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of cameras.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>wp.array of shape (num_worlds, num_cameras, height, width) with dtype uint32.</p>
+<dd class="field-even"><p>wp.array of shape (world_count, camera_count, height, width) with dtype uint32.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>array(ndim=4, dtype=uint32)</p>
@@ -1149,16 +1149,16 @@ pixel in each camera based on the specified field-of-view angles.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba">
-<span class="sig-name descname"><span class="pre">flatten_color_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">flatten_color_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba" title="Link to this definition">#</a></dt>
 <dd><p>Flatten rendered color image to a tiled image buffer.</p>
-<p>Arranges (num_worlds x num_cameras) tiles in a grid layout. Each tile
+<p>Arranges (world_count x camera_count) tiles in a grid layout. Each tile
 shows one camera’s view of one world.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>)</em>) – Color output array from render(), shape (num_worlds, num_cameras, height, width).</p></li>
+<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>)</em>) – Color output array from render(), shape (world_count, camera_count, height, width).</p></li>
 <li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Optional output array</p></li>
-<li><p><strong>num_worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
+<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
 </ul>
 </dd>
 </dl>
@@ -1166,17 +1166,17 @@ shows one camera’s view of one world.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba">
-<span class="sig-name descname"><span class="pre">flatten_depth_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">flatten_depth_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba" title="Link to this definition">#</a></dt>
 <dd><p>Flatten rendered depth image to a tiled grayscale image buffer.</p>
-<p>Arranges (num_worlds x num_cameras) tiles in a grid. Depth values are
+<p>Arranges (world_count x camera_count) tiles in a grid. Depth values are
 inverted (closer = brighter) and normalized to [50, 255] range. Background (depth &lt; 0
 or no hit) remains black.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=4</em><em>)</em>) – Depth output array from render(), shape (num_worlds, num_cameras, height, width).</p></li>
+<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=4</em><em>)</em>) – Depth output array from render(), shape (world_count, camera_count, height, width).</p></li>
 <li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Optional output array</p></li>
-<li><p><strong>num_worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
+<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
 <li><p><strong>depth_range</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><em>None</em>) – Depth range to normalize to, shape (2) [near, far], will be automatically determined if None</p></li>
 </ul>
 </dd>
@@ -1185,16 +1185,16 @@ or no hit) remains black.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.flatten_normal_image_to_rgba">
-<span class="sig-name descname"><span class="pre">flatten_normal_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_normal_image_to_rgba" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">flatten_normal_image_to_rgba</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">image</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">out_buffer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">worlds_per_row</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.flatten_normal_image_to_rgba" title="Link to this definition">#</a></dt>
 <dd><p>Flatten rendered normal image to a tiled image buffer.</p>
-<p>Arranges (num_worlds x num_cameras) tiles in a grid layout. Each tile
+<p>Arranges (world_count x camera_count) tiles in a grid layout. Each tile
 shows one camera’s view of one world.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>)</em>) – Normal output array from render(), shape (num_worlds, num_cameras, height, width).</p></li>
+<li><p><strong>image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>)</em>) – Normal output array from render(), shape (world_count, camera_count, height, width).</p></li>
 <li><p><strong>out_buffer</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint8</em><em>, </em><em>ndim=3</em><em>) </em><em>| </em><em>None</em>) – Optional output array</p></li>
-<li><p><strong>num_worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
+<li><p><strong>worlds_per_row</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional number of rows</p></li>
 </ul>
 </dd>
 </dl>
@@ -1204,23 +1204,23 @@ shows one camera’s view of one world.</p>
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.render">
 <span class="sig-name descname"><span class="pre">render</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_transforms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_rays</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_index_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normal_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">albedo_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refit_bvh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">DEFAULT_CLEAR_DATA</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.render" title="Link to this definition">#</a></dt>
 <dd><p>Render output images for all worlds and cameras.
-The shape of the output images is (num_worlds, num_cameras, height, width) where element
+The shape of the output images is (world_count, camera_count, height, width) where element
 [world_id, camera_id, y, x] is the output generated by the ray in camera_rays[camera_id, y, x].</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a><em> | </em><em>None</em>) – The current simulation state containing body transforms.</p></li>
-<li><p><strong>camera_transforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transformf</em><em>, </em><em>ndim=2</em><em>)</em>) – Array of camera transforms in world space, shape (num_cameras, num_worlds).</p></li>
-<li><p><strong>camera_rays</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>)</em>) – Array of camera rays in camera space, shape (num_cameras, height, width, 2).</p></li>
-<li><p><strong>color_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for color data (num_worlds, num_cameras, height, width).
+<li><p><strong>camera_transforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transformf</em><em>, </em><em>ndim=2</em><em>)</em>) – Array of camera transforms in world space, shape (camera_count, world_count).</p></li>
+<li><p><strong>camera_rays</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>)</em>) – Array of camera rays in camera space, shape (camera_count, height, width, 2).</p></li>
+<li><p><strong>color_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for color data (world_count, camera_count, height, width).
 If None, no color rendering is performed.</p></li>
-<li><p><strong>depth_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for depth data (num_worlds, num_cameras, height, width).
+<li><p><strong>depth_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for depth data (world_count, camera_count, height, width).
 If None, no depth rendering is performed.</p></li>
-<li><p><strong>shape_index_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for shape index data (num_worlds, num_cameras, height, width).
+<li><p><strong>shape_index_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for shape index data (world_count, camera_count, height, width).
 If None, no shape index rendering is performed.</p></li>
-<li><p><strong>normal_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for normal data (num_worlds, num_cameras, height, width).
+<li><p><strong>normal_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3f</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for normal data (world_count, camera_count, height, width).
 If None, no normal rendering is performed.</p></li>
-<li><p><strong>albedo_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for albedo data (num_worlds, num_cameras, height, width).
+<li><p><strong>albedo_image</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>, </em><em>ndim=4</em><em>) </em><em>| </em><em>None</em>) – Optional output array for albedo data (world_count, camera_count, height, width).
 If None, no albedo rendering is performed.</p></li>
 <li><p><strong>refit_bvh</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to refit the BVH or not.</p></li>
 <li><p><strong>clear_data</strong> (<em>ClearData</em><em> | </em><em>None</em>) – The data to clear the image buffers with (or skip if None).</p></li>

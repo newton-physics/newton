@@ -811,7 +811,7 @@
 <h1>newton.utils.compute_world_offsets<a class="headerlink" href="#newton-utils-compute-world-offsets" title="Link to this heading">#</a></h1>
 <dl class="py function">
 <dt class="sig sig-object py" id="newton.utils.compute_world_offsets">
-<span class="sig-prename descclassname"><span class="pre">newton.utils.</span></span><span class="sig-name descname"><span class="pre">compute_world_offsets</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">num_worlds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">spacing</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/utils/__init__.py#L51"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.utils.compute_world_offsets" title="Link to this definition">#</a></dt>
+<span class="sig-prename descclassname"><span class="pre">newton.utils.</span></span><span class="sig-name descname"><span class="pre">compute_world_offsets</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">world_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">spacing</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/utils/__init__.py#L51"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.utils.compute_world_offsets" title="Link to this definition">#</a></dt>
 <dd><p>Compute positional offsets for multiple worlds arranged in a grid.</p>
 <p>This function computes 3D offsets for arranging multiple worlds based on the provided spacing.
 The worlds are arranged in a regular grid pattern, with the layout automatically determined
@@ -819,7 +819,7 @@ based on the non-zero dimensions in the spacing tuple.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>num_worlds</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The number of worlds to arrange.</p></li>
+<li><p><strong>world_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The number of worlds to arrange.</p></li>
 <li><p><strong>spacing</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>]</em>) – The spacing between worlds along each axis.
 Non-zero values indicate active dimensions for the grid layout.</p></li>
 <li><p><strong>up_axis</strong> (<em>Any</em><em>, </em><em>optional</em>) – The up axis to ensure worlds are not shifted below the ground plane.
@@ -827,7 +827,7 @@ If provided, the offset correction along this axis will be zero.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>An array of shape (num_worlds, 3) containing the 3D offsets for each world.</p>
+<dd class="field-even"><p>An array of shape (world_count, 3) containing the 3D offsets for each world.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>np.ndarray</p>

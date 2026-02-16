@@ -845,7 +845,7 @@ arrays or the device of the input warp array.</p></li>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.geometry.BroadPhaseAllPairs.launch">
-<span class="sig-name descname"><span class="pre">launch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">shape_lower</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_upper</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_contact_margin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_group</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_shape_world</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">candidate_pair</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_candidate_pair</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">filter_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_filter_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.BroadPhaseAllPairs.launch" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">launch</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">shape_lower</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_upper</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_contact_margin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_collision_group</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_shape_world</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">candidate_pair</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">candidate_pair_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">filter_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_filter_pairs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.geometry.BroadPhaseAllPairs.launch" title="Link to this definition">#</a></dt>
 <dd><p>Launch the N x N broad phase collision detection.</p>
 <p>This method performs collision detection between all possible pairs of geometries by checking for
 axis-aligned bounding box (AABB) overlaps. It uses a lower triangular matrix approach to avoid
@@ -864,7 +864,7 @@ groups that collide with everything except their negative counterpart. Zero indi
 that collide with all worlds. Indices 0, 1, 2, … indicate world-specific entities.</p></li>
 <li><p><strong>shape_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Number of active bounding boxes to check</p></li>
 <li><p><strong>candidate_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store overlapping shape pairs</p></li>
-<li><p><strong>num_candidate_pair</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store number of overlapping pairs found</p></li>
+<li><p><strong>candidate_pair_count</strong> (<em>wp.array</em><em>(</em><em>dtype=int</em><em>, </em><em>ndim=1</em><em>)</em>) – Output array to store number of overlapping pairs found</p></li>
 <li><p><strong>device</strong> – Device to launch on. If None, uses the device of the input arrays.</p></li>
 </ul>
 </dd>
@@ -872,7 +872,7 @@ that collide with all worlds. Indices 0, 1, 2, … indicate world-specific entit
 <p>The method will populate candidate_pair with the indices of shape pairs (i,j) where i &lt; j whose AABBs overlap
 (with optional margin expansion), whose collision groups allow interaction, and whose world indices are
 compatible (same world or at least one is global). Pairs in filter_pairs (if provided) are excluded.
-The number of pairs found will be written to num_candidate_pair[0].</p>
+The number of pairs found will be written to candidate_pair_count[0].</p>
 </dd></dl>
 
 </dd></dl>

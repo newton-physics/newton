@@ -3730,7 +3730,7 @@ Bodies are shown as orange squares, shapes are shown as blue circles.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.ModelBuilder.replicate">
-<span class="sig-name descname"><span class="pre">replicate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">num_worlds</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">spacing</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0)</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.replicate" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">replicate</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">world_count</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">spacing</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">0.0,</span> <span class="pre">0.0)</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.replicate" title="Link to this definition">#</a></dt>
 <dd><p>Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.</p>
 <p>This method is useful for creating multiple instances of a sub-model (e.g., robots, scenes)
 arranged in a regular grid or along a line. Each copy is offset in space by a multiple of the
@@ -3745,7 +3745,7 @@ stability by keeping all worlds at the origin in the physics simulation.</p>
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>builder</strong> (<a class="reference internal" href="#newton.ModelBuilder" title="newton.ModelBuilder"><em>ModelBuilder</em></a>) – The builder to replicate. All entities from this builder will be copied.</p></li>
-<li><p><strong>num_worlds</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The number of worlds to create.</p></li>
+<li><p><strong>world_count</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – The number of worlds to create.</p></li>
 <li><p><strong>spacing</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>]</em><em>, </em><em>optional</em>) – The spacing between each copy along each axis.
 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
 Defaults to (0.0, 0.0, 0.0).</p></li>
