@@ -242,6 +242,8 @@ class Model:
         """Collision group of each shape, shape [shape_count], int. Array populated during finalization."""
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
+        self.shape_collision_filter_pairs_sorted = None
+        """Collision-filter pairs as sorted wp.vec2i array [num_pairs, 2]."""
         self.shape_collision_radius = None
         """Collision radius for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs = None
