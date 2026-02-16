@@ -144,35 +144,35 @@ class Model:
         """Number of worlds added to the ModelBuilder."""
 
         self.particle_q = None
-        """Particle positions, shape [particle_count, 3], float."""
+        """Particle positions [m], shape [particle_count, 3], float."""
         self.particle_qd = None
-        """Particle velocities, shape [particle_count, 3], float."""
+        """Particle velocities [m/s], shape [particle_count, 3], float."""
         self.particle_mass = None
-        """Particle mass, shape [particle_count], float."""
+        """Particle mass [kg], shape [particle_count], float."""
         self.particle_inv_mass = None
-        """Particle inverse mass, shape [particle_count], float."""
+        """Particle inverse mass [1/kg], shape [particle_count], float."""
         self.particle_radius = None
-        """Particle radius, shape [particle_count], float."""
+        """Particle radius [m], shape [particle_count], float."""
         self.particle_max_radius = 0.0
-        """Maximum particle radius (useful for HashGrid construction)."""
+        """Maximum particle radius [m] (useful for HashGrid construction)."""
         self.particle_ke = 1.0e3
-        """Particle normal contact stiffness (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
+        """Particle normal contact stiffness [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_kd = 1.0e2
-        """Particle normal contact damping (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
+        """Particle normal contact damping [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_kf = 1.0e2
-        """Particle friction force stiffness (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
+        """Particle friction force stiffness [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_mu = 0.5
-        """Particle friction coefficient."""
+        """Particle friction coefficient [dimensionless]."""
         self.particle_cohesion = 0.0
-        """Particle cohesion strength."""
+        """Particle cohesion strength [m]."""
         self.particle_adhesion = 0.0
-        """Particle adhesion strength."""
+        """Particle adhesion strength [m]."""
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags: wp.array | None = None
         """Particle enabled state, shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
-        """Maximum particle velocity (to prevent instability)."""
+        """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
         self.particle_world_start = None
@@ -192,7 +192,7 @@ class Model:
         self.shape_key = []
         """List of keys for each shape."""
         self.shape_transform = None
-        """Rigid shape transforms, shape [shape_count, 7], float."""
+        """Rigid shape transforms [m, unitless quaternion], shape [shape_count, 7], float."""
         self.shape_body = None
         """Rigid shape body index, shape [shape_count], int."""
         self.shape_flags = None
@@ -202,25 +202,25 @@ class Model:
 
         # Shape material properties
         self.shape_material_ke = None
-        """Shape contact elastic stiffness, shape [shape_count], float."""
+        """Shape contact elastic stiffness [N/m], shape [shape_count], float."""
         self.shape_material_kd = None
-        """Shape contact damping stiffness, shape [shape_count], float."""
+        """Shape contact damping stiffness [N·s/m], shape [shape_count], float."""
         self.shape_material_kf = None
-        """Shape contact friction stiffness, shape [shape_count], float."""
+        """Shape contact friction stiffness [N·s/m], shape [shape_count], float."""
         self.shape_material_ka = None
-        """Shape contact adhesion distance, shape [shape_count], float."""
+        """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu = None
-        """Shape coefficient of friction, shape [shape_count], float."""
+        """Shape coefficient of friction [dimensionless], shape [shape_count], float."""
         self.shape_material_restitution = None
-        """Shape coefficient of restitution, shape [shape_count], float."""
+        """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
         self.shape_material_torsional_friction = None
-        """Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float."""
+        """Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float."""
         self.shape_material_rolling_friction = None
-        """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
+        """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
         self.shape_material_k_hydro = None
-        """Shape hydroelastic stiffness coefficient, shape [shape_count], float."""
+        """Shape hydroelastic stiffness coefficient [N/m], shape [shape_count], float."""
         self.shape_contact_margin = None
-        """Shape contact margin for collision detection, shape [shape_count], float."""
+        """Shape contact margin for collision detection [m], shape [shape_count], float."""
 
         # Shape geometry properties
         self.shape_type = None
@@ -228,13 +228,13 @@ class Model:
         self.shape_is_solid = None
         """Whether shape is solid or hollow, shape [shape_count], bool."""
         self.shape_thickness = None
-        """Shape thickness, shape [shape_count], float."""
+        """Shape thickness [m], shape [shape_count], float."""
         self.shape_source = []
         """List of source geometry objects (e.g., :class:`~newton.Mesh`, :class:`~newton.SDF`) used for rendering and broadphase, shape [shape_count]."""
         self.shape_source_ptr = None
         """Geometry source pointer to be used inside the Warp kernels which can be generated by finalizing the geometry objects, see for example :meth:`newton.Mesh.finalize`, shape [shape_count], uint64."""
         self.shape_scale = None
-        """Shape 3D scale, shape [shape_count, 3], float."""
+        """Shape 3D scale [m], shape [shape_count, 3], float."""
         self.shape_filter = None
         """Shape filter group, shape [shape_count], int."""
 
@@ -243,7 +243,7 @@ class Model:
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
         self.shape_collision_radius = None
-        """Collision radius for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
+        """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0
@@ -282,11 +282,11 @@ class Model:
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
         # computed once during finalization, not per-frame contact data.
         self.shape_local_aabb_lower = None
-        """Local-space AABB lower bound for each shape, shape [shape_count, 3], float.
+        """Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
         Computed from base geometry only (excludes thickness - thickness is added during contact
         margin calculations). Used for voxel-based contact reduction."""
         self.shape_local_aabb_upper = None
-        """Local-space AABB upper bound for each shape, shape [shape_count, 3], float.
+        """Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Computed from base geometry only (excludes thickness - thickness is added during contact
         margin calculations). Used for voxel-based contact reduction."""
         self.shape_voxel_resolution = None
@@ -295,13 +295,13 @@ class Model:
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
         self.spring_rest_length = None
-        """Particle spring rest length, shape [spring_count], float."""
+        """Particle spring rest length [m], shape [spring_count], float."""
         self.spring_stiffness = None
-        """Particle spring stiffness, shape [spring_count], float."""
+        """Particle spring stiffness [N/m], shape [spring_count], float."""
         self.spring_damping = None
-        """Particle spring damping, shape [spring_count], float."""
+        """Particle spring damping [N·s/m], shape [spring_count], float."""
         self.spring_control = None
-        """Particle spring activation, shape [spring_count], float."""
+        """Particle spring activation [dimensionless], shape [spring_count], float."""
         self.spring_constraint_lambdas = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
@@ -312,18 +312,21 @@ class Model:
         self.tri_activations = None
         """Triangle element activations, shape [tri_count], float."""
         self.tri_materials = None
-        """Triangle element materials, shape [tri_count, 5], float."""
+        """Triangle element materials, shape [tri_count, 5], float.
+        Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s], [3] k_drag [Pa·s], [4] k_lift [Pa].
+        Stored per-element; kernels multiply by rest area internally."""
         self.tri_areas = None
-        """Triangle element rest areas, shape [tri_count], float."""
+        """Triangle element rest areas [m²], shape [tri_count], float."""
 
         self.edge_indices = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""
         self.edge_rest_angle = None
-        """Bending edge rest angle, shape [edge_count], float."""
+        """Bending edge rest angle [rad], shape [edge_count], float."""
         self.edge_rest_length = None
-        """Bending edge rest length, shape [edge_count], float."""
+        """Bending edge rest length [m], shape [edge_count], float."""
         self.edge_bending_properties = None
-        """Bending edge stiffness and damping, shape [edge_count, 2], float."""
+        """Bending edge stiffness and damping, shape [edge_count, 2], float.
+        Components: [0] stiffness [N·m/rad], [1] damping [N·s]."""
         self.edge_constraint_lambdas = None
         """Lagrange multipliers for edge constraints (internal use)."""
 
@@ -334,33 +337,37 @@ class Model:
         self.tet_activations = None
         """Tetrahedral volumetric activations, shape [tet_count], float."""
         self.tet_materials = None
-        """Tetrahedral elastic parameters in form :math:`k_{mu}, k_{lambda}, k_{damp}`, shape [tet_count, 3]."""
+        """Tetrahedral elastic parameters in form :math:`k_{mu}, k_{lambda}, k_{damp}`, shape [tet_count, 3].
+        Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
+        Stored per-element; kernels multiply by rest volume internally."""
 
         self.muscle_start = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params = None
-        """Muscle parameters, shape [muscle_count, 5], float."""
+        """Muscle parameters, shape [muscle_count, 5], float.
+        Components: [0] f0 [N] (force scaling), [1] lm [m] (muscle fiber length), [2] lt [m] (tendon slack length),
+        [3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor)."""
         self.muscle_bodies = None
         """Body indices of the muscle waypoints, int."""
         self.muscle_points = None
         """Local body offset of the muscle waypoints, float."""
         self.muscle_activations = None
-        """Muscle activations, shape [muscle_count], float."""
+        """Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float."""
 
         self.body_q = None
-        """Rigid body poses for state initialization, shape [body_count, 7], float."""
+        """Rigid body poses [m, unitless quaternion] for state initialization, shape [body_count, 7], float."""
         self.body_qd = None
-        """Rigid body velocities for state initialization, shape [body_count, 6], float."""
+        """Rigid body velocities [m/s, rad/s] for state initialization, shape [body_count, 6], float."""
         self.body_com = None
-        """Rigid body center of mass (in local frame), shape [body_count, 3], float."""
+        """Rigid body center of mass [m] (in local frame), shape [body_count, 3], float."""
         self.body_inertia = None
-        """Rigid body inertia tensor (relative to COM), shape [body_count, 3, 3], float."""
+        """Rigid body inertia tensor [kg·m²] (relative to COM), shape [body_count, 3, 3], float."""
         self.body_inv_inertia = None
-        """Rigid body inverse inertia tensor (relative to COM), shape [body_count, 3, 3], float."""
+        """Rigid body inverse inertia tensor [1/(kg·m²)] (relative to COM), shape [body_count, 3, 3], float."""
         self.body_mass = None
-        """Rigid body mass, shape [body_count], float."""
+        """Rigid body mass [kg], shape [body_count], float."""
         self.body_inv_mass = None
-        """Rigid body inverse mass, shape [body_count], float."""
+        """Rigid body inverse mass [1/kg], shape [body_count], float."""
         self.body_key = []
         """Rigid body keys, shape [body_count], str."""
         self.body_world = None
@@ -380,15 +387,15 @@ class Model:
         """
 
         self.joint_q = None
-        """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
+        """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
         self.joint_qd = None
-        """Generalized joint velocities for state initialization, shape [joint_dof_count], float."""
+        """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float."""
         self.joint_f = None
-        """Generalized joint forces for state initialization, shape [joint_dof_count], float."""
+        """Generalized joint forces [N or N·m, depending on joint type] for state initialization, shape [joint_dof_count], float."""
         self.joint_target_pos = None
-        """Generalized joint position targets, shape [joint_dof_count], float."""
+        """Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_vel = None
-        """Generalized joint velocity targets, shape [joint_dof_count], float."""
+        """Generalized joint velocity targets [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_articulation = None
@@ -400,41 +407,41 @@ class Model:
         self.joint_ancestor = None
         """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
         self.joint_X_p = None
-        """Joint transform in parent frame, shape [joint_count, 7], float."""
+        """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_X_c = None
-        """Joint mass frame in child frame, shape [joint_count, 7], float."""
+        """Joint mass frame in child frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_axis = None
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
         self.joint_armature = None
-        """Armature for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        """Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_act_mode = None
         """Actuator mode per DOF, see :class:`newton.ActuatorMode`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke = None
-        """Joint stiffness, shape [joint_dof_count], float."""
+        """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd = None
-        """Joint damping, shape [joint_dof_count], float."""
+        """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_effort_limit = None
-        """Joint effort (force/torque) limits, shape [joint_dof_count], float."""
+        """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_velocity_limit = None
-        """Joint velocity limits, shape [joint_dof_count], float."""
+        """Joint velocity limits [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
         self.joint_friction = None
-        """Joint friction coefficient, shape [joint_dof_count], float."""
+        """Joint friction force/torque [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_dof_dim = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_enabled = None
         """Controls which joint is simulated (bodies become disconnected if False, only supported by :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower = None
-        """Joint lower position limits, shape [joint_dof_count], float."""
+        """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_limit_upper = None
-        """Joint upper position limits, shape [joint_dof_count], float."""
+        """Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_limit_ke = None
-        """Joint position limit stiffness (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd = None
-        """Joint position limit damping (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_twist_lower = None
-        """Joint lower twist limit, shape [joint_count], float."""
+        """Joint lower twist limit [rad], shape [joint_count], float."""
         self.joint_twist_upper = None
-        """Joint upper twist limit, shape [joint_count], float."""
+        """Joint upper twist limit [rad], shape [joint_count], float."""
         self.joint_q_start = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start = None
@@ -521,15 +528,15 @@ class Model:
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
         self.soft_contact_ke = 1.0e3
-        """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd = 10.0
-        """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Damping of soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kf = 1.0e3
-        """Stiffness of friction force in soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Stiffness of friction force in soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_mu = 0.5
-        """Friction coefficient of soft contacts."""
+        """Friction coefficient of soft contacts [dimensionless]."""
         self.soft_contact_restitution = 0.0
-        """Restitution coefficient of soft contacts (used by :class:`SolverXPBD`)."""
+        """Restitution coefficient of soft contacts [dimensionless] (used by :class:`SolverXPBD`)."""
 
         self.rigid_contact_max = 0
         """Number of potential contact points between rigid bodies."""
@@ -537,7 +544,7 @@ class Model:
         self.up_axis = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity = None
-        """Gravity vector, shape [1], dtype vec3."""
+        """Gravity vector [m/s²], shape [1], dtype vec3."""
 
         self.equality_constraint_type = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
