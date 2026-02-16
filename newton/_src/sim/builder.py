@@ -2248,15 +2248,28 @@ class ModelBuilder:
         self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
-        # explicitly resolve the transform multiplication function to avoid
-        # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
+        xform_is_translation_only = False
+        xform_position_offset = wp.vec3()
+        if xform is not None:
+            qx = float(xform.q[0])
+            qy = float(xform.q[1])
+            qz = float(xform.q[2])
+            qw = float(xform.q[3])
+            xform_is_translation_only = qx == 0.0 and qy == 0.0 and qz == 0.0 and qw == 1.0
+            if xform_is_translation_only:
+                xform_position_offset = wp.vec3(*xform.p)
 
-        # dispatches two transform multiplies to the native implementation
-        def transform_mul(a, b):
-            out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-            transform_mul_cfunc(a, b, ctypes.byref(out))
-            return out
+        transform_mul = None
+        if xform is not None and not xform_is_translation_only:
+            # explicitly resolve the transform multiplication function to avoid
+            # repeatedly resolving builtin overloads during shape transformation
+            transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
+
+            # dispatches two transform multiplies to the native implementation
+            def transform_mul(a, b):
+                out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
+                transform_mul_cfunc(a, b, ctypes.byref(out))
+                return out
 
         start_particle_idx = self.particle_count
         start_body_idx = self.body_count
@@ -2310,7 +2323,10 @@ class ModelBuilder:
             else:
                 self.shape_body.append(-1)
                 # apply offset transform to root bodies
-                if xform is not None:
+                if xform_is_translation_only:
+                    tf = builder.shape_transform[s]
+                    self.shape_transform.append(wp.transform(tf.p + xform_position_offset, tf.q))
+                elif xform is not None:
                     self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
                 else:
                     self.shape_transform.append(builder.shape_transform[s])
@@ -2326,7 +2342,17 @@ class ModelBuilder:
             start_X_p = len(self.joint_X_p)
             self.joint_X_p.extend(builder.joint_X_p)
             self.joint_q.extend(builder.joint_q)
-            if xform is not None:
+            if xform_is_translation_only:
+                for i in range(len(builder.joint_X_p)):
+                    if builder.joint_type[i] == JointType.FREE:
+                        qi = start_q + builder.joint_q_start[i]
+                        self.joint_q[qi + 0] += xform_position_offset[0]
+                        self.joint_q[qi + 1] += xform_position_offset[1]
+                        self.joint_q[qi + 2] += xform_position_offset[2]
+                    elif builder.joint_parent[i] == -1:
+                        tf = builder.joint_X_p[i]
+                        self.joint_X_p[start_X_p + i] = wp.transform(tf.p + xform_position_offset, tf.q)
+            elif xform is not None:
                 for i in range(len(builder.joint_X_p)):
                     if builder.joint_type[i] == JointType.FREE:
                         qi = builder.joint_q_start[i]
@@ -2362,7 +2388,11 @@ class ModelBuilder:
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
             self.joint_cts_start.extend([c + self.joint_constraint_count for c in builder.joint_cts_start])
 
-        if xform is not None:
+        if xform_is_translation_only:
+            self.body_q.extend(
+                [wp.transform(body_tf.p + xform_position_offset, body_tf.q) for body_tf in builder.body_q]
+            )
+        elif xform is not None:
             for i in range(builder.body_count):
                 self.body_q.append(transform_mul(xform, builder.body_q[i]))
         else:
