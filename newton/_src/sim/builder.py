@@ -1398,6 +1398,11 @@ class ModelBuilder:
         spacing: tuple[float, float, float],
     ) -> None:
         """Replicate by adding each world explicitly through :meth:`add_world`."""
+        if spacing[0] == 0.0 and spacing[1] == 0.0 and spacing[2] == 0.0:
+            for _ in range(num_worlds):
+                self.add_world(builder, xform=None)
+            return
+
         offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
         xform = wp.transform_identity()
         for i in range(num_worlds):
@@ -1421,9 +1426,6 @@ class ModelBuilder:
                 "Call end_world() on the source builder before replicate(..., replicate_physics=True)."
             )
 
-        offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
-        xform = wp.transform_identity()
-
         start_shape_idx = self.shape_count
         shape_stride = builder.shape_count
         source_pairs = builder._collect_shape_collision_filter_pairs_array()
@@ -1432,15 +1434,21 @@ class ModelBuilder:
             order = np.lexsort((source_pairs[:, 1], source_pairs[:, 0]))
             source_pairs = source_pairs[order]
 
-        for i in range(num_worlds):
-            self.begin_world()
-            offset = offsets[i]
-            if offset[0] == 0.0 and offset[1] == 0.0 and offset[2] == 0.0:
+        if spacing[0] == 0.0 and spacing[1] == 0.0 and spacing[2] == 0.0:
+            for _ in range(num_worlds):
+                self.begin_world()
                 self.add_builder(builder, xform=None, copy_shape_collision_filter_pairs=False)
-            else:
+                self.end_world()
+            # All worlds are homogeneous and co-located; no offset grid needed.
+        else:
+            offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
+            xform = wp.transform_identity()
+            for i in range(num_worlds):
+                self.begin_world()
+                offset = offsets[i]
                 xform[:3] = offset
                 self.add_builder(builder, xform=xform, copy_shape_collision_filter_pairs=False)
-            self.end_world()
+                self.end_world()
 
         if source_pairs.size > 0:
             if shape_stride <= 0:
