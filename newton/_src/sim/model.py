@@ -204,7 +204,9 @@ class Model:
         self.shape_material_ke = None
         """Shape contact elastic stiffness [N/m], shape [shape_count], float."""
         self.shape_material_kd = None
-        """Shape contact damping stiffness [N·s/m], shape [shape_count], float."""
+        """Shape contact damping stiffness, shape [shape_count], float.
+        Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
+        but multiplied by ke as a relative damping factor by VBD."""
         self.shape_material_kf = None
         """Shape contact friction stiffness [N·s/m], shape [shape_count], float."""
         self.shape_material_ka = None
@@ -218,7 +220,8 @@ class Model:
         self.shape_material_rolling_friction = None
         """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
         self.shape_material_k_hydro = None
-        """Shape hydroelastic stiffness coefficient [N/m], shape [shape_count], float."""
+        """Shape hydroelastic stiffness coefficient [N/m³], shape [shape_count], float.
+        Contact stiffness is computed as ``area * k_hydro``, yielding an effective spring constant [N/m]."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection [m], shape [shape_count], float."""
 
@@ -530,7 +533,9 @@ class Model:
         self.soft_contact_ke = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd = 10.0
-        """Damping of soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`).
+        Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
+        but multiplied by ke as a relative damping factor by VBD."""
         self.soft_contact_kf = 1.0e3
         """Stiffness of friction force in soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_mu = 0.5
