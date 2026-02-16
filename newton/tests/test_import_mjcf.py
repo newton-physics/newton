@@ -1579,14 +1579,12 @@ class TestImportMjcf(unittest.TestCase):
             )
 
     def test_autolimits_false_tendon(self):
-        """Test that autolimits=false is respected for tendons.
+        """Tests autolimits=false handling for tendon limit flags.
 
-        With autolimits=false:
-        - Tendon with range and explicit limited="true" -> limited=1
-        - Tendon with range and explicit limited="false" -> limited=0
-        - Tendon with range and no limited attribute -> limited stays auto (MuJoCo will error,
-          but we verify Newton passes the auto value through correctly)
-        Same logic for actuatorfrclimited.
+        Verifies that explicit limited/actuatorfrclimited values are respected:
+            - explicit ``limited="true"`` -> limited=1
+            - explicit ``limited="false"`` -> limited=0
+            - same logic applies to ``actuatorfrclimited``
         """
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
