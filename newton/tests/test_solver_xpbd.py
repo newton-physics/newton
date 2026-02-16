@@ -363,7 +363,8 @@ def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
     state0.body_qd.assign(wp.array(body_vel, dtype=wp.spatial_vector, device=device))
 
     dt = 1.0 / 60.0
-    contacts = model.collide(state0)
+    contacts = model.contacts()
+    model.collide(state0, contacts)
     control = model.control()
     solver.step(state0, state1, control, contacts, dt)
 
