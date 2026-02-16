@@ -832,6 +832,34 @@ class SolverMuJoCo(SolverBase):
             s = s.strip().lower()
             return 1 if s in ("true", "1") else 0
 
+        def parse_limited(value: str, context: dict[str, Any] | None = None) -> int:
+            """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
+            v = value.lower().strip()
+            if v in ("false", "0"):
+                return 0
+            if v in ("true", "1"):
+                return 1
+            if v in ("auto", "2"):
+                return 2
+            return int(value)
+
+        def parse_presence(_value: str, _context: dict[str, Any] | None = None) -> int:
+            """Return 1 to indicate the attribute was explicitly present in the MJCF."""
+            return 1
+
+        # Compiler option (frequency ONCE for single value shared across all worlds)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="autolimits",
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=1,  # MuJoCo default: true
+                namespace="mujoco",
+                mjcf_value_transformer=parse_bool_int,
+            )
+        )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_trntype",
@@ -909,10 +937,10 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # MJCF parser auto-enables if ctrlrange is specified
+                default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
                 mjcf_attribute_name="ctrllimited",
-                mjcf_value_transformer=parse_bool_int,
+                mjcf_value_transformer=parse_limited,
             )
         )
         builder.add_custom_attribute(
@@ -921,10 +949,10 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # MJCF parser auto-enables if forcerange is specified
+                default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
                 mjcf_attribute_name="forcelimited",
-                mjcf_value_transformer=parse_bool_int,
+                mjcf_value_transformer=parse_limited,
             )
         )
         builder.add_custom_attribute(
@@ -940,6 +968,18 @@ class SolverMuJoCo(SolverBase):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="actuator_has_ctrlrange",
+                frequency="actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                mjcf_attribute_name="ctrlrange",
+                mjcf_value_transformer=parse_presence,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="actuator_forcerange",
                 frequency="actuator",
                 assignment=AttributeAssignment.MODEL,
@@ -947,6 +987,18 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
                 mjcf_attribute_name="forcerange",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_has_forcerange",
+                frequency="actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                mjcf_attribute_name="forcerange",
+                mjcf_value_transformer=parse_presence,
             )
         )
         builder.add_custom_attribute(
@@ -1003,10 +1055,10 @@ class SolverMuJoCo(SolverBase):
                 frequency="actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
-                default=0,  # MJCF parser auto-enables if actrange is specified
+                default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
                 mjcf_attribute_name="actlimited",
-                mjcf_value_transformer=parse_bool_int,
+                mjcf_value_transformer=parse_limited,
             )
         )
 
@@ -1019,6 +1071,18 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="actrange",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_has_actrange",
+                frequency="actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                mjcf_attribute_name="actrange",
+                mjcf_value_transformer=parse_presence,
             )
         )
 
@@ -1114,17 +1178,6 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="frictionloss",
             )
         )
-
-        def parse_limited(value: str, context: dict[str, Any] | None = None) -> int:
-            """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
-            v = value.lower().strip()
-            if v in ("false", "0"):
-                return 0
-            if v in ("true", "1"):
-                return 1
-            if v in ("auto", "2"):
-                return 2
-            return int(value)
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -1761,24 +1814,29 @@ class SolverMuJoCo(SolverBase):
             if hasattr(mujoco_attrs, "actuator_gear"):
                 gear_arr = mujoco_attrs.actuator_gear.numpy()[mujoco_act_idx]
                 general_args["gear"] = list(gear_arr)
-            if hasattr(mujoco_attrs, "actuator_ctrlrange"):
-                ctrlrange = mujoco_attrs.actuator_ctrlrange.numpy()[mujoco_act_idx]
-                general_args["ctrlrange"] = (ctrlrange[0], ctrlrange[1])
+            # Only pass range to MuJoCo when explicitly set in MJCF (has_*range flags),
+            # so MuJoCo can correctly resolve auto-limited flags via spec.compiler.autolimits.
+            if hasattr(mujoco_attrs, "actuator_has_ctrlrange"):
+                if int(mujoco_attrs.actuator_has_ctrlrange.numpy()[mujoco_act_idx]):
+                    ctrlrange = mujoco_attrs.actuator_ctrlrange.numpy()[mujoco_act_idx]
+                    general_args["ctrlrange"] = (ctrlrange[0], ctrlrange[1])
             if hasattr(mujoco_attrs, "actuator_ctrllimited"):
                 ctrllimited = mujoco_attrs.actuator_ctrllimited.numpy()[mujoco_act_idx]
-                general_args["ctrllimited"] = bool(ctrllimited)
-            if hasattr(mujoco_attrs, "actuator_forcerange"):
-                forcerange = mujoco_attrs.actuator_forcerange.numpy()[mujoco_act_idx]
-                general_args["forcerange"] = (forcerange[0], forcerange[1])
+                general_args["ctrllimited"] = int(ctrllimited)
+            if hasattr(mujoco_attrs, "actuator_has_forcerange"):
+                if int(mujoco_attrs.actuator_has_forcerange.numpy()[mujoco_act_idx]):
+                    forcerange = mujoco_attrs.actuator_forcerange.numpy()[mujoco_act_idx]
+                    general_args["forcerange"] = (forcerange[0], forcerange[1])
             if hasattr(mujoco_attrs, "actuator_forcelimited"):
                 forcelimited = mujoco_attrs.actuator_forcelimited.numpy()[mujoco_act_idx]
-                general_args["forcelimited"] = bool(forcelimited)
-            if hasattr(mujoco_attrs, "actuator_actrange"):
-                actrange = mujoco_attrs.actuator_actrange.numpy()[mujoco_act_idx]
-                general_args["actrange"] = (actrange[0], actrange[1])
+                general_args["forcelimited"] = int(forcelimited)
+            if hasattr(mujoco_attrs, "actuator_has_actrange"):
+                if int(mujoco_attrs.actuator_has_actrange.numpy()[mujoco_act_idx]):
+                    actrange = mujoco_attrs.actuator_actrange.numpy()[mujoco_act_idx]
+                    general_args["actrange"] = (actrange[0], actrange[1])
             if hasattr(mujoco_attrs, "actuator_actlimited"):
                 actlimited = mujoco_attrs.actuator_actlimited.numpy()[mujoco_act_idx]
-                general_args["actlimited"] = bool(actlimited)
+                general_args["actlimited"] = int(actlimited)
             if hasattr(mujoco_attrs, "actuator_actearly"):
                 actearly = mujoco_attrs.actuator_actearly.numpy()[mujoco_act_idx]
                 general_args["actearly"] = bool(actearly)
@@ -2766,6 +2824,11 @@ class SolverMuJoCo(SolverBase):
         wind = resolve_vector_option("wind", wind)
         magnetic = resolve_vector_option("magnetic", magnetic)
 
+        # Resolve autolimits compiler option from custom attributes
+        autolimits = None
+        if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
+            autolimits = int(mujoco_attrs.autolimits.numpy()[0])
+
         # Resolve ONCE frequency numeric options from custom attributes if not provided
         if iterations is None and mujoco_attrs and hasattr(mujoco_attrs, "iterations"):
             iterations = int(mujoco_attrs.iterations.numpy()[0])
@@ -2841,6 +2904,8 @@ class SolverMuJoCo(SolverBase):
             spec.option.magnetic = np.array(magnetic)
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
+        if autolimits is not None:
+            spec.compiler.autolimits = bool(autolimits)
 
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
