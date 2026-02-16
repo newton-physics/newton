@@ -671,8 +671,8 @@ class TestModel(unittest.TestCase):
         main_builder2.end_world()
         self.assertEqual(main_builder2.num_worlds, 3)  # Should now be 3
 
-    def test_replicate_physics_flag_matches_faithful_path(self):
-        """Test that replicate_physics=True and False produce identical finalized collision filters."""
+    def test_replicate_mode_fast_matches_legacy_path(self):
+        """Test that replicate(mode='fast') and replicate(mode='legacy') finalize to identical filters."""
         template = ModelBuilder()
         body = template.add_body(mass=1.0)
         shape_a = template.add_shape_sphere(body=body, radius=0.2)
@@ -680,30 +680,52 @@ class TestModel(unittest.TestCase):
         template.add_shape_collision_filter_pair(shape_a, shape_b)
 
         fast_builder = ModelBuilder()
-        fast_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0), replicate_physics=True)
+        fast_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0), mode="fast")
         fast_model = fast_builder.finalize(skip_all_validations=True)
 
-        faithful_builder = ModelBuilder()
-        faithful_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0), replicate_physics=False)
-        faithful_model = faithful_builder.finalize(skip_all_validations=True)
+        legacy_builder = ModelBuilder()
+        legacy_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0), mode="legacy")
+        legacy_model = legacy_builder.finalize(skip_all_validations=True)
 
-        self.assertEqual(fast_model.num_worlds, faithful_model.num_worlds)
-        assert_np_equal(fast_model.shape_world.numpy(), faithful_model.shape_world.numpy())
-        self.assertEqual(fast_model.shape_collision_filter_pairs, faithful_model.shape_collision_filter_pairs)
+        self.assertEqual(fast_model.num_worlds, legacy_model.num_worlds)
+        assert_np_equal(fast_model.shape_world.numpy(), legacy_model.shape_world.numpy())
+        self.assertEqual(fast_model.shape_collision_filter_pairs, legacy_model.shape_collision_filter_pairs)
         assert_np_equal(
             fast_model.shape_collision_filter_pairs_sorted.numpy(),
-            faithful_model.shape_collision_filter_pairs_sorted.numpy(),
+            legacy_model.shape_collision_filter_pairs_sorted.numpy(),
         )
 
-    def test_replicate_physics_fails_if_source_in_world_context(self):
-        """Fast replication should fail loudly if the source builder is mid world construction."""
+    def test_replicate_mode_fast_fails_if_source_in_world_context(self):
+        """Fast mode should fail loudly if the source builder is mid world construction."""
         template = ModelBuilder()
         template.begin_world()
         template.add_body(mass=1.0)
 
         builder = ModelBuilder()
-        with self.assertRaises(RuntimeError):
-            builder.replicate(template, num_worlds=1, replicate_physics=True)
+        with self.assertRaises(RuntimeError) as cm:
+            builder.replicate(template, num_worlds=1, mode="fast")
+        self.assertIn("replicate(mode='fast') unsupported", str(cm.exception))
+        self.assertIn("call end_world() first", str(cm.exception))
+
+    def test_replicate_mode_auto_falls_back_to_legacy_if_fast_unsupported(self):
+        """Auto mode should use legacy path instead of failing when fast mode is unsupported."""
+        template = ModelBuilder()
+        template.begin_world()
+        template.add_body(mass=1.0)
+
+        builder = ModelBuilder()
+        builder.replicate(template, num_worlds=2, mode="auto")
+        model = builder.finalize(skip_all_validations=True)
+        self.assertEqual(model.num_worlds, 2)
+
+    def test_replicate_mode_raises_on_invalid_mode(self):
+        """replicate() should fail loudly on unknown mode names."""
+        template = ModelBuilder()
+        template.add_body(mass=1.0)
+
+        builder = ModelBuilder()
+        with self.assertRaises(ValueError):
+            builder.replicate(template, num_worlds=1, mode="unknown")
 
     def test_world_validation_errors(self):
         """Test that world validation catches non-contiguous and non-monotonic world indices."""

@@ -1357,7 +1357,7 @@ class ModelBuilder:
         builder: ModelBuilder,
         num_worlds: int,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        replicate_physics: bool = True,
+        mode: Literal["auto", "fast", "legacy"] = "auto",
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -1377,19 +1377,39 @@ class ModelBuilder:
             spacing (tuple[float, float, float], optional): The spacing between each copy along each axis.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
-            replicate_physics (bool, optional): If True, uses homogeneous replication and compactly stores
-                repeated collision-filter pairs for faster startup. If False, uses the faithful per-world
-                replication path (equivalent to repeatedly calling :meth:`add_world`).
-                Defaults to True.
+            mode: Replication strategy:
+                - ``"auto"``: Use fast homogeneous replication when supported; otherwise fall back to legacy.
+                - ``"fast"``: Require fast homogeneous replication; raise with an explicit reason if unsupported.
+                - ``"legacy"``: Use the faithful per-world path (equivalent to repeatedly calling :meth:`add_world`).
         """
         if num_worlds < 0:
             raise ValueError(f"num_worlds must be >= 0, got {num_worlds}")
 
-        if replicate_physics:
+        if mode not in ("auto", "fast", "legacy"):
+            raise ValueError(f"replicate mode must be one of ('auto', 'fast', 'legacy'), got {mode!r}")
+
+        if mode == "legacy":
+            self._replicate_per_world(builder=builder, num_worlds=num_worlds, spacing=spacing)
+            return
+
+        fast_unsupported_reason = self._replicate_fast_path_unsupported_reason(builder=builder)
+        if fast_unsupported_reason is None:
             self._replicate_homogeneous_fast(builder=builder, num_worlds=num_worlds, spacing=spacing)
             return
 
+        if mode == "fast":
+            raise RuntimeError(f"replicate(mode='fast') unsupported: {fast_unsupported_reason}")
+
         self._replicate_per_world(builder=builder, num_worlds=num_worlds, spacing=spacing)
+
+    def _replicate_fast_path_unsupported_reason(self, builder: ModelBuilder) -> str | None:
+        """Return None when fast replicate is valid, otherwise an explicit unsupported reason."""
+        if builder.current_world != -1:
+            return (
+                "source builder is currently in world context "
+                f"(current_world={builder.current_world}); call end_world() first"
+            )
+        return None
 
     def _replicate_per_world(
         self,
@@ -1423,7 +1443,7 @@ class ModelBuilder:
         if builder.current_world != -1:
             raise RuntimeError(
                 "Cannot replicate a builder that is currently in world context. "
-                "Call end_world() on the source builder before replicate(..., replicate_physics=True)."
+                "Call end_world() on the source builder before replicate(..., mode='fast')."
             )
 
         start_shape_idx = self.shape_count
