@@ -671,6 +671,40 @@ class TestModel(unittest.TestCase):
         main_builder2.end_world()
         self.assertEqual(main_builder2.world_count, 3)  # Should now be 3
 
+    def test_replicate_physics_flag_matches_faithful_path(self):
+        """Test that replicate_physics=True and False produce identical finalized collision filters."""
+        template = ModelBuilder()
+        body = template.add_body(mass=1.0)
+        shape_a = template.add_shape_sphere(body=body, radius=0.2)
+        shape_b = template.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
+        template.add_shape_collision_filter_pair(shape_a, shape_b)
+
+        fast_builder = ModelBuilder()
+        fast_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0), replicate_physics=True)
+        fast_model = fast_builder.finalize(skip_all_validations=True)
+
+        faithful_builder = ModelBuilder()
+        faithful_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0), replicate_physics=False)
+        faithful_model = faithful_builder.finalize(skip_all_validations=True)
+
+        self.assertEqual(fast_model.num_worlds, faithful_model.num_worlds)
+        assert_np_equal(fast_model.shape_world.numpy(), faithful_model.shape_world.numpy())
+        self.assertEqual(fast_model.shape_collision_filter_pairs, faithful_model.shape_collision_filter_pairs)
+        assert_np_equal(
+            fast_model.shape_collision_filter_pairs_sorted.numpy(),
+            faithful_model.shape_collision_filter_pairs_sorted.numpy(),
+        )
+
+    def test_replicate_physics_fails_if_source_in_world_context(self):
+        """Fast replication should fail loudly if the source builder is mid world construction."""
+        template = ModelBuilder()
+        template.begin_world()
+        template.add_body(mass=1.0)
+
+        builder = ModelBuilder()
+        with self.assertRaises(RuntimeError):
+            builder.replicate(template, num_worlds=1, replicate_physics=True)
+
     def test_world_validation_errors(self):
         """Test that world validation catches non-contiguous and non-monotonic world indices."""
         # Test non-contiguous worlds

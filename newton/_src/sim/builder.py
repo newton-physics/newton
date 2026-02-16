@@ -55,6 +55,7 @@ from ..geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from ..geometry.broad_phase_nxn import BroadPhaseAllPairs
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
@@ -73,6 +74,16 @@ from .joints import (
     JointType,
 )
 from .model import Model
+
+
+@dataclass(frozen=True)
+class _ShapeCollisionFilterPairReplica:
+    """Compact description of repeated collision-filter pairs across replicated worlds."""
+
+    pairs: nparray
+    start_offset: int
+    shape_stride: int
+    repeats: int
 
 
 class ModelBuilder:
@@ -556,7 +567,7 @@ class ModelBuilder:
             gravity (float, optional): The magnitude of gravity to apply along the up axis.
                 Defaults to -9.81.
         """
-        self.world_count = 0
+        self.num_worlds = 0
 
         # region defaults
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
@@ -656,6 +667,7 @@ class ModelBuilder:
 
         # filtering to ignore certain collision pairs
         self.shape_collision_filter_pairs: list[tuple[int, int]] = []
+        self._shape_collision_filter_pair_replicas: list[_ShapeCollisionFilterPairReplica] = []
 
         self._requested_contact_attributes: set[str] = set()
         self._requested_state_attributes: set[str] = set()
@@ -822,6 +834,63 @@ class ModelBuilder:
             shape_b: Second shape index
         """
         self.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
+
+    @staticmethod
+    def _canonicalize_shape_collision_filter_pairs(pairs: nparray) -> nparray:
+        """Return canonical (s1 < s2) collision-filter pairs with shape [N, 2]."""
+        arr = np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+        if arr.size == 0:
+            return arr.astype(np.int32, copy=False)
+        swap = arr[:, 0] > arr[:, 1]
+        if np.any(swap):
+            arr[swap] = arr[swap][:, ::-1]
+        return arr.astype(np.int32, copy=False)
+
+    @staticmethod
+    def _expand_shape_collision_filter_pair_replica(replica: _ShapeCollisionFilterPairReplica) -> nparray:
+        """Expand one compact collision-filter-pair replica descriptor into explicit pairs."""
+        if replica.repeats <= 0 or replica.pairs.size == 0:
+            return np.empty((0, 2), dtype=np.int32)
+
+        base = replica.pairs.astype(np.int64, copy=False)
+        if replica.repeats == 1 and replica.shape_stride == 0:
+            return (base + np.int64(replica.start_offset)).astype(np.int32, copy=False)
+
+        offsets = np.int64(replica.start_offset) + np.int64(replica.shape_stride) * np.arange(
+            replica.repeats, dtype=np.int64
+        )
+        expanded = base[None, :, :] + offsets[:, None, None]
+        return expanded.reshape(-1, 2).astype(np.int32, copy=False)
+
+    def _collect_shape_collision_filter_pairs_array(self) -> nparray:
+        """Collect explicit collision-filter pairs from direct and compact replicated storage."""
+        pair_chunks: list[nparray] = []
+
+        if self.shape_collision_filter_pairs:
+            pair_chunks.append(np.asarray(self.shape_collision_filter_pairs, dtype=np.int32).reshape(-1, 2))
+
+        for replica in self._shape_collision_filter_pair_replicas:
+            pair_chunks.append(self._expand_shape_collision_filter_pair_replica(replica))
+
+        if not pair_chunks:
+            return np.empty((0, 2), dtype=np.int32)
+
+        return self._canonicalize_shape_collision_filter_pairs(np.concatenate(pair_chunks, axis=0))
+
+    def _add_builder_shape_collision_filter_pairs(self, builder: ModelBuilder, start_shape_idx: int) -> None:
+        """Copy collision-filter pairs from another builder with shape index remapping."""
+        if not builder._shape_collision_filter_pair_replicas:
+            # Hot path for regular builders: avoid intermediate NumPy materialization.
+            self.shape_collision_filter_pairs.extend(
+                [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
+            )
+            return
+
+        pairs = builder._collect_shape_collision_filter_pairs_array()
+        if pairs.size == 0:
+            return
+        pairs = pairs.astype(np.int64, copy=False) + np.int64(start_shape_idx)
+        self.shape_collision_filter_pairs.extend(map(tuple, pairs.tolist()))
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
         """
@@ -1286,8 +1355,9 @@ class ModelBuilder:
     def replicate(
         self,
         builder: ModelBuilder,
-        world_count: int,
+        num_worlds: int,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        replicate_physics: bool = True,
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -1303,16 +1373,76 @@ class ModelBuilder:
 
         Args:
             builder (ModelBuilder): The builder to replicate. All entities from this builder will be copied.
-            world_count (int): The number of worlds to create.
+            num_worlds (int): The number of worlds to create.
             spacing (tuple[float, float, float], optional): The spacing between each copy along each axis.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
+            replicate_physics (bool, optional): If True, uses homogeneous replication and compactly stores
+                repeated collision-filter pairs for faster startup. If False, uses the faithful per-world
+                replication path (equivalent to repeatedly calling :meth:`add_world`).
+                Defaults to True.
         """
-        offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+        if num_worlds < 0:
+            raise ValueError(f"num_worlds must be >= 0, got {num_worlds}")
+
+        if replicate_physics:
+            self._replicate_homogeneous_fast(builder=builder, num_worlds=num_worlds, spacing=spacing)
+            return
+
+        self._replicate_per_world(builder=builder, num_worlds=num_worlds, spacing=spacing)
+
+    def _replicate_per_world(
+        self,
+        builder: ModelBuilder,
+        num_worlds: int,
+        spacing: tuple[float, float, float],
+    ) -> None:
+        """Replicate by adding each world explicitly through :meth:`add_world`."""
+        offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
         xform = wp.transform_identity()
-        for i in range(world_count):
+        for i in range(num_worlds):
             xform[:3] = offsets[i]
             self.add_world(builder, xform=xform)
+
+    def _replicate_homogeneous_fast(
+        self,
+        builder: ModelBuilder,
+        num_worlds: int,
+        spacing: tuple[float, float, float],
+    ) -> None:
+        """Replicate worlds while keeping collision-filter pairs in compact replicated form."""
+        if builder.current_world != -1:
+            raise RuntimeError(
+                "Cannot replicate a builder that is currently in world context. "
+                "Call end_world() on the source builder before replicate(..., replicate_physics=True)."
+            )
+
+        offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
+        xform = wp.transform_identity()
+
+        start_shape_idx = self.shape_count
+        shape_stride = builder.shape_count
+        source_pairs = builder._collect_shape_collision_filter_pairs_array()
+
+        for i in range(num_worlds):
+            self.begin_world()
+            xform[:3] = offsets[i]
+            self.add_builder(builder, xform=xform, copy_shape_collision_filter_pairs=False)
+            self.end_world()
+
+        if source_pairs.size > 0:
+            if shape_stride <= 0:
+                raise RuntimeError(
+                    "Source builder has collision filter pairs but zero shapes, cannot replicate collision filters."
+                )
+            self._shape_collision_filter_pair_replicas.append(
+                _ShapeCollisionFilterPairReplica(
+                    pairs=source_pairs,
+                    start_offset=start_shape_idx,
+                    shape_stride=shape_stride,
+                    repeats=num_worlds,
+                )
+            )
 
     def add_articulation(
         self, joints: list[int], key: str | None = None, custom_attributes: dict[str, Any] | None = None
@@ -1999,8 +2129,8 @@ class ModelBuilder:
             )
 
         # Set the current world to the next available world index
-        self.current_world = self.world_count
-        self.world_count += 1
+        self.current_world = self.num_worlds
+        self.num_worlds += 1
 
         # Store world metadata if needed (for future use)
         # Note: We might want to add world_key and world_attributes lists in __init__ if needed
@@ -2076,6 +2206,7 @@ class ModelBuilder:
         self,
         builder: ModelBuilder,
         xform: Transform | None = None,
+        copy_shape_collision_filter_pairs: bool = True,
     ):
         """Copies the data from another `ModelBuilder` into this `ModelBuilder`.
 
@@ -2099,6 +2230,8 @@ class ModelBuilder:
         Args:
             builder (ModelBuilder): The model builder to copy data from.
             xform (Transform): Optional offset transform applied to root bodies.
+            copy_shape_collision_filter_pairs (bool): Whether to copy shape collision filter pairs.
+                Internal fast-replication paths may disable this and append compact replicas instead.
         """
 
         if builder.up_axis != self.up_axis:
@@ -2238,10 +2371,8 @@ class ModelBuilder:
         # Copy collision groups without modification
         self.shape_collision_group.extend(builder.shape_collision_group)
 
-        # Copy collision filter pairs with offset
-        self.shape_collision_filter_pairs.extend(
-            [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
-        )
+        if copy_shape_collision_filter_pairs:
+            self._add_builder_shape_collision_filter_pairs(builder, start_shape_idx=start_shape_idx)
 
         # Handle world assignments
         # For particles
@@ -4901,49 +5032,6 @@ class ModelBuilder:
             key=key,
         )
 
-    def add_shape_heightfield(
-        self,
-        xform: Transform | None = None,
-        heightfield: Any | None = None,  # Heightfield type, using Any to avoid circular import
-        scale: Vec3 | None = None,
-        cfg: ShapeConfig | None = None,
-        key: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Adds a heightfield (2D elevation grid) collision shape to the model.
-
-        Heightfields are efficient representations of terrain using a 2D grid of elevation values.
-        They are always static (attached to the world body) and more memory-efficient than
-        equivalent triangle meshes.
-
-        Args:
-            xform (Transform | None): The transform of the heightfield in world frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
-            heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
-            scale (Vec3 | None): The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
-            custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
-
-        Returns:
-            int: The index of the newly added shape.
-        """
-        if heightfield is None:
-            raise ValueError("add_shape_heightfield() requires a Heightfield instance.")
-        if cfg is None:
-            cfg = self.default_shape_cfg
-
-        return self.add_shape(
-            body=-1,
-            type=GeoType.HFIELD,
-            xform=xform,
-            cfg=cfg,
-            scale=scale,
-            src=heightfield,
-            is_static=True,
-            key=key,
-            custom_attributes=custom_attributes,
-        )
-
     def add_site(
         self,
         body: int,
@@ -7545,7 +7633,7 @@ class ModelBuilder:
         1. World indices are monotonic (non-decreasing after first non-negative)
         2. World indices are contiguous (no gaps in sequence)
         3. Global entities (world -1) only appear at beginning or end of arrays
-        4. All world indices are in valid range [-1, world_count-1]
+        4. All world indices are in valid range [-1, num_worlds-1]
 
         Raises:
             ValueError: If any validation check fails.
@@ -7569,14 +7657,14 @@ class ModelBuilder:
 
             arr = np.array(world_array, dtype=np.int32)
 
-            # Check for invalid world indices (must be in range [-1, world_count-1])
-            max_valid = self.world_count - 1
+            # Check for invalid world indices (must be in range [-1, num_worlds-1])
+            max_valid = self.num_worlds - 1
             invalid_indices = np.where((arr < -1) | (arr > max_valid))[0]
             if len(invalid_indices) > 0:
                 invalid_values = arr[invalid_indices]
                 raise ValueError(
                     f"Invalid world index in {array_name}: found value(s) {invalid_values.tolist()} "
-                    f"at indices {invalid_indices.tolist()}. Valid range is -1 to {max_valid} (world_count={self.world_count})."
+                    f"at indices {invalid_indices.tolist()}. Valid range is -1 to {max_valid} (num_worlds={self.num_worlds})."
                 )
 
             # Check for global entity positioning (world -1)
@@ -8042,7 +8130,7 @@ class ModelBuilder:
 
             # Initialize world_entity_start with zeros
             world_entity_start.clear()
-            world_entity_start.extend([0] * (self.world_count + 2))
+            world_entity_start.extend([0] * (self.num_worlds + 2))
 
             # Count global entities at the front of the entity_world array
             front_global_entity_count = 0
@@ -8055,8 +8143,8 @@ class ModelBuilder:
 
             # Compute per-world cumulative counts
             entity_world_np = np.asarray(entity_world, dtype=np.int32)
-            world_counts = np.bincount(entity_world_np[entity_world_np >= 0], minlength=self.world_count)
-            for w in range(self.world_count):
+            world_counts = np.bincount(entity_world_np[entity_world_np >= 0], minlength=self.num_worlds)
+            for w in range(self.num_worlds):
                 world_entity_start[w + 1] = world_entity_start[w] + int(world_counts[w])
 
             # Set the last element to the total entity counts over all worlds in the model
@@ -8067,8 +8155,8 @@ class ModelBuilder:
             # First build the start lists by appending tail-end global and total entity counts
             build_entity_start_array(total_count, entity_world_array, world_start_array, name)
 
-            # Ensure the world_start array has length world_count + 2 (for global entities at start/end)
-            expected_length = self.world_count + 2
+            # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
+            expected_length = self.num_worlds + 2
             if len(world_start_array) != expected_length:
                 raise ValueError(
                     f"World start indices for {name}s have incorrect length: "
@@ -8077,7 +8165,7 @@ class ModelBuilder:
 
             # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
             sum_of_counts = world_start_array[0]
-            for w in range(self.world_count + 1):
+            for w in range(self.num_worlds + 1):
                 start_idx = world_start_array[w]
                 end_idx = world_start_array[w + 1]
                 count = end_idx - start_idx
@@ -8121,7 +8209,7 @@ class ModelBuilder:
 
             # Initialize world_space_start with zeros
             world_space_start.clear()
-            world_space_start.extend([0] * (self.world_count + 2))
+            world_space_start.extend([0] * (self.num_worlds + 2))
 
             # Extend joint_space_start with total count to enable computing per-world counts
             joint_space_start_ext = copy.copy(joint_space_start)
@@ -8142,7 +8230,7 @@ class ModelBuilder:
 
             # Convert per-world counts to cumulative start indices
             world_space_start[0] += front_global_space_count
-            for w in range(self.world_count):
+            for w in range(self.num_worlds):
                 world_space_start[w + 1] += world_space_start[w]
 
             # Add total (i.e. final) entity counts to the per-world start indices
@@ -8153,8 +8241,8 @@ class ModelBuilder:
             # First finalize the start array by appending tail-end global and total entity counts
             build_joint_space_start_array(total_count, space_start_array, world_start_array, name)
 
-            # Ensure the world_start array has length world_count + 2 (for global entities at start/end)
-            expected_length = self.world_count + 2
+            # Ensure the world_start array has length num_worlds + 2 (for global entities at start/end)
+            expected_length = self.num_worlds + 2
             if len(world_start_array) != expected_length:
                 raise ValueError(
                     f"World start indices for {name}s have incorrect length: "
@@ -8163,7 +8251,7 @@ class ModelBuilder:
 
             # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
             sum_of_counts = world_start_array[0]
-            for w in range(self.world_count + 1):
+            for w in range(self.num_worlds + 1):
                 start_idx = world_start_array[w]
                 end_idx = world_start_array[w + 1]
                 count = end_idx - start_idx
@@ -8230,7 +8318,7 @@ class ModelBuilder:
         """
 
         # ensure the world count is set correctly
-        self.world_count = max(1, self.world_count)
+        self.num_worlds = max(1, self.num_worlds)
 
         # validate world ordering and contiguity
         if not skip_all_validations and not skip_validation_worlds:
@@ -8271,7 +8359,7 @@ class ModelBuilder:
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
 
-            m.world_count = self.world_count
+            m.num_worlds = self.num_worlds
 
             # ---------------------
             # particles
@@ -8355,9 +8443,29 @@ class ModelBuilder:
             )
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
-            m.shape_collision_filter_pairs = {
-                (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
-            }
+            has_colliding_shapes = any(flag & ShapeFlags.COLLIDE_SHAPES for flag in self.shape_flags)
+            if has_colliding_shapes:
+                shape_collision_filter_pairs_np = self._collect_shape_collision_filter_pairs_array()
+                if shape_collision_filter_pairs_np.size > 0:
+                    colliding_shape_mask = np.array(
+                        [bool(flag & ShapeFlags.COLLIDE_SHAPES) for flag in self.shape_flags], dtype=bool
+                    )
+                    shape_collision_filter_pairs_np = shape_collision_filter_pairs_np[
+                        colliding_shape_mask[shape_collision_filter_pairs_np[:, 0]]
+                        & colliding_shape_mask[shape_collision_filter_pairs_np[:, 1]]
+                    ]
+                if shape_collision_filter_pairs_np.size > 0:
+                    shape_collision_filter_pairs_np = np.unique(shape_collision_filter_pairs_np, axis=0)
+                    order = np.lexsort((shape_collision_filter_pairs_np[:, 1], shape_collision_filter_pairs_np[:, 0]))
+                    shape_collision_filter_pairs_np = shape_collision_filter_pairs_np[order]
+            else:
+                # If no shape-shape collisions are enabled, filter pairs are irrelevant for runtime collision.
+                shape_collision_filter_pairs_np = np.empty((0, 2), dtype=np.int32)
+
+            m.shape_collision_filter_pairs_sorted = wp.array(
+                shape_collision_filter_pairs_np, dtype=wp.vec2i, device=device
+            )
+            m.shape_collision_filter_pairs = {(int(s1), int(s2)) for s1, s2 in shape_collision_filter_pairs_np}
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
@@ -8399,14 +8507,19 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
-            for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
-            ):
+            shape_iter = ()
+            if has_colliding_shapes:
+                shape_iter = enumerate(zip(self.shape_type, self.shape_source, self.shape_scale, strict=True))
+
+            for shape_idx, (shape_type, shape_src, shape_scale) in shape_iter:
+                # Get margin to expand AABB (SDF extends beyond shape bounds by margin + thickness)
+                margin = self.shape_contact_margin[shape_idx] + self.shape_thickness[shape_idx]
+
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
-                    cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                    cache_key = (shape_type, id(shape_src), tuple(shape_scale), margin)
                 else:
-                    cache_key = (shape_type, tuple(shape_scale))
+                    cache_key = (shape_type, tuple(shape_scale), margin)
 
                 # Check cache first
                 if cache_key in shape_aabb_cache:
@@ -8423,6 +8536,10 @@ class ModelBuilder:
                         aabb_lower = aabb_lower * np.array(shape_scale)
                         aabb_upper = aabb_upper * np.array(shape_scale)
 
+                        # Expand by margin (SDF extends beyond mesh bounds)
+                        aabb_lower = aabb_lower - margin
+                        aabb_upper = aabb_upper + margin
+
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
@@ -8435,25 +8552,29 @@ class ModelBuilder:
                         aabb_lower = aabb_lower * np.array(shape_scale)
                         aabb_upper = aabb_upper * np.array(shape_scale)
 
+                        # Expand by margin
+                        aabb_lower = aabb_lower - margin
+                        aabb_upper = aabb_upper + margin
+
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.ELLIPSOID:
                         # Ellipsoid: shape_scale = (semi_axis_x, semi_axis_y, semi_axis_z)
                         sx, sy, sz = shape_scale
-                        aabb_lower = np.array([-sx, -sy, -sz])
-                        aabb_upper = np.array([sx, sy, sz])
+                        aabb_lower = np.array([-sx - margin, -sy - margin, -sz - margin])
+                        aabb_upper = np.array([sx + margin, sy + margin, sz + margin])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.BOX:
                         # Box: shape_scale = (hx, hy, hz) half-extents
                         hx, hy, hz = shape_scale
-                        aabb_lower = np.array([-hx, -hy, -hz])
-                        aabb_upper = np.array([hx, hy, hz])
+                        aabb_lower = np.array([-hx - margin, -hy - margin, -hz - margin])
+                        aabb_upper = np.array([hx + margin, hy + margin, hz + margin])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.SPHERE:
                         # Sphere: shape_scale = (radius, radius, radius)
-                        r = shape_scale[0]
+                        r = shape_scale[0] + margin
                         aabb_lower = np.array([-r, -r, -r])
                         aabb_upper = np.array([r, r, r])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
@@ -8462,24 +8583,25 @@ class ModelBuilder:
                         # Capsule: shape_scale = (radius, half_height, radius)
                         # Capsule is along Z axis with hemispherical caps (matches SDF in kernels.py)
                         r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height - r])
-                        aabb_upper = np.array([r, r, half_height + r])
+                        r_expanded = r + margin
+                        aabb_lower = np.array([-r_expanded, -r_expanded, -half_height - r_expanded])
+                        aabb_upper = np.array([r_expanded, r_expanded, half_height + r_expanded])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CYLINDER:
                         # Cylinder: shape_scale = (radius, half_height, radius)
                         # Cylinder is along Z axis (matches SDF in kernels.py)
                         r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height])
-                        aabb_upper = np.array([r, r, half_height])
+                        aabb_lower = np.array([-r - margin, -r - margin, -half_height - margin])
+                        aabb_upper = np.array([r + margin, r + margin, half_height + margin])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONE:
                         # Cone: shape_scale = (radius, half_height, radius)
                         # Cone is along Z axis (matches SDF in kernels.py)
                         r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r, -r, -half_height])
-                        aabb_upper = np.array([r, r, half_height])
+                        aabb_lower = np.array([-r - margin, -r - margin, -half_height - margin])
+                        aabb_upper = np.array([r + margin, r + margin, half_height + margin])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     else:
@@ -8495,9 +8617,15 @@ class ModelBuilder:
                 local_aabb_upper.append(aabb_upper)
                 voxel_resolution.append([nx, ny, nz])
 
-            m.shape_local_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
-            m.shape_local_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
-            m.shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
+            if not has_colliding_shapes:
+                shape_count = len(self.shape_type)
+                m.shape_local_aabb_lower = wp.zeros(shape_count, dtype=wp.vec3, device=device)
+                m.shape_local_aabb_upper = wp.zeros(shape_count, dtype=wp.vec3, device=device)
+                m.shape_voxel_resolution = wp.zeros(shape_count, dtype=wp.vec3i, device=device)
+            else:
+                m.shape_local_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
+                m.shape_local_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+                m.shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
@@ -8652,48 +8780,6 @@ class ModelBuilder:
                 m.shape_sdf_coarse_volume = [None] * len(self.shape_type)
                 m.shape_sdf_block_coords = wp.array([], dtype=wp.vec3us)
                 m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
-
-            # ---------------------
-            # heightfield collision data
-            has_heightfields = any(t == GeoType.HFIELD for t in self.shape_type)
-            if has_heightfields:
-                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
-
-                hfield_data_list = []
-                elevation_chunks = []
-                offset = 0
-                empty_hfield = create_empty_heightfield_data()
-                for i in range(len(self.shape_type)):
-                    if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
-                        hf = self.shape_source[i]
-                        hd = HeightfieldData()
-                        hd.data_offset = offset
-                        hd.nrow = hf.nrow
-                        hd.ncol = hf.ncol
-                        hd.hx = hf.hx
-                        hd.hy = hf.hy
-                        hd.min_z = hf.min_z
-                        hd.max_z = hf.max_z
-                        hfield_data_list.append(hd)
-                        elevation_chunks.append(hf.data.flatten())
-                        offset += hf.nrow * hf.ncol
-                    else:
-                        hfield_data_list.append(empty_hfield)
-                m.shape_heightfield_data = wp.array(hfield_data_list, dtype=HeightfieldData, device=device)
-                if elevation_chunks:
-                    m.heightfield_elevation_data = wp.array(
-                        np.concatenate(elevation_chunks), dtype=wp.float32, device=device
-                    )
-                else:
-                    m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
-            else:
-                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
-
-                empty_hfield = create_empty_heightfield_data()
-                m.shape_heightfield_data = wp.array(
-                    [empty_hfield] * max(len(self.shape_type), 1), dtype=HeightfieldData, device=device
-                )
-                m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
 
             # ---------------------
             # springs
@@ -8986,7 +9072,7 @@ class ModelBuilder:
             else:
                 # Fallback: use scalar gravity for all worlds
                 gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
-                gravity_vecs = [gravity_vec] * self.world_count
+                gravity_vecs = [gravity_vec] * self.num_worlds
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
@@ -9062,7 +9148,7 @@ class ModelBuilder:
                 elif freq_key == Model.AttributeFrequency.ARTICULATION:
                     count = m.articulation_count
                 elif freq_key == Model.AttributeFrequency.WORLD:
-                    count = m.world_count
+                    count = m.num_worlds
                 elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
                 elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
@@ -9152,6 +9238,71 @@ class ModelBuilder:
             - Sets `model.shape_contact_pairs` to a wp.array of shape pairs (wp.vec2i).
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
+        if wp.get_device(model.device).is_cuda:
+            self._find_shape_contact_pairs_warp(model)
+            return
+
+        self._find_shape_contact_pairs_python(model)
+
+    def _find_shape_contact_pairs_warp(self, model: Model) -> None:
+        """CUDA path for explicit contact-pair generation.
+
+        We reuse NxN broad-phase kernels as a pure pair-filtering stage by providing
+        degenerate zero-sized AABBs for every shape. Since all AABBs are identical,
+        the overlap predicate is always true, and the kernel effectively performs:
+
+        1. world-segmented pair enumeration
+        2. world/group compatibility filtering
+        3. explicit collision-filter-pair exclusion
+
+        This avoids Python O(n^2) loops during finalize for large multi-world scenes.
+        """
+        if model.shape_count < 2:
+            self._set_empty_shape_contact_pairs(model)
+            return
+
+        broadphase = BroadPhaseAllPairs(self.shape_world, shape_flags=self.shape_flags, device=model.device)
+        max_pairs = int(broadphase.num_kernel_threads)
+        if max_pairs <= 0:
+            self._set_empty_shape_contact_pairs(model)
+            return
+
+        # Degenerate boxes centered at origin for all shapes: every valid pair overlaps.
+        shape_lower = wp.zeros(model.shape_count, dtype=wp.vec3, device=model.device)
+        shape_upper = wp.zeros(model.shape_count, dtype=wp.vec3, device=model.device)
+        candidate_pair = wp.empty(max_pairs, dtype=wp.vec2i, device=model.device)
+        num_candidate_pair = wp.zeros(1, dtype=wp.int32, device=model.device)
+
+        filter_pairs = model.shape_collision_filter_pairs_sorted
+        num_filter_pairs = int(filter_pairs.shape[0]) if filter_pairs is not None else 0
+
+        broadphase.launch(
+            shape_lower=shape_lower,
+            shape_upper=shape_upper,
+            shape_contact_margin=None,
+            shape_collision_group=model.shape_collision_group,
+            shape_shape_world=model.shape_world,
+            shape_count=model.shape_count,
+            candidate_pair=candidate_pair,
+            num_candidate_pair=num_candidate_pair,
+            device=model.device,
+            filter_pairs=filter_pairs,
+            num_filter_pairs=num_filter_pairs,
+        )
+
+        pair_count = int(num_candidate_pair.numpy()[0])
+        if pair_count <= 0:
+            self._set_empty_shape_contact_pairs(model)
+            return
+
+        # Trim to exact pair count so EXPLICIT broad phase consumes only valid entries.
+        contact_pairs = wp.empty(pair_count, dtype=wp.vec2i, device=model.device)
+        wp.copy(dest=contact_pairs, src=candidate_pair[:pair_count])
+        model.shape_contact_pairs = contact_pairs
+        model.shape_contact_pair_count = pair_count
+
+    def _find_shape_contact_pairs_python(self, model: Model) -> None:
+        """CPU fallback for explicit contact-pair generation."""
         filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
         contact_pairs: list[tuple[int, int]] = []
 
@@ -9191,3 +9342,8 @@ class ModelBuilder:
 
         model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
         model.shape_contact_pair_count = len(contact_pairs)
+
+    @staticmethod
+    def _set_empty_shape_contact_pairs(model: Model) -> None:
+        model.shape_contact_pairs = wp.empty(0, dtype=wp.vec2i, device=model.device)
+        model.shape_contact_pair_count = 0

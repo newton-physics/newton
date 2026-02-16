@@ -460,20 +460,22 @@ class CollisionPipeline:
         self.reduce_contacts = reduce_contacts
         self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
 
-        # For NXN/SAP, build sorted exclusion array from model.shape_collision_filter_pairs
+        # For NXN/SAP, use pre-sorted exclusion pairs when available.
         shape_pairs_excluded = None
-        if broad_phase_mode in (BroadPhaseMode.NXN, BroadPhaseMode.SAP) and hasattr(
-            model, "shape_collision_filter_pairs"
-        ):
-            filters = model.shape_collision_filter_pairs
-            if filters:
-                sorted_pairs = sorted(filters)  # lexicographic (already canonical min,max)
-                shape_pairs_excluded = wp.array(
-                    np.array(sorted_pairs),
-                    dtype=wp.vec2i,
-                    device=model.device,
-                )
-            # else: leave None
+        if broad_phase_mode in (BroadPhaseMode.NXN, BroadPhaseMode.SAP):
+            pre_sorted_filters = getattr(model, "shape_collision_filter_pairs_sorted", None)
+            if pre_sorted_filters is not None:
+                shape_pairs_excluded = pre_sorted_filters
+            elif hasattr(model, "shape_collision_filter_pairs"):
+                filters = model.shape_collision_filter_pairs
+                if filters:
+                    sorted_pairs = sorted(filters)  # lexicographic (already canonical min,max)
+                    shape_pairs_excluded = wp.array(
+                        np.array(sorted_pairs),
+                        dtype=wp.vec2i,
+                        device=model.device,
+                    )
+                # else: leave None
 
         self.shape_pairs_excluded = shape_pairs_excluded
         self.shape_pairs_excluded_count = shape_pairs_excluded.shape[0] if shape_pairs_excluded is not None else 0
