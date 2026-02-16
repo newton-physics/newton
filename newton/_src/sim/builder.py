@@ -9354,10 +9354,8 @@ class ModelBuilder:
             self._set_empty_shape_contact_pairs(model)
             return
 
-        # Trim to exact pair count so EXPLICIT broad phase consumes only valid entries.
-        contact_pairs = wp.empty(pair_count, dtype=wp.vec2i, device=model.device)
-        wp.copy(dest=contact_pairs, src=candidate_pair[:pair_count])
-        model.shape_contact_pairs = contact_pairs
+        # Keep an exact-length view without an additional device allocation/copy.
+        model.shape_contact_pairs = candidate_pair[:pair_count]
         model.shape_contact_pair_count = pair_count
 
     def _find_shape_contact_pairs_python(self, model: Model) -> None:
