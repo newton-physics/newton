@@ -1427,6 +1427,10 @@ class ModelBuilder:
         start_shape_idx = self.shape_count
         shape_stride = builder.shape_count
         source_pairs = builder._collect_shape_collision_filter_pairs_array()
+        if source_pairs.size > 0:
+            source_pairs = np.unique(source_pairs, axis=0)
+            order = np.lexsort((source_pairs[:, 1], source_pairs[:, 0]))
+            source_pairs = source_pairs[order]
 
         for i in range(num_worlds):
             self.begin_world()
@@ -8486,6 +8490,12 @@ class ModelBuilder:
 
             has_colliding_shapes = any(flag & ShapeFlags.COLLIDE_SHAPES for flag in self.shape_flags)
             if has_colliding_shapes:
+                # Replica-only storage is pre-sorted and deduplicated by construction.
+                # In this common path we can skip global unique/sort on the expanded array.
+                skip_pair_dedup_and_sort = (
+                    len(self.shape_collision_filter_pairs) == 0 and len(self._shape_collision_filter_pair_replicas) > 0
+                )
+
                 shape_collision_filter_pairs_np = self._collect_shape_collision_filter_pairs_array()
                 if shape_collision_filter_pairs_np.size > 0:
                     colliding_shape_mask = np.array(
@@ -8495,7 +8505,7 @@ class ModelBuilder:
                         colliding_shape_mask[shape_collision_filter_pairs_np[:, 0]]
                         & colliding_shape_mask[shape_collision_filter_pairs_np[:, 1]]
                     ]
-                if shape_collision_filter_pairs_np.size > 0:
+                if shape_collision_filter_pairs_np.size > 0 and not skip_pair_dedup_and_sort:
                     shape_collision_filter_pairs_np = np.unique(shape_collision_filter_pairs_np, axis=0)
                     order = np.lexsort((shape_collision_filter_pairs_np[:, 1], shape_collision_filter_pairs_np[:, 0]))
                     shape_collision_filter_pairs_np = shape_collision_filter_pairs_np[order]
