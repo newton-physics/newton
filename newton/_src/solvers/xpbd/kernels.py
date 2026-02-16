@@ -1942,6 +1942,7 @@ def compute_contact_constraint_delta(
     relaxation: float,
     dt: float,
 ) -> float:
+    """Compute contact constraint correction for hard contacts (no compliance)."""
     denom = 0.0
     denom += wp.length_sq(linear_a) * m_inv_a
     denom += wp.length_sq(linear_b) * m_inv_b
@@ -1961,6 +1962,123 @@ def compute_contact_constraint_delta(
         delta_lambda /= dt * denom
 
     return delta_lambda * relaxation
+
+
+@wp.func
+def compute_contact_constraint_delta_compliant(
+    err: float,
+    err_dot: float,
+    tf_a: wp.transform,
+    tf_b: wp.transform,
+    m_inv_a: float,
+    m_inv_b: float,
+    I_inv_a: wp.mat33,
+    I_inv_b: wp.mat33,
+    linear_a: wp.vec3,
+    linear_b: wp.vec3,
+    angular_a: wp.vec3,
+    angular_b: wp.vec3,
+    lambda_accumulated: float,
+    relaxation: float,
+    ke: float,
+    kd: float,
+    max_result_velocity: float,
+    dt: float,
+) -> float:
+    """Compute contact constraint correction using ke/kd directly.
+
+    Uses a simplified XPBD formula inspired by Erin Catto's Box2D approach::
+
+        alpha_tilde = 1 / (ke * dt)     (scaled compliance from stiffness)
+        gamma = 1 / kd                  (damping compliance, inverse of damping coefficient)
+        delta_lambda = -(C + alpha_tilde*lambda + gamma*C_dot) / (dt*w + alpha_tilde)
+
+    Note: This is a simplified variant of the full XPBD damped constraint formula.
+    The simplification removes the (1 + gamma/dt) term from the denominator, which
+    provides stable behavior while being compatible with direct ke/kd parameters.
+
+    This produces physically correct spring-damper behavior:
+        - Equilibrium penetration: x_eq = mg/ke (matches spring physics)
+        - Damping: Higher kd values produce faster damping (lower gamma = 1/kd)
+
+    Args:
+        err: Constraint error C (penetration depth, negative when penetrating)
+        err_dot: Constraint velocity C_dot (relative normal velocity)
+        ke: Contact elastic stiffness (N/m)
+        kd: Contact damping coefficient (Ns/m)
+        lambda_accumulated: Accumulated Lagrange multiplier from previous iterations
+        dt: Timestep size
+    """
+    # Compute generalized inverse mass w = gradC^T * M^(-1) * gradC
+    w = 0.0
+    w += wp.length_sq(linear_a) * m_inv_a
+    w += wp.length_sq(linear_b) * m_inv_b
+
+    q1 = wp.transform_get_rotation(tf_a)
+    q2 = wp.transform_get_rotation(tf_b)
+
+    # Transform angular components to body frame for correct inertia computation
+    rot_angular_a = wp.quat_rotate_inv(q1, angular_a)
+    rot_angular_b = wp.quat_rotate_inv(q2, angular_b)
+
+    w += wp.dot(rot_angular_a, I_inv_a * rot_angular_a)
+    w += wp.dot(rot_angular_b, I_inv_b * rot_angular_b)
+
+    # XPBD soft contact with accumulated lambda
+    #
+    # Standard XPBD formula: delta_lambda = -(C + alpha_tilde*lambda) / (w + alpha_tilde)
+    # where alpha_tilde is the scaled compliance and lambda is accumulated this timestep.
+    #
+    # Key insight: apply_body_deltas computes position change as:
+    #   delta_x = lambda * inv_m * dt
+    #
+    # For the hard contact formula: delta_lambda = -err / (dt * w)
+    # With w = inv_m, this gives delta_x = -err (corrects full penetration).
+    #
+    # For XPBD soft contacts:
+    #   alpha = 1/ke (compliance = inverse stiffness)
+    #   alpha_tilde = alpha/dt = 1/(ke*dt) (scaled compliance, accounts for dt in position update)
+    #
+    # At convergence (delta_lambda -> 0): C + alpha_tilde*lambda_total = 0
+    #   lambda_total = -C/alpha_tilde = -err/(1/(ke*dt)) = -err*ke*dt
+    #   delta_x_total = lambda_total*inv_m*dt = -err*ke*dt^2/m
+    #
+    # At equilibrium (delta_x_contact = delta_x_gravity = g*dt^2):
+    #   |err|*ke*dt^2/m = g*dt^2
+    #   |err| = m*g/ke (physically correct spring equilibrium!)
+
+    delta_lambda = 0.0
+    if ke > 0.0 and w > 0.0:
+        # Scaled compliance: alpha_tilde = alpha/dt = 1/(ke*dt)
+        # This scaling accounts for apply_body_deltas multiplying by dt
+        alpha_tilde = 1.0 / (ke * dt)
+
+        # Damping term (velocity-proportional)
+        damping_term = 0.0
+        if kd > 0.0:
+            # gamma = 1/kd gives damping proportional to velocity
+            gamma = 1.0 / kd
+            damping_term = gamma * err_dot
+
+        # XPBD formula: delta_lambda = -(C + alpha_tilde*lambda + gamma*C_dot) / (dt*w + alpha_tilde)
+        # The dt*w term matches the hard contact formula structure
+        numerator = -(err + alpha_tilde * lambda_accumulated + damping_term)
+        denominator = dt * w + alpha_tilde
+
+        delta_lambda = 0.0
+        if denominator > 0.0:
+            delta_lambda = numerator / denominator
+
+        delta_lambda *= relaxation
+
+    # Clamp resulting velocity to prevent explosive separation
+    if max_result_velocity > 0.0 and w > 0.0:
+        v_new = err_dot + delta_lambda * w
+        if v_new > max_result_velocity:
+            delta_lambda = (max_result_velocity - err_dot) / w
+            delta_lambda = wp.max(delta_lambda, 0.0)
+
+    return delta_lambda
 
 
 @wp.func
@@ -2070,6 +2188,7 @@ def solve_body_contact_positions(
     deltas: wp.array(dtype=wp.spatial_vector),
     contact_inv_weight: wp.array(dtype=float),
 ):
+    """Solve rigid body contact position constraints using hard contacts (no compliance)."""
     tid = wp.tid()
 
     count = contact_count[0]
@@ -2172,7 +2291,19 @@ def solve_body_contact_positions(
             wp.atomic_add(contact_inv_weight, body_b, 1.0)
 
     lambda_n = compute_contact_constraint_delta(
-        d, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, -n, n, angular_a, angular_b, relaxation, dt
+        d,
+        X_wb_a,
+        X_wb_b,
+        m_inv_a,
+        m_inv_b,
+        I_inv_a,
+        I_inv_b,
+        -n,
+        n,
+        angular_a,
+        angular_b,
+        relaxation,
+        dt,
     )
 
     lin_delta_a = -n * lambda_n
@@ -2235,7 +2366,19 @@ def solve_body_contact_positions(
         if wp.abs(err) > 0.0:
             lin = wp.vec3(0.0)
             lambda_torsion = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -n, n, relaxation, dt
+                err,
+                X_wb_a,
+                X_wb_b,
+                m_inv_a,
+                m_inv_b,
+                I_inv_a,
+                I_inv_b,
+                lin,
+                lin,
+                -n,
+                n,
+                relaxation,
+                dt,
             )
 
             lambda_torsion = wp.clamp(lambda_torsion, -lambda_n * torsional_friction, lambda_n * torsional_friction)
@@ -2250,10 +2393,351 @@ def solve_body_contact_positions(
             lin = wp.vec3(0.0)
             roll_n = wp.normalize(delta_omega)
             lambda_roll = compute_contact_constraint_delta(
-                err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -roll_n, roll_n, relaxation, dt
+                err,
+                X_wb_a,
+                X_wb_b,
+                m_inv_a,
+                m_inv_b,
+                I_inv_a,
+                I_inv_b,
+                lin,
+                lin,
+                -roll_n,
+                roll_n,
+                relaxation,
+                dt,
             )
 
             lambda_roll = wp.max(lambda_roll, -lambda_n * rolling_friction)
+
+            ang_delta_a -= roll_n * lambda_roll
+            ang_delta_b += roll_n * lambda_roll
+
+    if body_a >= 0:
+        wp.atomic_add(deltas, body_a, wp.spatial_vector(lin_delta_a, ang_delta_a))
+    if body_b >= 0:
+        wp.atomic_add(deltas, body_b, wp.spatial_vector(lin_delta_b, ang_delta_b))
+
+
+@wp.kernel
+def solve_body_contact_positions_shape_material(
+    body_q: wp.array(dtype=wp.transform),
+    body_qd: wp.array(dtype=wp.spatial_vector),
+    body_com: wp.array(dtype=wp.vec3),
+    body_m_inv: wp.array(dtype=float),
+    body_I_inv: wp.array(dtype=wp.mat33),
+    shape_body: wp.array(dtype=int),
+    contact_count: wp.array(dtype=int),
+    contact_point0: wp.array(dtype=wp.vec3),
+    contact_point1: wp.array(dtype=wp.vec3),
+    contact_offset0: wp.array(dtype=wp.vec3),
+    contact_offset1: wp.array(dtype=wp.vec3),
+    contact_normal: wp.array(dtype=wp.vec3),
+    contact_thickness0: wp.array(dtype=float),
+    contact_thickness1: wp.array(dtype=float),
+    contact_shape0: wp.array(dtype=int),
+    contact_shape1: wp.array(dtype=int),
+    shape_material_mu: wp.array(dtype=float),
+    shape_material_torsional_friction: wp.array(dtype=float),
+    shape_material_rolling_friction: wp.array(dtype=float),
+    shape_material_ke: wp.array(dtype=float),
+    shape_material_kd: wp.array(dtype=float),
+    relaxation: float,
+    max_depenetration_velocity: float,
+    dt: float,
+    # outputs
+    deltas: wp.array(dtype=wp.spatial_vector),
+    contact_inv_weight: wp.array(dtype=float),
+    contact_lambda: wp.array(dtype=float),
+):
+    """Solve rigid body contact position constraints using per-shape material properties.
+
+    This kernel variant uses shape_material_ke (stiffness) and shape_material_kd (damping)
+    to compute per-contact compliance and damping, enabling consistent contact behavior
+    with MuJoCo solver when using the same shape material properties.
+
+    The contact_lambda array stores accumulated Lagrange multipliers across iterations,
+    which is essential for XPBD compliance to work correctly. Without accumulated lambda,
+    the equilibrium would always be zero penetration (hard contact) regardless of stiffness.
+    """
+    tid = wp.tid()
+
+    count = contact_count[0]
+    if tid >= count:
+        return
+
+    shape_a = contact_shape0[tid]
+    shape_b = contact_shape1[tid]
+    if shape_a == shape_b:
+        return
+    body_a = -1
+    if shape_a >= 0:
+        body_a = shape_body[shape_a]
+    body_b = -1
+    if shape_b >= 0:
+        body_b = shape_body[shape_b]
+    if body_a == body_b:
+        return
+
+    # find body to world transform
+    X_wb_a = wp.transform_identity()
+    X_wb_b = wp.transform_identity()
+    if body_a >= 0:
+        X_wb_a = body_q[body_a]
+    if body_b >= 0:
+        X_wb_b = body_q[body_b]
+
+    # compute body position in world space
+    bx_a = wp.transform_point(X_wb_a, contact_point0[tid])
+    bx_b = wp.transform_point(X_wb_b, contact_point1[tid])
+
+    thickness = contact_thickness0[tid] + contact_thickness1[tid]
+    n = -contact_normal[tid]
+    d = wp.dot(n, bx_b - bx_a) - thickness
+
+    if d >= 0.0:
+        return
+
+    m_inv_a = 0.0
+    m_inv_b = 0.0
+    I_inv_a = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    I_inv_b = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    # center of mass in body frame
+    com_a = wp.vec3(0.0)
+    com_b = wp.vec3(0.0)
+    # body to world transform
+    X_wb_a = wp.transform_identity()
+    X_wb_b = wp.transform_identity()
+    # angular velocities
+    omega_a = wp.vec3(0.0)
+    omega_b = wp.vec3(0.0)
+    # contact offset in body frame
+    offset_a = contact_offset0[tid]
+    offset_b = contact_offset1[tid]
+
+    # linear velocities
+    vel_a = wp.vec3(0.0)
+    vel_b = wp.vec3(0.0)
+
+    if body_a >= 0:
+        X_wb_a = body_q[body_a]
+        com_a = body_com[body_a]
+        m_inv_a = body_m_inv[body_a]
+        I_inv_a = body_I_inv[body_a]
+        vel_a = wp.spatial_top(body_qd[body_a])
+        omega_a = wp.spatial_bottom(body_qd[body_a])
+
+    if body_b >= 0:
+        X_wb_b = body_q[body_b]
+        com_b = body_com[body_b]
+        m_inv_b = body_m_inv[body_b]
+        I_inv_b = body_I_inv[body_b]
+        vel_b = wp.spatial_top(body_qd[body_b])
+        omega_b = wp.spatial_bottom(body_qd[body_b])
+
+    # use average contact material properties
+    mat_nonzero = 0
+    mu = 0.0
+    torsional_friction = 0.0
+    rolling_friction = 0.0
+    ke = 0.0
+    kd = 0.0
+    if shape_a >= 0:
+        mat_nonzero += 1
+        mu += shape_material_mu[shape_a]
+        torsional_friction += shape_material_torsional_friction[shape_a]
+        rolling_friction += shape_material_rolling_friction[shape_a]
+        ke += shape_material_ke[shape_a]
+        kd += shape_material_kd[shape_a]
+    if shape_b >= 0:
+        mat_nonzero += 1
+        mu += shape_material_mu[shape_b]
+        torsional_friction += shape_material_torsional_friction[shape_b]
+        rolling_friction += shape_material_rolling_friction[shape_b]
+        ke += shape_material_ke[shape_b]
+        kd += shape_material_kd[shape_b]
+    if mat_nonzero > 0:
+        mu /= float(mat_nonzero)
+        torsional_friction /= float(mat_nonzero)
+        rolling_friction /= float(mat_nonzero)
+        ke /= float(mat_nonzero)
+        kd /= float(mat_nonzero)
+
+    r_a = bx_a - wp.transform_point(X_wb_a, com_a)
+    r_b = bx_b - wp.transform_point(X_wb_b, com_b)
+
+    angular_a = -wp.cross(r_a, n)
+    angular_b = wp.cross(r_b, n)
+
+    # Compute relative normal velocity (time derivative of penetration depth d)
+    # v_point = v_com + omega x r
+    v_a_point = vel_a + wp.cross(omega_a, r_a)
+    v_b_point = vel_b + wp.cross(omega_b, r_b)
+    # Relative velocity of B w.r.t. A, projected onto normal
+    # d_dot > 0 means separating, d_dot < 0 means approaching
+    d_dot = wp.dot(n, v_b_point - v_a_point)
+
+    if contact_inv_weight:
+        if body_a >= 0:
+            wp.atomic_add(contact_inv_weight, body_a, 1.0)
+        if body_b >= 0:
+            wp.atomic_add(contact_inv_weight, body_b, 1.0)
+
+    # Read accumulated lambda for this contact
+    lambda_accumulated = 0.0
+    if contact_lambda:
+        lambda_accumulated = contact_lambda[tid]
+
+    delta_lambda_n = compute_contact_constraint_delta_compliant(
+        d,
+        d_dot,
+        X_wb_a,
+        X_wb_b,
+        m_inv_a,
+        m_inv_b,
+        I_inv_a,
+        I_inv_b,
+        -n,
+        n,
+        angular_a,
+        angular_b,
+        lambda_accumulated,
+        relaxation,
+        ke,
+        kd,
+        max_depenetration_velocity,
+        dt,
+    )
+
+    # Box2D-style accumulated impulse clamping (Erin Catto's approach):
+    # For contacts (unilateral constraints), total accumulated lambda must be >= 0
+    # (we can only push apart, never pull together)
+    #
+    # Instead of clamping delta_lambda directly, we:
+    # 1. Compute new_lambda = old_lambda + delta_lambda (unconstrained)
+    # 2. Clamp: new_lambda = max(new_lambda, 0)
+    # 3. Derive actual_delta = new_lambda - old_lambda
+    # 4. Apply actual_delta
+    #
+    # This allows negative delta_lambda to reduce accumulated impulse toward 0,
+    # which is essential for XPBD to find the correct equilibrium.
+    if contact_lambda:
+        old_lambda = contact_lambda[tid]
+        new_lambda = old_lambda + delta_lambda_n
+        new_lambda = wp.max(new_lambda, 0.0)  # Clamp total, not delta
+        delta_lambda_n = new_lambda - old_lambda  # Actual delta to apply
+        contact_lambda[tid] = new_lambda
+
+    lin_delta_a = -n * delta_lambda_n
+    lin_delta_b = n * delta_lambda_n
+    ang_delta_a = angular_a * delta_lambda_n
+    ang_delta_b = angular_b * delta_lambda_n
+
+    # linear friction
+    if mu > 0.0:
+        # add on displacement from surface offsets, this ensures we include any rotational effects due to thickness from feature
+        # need to use the current rotation to account for friction due to angular effects (e.g.: slipping contact)
+        bx_a += wp.transform_vector(X_wb_a, offset_a)
+        bx_b += wp.transform_vector(X_wb_b, offset_b)
+
+        # update delta
+        delta = bx_b - bx_a
+        friction_delta = delta - wp.dot(n, delta) * n
+
+        perp = wp.normalize(friction_delta)
+
+        r_a = bx_a - wp.transform_point(X_wb_a, com_a)
+        r_b = bx_b - wp.transform_point(X_wb_b, com_b)
+
+        angular_a = -wp.cross(r_a, perp)
+        angular_b = wp.cross(r_b, perp)
+
+        err = wp.length(friction_delta)
+
+        if err > 0.0:
+            lambda_fr = compute_contact_constraint_delta(
+                err,
+                X_wb_a,
+                X_wb_b,
+                m_inv_a,
+                m_inv_b,
+                I_inv_a,
+                I_inv_b,
+                -perp,
+                perp,
+                angular_a,
+                angular_b,
+                relaxation,
+                dt,
+            )
+
+            # limit friction based on incremental normal force, good approximation to limiting on total force
+            # Use abs(delta_lambda_n) since delta_lambda_n can be negative after Box2D-style clamping
+            lambda_fr = wp.max(lambda_fr, -wp.abs(delta_lambda_n) * mu)
+
+            lin_delta_a -= perp * lambda_fr
+            lin_delta_b += perp * lambda_fr
+
+            ang_delta_a += angular_a * lambda_fr
+            ang_delta_b += angular_b * lambda_fr
+
+    delta_omega = omega_b - omega_a
+
+    if torsional_friction > 0.0:
+        err = wp.dot(delta_omega, n) * dt
+
+        if wp.abs(err) > 0.0:
+            lin = wp.vec3(0.0)
+            lambda_torsion = compute_contact_constraint_delta(
+                err,
+                X_wb_a,
+                X_wb_b,
+                m_inv_a,
+                m_inv_b,
+                I_inv_a,
+                I_inv_b,
+                lin,
+                lin,
+                -n,
+                n,
+                relaxation,
+                dt,
+            )
+
+            # Use abs(delta_lambda_n) since delta_lambda_n can be negative after Box2D-style clamping
+            # Without abs(), inverted clamp bounds would cause undefined behavior
+            abs_lambda_n = wp.abs(delta_lambda_n)
+            lambda_torsion = wp.clamp(
+                lambda_torsion, -abs_lambda_n * torsional_friction, abs_lambda_n * torsional_friction
+            )
+
+            ang_delta_a -= n * lambda_torsion
+            ang_delta_b += n * lambda_torsion
+
+    if rolling_friction > 0.0:
+        delta_omega -= wp.dot(n, delta_omega) * n
+        err = wp.length(delta_omega) * dt
+        if err > 0.0:
+            lin = wp.vec3(0.0)
+            roll_n = wp.normalize(delta_omega)
+            lambda_roll = compute_contact_constraint_delta(
+                err,
+                X_wb_a,
+                X_wb_b,
+                m_inv_a,
+                m_inv_b,
+                I_inv_a,
+                I_inv_b,
+                lin,
+                lin,
+                -roll_n,
+                roll_n,
+                relaxation,
+                dt,
+            )
+
+            # Use abs(delta_lambda_n) since delta_lambda_n can be negative after Box2D-style clamping
+            lambda_roll = wp.max(lambda_roll, -wp.abs(delta_lambda_n) * rolling_friction)
 
             ang_delta_a -= roll_n * lambda_roll
             ang_delta_b += roll_n * lambda_roll

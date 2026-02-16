@@ -27,6 +27,7 @@ from .kernels import (
     apply_rigid_restitution,
     bending_constraint,
     solve_body_contact_positions,
+    solve_body_contact_positions_shape_material,
     solve_body_joints,
     solve_particle_particle_contacts,
     solve_particle_shape_contacts,
@@ -46,6 +47,33 @@ class SolverXPBD(SolverBase):
 
     After constructing :class:`Model`, :class:`State`, and :class:`Control` (optional) objects, this time-integrator
     may be used to advance the simulation state forward in time.
+
+    Args:
+        model: The simulation model
+        iterations: Number of solver iterations per substep
+        soft_body_relaxation: Relaxation factor for soft body constraints
+        soft_contact_relaxation: Relaxation factor for soft body contacts
+        joint_linear_relaxation: Relaxation factor for joint linear constraints
+        joint_angular_relaxation: Relaxation factor for joint angular constraints
+        joint_linear_compliance: Compliance for joint linear constraints
+        joint_angular_compliance: Compliance for joint angular constraints
+        rigid_contact_relaxation: Relaxation factor for rigid contact constraints (0.0-1.0)
+        rigid_contact_use_shape_material: When True, uses per-shape ``shape_material_ke`` (stiffness)
+            and ``shape_material_kd`` (damping) to compute contact compliance and damping.
+            This enables consistent contact behavior with MuJoCo solver. When False (default),
+            uses hard contacts with no compliance.
+        rigid_contact_con_weighting: Whether to weight contact corrections by contact count
+        rigid_contact_max_depenetration_velocity: Hard limit on the resulting relative normal
+            velocity (m/s) at contact points after contact resolution. Only used when
+            ``rigid_contact_use_shape_material=True``. This clamps how fast the contact points
+            can be separating after the impulse is applied, preventing violent "explosion"
+            artifacts when objects are deeply interpenetrating. Set to 0 to disable (default).
+            Typical values: 1-5 m/s.
+        angular_damping: Angular velocity damping factor applied during integration.
+            Reduces angular velocity by a factor of (1 - angular_damping * dt) each step.
+            Set to 0.0 (default) for no damping. Note: this is an approximate linear
+            damping model, not exact exponential decay.
+        enable_restitution: Whether to enable contact restitution (bounciness)
 
     Example
     -------
@@ -72,7 +100,9 @@ class SolverXPBD(SolverBase):
         joint_linear_compliance: float = 0.0,
         joint_angular_compliance: float = 0.0,
         rigid_contact_relaxation: float = 0.8,
+        rigid_contact_use_shape_material: bool = False,
         rigid_contact_con_weighting: bool = True,
+        rigid_contact_max_depenetration_velocity: float = 0.0,
         angular_damping: float = 0.0,
         enable_restitution: bool = False,
     ):
@@ -88,7 +118,9 @@ class SolverXPBD(SolverBase):
         self.joint_angular_compliance = joint_angular_compliance
 
         self.rigid_contact_relaxation = rigid_contact_relaxation
+        self.rigid_contact_use_shape_material = rigid_contact_use_shape_material
         self.rigid_contact_con_weighting = rigid_contact_con_weighting
+        self.rigid_contact_max_depenetration_velocity = rigid_contact_max_depenetration_velocity
 
         self.angular_damping = angular_damping
 
@@ -231,6 +263,14 @@ class SolverXPBD(SolverBase):
             if self.rigid_contact_con_weighting:
                 rigid_contact_inv_weight = wp.zeros(model.body_count, dtype=float, device=model.device)
             rigid_contact_inv_weight_init = None
+            # Allocate accumulated lambda for XPBD compliant contacts
+            # This is zeroed at the start of each step and accumulated across iterations
+            if self.rigid_contact_use_shape_material and contacts.rigid_contact_max > 0:
+                contact_lambda = wp.zeros(contacts.rigid_contact_max, dtype=float, device=model.device)
+            else:
+                contact_lambda = None
+        else:
+            contact_lambda = None
 
         if control is None:
             control = model.control(clone_variables=False)
@@ -519,38 +559,79 @@ class SolverXPBD(SolverBase):
                             rigid_contact_inv_weight.zero_()
                         body_deltas.zero_()
 
-                        wp.launch(
-                            kernel=solve_body_contact_positions,
-                            dim=contacts.rigid_contact_max,
-                            inputs=[
-                                body_q,
-                                body_qd,
-                                model.body_com,
-                                model.body_inv_mass,
-                                model.body_inv_inertia,
-                                model.shape_body,
-                                contacts.rigid_contact_count,
-                                contacts.rigid_contact_point0,
-                                contacts.rigid_contact_point1,
-                                contacts.rigid_contact_offset0,
-                                contacts.rigid_contact_offset1,
-                                contacts.rigid_contact_normal,
-                                contacts.rigid_contact_thickness0,
-                                contacts.rigid_contact_thickness1,
-                                contacts.rigid_contact_shape0,
-                                contacts.rigid_contact_shape1,
-                                model.shape_material_mu,
-                                model.shape_material_torsional_friction,
-                                model.shape_material_rolling_friction,
-                                self.rigid_contact_relaxation,
-                                dt,
-                            ],
-                            outputs=[
-                                body_deltas,
-                                rigid_contact_inv_weight,
-                            ],
-                            device=model.device,
-                        )
+                        if self.rigid_contact_use_shape_material:
+                            # Use per-shape ke/kd for contact compliance (MuJoCo-compatible)
+                            # contact_lambda accumulates across iterations for proper XPBD compliance
+                            wp.launch(
+                                kernel=solve_body_contact_positions_shape_material,
+                                dim=contacts.rigid_contact_max,
+                                inputs=[
+                                    body_q,
+                                    body_qd,
+                                    model.body_com,
+                                    model.body_inv_mass,
+                                    model.body_inv_inertia,
+                                    model.shape_body,
+                                    contacts.rigid_contact_count,
+                                    contacts.rigid_contact_point0,
+                                    contacts.rigid_contact_point1,
+                                    contacts.rigid_contact_offset0,
+                                    contacts.rigid_contact_offset1,
+                                    contacts.rigid_contact_normal,
+                                    contacts.rigid_contact_thickness0,
+                                    contacts.rigid_contact_thickness1,
+                                    contacts.rigid_contact_shape0,
+                                    contacts.rigid_contact_shape1,
+                                    model.shape_material_mu,
+                                    model.shape_material_torsional_friction,
+                                    model.shape_material_rolling_friction,
+                                    model.shape_material_ke,
+                                    model.shape_material_kd,
+                                    self.rigid_contact_relaxation,
+                                    self.rigid_contact_max_depenetration_velocity,
+                                    dt,
+                                ],
+                                outputs=[
+                                    body_deltas,
+                                    rigid_contact_inv_weight,
+                                    contact_lambda,
+                                ],
+                                device=model.device,
+                            )
+                        else:
+                            # Use hard contacts (no compliance)
+                            wp.launch(
+                                kernel=solve_body_contact_positions,
+                                dim=contacts.rigid_contact_max,
+                                inputs=[
+                                    body_q,
+                                    body_qd,
+                                    model.body_com,
+                                    model.body_inv_mass,
+                                    model.body_inv_inertia,
+                                    model.shape_body,
+                                    contacts.rigid_contact_count,
+                                    contacts.rigid_contact_point0,
+                                    contacts.rigid_contact_point1,
+                                    contacts.rigid_contact_offset0,
+                                    contacts.rigid_contact_offset1,
+                                    contacts.rigid_contact_normal,
+                                    contacts.rigid_contact_thickness0,
+                                    contacts.rigid_contact_thickness1,
+                                    contacts.rigid_contact_shape0,
+                                    contacts.rigid_contact_shape1,
+                                    model.shape_material_mu,
+                                    model.shape_material_torsional_friction,
+                                    model.shape_material_rolling_friction,
+                                    self.rigid_contact_relaxation,
+                                    dt,
+                                ],
+                                outputs=[
+                                    body_deltas,
+                                    rigid_contact_inv_weight,
+                                ],
+                                device=model.device,
+                            )
 
                         # if model.rigid_contact_count.numpy()[0] > 0:
                         #     print("rigid_contact_count:", model.rigid_contact_count.numpy().flatten())
