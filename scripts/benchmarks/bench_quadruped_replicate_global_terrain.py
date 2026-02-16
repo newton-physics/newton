@@ -184,7 +184,85 @@ def _aggregate(records: list[RunRecord]) -> list[dict[str, float | int | str]]:
     return summaries
 
 
-def _write_outputs(out_dir: Path, records: list[RunRecord], summary_rows: list[dict[str, float | int | str]]) -> None:
+def _add_legacy_effects(summary_rows: list[dict[str, float | int | str]]) -> list[dict[str, float | int | str]]:
+    by_world: dict[int, dict[str, dict[str, float | int | str]]] = {}
+    for row in summary_rows:
+        num_worlds = int(row["num_worlds"])
+        mode = str(row["mode"])
+        by_world.setdefault(num_worlds, {})[mode] = row
+
+    metric_keys = [
+        "robot_build_median_seconds",
+        "replicate_median_seconds",
+        "terrain_build_once_median_seconds",
+        "finalize_median_seconds",
+        "replicate_path_only_median_seconds",
+        "total_startup_median_seconds",
+    ]
+    phase_keys = [
+        "robot_build_median_seconds",
+        "replicate_median_seconds",
+        "terrain_build_once_median_seconds",
+        "finalize_median_seconds",
+    ]
+
+    enriched_rows: list[dict[str, float | int | str]] = []
+    for row in summary_rows:
+        num_worlds = int(row["num_worlds"])
+        mode = str(row["mode"])
+        if "legacy" not in by_world[num_worlds]:
+            raise ValueError(f"missing legacy row for num_worlds={num_worlds}")
+        legacy = by_world[num_worlds]["legacy"]
+
+        enriched = dict(row)
+        total_delta = float(row["total_startup_median_seconds"]) - float(legacy["total_startup_median_seconds"])
+
+        for key in metric_keys:
+            base = key.replace("_median_seconds", "")
+            current_value = float(row[key])
+            legacy_value = float(legacy[key])
+            if legacy_value == 0.0:
+                raise ValueError(f"legacy baseline for {key} is zero at num_worlds={num_worlds}")
+            delta_seconds = current_value - legacy_value
+            delta_percent = (delta_seconds / legacy_value) * 100.0
+            enriched[f"{base}_delta_vs_legacy_seconds"] = delta_seconds
+            enriched[f"{base}_delta_vs_legacy_percent"] = delta_percent
+
+        if float(row["replicate_path_only_median_seconds"]) == 0.0:
+            raise ValueError(f"replicate_path_only_median_seconds is zero at num_worlds={num_worlds}, mode={mode}")
+        if float(row["total_startup_median_seconds"]) == 0.0:
+            raise ValueError(f"total_startup_median_seconds is zero at num_worlds={num_worlds}, mode={mode}")
+        enriched["replicate_path_only_speedup_vs_legacy_x"] = float(
+            legacy["replicate_path_only_median_seconds"]
+        ) / float(row["replicate_path_only_median_seconds"])
+        enriched["total_startup_speedup_vs_legacy_x"] = float(legacy["total_startup_median_seconds"]) / float(
+            row["total_startup_median_seconds"]
+        )
+
+        for key in phase_keys:
+            base = key.replace("_median_seconds", "")
+            if mode == "legacy":
+                contribution_percent = 0.0
+            else:
+                if total_delta == 0.0:
+                    raise ValueError(
+                        f"total_startup delta is zero for non-legacy row at num_worlds={num_worlds}, mode={mode}"
+                    )
+                phase_delta = float(row[key]) - float(legacy[key])
+                contribution_percent = (phase_delta / total_delta) * 100.0
+            enriched[f"{base}_contribution_to_total_delta_percent"] = contribution_percent
+
+        enriched_rows.append(enriched)
+
+    return enriched_rows
+
+
+def _write_outputs(
+    out_dir: Path,
+    records: list[RunRecord],
+    summary_rows: list[dict[str, float | int | str]],
+    summary_effect_rows: list[dict[str, float | int | str]],
+) -> None:
     out_dir.mkdir(parents=True)
 
     run_records_path = out_dir / "run_records.json"
@@ -199,6 +277,16 @@ def _write_outputs(out_dir: Path, records: list[RunRecord], summary_rows: list[d
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(summary_rows)
+
+    summary_effect_json_path = out_dir / "summary_effects_vs_legacy.json"
+    summary_effect_json_path.write_text(json.dumps(summary_effect_rows, indent=2), encoding="utf-8")
+
+    summary_effect_csv_path = out_dir / "summary_effects_vs_legacy.csv"
+    effect_fieldnames = list(summary_effect_rows[0].keys())
+    with summary_effect_csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=effect_fieldnames)
+        writer.writeheader()
+        writer.writerows(summary_effect_rows)
 
 
 def parse_args() -> argparse.Namespace:
@@ -230,8 +318,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.runs <= 0:
-        raise ValueError(f"--runs must be > 0, got {args.runs}")
+    if args.runs < 2:
+        raise ValueError(f"--runs must be >= 2 (p95 requires at least two samples), got {args.runs}")
     if any(num_worlds <= 0 for num_worlds in args.num_worlds):
         raise ValueError(f"all --num-worlds values must be > 0, got {args.num_worlds}")
     if args.out_dir.exists():
@@ -261,14 +349,21 @@ def main() -> None:
                 )
 
     summary_rows = _aggregate(records)
-    _write_outputs(args.out_dir, records, summary_rows)
+    summary_effect_rows = _add_legacy_effects(summary_rows)
+    _write_outputs(args.out_dir, records, summary_rows, summary_effect_rows)
+    summary_effect_map = {(int(row["num_worlds"]), str(row["mode"])): row for row in summary_effect_rows}
 
     print("\nSummary (median seconds)")
     for row in summary_rows:
+        num_worlds = int(row["num_worlds"])
+        mode = str(row["mode"])
+        effects = summary_effect_map[(num_worlds, mode)]
         print(
-            f"num_worlds={row['num_worlds']:5d} mode={row['mode']:7s} "
+            f"num_worlds={num_worlds:5d} mode={mode:7s} "
             f"replicate_path_only={row['replicate_path_only_median_seconds']:.4f}s "
-            f"total_startup={row['total_startup_median_seconds']:.4f}s"
+            f"total_startup={row['total_startup_median_seconds']:.4f}s "
+            f"delta_vs_legacy={effects['total_startup_delta_vs_legacy_percent']:+.1f}% "
+            f"speedup={effects['total_startup_speedup_vs_legacy_x']:.3f}x"
         )
 
     print(f"\nArtifacts written to: {args.out_dir}")
