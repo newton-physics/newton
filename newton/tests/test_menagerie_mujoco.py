@@ -1695,7 +1695,7 @@ class TestMenagerieBase(unittest.TestCase):
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-        newton_solver = SolverMuJoCo(newton_model, update_data_interval=0)
+        newton_solver = SolverMuJoCo(newton_model)
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
