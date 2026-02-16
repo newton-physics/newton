@@ -2840,7 +2840,6 @@ class SolverMuJoCo(SolverBase):
         magnetic = resolve_vector_option("magnetic", magnetic)
 
         # Resolve autolimits compiler option from custom attributes
-        # Resolve autolimits compiler option from custom attributes
         autolimits = None
         if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
             autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
