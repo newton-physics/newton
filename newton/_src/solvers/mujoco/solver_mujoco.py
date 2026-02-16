@@ -46,7 +46,6 @@ from .kernels import (
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
-    convert_body_xforms_to_warp_kernel,
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contacts_to_newton_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
@@ -56,6 +55,7 @@ from .kernels import (
     create_inverse_shape_mapping_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
+    sync_qpos0_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
     update_body_mass_ipos_kernel,
@@ -2014,12 +2014,6 @@ class SolverMuJoCo(SolverBase):
         self.update_data_interval = update_data_interval
         self._step = 0
 
-        # Check if dof_ref is used - if so, we use MuJoCo's FK (eval_fk=False)
-        # because ref is only handled by MuJoCo via qpos0
-        mujoco_attrs = getattr(model, "mujoco", None)
-        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
-        self._has_ref = dof_ref is not None and np.any(dof_ref.numpy() != 0.0)
-
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
@@ -2030,9 +2024,6 @@ class SolverMuJoCo(SolverBase):
     @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
-        # When ref is used, we rely on MuJoCo's FK (eval_fk=False) because ref is handled by MuJoCo via qpos0
-        eval_fk = not self._has_ref
-
         if self.use_mujoco_cpu:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
@@ -2040,7 +2031,7 @@ class SolverMuJoCo(SolverBase):
                 self.update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
             self._mujoco.mj_step(self.mj_model, self.mj_data)
-            self.update_newton_state(self.model, state_out, self.mj_data, eval_fk=eval_fk)
+            self.update_newton_state(self.model, state_out, self.mj_data)
         else:
             self.enable_rne_postconstraint(state_out)
             self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
@@ -2054,7 +2045,7 @@ class SolverMuJoCo(SolverBase):
                     self.convert_contacts_to_mjwarp(self.model, state_in, contacts)
                     self.mujoco_warp_step()
 
-            self.update_newton_state(self.model, state_out, self.mjw_data, eval_fk=eval_fk)
+            self.update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
         return state_out
 
@@ -2272,6 +2263,24 @@ class SolverMuJoCo(SolverBase):
             mj_data.ctrl[:] = ctrl.numpy().flatten()
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
+    @staticmethod
+    def _get_dof_ref(model: Model) -> wp.array:
+        """Get dof_ref array from model, returning zeros if not available."""
+        mujoco_attrs = getattr(model, "mujoco", None)
+        dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
+        if dof_ref is None:
+            dof_ref = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        return dof_ref
+
+    @staticmethod
+    def _get_dof_springref(model: Model) -> wp.array:
+        """Get dof_springref array from model, returning zeros if not available."""
+        mujoco_attrs = getattr(model, "mujoco", None)
+        dof_springref = getattr(mujoco_attrs, "dof_springref", None) if mujoco_attrs is not None else None
+        if dof_springref is None:
+            dof_springref = wp.zeros(model.joint_dof_count, dtype=wp.float32, device=model.device)
+        return dof_springref
+
     def update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
@@ -2291,6 +2300,7 @@ class SolverMuJoCo(SolverBase):
             joint_q = state.joint_q
             joint_qd = state.joint_qd
         joints_per_world = model.joint_count // nworld
+        dof_ref = self._get_dof_ref(model)
         wp.launch(
             convert_warp_coords_to_mj_kernel,
             dim=(nworld, joints_per_world),
@@ -2304,6 +2314,7 @@ class SolverMuJoCo(SolverBase):
                 model.joint_dof_dim,
                 model.joint_child,
                 model.body_com,
+                dof_ref,
             ],
             outputs=[qpos, qvel],
             device=model.device,
@@ -2317,7 +2328,6 @@ class SolverMuJoCo(SolverBase):
         model: Model,
         state: State,
         mj_data: MjWarpData | MjData,
-        eval_fk: bool = True,
     ):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
@@ -2325,18 +2335,13 @@ class SolverMuJoCo(SolverBase):
             qpos = mj_data.qpos
             qvel = mj_data.qvel
             nworld = mj_data.nworld
-
-            xpos = mj_data.xpos
-            xquat = mj_data.xquat
         else:
             # we have an MjData object from Mujoco
             qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
             qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
             nworld = 1
-
-            xpos = wp.array([mj_data.xpos], dtype=wp.vec3, device=model.device)
-            xquat = wp.array([mj_data.xquat], dtype=wp.quat, device=model.device)
         joints_per_world = model.joint_count // nworld
+        dof_ref = self._get_dof_ref(model)
         wp.launch(
             convert_mj_coords_to_warp_kernel,
             dim=(nworld, joints_per_world),
@@ -2350,52 +2355,38 @@ class SolverMuJoCo(SolverBase):
                 model.joint_dof_dim,
                 model.joint_child,
                 model.body_com,
+                dof_ref,
             ],
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
         )
 
-        if eval_fk:
-            # custom forward kinematics for handling multi-dof joints
-            wp.launch(
-                kernel=eval_articulation_fk,
-                dim=model.articulation_count,
-                inputs=[
-                    model.articulation_start,
-                    model.joint_articulation,
-                    state.joint_q,
-                    state.joint_qd,
-                    model.joint_q_start,
-                    model.joint_qd_start,
-                    model.joint_type,
-                    model.joint_parent,
-                    model.joint_child,
-                    model.joint_X_p,
-                    model.joint_X_c,
-                    model.joint_axis,
-                    model.joint_dof_dim,
-                    model.body_com,
-                ],
-                outputs=[
-                    state.body_q,
-                    state.body_qd,
-                ],
-                device=model.device,
-            )
-        else:
-            # Launch over MuJoCo bodies
-            nbody = self.mjc_body_to_newton.shape[1]
-            wp.launch(
-                convert_body_xforms_to_warp_kernel,
-                dim=(nworld, nbody),
-                inputs=[
-                    self.mjc_body_to_newton,
-                    xpos,
-                    xquat,
-                ],
-                outputs=[state.body_q],
-                device=model.device,
-            )
+        # custom forward kinematics for handling multi-dof joints
+        wp.launch(
+            kernel=eval_articulation_fk,
+            dim=model.articulation_count,
+            inputs=[
+                model.articulation_start,
+                model.joint_articulation,
+                state.joint_q,
+                state.joint_qd,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
+                model.joint_axis,
+                model.joint_dof_dim,
+                model.body_com,
+            ],
+            outputs=[
+                state.body_q,
+                state.body_qd,
+            ],
+            device=model.device,
+        )
 
         # Update rigid force fields on state.
         if state.body_qdd is not None or state.body_parent_f is not None:
@@ -4041,8 +4032,8 @@ class SolverMuJoCo(SolverBase):
             return
 
         model_fields_to_expand = {
-            # "qpos0",
-            # "qpos_spring",
+            "qpos0",
+            "qpos_spring",
             "body_pos",
             "body_quat",
             "body_ipos",
@@ -4379,6 +4370,35 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.jnt_margin,
                 self.mjw_model.jnt_range,
                 self.mjw_model.jnt_actfrcrange,
+            ],
+            device=self.model.device,
+        )
+
+        # Sync qpos0 and qpos_spring from Newton model data before set_const.
+        # set_const copies qpos0 → d.qpos and runs FK to compute derived fields,
+        # so qpos0 must be correct before calling it.
+        dof_ref = self._get_dof_ref(self.model)
+        dof_springref = self._get_dof_springref(self.model)
+        joints_per_world = self.model.joint_count // nworld
+        bodies_per_world = self.model.body_count // self.model.num_worlds
+        wp.launch(
+            sync_qpos0_kernel,
+            dim=(nworld, joints_per_world),
+            inputs=[
+                joints_per_world,
+                bodies_per_world,
+                self.model.joint_type,
+                self.model.joint_q_start,
+                self.model.joint_qd_start,
+                self.model.joint_dof_dim,
+                self.model.joint_child,
+                self.model.body_q,
+                dof_ref,
+                dof_springref,
+            ],
+            outputs=[
+                self.mjw_model.qpos0,
+                self.mjw_model.qpos_spring,
             ],
             device=self.model.device,
         )
