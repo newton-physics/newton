@@ -598,6 +598,10 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
+            # Parse MJCF margin for collision thickness (only if explicitly specified)
+            if "margin" in geom_attrib:
+                shape_cfg.thickness = float(geom_attrib["margin"]) * scale
+
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
                 "key": geom_name,

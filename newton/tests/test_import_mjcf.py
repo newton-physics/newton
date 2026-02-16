@@ -2041,6 +2041,34 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
         self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
 
+    def test_mjcf_geom_margin_parsing(self):
+        """Test MJCF geom margin is parsed to shape thickness."""
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="test_body">
+                    <geom name="geom1" type="box" size="0.1 0.1 0.1" margin="0.003"/>
+                    <geom name="geom2" type="sphere" size="0.1" margin="0.01"/>
+                    <geom name="geom3" type="capsule" size="0.1 0.2"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, up_axis="Z")
+
+        self.assertEqual(builder.shape_count, 3)
+        self.assertAlmostEqual(builder.shape_thickness[0], 0.003, places=6)
+        self.assertAlmostEqual(builder.shape_thickness[1], 0.01, places=6)
+        # geom3 has no margin, should use ShapeConfig default (1e-5)
+        self.assertAlmostEqual(builder.shape_thickness[2], 1e-5, places=8)
+
+        # Verify scale is applied to margin
+        builder_scaled = newton.ModelBuilder()
+        builder_scaled.add_mjcf(mjcf_content, up_axis="Z", scale=2.0)
+        self.assertAlmostEqual(builder_scaled.shape_thickness[0], 0.006, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_thickness[1], 0.02, places=6)
+
     def test_mjcf_geom_solref_parsing(self):
         """Test MJCF geom solref parsing for contact stiffness/damping.
 
