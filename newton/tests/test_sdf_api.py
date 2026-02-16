@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the SDF API: enable/disable, USD parsing with fallback, and per-shape overrides."""
+"""Tests for the SDF API: USD attribute parsing and per-shape overrides via override_shape_sdf."""
 
 import tempfile
 import unittest
@@ -109,52 +109,10 @@ def _count_sdf_shapes(model):
 
 
 class TestSDFAPI(unittest.TestCase):
-    """Tests for builder.enable_sdf / disable_sdf, USD attribute parsing, and override_shape_sdf."""
+    """Tests for USD SDF attribute parsing and override_shape_sdf."""
 
-    def test_defaults_enable_disable(self, device=None):
-        """enable_sdf sets defaults; disable_sdf clears them; invalid args raise ValueError."""
-        if device is None or not wp.get_device(device).is_cuda:
-            self.skipTest("SDF tests require CUDA device")
-
-        builder = newton.ModelBuilder()
-        self.assertIsNone(builder.default_shape_cfg.sdf_max_resolution)
-
-        builder.enable_sdf()
-        self.assertEqual(builder.default_shape_cfg.sdf_max_resolution, 64)
-        self.assertEqual(builder.default_shape_cfg.sdf_narrow_band_range, (-0.01, 0.01))
-        self.assertEqual(builder.default_shape_cfg.contact_margin, 0.01)
-
-        builder.enable_sdf(max_resolution=128, narrow_band_range=(-0.02, 0.02), contact_margin=0.02)
-        self.assertEqual(builder.default_shape_cfg.sdf_max_resolution, 128)
-        self.assertIsNone(builder.default_shape_cfg.sdf_target_voxel_size)
-        self.assertEqual(builder.default_shape_cfg.sdf_narrow_band_range, (-0.02, 0.02))
-        self.assertEqual(builder.default_shape_cfg.contact_margin, 0.02)
-
-        # target_voxel_size takes precedence and clears max_resolution
-        builder.enable_sdf(target_voxel_size=0.005)
-        self.assertEqual(builder.default_shape_cfg.sdf_target_voxel_size, 0.005)
-        self.assertIsNone(builder.default_shape_cfg.sdf_max_resolution)
-
-        # switching back to max_resolution clears target_voxel_size
-        builder.enable_sdf(max_resolution=64)
-        self.assertEqual(builder.default_shape_cfg.sdf_max_resolution, 64)
-        self.assertIsNone(builder.default_shape_cfg.sdf_target_voxel_size)
-
-        builder.disable_sdf()
-        self.assertIsNone(builder.default_shape_cfg.sdf_max_resolution)
-        self.assertIsNone(builder.default_shape_cfg.sdf_target_voxel_size)
-
-        with self.assertRaises(ValueError):
-            newton.ModelBuilder().enable_sdf(max_resolution=65)
-
-        with self.assertRaises(ValueError):
-            newton.ModelBuilder().enable_sdf(narrow_band_range=(0.01, -0.01))
-
-        with self.assertRaises(ValueError):
-            newton.ModelBuilder().enable_sdf(target_voxel_size=-0.01)
-
-    def test_usd_with_defaults(self, device=None):
-        """USD attributes override builder defaults; shapes without attrs fall back to defaults."""
+    def test_usd_sdf_attributes(self, device=None):
+        """USD newton:sdf* attributes are parsed into per-shape SDF lists on the builder."""
         if device is None or not wp.get_device(device).is_cuda:
             self.skipTest("SDF tests require CUDA device")
 
@@ -169,46 +127,32 @@ class TestSDFAPI(unittest.TestCase):
             m1 = _add_collision_mesh(stage, "/World/Body1/CollisionMesh")
             _set_sdf_attrs(m1.GetPrim(), resolution=128, inner=-0.02, outer=0.02)
 
-            # Body2: no USD SDF attributes → should use builder defaults
+            # Body2: USD-defined resolution=256, no narrow band
             _add_rigid_body(stage, "/World/Body2")
-            _add_collision_mesh(stage, "/World/Body2/CollisionMesh")
-
-            # Body3: USD-defined resolution=256, no narrow band → defaults for narrow band
-            _add_rigid_body(stage, "/World/Body3")
-            m3 = _add_collision_mesh(stage, "/World/Body3/CollisionMesh")
-            _set_sdf_attrs(m3.GetPrim(), resolution=256)
+            m2 = _add_collision_mesh(stage, "/World/Body2/CollisionMesh")
+            _set_sdf_attrs(m2.GetPrim(), resolution=256)
 
             stage.Save()
 
             builder = newton.ModelBuilder()
-            builder.enable_sdf(max_resolution=64, narrow_band_range=(-0.01, 0.01))
-
             result = parse_usd(builder, str(usd_path))
             psm = result["path_shape_map"]
             s1 = psm["/World/Body1/CollisionMesh"]
             s2 = psm["/World/Body2/CollisionMesh"]
-            s3 = psm["/World/Body3/CollisionMesh"]
 
-            # Body1: USD values
+            # Body1: USD values for both resolution and narrow band
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 128)
             self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[s1][0], -0.02, places=5)
             self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[s1][1], 0.02, places=5)
 
-            # Body2: builder defaults
-            self.assertEqual(builder.shape_sdf_max_resolution[s2], 64)
-            self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[s2][0], -0.01, places=5)
-            self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[s2][1], 0.01, places=5)
-
-            # Body3: USD resolution, builder default narrow band
-            self.assertEqual(builder.shape_sdf_max_resolution[s3], 256)
-            self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[s3][0], -0.01, places=5)
-            self.assertAlmostEqual(builder.shape_sdf_narrow_band_range[s3][1], 0.01, places=5)
+            # Body2: USD resolution only, narrow band from ShapeConfig default
+            self.assertEqual(builder.shape_sdf_max_resolution[s2], 256)
 
             model = builder.finalize(device=device)
-            self.assertEqual(_count_sdf_shapes(model), 3)
+            self.assertEqual(_count_sdf_shapes(model), 2)
 
     def test_override_shape_sdf(self, device=None):
-        """override_shape_sdf modifies individual shapes after USD import."""
+        """override_shape_sdf sets and modifies SDF properties on individual shapes."""
         if device is None or not wp.get_device(device).is_cuda:
             self.skipTest("SDF tests require CUDA device")
 
@@ -227,23 +171,17 @@ class TestSDFAPI(unittest.TestCase):
             stage.Save()
 
             builder = newton.ModelBuilder()
-            builder.enable_sdf(max_resolution=64)
             result = parse_usd(builder, str(usd_path))
             psm = result["path_shape_map"]
             s1 = psm["/World/Body1/CollisionMesh"]
             s2 = psm["/World/Body2/CollisionMesh"]
 
-            # Both shapes start with the builder default
-            self.assertEqual(builder.shape_sdf_max_resolution[s1], 64)
-            self.assertEqual(builder.shape_sdf_max_resolution[s2], 64)
-
-            # Override shape1
+            # Set SDF on shape1 via override
             builder.override_shape_sdf(s1, sdf_max_resolution=128, sdf_narrow_band_range=(-0.02, 0.02))
             self.assertEqual(builder.shape_sdf_max_resolution[s1], 128)
             self.assertEqual(builder.shape_sdf_narrow_band_range[s1], (-0.02, 0.02))
-            self.assertEqual(builder.shape_sdf_max_resolution[s2], 64)  # unchanged
 
-            # Override shape2
+            # Set SDF on shape2 via override
             builder.override_shape_sdf(s2, sdf_max_resolution=256, sdf_narrow_band_range=(-0.01, 0.01))
             self.assertEqual(builder.shape_sdf_max_resolution[s2], 256)
             self.assertEqual(builder.shape_sdf_narrow_band_range[s2], (-0.01, 0.01))
@@ -277,8 +215,7 @@ class TestSDFAPI(unittest.TestCase):
 
 
 devices = get_selected_cuda_test_devices()
-add_function_test(TestSDFAPI, "test_defaults_enable_disable", TestSDFAPI.test_defaults_enable_disable, devices=devices)
-add_function_test(TestSDFAPI, "test_usd_with_defaults", TestSDFAPI.test_usd_with_defaults, devices=devices)
+add_function_test(TestSDFAPI, "test_usd_sdf_attributes", TestSDFAPI.test_usd_sdf_attributes, devices=devices)
 add_function_test(TestSDFAPI, "test_override_shape_sdf", TestSDFAPI.test_override_shape_sdf, devices=devices)
 
 
