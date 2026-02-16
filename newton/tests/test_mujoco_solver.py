@@ -6274,8 +6274,6 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
 
     def test_hinge_ref_mujoco_to_newton(self):
         """Hinge with ref: qpos=ref+0.1 → joint_q=0.1 after update_newton_state."""
-        import mujoco_warp
-
         mjcf = """<mujoco><worldbody>
             <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
                 <body name="child" pos="0 0 1">
@@ -6293,15 +6291,13 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         qpos[0, 0] = np.pi / 2 + 0.1
         solver.mjw_data.qpos.assign(qpos)
         state = model.state()
-        mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         solver.update_newton_state(model, state, solver.mjw_data)
         joint_q = state.joint_q.numpy()
         np.testing.assert_allclose(joint_q[0], 0.1, atol=1e-5)
 
     def test_slide_ref_roundtrip(self):
         """Slide with ref: verify Newton↔MuJoCo roundtrip preserves joint_q."""
-        import mujoco_warp
-
         mjcf = """<mujoco><worldbody>
             <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
                 <body name="child" pos="0 0 1">
@@ -6328,15 +6324,13 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         np.testing.assert_allclose(qpos[0, 0], test_q + 0.5, atol=1e-5)
 
         # MuJoCo → Newton
-        mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         state2 = model.state()
         solver.update_newton_state(model, state2, solver.mjw_data)
         np.testing.assert_allclose(state2.joint_q.numpy()[0], test_q, atol=1e-5)
 
     def test_free_joint_position_roundtrip(self):
         """Free joint: position round-trips through conversion without ref offset."""
-        import mujoco_warp
-
         mjcf = """<mujoco><worldbody>
             <body name="b" pos="1 2 3">
                 <joint type="free"/>
@@ -6352,7 +6346,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
 
         # Newton → MuJoCo → Newton
         solver.update_mjc_data(solver.mjw_data, model, state)
-        mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         solver.update_newton_state(model, state, solver.mjw_data)
         roundtrip_q = state.joint_q.numpy()
 
@@ -6367,10 +6361,8 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
 
     def _compare_body_positions(self, model, solver, state, body_names, atol=0.01):
         """Helper to compare Newton and MuJoCo body positions."""
-        import mujoco_warp
-
         solver.update_mjc_data(solver.mjw_data, model, state)
-        mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         solver.update_newton_state(model, state, solver.mjw_data)
 
         newton_body_q = state.body_q.numpy()
