@@ -2840,6 +2840,7 @@ class SolverMuJoCo(SolverBase):
         # joint_velocity_limit = model.joint_velocity_limit.numpy()
         joint_friction = model.joint_friction.numpy()
         joint_world = model.joint_world.numpy()
+        body_q = model.body_q.numpy()
         body_mass = model.body_mass.numpy()
         body_inertia = model.body_inertia.numpy()
         body_com = model.body_com.numpy()
@@ -3215,7 +3216,7 @@ class SolverMuJoCo(SolverBase):
             # initial position lives in body_q (see add_joint_free docstring).
             child_xform = wp.transform(*joint_child_xform[j])
             if joint_type[j] == JointType.FREE:
-                bq = model.body_q.numpy()[child]
+                bq = body_q[child]
                 tf = wp.transform(bq[:3], bq[3:])
             else:
                 tf = wp.transform(*joint_parent_xform[j])
