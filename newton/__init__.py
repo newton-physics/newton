@@ -36,6 +36,7 @@ __all__ = [
 from ._src.geometry import (
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
     ParticleFlags,
     SAPSortType,
@@ -45,6 +46,7 @@ from ._src.geometry import (
 __all__ += [
     "SDF",
     "GeoType",
+    "Heightfield",
     "Mesh",
     "ParticleFlags",
     "SAPSortType",
