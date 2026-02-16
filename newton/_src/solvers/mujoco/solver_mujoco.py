@@ -3220,8 +3220,8 @@ class SolverMuJoCo(SolverBase):
 
             inertia = body_inertia[child]
             mass = body_mass[child]
-            # MuJoCo's compiler requires positive-definite inertia. For zero-mass
-            # bodies (e.g. sensor frames, reference links), omit explicit inertia
+            # MuJoCo requires positive-definite inertia. For zero-mass bodies
+            # (sensor frames, reference links), omit mass and inertia entirely
             # and let MuJoCo handle them natively.
             if mass > 0.0:
                 body = mj_bodies[body_mapping[parent]].add_body(

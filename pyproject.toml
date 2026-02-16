@@ -33,8 +33,8 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=0.0.2",         # MuJoCo, warp-accelerated
-    "mujoco>=3.4.1.dev856273160", # MuJoCo physics engine
+    "mujoco-warp>=3.5.0",         # MuJoCo, warp-accelerated
+    "mujoco>=3.5.0",              # MuJoCo physics engine
 ]
 
 # Asset import and mesh processing dependencies
@@ -129,9 +129,7 @@ url = "https://pypi.nvidia.com/"
 explicit = true
 
 [tool.uv.sources]
-mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia" }
-mujoco = { index = "mujoco" }
 torch = [{ index = "pytorch-cu128", extra = "torch-cu12" }]
 
 [dependency-groups]
@@ -182,11 +180,6 @@ ignore = [
 # TID253 (banned module-level imports) only applies to newton/_src and newton/tests
 "docs/**/*" = ["TID253"]
 "asv/**/*" = ["TID253"]
-
-[[tool.uv.index]]
-name = "mujoco"
-url = "https://py.mujoco.org"
-explicit = true
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = [
