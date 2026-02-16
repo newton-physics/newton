@@ -2956,6 +2956,7 @@ class SolverMuJoCo(SolverBase):
         geom_type_mapping = {
             GeoType.SPHERE: mujoco.mjtGeom.mjGEOM_SPHERE,
             GeoType.PLANE: mujoco.mjtGeom.mjGEOM_PLANE,
+            GeoType.HFIELD: mujoco.mjtGeom.mjGEOM_HFIELD,
             GeoType.CAPSULE: mujoco.mjtGeom.mjGEOM_CAPSULE,
             GeoType.CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
             GeoType.BOX: mujoco.mjtGeom.mjGEOM_BOX,
@@ -3099,7 +3100,41 @@ class SolverMuJoCo(SolverBase):
                     "name": name,
                 }
                 tf = wp.transform(*shape_transform[shape])
-                if stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
+                if stype == GeoType.HFIELD:
+                    # Retrieve heightfield source
+                    hfield_src = model.shape_source[shape]
+                    if hfield_src is None:
+                        if wp.config.verbose:
+                            print(f"Warning: Heightfield shape {shape} has no source data, skipping")
+                        continue
+
+                    # Convert Newton heightfield to MuJoCo format
+                    # MuJoCo size: (size_x, size_y, size_z, size_base) — all must be positive
+                    # Our data is normalized [0,1], height range = max_z - min_z
+                    # We set size_base to eps (MuJoCo requires positive) and shift the
+                    # geom origin by min_z so the lowest point is at the right world Z.
+                    eps = 1e-4
+                    mj_size_z = max(hfield_src.max_z - hfield_src.min_z, eps)
+                    mj_size = (hfield_src.hx, hfield_src.hy, mj_size_z, eps)
+                    elevation_data = hfield_src.data.flatten()
+
+                    hfield_name = f"{model.shape_key[shape]}_{shape}"
+                    spec.add_hfield(
+                        name=hfield_name,
+                        nrow=hfield_src.nrow,
+                        ncol=hfield_src.ncol,
+                        size=mj_size,
+                        userdata=elevation_data,
+                    )
+
+                    geom_params["hfieldname"] = hfield_name
+
+                    # Shift geom origin so data=0 maps to min_z in world space
+                    tf = wp.transform(
+                        wp.vec3(tf.p[0], tf.p[1], tf.p[2] + hfield_src.min_z),
+                        tf.q,
+                    )
+                elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
                     # use mesh-specific maxhullvert or fall back to the default
                     maxhullvert = getattr(mesh_src, "maxhullvert", mesh_maxhullvert)
@@ -3201,10 +3236,16 @@ class SolverMuJoCo(SolverBase):
             if parent == -1 and joint_type[j] == JointType.FIXED:
                 fixed_base = True
 
-            # this assumes that the joint position is 0
-            tf = wp.transform(*joint_parent_xform[j])
+            # Compute body transform for the MjSpec body pos/quat.
+            # For free joints, the parent/child xforms are identity and the
+            # initial position lives in body_q (see add_joint_free docstring).
             child_xform = wp.transform(*joint_child_xform[j])
-            tf = tf * wp.transform_inverse(child_xform)
+            if joint_type[j] == JointType.FREE:
+                bq = model.body_q.numpy()[child]
+                tf = wp.transform(bq[:3], bq[3:])
+            else:
+                tf = wp.transform(*joint_parent_xform[j])
+                tf = tf * wp.transform_inverse(child_xform)
 
             joint_pos = child_xform.p
             joint_rot = child_xform.q

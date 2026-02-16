@@ -264,6 +264,12 @@ class Model:
             `num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]`.
         """
 
+        # Heightfield collision data
+        self.shape_heightfield_data = None
+        """Array of HeightfieldData structs, shape [shape_count]. Contains grid metadata for collision kernels."""
+        self.heightfield_elevation_data = None
+        """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
+
         # Mesh SDF storage
         self.shape_sdf_data = None
         """Array of SDFData structs for mesh shapes, shape [shape_count]. Contains sparse and coarse SDF pointers, extents, and voxel sizes. Empty array if there are no colliding meshes."""

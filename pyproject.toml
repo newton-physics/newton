@@ -260,6 +260,7 @@ files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf
 arange = "arange"
 ba = "ba"
 HAA = "HAA"
+lod = "lod"
 # MuJoCo Menagerie brand/product names
 Pincher = "Pincher"
 Robotis = "Robotis"
@@ -272,3 +273,4 @@ pnd = "pnd"
 
 [tool.typos.default.extend-identifiers]
 PNGs = "PNGs"
+Haa = "Haa"
