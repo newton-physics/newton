@@ -2839,11 +2839,6 @@ class SolverMuJoCo(SolverBase):
         wind = resolve_vector_option("wind", wind)
         magnetic = resolve_vector_option("magnetic", magnetic)
 
-        # Resolve autolimits compiler option from custom attributes
-        autolimits = None
-        if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
-            autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
-
         # Resolve ONCE frequency numeric options from custom attributes if not provided
         if iterations is None and mujoco_attrs and hasattr(mujoco_attrs, "iterations"):
             iterations = int(mujoco_attrs.iterations.numpy()[0])
@@ -2919,8 +2914,8 @@ class SolverMuJoCo(SolverBase):
             spec.option.magnetic = np.array(magnetic)
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
-        if autolimits is not None:
-            spec.compiler.autolimits = autolimits
+        if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
+            spec.compiler.autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
 
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
