@@ -803,6 +803,7 @@ window.addEventListener("load", () => mermaid.run());
             <dt><a href="api/_generated/newton.geometry.BroadPhaseExplicit.html#newton.geometry.BroadPhaseExplicit.__init__">(newton.geometry.BroadPhaseExplicit method)</a></dt>
             <dt><a href="api/_generated/newton.geometry.BroadPhaseSAP.html#newton.geometry.BroadPhaseSAP.__init__">(newton.geometry.BroadPhaseSAP method)</a></dt>
             <dt><a href="api/_generated/newton.geometry.SDFHydroelasticConfig.html#newton.geometry.SDFHydroelasticConfig.__init__">(newton.geometry.SDFHydroelasticConfig method)</a></dt>
+            <dt><a href="api/_generated/newton.Heightfield.html#newton.Heightfield.__init__">(newton.Heightfield method)</a></dt>
             <dt><a href="api/_generated/newton.ik.IKObjective.html#newton.ik.IKObjective.__init__">(newton.ik.IKObjective method)</a></dt>
             <dt><a href="api/_generated/newton.ik.IKObjectiveJointLimit.html#newton.ik.IKObjectiveJointLimit.__init__">(newton.ik.IKObjectiveJointLimit method)</a></dt>
             <dt><a href="api/_generated/newton.ik.IKObjectivePosition.html#newton.ik.IKObjectivePosition.__init__">(newton.ik.IKObjectivePosition method)</a></dt>
@@ -1015,6 +1016,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_ellipsoid">add_shape_ellipsoid() (newton.ModelBuilder method)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_heightfield">add_shape_heightfield() (newton.ModelBuilder method)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_shape_mesh">add_shape_mesh() (newton.ModelBuilder method)</a>
@@ -1694,6 +1698,9 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.JointType.html#newton.JointType.D6">D6 (newton.JointType attribute)</a>
         </dt>
         <dt>
+          <a href="api/_generated/newton.Heightfield.html#newton.Heightfield.data">data (newton.Heightfield property)</a>
+        </dt>
+        <dt>
           <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.Options.default_light">default_light (newton.sensors.SensorTiledCamera.Options attribute)</a>
         </dt>
         <dt>
@@ -1929,10 +1936,11 @@ window.addEventListener("load", () => mermaid.run());
           <a href="api/_generated/newton.utils.MeshAdjacency.html#newton.utils.MeshAdjacency.Edge.f1">f1 (newton.utils.MeshAdjacency.Edge attribute)</a>
         </dt>
         <dt>
-          <a href="api/_generated/newton.Mesh.html#newton.Mesh.finalize">finalize() (newton.Mesh method)</a>
+          <a href="api/_generated/newton.Heightfield.html#newton.Heightfield.finalize">finalize() (newton.Heightfield method)</a>
         </dt>
         <dd>
           <dl>
+            <dt><a href="api/_generated/newton.Mesh.html#newton.Mesh.finalize">(newton.Mesh method)</a></dt>
             <dt><a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.finalize">(newton.ModelBuilder method)</a></dt>
             <dt><a href="api/_generated/newton.SDF.html#newton.SDF.finalize">(newton.SDF method)</a></dt>
           </dl>
@@ -1955,13 +1963,13 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.flags">flags (newton.ModelBuilder.ShapeConfig property)</a>
         </dt>
-        <dt>
-          <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba">flatten_color_image_to_rgba() (newton.sensors.SensorTiledCamera method)</a>
-        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
+        <dt>
+          <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba">flatten_color_image_to_rgba() (newton.sensors.SensorTiledCamera method)</a>
+        </dt>
         <dt>
           <a href="api/_generated/newton.sensors.SensorTiledCamera.html#newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba">flatten_depth_image_to_rgba() (newton.sensors.SensorTiledCamera method)</a>
         </dt>
@@ -2150,15 +2158,21 @@ window.addEventListener("load", () => mermaid.run());
         <dt>
           <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.has_particle_collision">has_particle_collision (newton.ModelBuilder.ShapeConfig attribute)</a>
         </dt>
+        <dt>
+          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.has_shape_collision">has_shape_collision (newton.ModelBuilder.ShapeConfig attribute)</a>
+        </dt>
       </dl>
     </td>
     <td style="width: 33%; vertical-align: top;">
       <dl>
         <dt>
-          <a href="api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.has_shape_collision">has_shape_collision (newton.ModelBuilder.ShapeConfig attribute)</a>
+          <a href="api/_generated/newton.sensors.SensorRaycast.html#newton.sensors.SensorRaycast.height">height (newton.sensors.SensorRaycast attribute)</a>
         </dt>
         <dt>
-          <a href="api/_generated/newton.sensors.SensorRaycast.html#newton.sensors.SensorRaycast.height">height (newton.sensors.SensorRaycast attribute)</a>
+          <a href="api/_generated/newton.Heightfield.html#newton.Heightfield">Heightfield (class in newton)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.Model.html#newton.Model.heightfield_elevation_data">heightfield_elevation_data (newton.Model attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.GeoType.html#newton.GeoType.HFIELD">HFIELD (newton.GeoType attribute)</a>
@@ -3409,6 +3423,9 @@ window.addEventListener("load", () => mermaid.run());
         </dt>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.shape_flags">shape_flags (newton.Model attribute)</a>
+        </dt>
+        <dt>
+          <a href="api/_generated/newton.Model.html#newton.Model.shape_heightfield_data">shape_heightfield_data (newton.Model attribute)</a>
         </dt>
         <dt>
           <a href="api/_generated/newton.Model.html#newton.Model.shape_is_solid">shape_is_solid (newton.Model attribute)</a>

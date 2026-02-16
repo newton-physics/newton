@@ -2693,6 +2693,33 @@ which provides accurate collision detection for all convex shape pairs.</p>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.ModelBuilder.add_shape_heightfield">
+<span class="sig-name descname"><span class="pre">add_shape_heightfield</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">heightfield</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cfg</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">key</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_shape_heightfield" title="Link to this definition">#</a></dt>
+<dd><p>Adds a heightfield (2D elevation grid) collision shape to the model.</p>
+<p>Heightfields are efficient representations of terrain using a 2D grid of elevation values.
+They are always static (attached to the world body) and more memory-efficient than
+equivalent triangle meshes.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>xform</strong> (<em>Transform</em><em> | </em><em>None</em>) – The transform of the heightfield in world frame. If <cite>None</cite>, the identity transform <cite>wp.transform()</cite> is used. Defaults to <cite>None</cite>.</p></li>
+<li><p><strong>heightfield</strong> (<em>Any</em><em> | </em><em>None</em>) – The <a class="reference internal" href="newton.Heightfield.html#newton.Heightfield" title="newton.Heightfield"><code class="xref py py-class docutils literal notranslate"><span class="pre">Heightfield</span></code></a> object containing the elevation grid data. Defaults to <cite>None</cite>.</p></li>
+<li><p><strong>scale</strong> (<em>Vec3</em><em> | </em><em>None</em>) – The scale of the heightfield. Defaults to <cite>None</cite>, in which case the scale is <cite>(1.0, 1.0, 1.0)</cite>.</p></li>
+<li><p><strong>cfg</strong> (<a class="reference internal" href="#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><em>ShapeConfig</em></a><em> | </em><em>None</em>) – The configuration for the shape’s physical and collision properties. If <cite>None</cite>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">default_shape_cfg</span></code> is used. Defaults to <cite>None</cite>.</p></li>
+<li><p><strong>key</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – An optional unique key for identifying the shape. If <cite>None</cite>, a default key is automatically generated. Defaults to <cite>None</cite>.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><em>Any</em><em>] </em><em>| </em><em>None</em>) – Dictionary of custom attribute values for SHAPE frequency attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The index of the newly added shape.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.ModelBuilder.add_shape_mesh">
 <span class="sig-name descname"><span class="pre">add_shape_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">xform</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mesh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cfg</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">key</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_shape_mesh" title="Link to this definition">#</a></dt>
 <dd><p>Adds a triangle mesh collision shape to a body.</p>
@@ -4044,6 +4071,7 @@ Default: False.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_shape_convex_hull"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_convex_hull()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_shape_cylinder"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_cylinder()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_shape_ellipsoid"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_ellipsoid()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_shape_heightfield"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_heightfield()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_shape_mesh"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_mesh()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_shape_plane"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_plane()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_shape_sdf"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_shape_sdf()</span></code></a></li>

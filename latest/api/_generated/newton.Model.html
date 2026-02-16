@@ -1572,6 +1572,12 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.heightfield_elevation_data">
+<span class="sig-name descname"><span class="pre">heightfield_elevation_data</span></span><a class="headerlink" href="#newton.Model.heightfield_elevation_data" title="Link to this definition">#</a></dt>
+<dd><p>Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_X_c">
 <span class="sig-name descname"><span class="pre">joint_X_c</span></span><a class="headerlink" href="#newton.Model.joint_X_c" title="Link to this definition">#</a></dt>
 <dd><p>Joint mass frame in child frame, shape [joint_count, 7], float.</p>
@@ -2108,6 +2114,12 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_heightfield_data">
+<span class="sig-name descname"><span class="pre">shape_heightfield_data</span></span><a class="headerlink" href="#newton.Model.shape_heightfield_data" title="Link to this definition">#</a></dt>
+<dd><p>Array of HeightfieldData structs, shape [shape_count]. Contains grid metadata for collision kernels.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_is_solid">
 <span class="sig-name descname"><span class="pre">shape_is_solid</span></span><a class="headerlink" href="#newton.Model.shape_is_solid" title="Link to this definition">#</a></dt>
 <dd><p>Whether shape is solid or hollow, shape [shape_count], bool.</p>
@@ -2542,6 +2554,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_world"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_world</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_world_start"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_world_start</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.gravity"><code class="docutils literal notranslate"><span class="pre">Model.gravity</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.heightfield_elevation_data"><code class="docutils literal notranslate"><span class="pre">Model.heightfield_elevation_data</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_c"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_p"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_act_mode"><code class="docutils literal notranslate"><span class="pre">Model.joint_act_mode</span></code></a></li>
@@ -2623,6 +2636,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_count"><code class="docutils literal notranslate"><span class="pre">Model.shape_count</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_filter"><code class="docutils literal notranslate"><span class="pre">Model.shape_filter</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_flags"><code class="docutils literal notranslate"><span class="pre">Model.shape_flags</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_heightfield_data"><code class="docutils literal notranslate"><span class="pre">Model.shape_heightfield_data</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_is_solid"><code class="docutils literal notranslate"><span class="pre">Model.shape_is_solid</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_key"><code class="docutils literal notranslate"><span class="pre">Model.shape_key</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_local_aabb_lower"><code class="docutils literal notranslate"><span class="pre">Model.shape_local_aabb_lower</span></code></a></li>
