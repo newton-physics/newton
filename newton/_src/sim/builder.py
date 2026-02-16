@@ -173,7 +173,7 @@ class ModelBuilder:
         """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
         rolling_friction: float = 0.0005
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
-        thickness: float = 1e-5
+        thickness: float = 0.0
         """Outward offset from the shape's surface for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
         their thicknesses are summed (thickness_a + thickness_b) to determine the total separation."""

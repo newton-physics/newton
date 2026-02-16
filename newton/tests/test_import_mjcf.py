@@ -2060,8 +2060,8 @@ class TestImportMjcf(unittest.TestCase):
         self.assertEqual(builder.shape_count, 3)
         self.assertAlmostEqual(builder.shape_thickness[0], 0.003, places=6)
         self.assertAlmostEqual(builder.shape_thickness[1], 0.01, places=6)
-        # geom3 has no margin, should use ShapeConfig default (1e-5)
-        self.assertAlmostEqual(builder.shape_thickness[2], 1e-5, places=8)
+        # geom3 has no margin, should use ShapeConfig default (0.0)
+        self.assertAlmostEqual(builder.shape_thickness[2], 0.0, places=8)
 
         # Verify scale is applied to margin
         builder_scaled = newton.ModelBuilder()
