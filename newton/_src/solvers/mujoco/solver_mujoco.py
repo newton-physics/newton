@@ -1744,6 +1744,30 @@ class SolverMuJoCo(SolverBase):
         trntype_arr = mujoco_attrs.actuator_trntype.numpy() if hasattr(mujoco_attrs, "actuator_trntype") else None
         ctrl_source_arr = mujoco_attrs.ctrl_source.numpy() if hasattr(mujoco_attrs, "ctrl_source") else None
         actuator_world_arr = mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
+        # Pre-fetch range/limited arrays to avoid per-element .numpy() calls
+        has_ctrlrange_arr = (
+            mujoco_attrs.actuator_has_ctrlrange.numpy() if hasattr(mujoco_attrs, "actuator_has_ctrlrange") else None
+        )
+        ctrlrange_arr = mujoco_attrs.actuator_ctrlrange.numpy() if hasattr(mujoco_attrs, "actuator_ctrlrange") else None
+        ctrllimited_arr = (
+            mujoco_attrs.actuator_ctrllimited.numpy() if hasattr(mujoco_attrs, "actuator_ctrllimited") else None
+        )
+        has_forcerange_arr = (
+            mujoco_attrs.actuator_has_forcerange.numpy() if hasattr(mujoco_attrs, "actuator_has_forcerange") else None
+        )
+        forcerange_arr = (
+            mujoco_attrs.actuator_forcerange.numpy() if hasattr(mujoco_attrs, "actuator_forcerange") else None
+        )
+        forcelimited_arr = (
+            mujoco_attrs.actuator_forcelimited.numpy() if hasattr(mujoco_attrs, "actuator_forcelimited") else None
+        )
+        has_actrange_arr = (
+            mujoco_attrs.actuator_has_actrange.numpy() if hasattr(mujoco_attrs, "actuator_has_actrange") else None
+        )
+        actrange_arr = mujoco_attrs.actuator_actrange.numpy() if hasattr(mujoco_attrs, "actuator_actrange") else None
+        actlimited_arr = (
+            mujoco_attrs.actuator_actlimited.numpy() if hasattr(mujoco_attrs, "actuator_actlimited") else None
+        )
 
         for mujoco_act_idx in range(mujoco_actuator_count):
             # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
@@ -1816,27 +1840,18 @@ class SolverMuJoCo(SolverBase):
                 general_args["gear"] = list(gear_arr)
             # Only pass range to MuJoCo when explicitly set in MJCF (has_*range flags),
             # so MuJoCo can correctly resolve auto-limited flags via spec.compiler.autolimits.
-            if hasattr(mujoco_attrs, "actuator_has_ctrlrange"):
-                if int(mujoco_attrs.actuator_has_ctrlrange.numpy()[mujoco_act_idx]):
-                    ctrlrange = mujoco_attrs.actuator_ctrlrange.numpy()[mujoco_act_idx]
-                    general_args["ctrlrange"] = (ctrlrange[0], ctrlrange[1])
-            if hasattr(mujoco_attrs, "actuator_ctrllimited"):
-                ctrllimited = mujoco_attrs.actuator_ctrllimited.numpy()[mujoco_act_idx]
-                general_args["ctrllimited"] = int(ctrllimited)
-            if hasattr(mujoco_attrs, "actuator_has_forcerange"):
-                if int(mujoco_attrs.actuator_has_forcerange.numpy()[mujoco_act_idx]):
-                    forcerange = mujoco_attrs.actuator_forcerange.numpy()[mujoco_act_idx]
-                    general_args["forcerange"] = (forcerange[0], forcerange[1])
-            if hasattr(mujoco_attrs, "actuator_forcelimited"):
-                forcelimited = mujoco_attrs.actuator_forcelimited.numpy()[mujoco_act_idx]
-                general_args["forcelimited"] = int(forcelimited)
-            if hasattr(mujoco_attrs, "actuator_has_actrange"):
-                if int(mujoco_attrs.actuator_has_actrange.numpy()[mujoco_act_idx]):
-                    actrange = mujoco_attrs.actuator_actrange.numpy()[mujoco_act_idx]
-                    general_args["actrange"] = (actrange[0], actrange[1])
-            if hasattr(mujoco_attrs, "actuator_actlimited"):
-                actlimited = mujoco_attrs.actuator_actlimited.numpy()[mujoco_act_idx]
-                general_args["actlimited"] = int(actlimited)
+            if has_ctrlrange_arr is not None and has_ctrlrange_arr[mujoco_act_idx]:
+                general_args["ctrlrange"] = tuple(ctrlrange_arr[mujoco_act_idx])
+            if ctrllimited_arr is not None:
+                general_args["ctrllimited"] = int(ctrllimited_arr[mujoco_act_idx])
+            if has_forcerange_arr is not None and has_forcerange_arr[mujoco_act_idx]:
+                general_args["forcerange"] = tuple(forcerange_arr[mujoco_act_idx])
+            if forcelimited_arr is not None:
+                general_args["forcelimited"] = int(forcelimited_arr[mujoco_act_idx])
+            if has_actrange_arr is not None and has_actrange_arr[mujoco_act_idx]:
+                general_args["actrange"] = tuple(actrange_arr[mujoco_act_idx])
+            if actlimited_arr is not None:
+                general_args["actlimited"] = int(actlimited_arr[mujoco_act_idx])
             if hasattr(mujoco_attrs, "actuator_actearly"):
                 actearly = mujoco_attrs.actuator_actearly.numpy()[mujoco_act_idx]
                 general_args["actearly"] = bool(actearly)
@@ -2825,9 +2840,10 @@ class SolverMuJoCo(SolverBase):
         magnetic = resolve_vector_option("magnetic", magnetic)
 
         # Resolve autolimits compiler option from custom attributes
+        # Resolve autolimits compiler option from custom attributes
         autolimits = None
         if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
-            autolimits = int(mujoco_attrs.autolimits.numpy()[0])
+            autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
 
         # Resolve ONCE frequency numeric options from custom attributes if not provided
         if iterations is None and mujoco_attrs and hasattr(mujoco_attrs, "iterations"):
@@ -2905,7 +2921,7 @@ class SolverMuJoCo(SolverBase):
 
         spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
         if autolimits is not None:
-            spec.compiler.autolimits = bool(autolimits)
+            spec.compiler.autolimits = autolimits
 
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
