@@ -3235,10 +3235,16 @@ class SolverMuJoCo(SolverBase):
             if parent == -1 and joint_type[j] == JointType.FIXED:
                 fixed_base = True
 
-            # this assumes that the joint position is 0
-            tf = wp.transform(*joint_parent_xform[j])
+            # Compute body transform for the MjSpec body pos/quat.
+            # For free joints, the parent/child xforms are identity and the
+            # initial position lives in body_q (see add_joint_free docstring).
             child_xform = wp.transform(*joint_child_xform[j])
-            tf = tf * wp.transform_inverse(child_xform)
+            if joint_type[j] == JointType.FREE:
+                bq = model.body_q.numpy()[child]
+                tf = wp.transform(bq[:3], bq[3:])
+            else:
+                tf = wp.transform(*joint_parent_xform[j])
+                tf = tf * wp.transform_inverse(child_xform)
 
             joint_pos = child_xform.p
             joint_rot = child_xform.q

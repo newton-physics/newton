@@ -6083,5 +6083,37 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             )
 
 
+class TestMuJoCoSolverFreeJointBodyPos(unittest.TestCase):
+    """Verify free joint bodies preserve their initial position in qpos0."""
+
+    def test_free_joint_body_pos(self):
+        """Free joint body at non-origin position should have correct qpos0."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1.5">
+                    <freejoint name="root"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # qpos0 should have the body's initial z position
+        qpos0 = np.array(solver.mj_model.qpos0)
+        np.testing.assert_allclose(
+            qpos0[:3],
+            [0.0, 0.0, 1.5],
+            atol=1e-6,
+            err_msg="Free joint qpos0 position should match body pos from MJCF",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
