@@ -1401,8 +1401,12 @@ class ModelBuilder:
         offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
         xform = wp.transform_identity()
         for i in range(num_worlds):
-            xform[:3] = offsets[i]
-            self.add_world(builder, xform=xform)
+            offset = offsets[i]
+            if offset[0] == 0.0 and offset[1] == 0.0 and offset[2] == 0.0:
+                self.add_world(builder, xform=None)
+            else:
+                xform[:3] = offset
+                self.add_world(builder, xform=xform)
 
     def _replicate_homogeneous_fast(
         self,
@@ -1426,8 +1430,12 @@ class ModelBuilder:
 
         for i in range(num_worlds):
             self.begin_world()
-            xform[:3] = offsets[i]
-            self.add_builder(builder, xform=xform, copy_shape_collision_filter_pairs=False)
+            offset = offsets[i]
+            if offset[0] == 0.0 and offset[1] == 0.0 and offset[2] == 0.0:
+                self.add_builder(builder, xform=None, copy_shape_collision_filter_pairs=False)
+            else:
+                xform[:3] = offset
+                self.add_builder(builder, xform=xform, copy_shape_collision_filter_pairs=False)
             self.end_world()
 
         if source_pairs.size > 0:
@@ -2558,136 +2566,139 @@ class ModelBuilder:
         self.joint_coord_count += builder.joint_coord_count
         self.joint_constraint_count += builder.joint_constraint_count
 
-        # Merge custom attributes from the sub-builder
-        # Shared offset map for both frequency and references
-        # Note: "world" is NOT included here - WORLD frequency is handled specially
-        entity_offsets = {
-            "body": start_body_idx,
-            "shape": start_shape_idx,
-            "joint": start_joint_idx,
-            "joint_dof": start_joint_dof_idx,
-            "joint_coord": start_joint_coord_idx,
-            "joint_constraint": start_joint_constraint_idx,
-            "articulation": start_articulation_idx,
-            "equality_constraint": start_equality_constraint_idx,
-            "constraint_mimic": start_constraint_mimic_idx,
-            "particle": start_particle_idx,
-            "edge": start_edge_idx,
-            "triangle": start_triangle_idx,
-            "tetrahedron": start_tetrahedron_idx,
-            "spring": start_spring_idx,
-        }
+        if builder.custom_attributes:
+            # Merge custom attributes from the sub-builder
+            # Shared offset map for both frequency and references
+            # Note: "world" is NOT included here - WORLD frequency is handled specially
+            entity_offsets = {
+                "body": start_body_idx,
+                "shape": start_shape_idx,
+                "joint": start_joint_idx,
+                "joint_dof": start_joint_dof_idx,
+                "joint_coord": start_joint_coord_idx,
+                "joint_constraint": start_joint_constraint_idx,
+                "articulation": start_articulation_idx,
+                "equality_constraint": start_equality_constraint_idx,
+                "constraint_mimic": start_constraint_mimic_idx,
+                "particle": start_particle_idx,
+                "edge": start_edge_idx,
+                "triangle": start_triangle_idx,
+                "tetrahedron": start_tetrahedron_idx,
+                "spring": start_spring_idx,
+            }
 
-        # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
-        custom_frequency_offsets = dict(self._custom_frequency_counts)
+            # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
+            custom_frequency_offsets = dict(self._custom_frequency_counts)
 
-        def get_offset(entity_or_key: str | None) -> int:
-            """Get offset for an entity type or custom frequency."""
-            if entity_or_key is None:
-                return 0
-            if entity_or_key in entity_offsets:
-                return entity_offsets[entity_or_key]
-            if entity_or_key in custom_frequency_offsets:
-                return custom_frequency_offsets[entity_or_key]
-            if entity_or_key in builder._custom_frequency_counts:
-                return 0
-            raise ValueError(
-                f"Unknown references value '{entity_or_key}'. "
-                f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
-            )
-
-        for full_key, attr in builder.custom_attributes.items():
-            # Fast path: skip attributes with no values (avoids computing offsets/closures)
-            if not attr.values:
-                # Still need to declare empty attribute on first merge
-                if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency_key
-                    mapped_values = [] if isinstance(freq_key, str) else {}
-                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
-                continue
-
-            # Index offset based on frequency
-            freq_key = attr.frequency_key
-            if isinstance(freq_key, str):
-                # Custom frequency: offset by pre-merge count
-                index_offset = custom_frequency_offsets.get(freq_key, 0)
-            elif attr.frequency == Model.AttributeFrequency.ONCE:
-                index_offset = 0
-            elif attr.frequency == Model.AttributeFrequency.WORLD:
-                # WORLD frequency: indices are keyed by world index, not by offset
-                # When called via add_world(), current_world is the world being added
-                index_offset = 0 if self.current_world == -1 else self.current_world
-            else:
-                index_offset = get_offset(attr.frequency.name.lower())
-
-            # Value transformation based on references
-            use_current_world = attr.references == "world"
-            value_offset = 0 if use_current_world else get_offset(attr.references)
-
-            def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
-                if replace_with_world:
-                    return self.current_world
-                if offset == 0:
-                    return v
-                # Handle integers, preserving negative sentinels (e.g., -1 means "invalid")
-                if isinstance(v, int):
-                    return v + offset if v >= 0 else v
-                # Handle list/tuple explicitly, preserving negative sentinels in elements
-                if isinstance(v, (list, tuple)):
-                    transformed = [x + offset if isinstance(x, int) and x >= 0 else x for x in v]
-                    return type(v)(transformed)
-                # For other types (numpy, warp, etc.), try arithmetic offset
-                try:
-                    return v + offset
-                except TypeError:
-                    return v
-
-            # Declare the attribute if it doesn't exist in the main builder
-            merged = self.custom_attributes.get(full_key)
-            if merged is None:
-                if isinstance(freq_key, str):
-                    # String frequency: copy list as-is (no offset for sequential data)
-                    mapped_values = [transform_value(value) for value in attr.values]
-                else:
-                    # Enum frequency: remap dict indices with offset
-                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
-                self.custom_attributes[full_key] = replace(attr, values=mapped_values)
-                continue
-
-            # Prevent silent divergence if defaults differ
-            # Handle array/vector types by converting to comparable format
-            try:
-                defaults_match = merged.default == attr.default
-                # Handle array-like comparisons
-                if hasattr(defaults_match, "__iter__") and not isinstance(defaults_match, (str, bytes)):
-                    defaults_match = all(defaults_match)
-            except (ValueError, TypeError):
-                # If comparison fails, assume they're different
-                defaults_match = False
-
-            if not defaults_match:
+            def get_offset(entity_or_key: str | None) -> int:
+                """Get offset for an entity type or custom frequency."""
+                if entity_or_key is None:
+                    return 0
+                if entity_or_key in entity_offsets:
+                    return entity_offsets[entity_or_key]
+                if entity_or_key in custom_frequency_offsets:
+                    return custom_frequency_offsets[entity_or_key]
+                if entity_or_key in builder._custom_frequency_counts:
+                    return 0
                 raise ValueError(
-                    f"Custom attribute '{full_key}' default mismatch when merging builders: "
-                    f"existing={merged.default}, incoming={attr.default}"
+                    f"Unknown references value '{entity_or_key}'. "
+                    f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
                 )
 
-            # Remap indices and copy values
-            if merged.values is None:
-                merged.values = [] if isinstance(freq_key, str) else {}
+            for full_key, attr in builder.custom_attributes.items():
+                # Fast path: skip attributes with no values (avoids computing offsets/closures)
+                if not attr.values:
+                    # Still need to declare empty attribute on first merge
+                    if full_key not in self.custom_attributes:
+                        freq_key = attr.frequency_key
+                        mapped_values = [] if isinstance(freq_key, str) else {}
+                        self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                    continue
 
-            if isinstance(freq_key, str):
-                # String frequency: extend list with transformed values
-                new_values = [transform_value(value) for value in attr.values]
-                merged.values.extend(new_values)
-            else:
-                # Enum frequency: update dict with remapped indices
-                new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
-                merged.values.update(new_indices)
+                # Index offset based on frequency
+                freq_key = attr.frequency_key
+                if isinstance(freq_key, str):
+                    # Custom frequency: offset by pre-merge count
+                    index_offset = custom_frequency_offsets.get(freq_key, 0)
+                elif attr.frequency == Model.AttributeFrequency.ONCE:
+                    index_offset = 0
+                elif attr.frequency == Model.AttributeFrequency.WORLD:
+                    # WORLD frequency: indices are keyed by world index, not by offset
+                    # When called via add_world(), current_world is the world being added
+                    index_offset = 0 if self.current_world == -1 else self.current_world
+                else:
+                    index_offset = get_offset(attr.frequency.name.lower())
 
-        # Update custom frequency counts once per unique frequency (not per attribute)
-        for freq_key, builder_count in builder._custom_frequency_counts.items():
-            offset = custom_frequency_offsets.get(freq_key, 0)
-            self._custom_frequency_counts[freq_key] = offset + builder_count
+                # Value transformation based on references
+                use_current_world = attr.references == "world"
+                value_offset = 0 if use_current_world else get_offset(attr.references)
+
+                def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
+                    if replace_with_world:
+                        return self.current_world
+                    if offset == 0:
+                        return v
+                    # Handle integers, preserving negative sentinels (e.g., -1 means "invalid")
+                    if isinstance(v, int):
+                        return v + offset if v >= 0 else v
+                    # Handle list/tuple explicitly, preserving negative sentinels in elements
+                    if isinstance(v, (list, tuple)):
+                        transformed = [x + offset if isinstance(x, int) and x >= 0 else x for x in v]
+                        return type(v)(transformed)
+                    # For other types (numpy, warp, etc.), try arithmetic offset
+                    try:
+                        return v + offset
+                    except TypeError:
+                        return v
+
+                # Declare the attribute if it doesn't exist in the main builder
+                merged = self.custom_attributes.get(full_key)
+                if merged is None:
+                    if isinstance(freq_key, str):
+                        # String frequency: copy list as-is (no offset for sequential data)
+                        mapped_values = [transform_value(value) for value in attr.values]
+                    else:
+                        # Enum frequency: remap dict indices with offset
+                        mapped_values = {
+                            index_offset + idx: transform_value(value) for idx, value in attr.values.items()
+                        }
+                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                    continue
+
+                # Prevent silent divergence if defaults differ
+                # Handle array/vector types by converting to comparable format
+                try:
+                    defaults_match = merged.default == attr.default
+                    # Handle array-like comparisons
+                    if hasattr(defaults_match, "__iter__") and not isinstance(defaults_match, (str, bytes)):
+                        defaults_match = all(defaults_match)
+                except (ValueError, TypeError):
+                    # If comparison fails, assume they're different
+                    defaults_match = False
+
+                if not defaults_match:
+                    raise ValueError(
+                        f"Custom attribute '{full_key}' default mismatch when merging builders: "
+                        f"existing={merged.default}, incoming={attr.default}"
+                    )
+
+                # Remap indices and copy values
+                if merged.values is None:
+                    merged.values = [] if isinstance(freq_key, str) else {}
+
+                if isinstance(freq_key, str):
+                    # String frequency: extend list with transformed values
+                    new_values = [transform_value(value) for value in attr.values]
+                    merged.values.extend(new_values)
+                else:
+                    # Enum frequency: update dict with remapped indices
+                    new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                    merged.values.update(new_indices)
+
+            # Update custom frequency counts once per unique frequency (not per attribute)
+            for freq_key, builder_count in builder._custom_frequency_counts.items():
+                offset = custom_frequency_offsets.get(freq_key, 0)
+                self._custom_frequency_counts[freq_key] = offset + builder_count
 
     @staticmethod
     def _coerce_mat33(value: Any) -> wp.mat33:
