@@ -36,6 +36,7 @@ from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
 from .types import (
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
 )
 from .utils import compute_shape_radius
@@ -46,6 +47,7 @@ __all__ = [
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
     "GeoType",
+    "Heightfield",
     "Mesh",
     "ParticleFlags",
     "SAPSortType",

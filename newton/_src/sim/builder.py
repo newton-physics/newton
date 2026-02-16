@@ -4901,6 +4901,49 @@ class ModelBuilder:
             key=key,
         )
 
+    def add_shape_heightfield(
+        self,
+        xform: Transform | None = None,
+        heightfield: Any | None = None,  # Heightfield type, using Any to avoid circular import
+        scale: Vec3 | None = None,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a heightfield (2D elevation grid) collision shape to the model.
+
+        Heightfields are efficient representations of terrain using a 2D grid of elevation values.
+        They are always static (attached to the world body) and more memory-efficient than
+        equivalent triangle meshes.
+
+        Args:
+            xform (Transform | None): The transform of the heightfield in world frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
+            scale (Vec3 | None): The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+        if heightfield is None:
+            raise ValueError("add_shape_heightfield() requires a Heightfield instance.")
+        if cfg is None:
+            cfg = self.default_shape_cfg
+
+        return self.add_shape(
+            body=-1,
+            type=GeoType.HFIELD,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            src=heightfield,
+            is_static=True,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
+
     def add_site(
         self,
         body: int,
@@ -8356,17 +8399,14 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
-            for shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
+            for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
                 zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
             ):
-                # Get margin to expand AABB (SDF extends beyond shape bounds by margin + thickness)
-                margin = self.shape_contact_margin[shape_idx] + self.shape_thickness[shape_idx]
-
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
-                    cache_key = (shape_type, id(shape_src), tuple(shape_scale), margin)
+                    cache_key = (shape_type, id(shape_src), tuple(shape_scale))
                 else:
-                    cache_key = (shape_type, tuple(shape_scale), margin)
+                    cache_key = (shape_type, tuple(shape_scale))
 
                 # Check cache first
                 if cache_key in shape_aabb_cache:
@@ -8383,10 +8423,6 @@ class ModelBuilder:
                         aabb_lower = aabb_lower * np.array(shape_scale)
                         aabb_upper = aabb_upper * np.array(shape_scale)
 
-                        # Expand by margin (SDF extends beyond mesh bounds)
-                        aabb_lower = aabb_lower - margin
-                        aabb_upper = aabb_upper + margin
-
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
@@ -8399,29 +8435,25 @@ class ModelBuilder:
                         aabb_lower = aabb_lower * np.array(shape_scale)
                         aabb_upper = aabb_upper * np.array(shape_scale)
 
-                        # Expand by margin
-                        aabb_lower = aabb_lower - margin
-                        aabb_upper = aabb_upper + margin
-
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.ELLIPSOID:
                         # Ellipsoid: shape_scale = (semi_axis_x, semi_axis_y, semi_axis_z)
                         sx, sy, sz = shape_scale
-                        aabb_lower = np.array([-sx - margin, -sy - margin, -sz - margin])
-                        aabb_upper = np.array([sx + margin, sy + margin, sz + margin])
+                        aabb_lower = np.array([-sx, -sy, -sz])
+                        aabb_upper = np.array([sx, sy, sz])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.BOX:
                         # Box: shape_scale = (hx, hy, hz) half-extents
                         hx, hy, hz = shape_scale
-                        aabb_lower = np.array([-hx - margin, -hy - margin, -hz - margin])
-                        aabb_upper = np.array([hx + margin, hy + margin, hz + margin])
+                        aabb_lower = np.array([-hx, -hy, -hz])
+                        aabb_upper = np.array([hx, hy, hz])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.SPHERE:
                         # Sphere: shape_scale = (radius, radius, radius)
-                        r = shape_scale[0] + margin
+                        r = shape_scale[0]
                         aabb_lower = np.array([-r, -r, -r])
                         aabb_upper = np.array([r, r, r])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
@@ -8430,25 +8462,24 @@ class ModelBuilder:
                         # Capsule: shape_scale = (radius, half_height, radius)
                         # Capsule is along Z axis with hemispherical caps (matches SDF in kernels.py)
                         r, half_height, _ = shape_scale
-                        r_expanded = r + margin
-                        aabb_lower = np.array([-r_expanded, -r_expanded, -half_height - r_expanded])
-                        aabb_upper = np.array([r_expanded, r_expanded, half_height + r_expanded])
+                        aabb_lower = np.array([-r, -r, -half_height - r])
+                        aabb_upper = np.array([r, r, half_height + r])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CYLINDER:
                         # Cylinder: shape_scale = (radius, half_height, radius)
                         # Cylinder is along Z axis (matches SDF in kernels.py)
                         r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r - margin, -r - margin, -half_height - margin])
-                        aabb_upper = np.array([r + margin, r + margin, half_height + margin])
+                        aabb_lower = np.array([-r, -r, -half_height])
+                        aabb_upper = np.array([r, r, half_height])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     elif shape_type == GeoType.CONE:
                         # Cone: shape_scale = (radius, half_height, radius)
                         # Cone is along Z axis (matches SDF in kernels.py)
                         r, half_height, _ = shape_scale
-                        aabb_lower = np.array([-r - margin, -r - margin, -half_height - margin])
-                        aabb_upper = np.array([r + margin, r + margin, half_height + margin])
+                        aabb_lower = np.array([-r, -r, -half_height])
+                        aabb_upper = np.array([r, r, half_height])
                         nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
                     else:
@@ -8621,6 +8652,48 @@ class ModelBuilder:
                 m.shape_sdf_coarse_volume = [None] * len(self.shape_type)
                 m.shape_sdf_block_coords = wp.array([], dtype=wp.vec3us)
                 m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
+
+            # ---------------------
+            # heightfield collision data
+            has_heightfields = any(t == GeoType.HFIELD for t in self.shape_type)
+            if has_heightfields:
+                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+
+                hfield_data_list = []
+                elevation_chunks = []
+                offset = 0
+                empty_hfield = create_empty_heightfield_data()
+                for i in range(len(self.shape_type)):
+                    if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
+                        hf = self.shape_source[i]
+                        hd = HeightfieldData()
+                        hd.data_offset = offset
+                        hd.nrow = hf.nrow
+                        hd.ncol = hf.ncol
+                        hd.hx = hf.hx
+                        hd.hy = hf.hy
+                        hd.min_z = hf.min_z
+                        hd.max_z = hf.max_z
+                        hfield_data_list.append(hd)
+                        elevation_chunks.append(hf.data.flatten())
+                        offset += hf.nrow * hf.ncol
+                    else:
+                        hfield_data_list.append(empty_hfield)
+                m.shape_heightfield_data = wp.array(hfield_data_list, dtype=HeightfieldData, device=device)
+                if elevation_chunks:
+                    m.heightfield_elevation_data = wp.array(
+                        np.concatenate(elevation_chunks), dtype=wp.float32, device=device
+                    )
+                else:
+                    m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
+            else:
+                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+
+                empty_hfield = create_empty_heightfield_data()
+                m.shape_heightfield_data = wp.array(
+                    [empty_hfield] * max(len(self.shape_type), 1), dtype=HeightfieldData, device=device
+                )
+                m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
 
             # ---------------------
             # springs
