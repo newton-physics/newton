@@ -125,7 +125,7 @@ class Example:
         builder.joint_q[:9] = [*init_q, 0.05, 0.05]
         builder.joint_target_pos[:9] = [*init_q, 1.0, 1.0]
 
-        builder.joint_target_ke[:9] = [500.0] * 9
+        builder.joint_target_ke[:9] = [650.0] * 9
         builder.joint_target_kd[:9] = [100.0] * 9
         builder.joint_effort_limit[:7] = [80.0] * 7
         builder.joint_effort_limit[7:9] = [20.0] * 2
@@ -232,13 +232,13 @@ class Example:
         sdf_hydroelastic_config = SDFHydroelasticConfig(
             output_contact_surface=hasattr(viewer, "renderer"),  # Compile in if viewer supports it
         )
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
             broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
             sdf_hydroelastic_config=sdf_hydroelastic_config,
         )
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Create MuJoCo solver with Newton contacts
         self.solver = newton.solvers.SolverMuJoCo(
@@ -331,7 +331,7 @@ class Example:
 
         for i in range(self.sim_substeps):
             if i % self.collide_substeps == 0:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

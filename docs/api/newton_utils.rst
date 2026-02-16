@@ -23,12 +23,16 @@ newton.utils
    color_graph
    compute_world_offsets
    create_box_mesh
+   create_cable_stiffness_from_elastic_moduli
    create_capsule_mesh
    create_cone_mesh
    create_cylinder_mesh
    create_ellipsoid_mesh
+   create_parallel_transport_cable_quaternions
    create_plane_mesh
    create_sphere_mesh
+   create_straight_cable_points
+   create_straight_cable_points_and_quaternions
    download_asset
    event_scope
    leaky_max
@@ -37,6 +41,7 @@ newton.utils
    normalize_texture
    plot_graph
    quat_between_axes
+   quat_between_vectors_robust
    quat_decompose
    quat_from_euler
    quat_to_euler

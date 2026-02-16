@@ -195,9 +195,9 @@ Installing dependencies including optional development dependencies:
 
 .. code-block:: console
 
-    python -m pip install mujoco --pre -f https://py.mujoco.org/
+    python -m pip install mujoco
+    python -m pip install mujoco-warp
     python -m pip install warp-lang --pre -U -f https://pypi.nvidia.com/warp-lang/
-    python -m pip install git+https://github.com/google-deepmind/mujoco_warp.git@main
     python -m pip install -e .[dev]
 
 Test the installation by running an example:

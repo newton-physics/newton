@@ -280,7 +280,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.contacts()
 
         # Set model in viewer
         self.viewer.set_model(self.model)
@@ -325,7 +325,7 @@ class Example:
 
     def simulate(self):
         """Simulate performs one frame's worth of updates."""
-        self.contacts = self.model.collide(self.state_0)
+        self.model.collide(self.state_0, self.contacts)
 
         need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
 

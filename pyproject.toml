@@ -33,8 +33,8 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp>=0.0.2",         # MuJoCo, warp-accelerated
-    "mujoco>=3.4.1.dev856273160", # MuJoCo physics engine
+    "mujoco-warp>=3.5.0",         # MuJoCo, warp-accelerated
+    "mujoco>=3.5.0",              # MuJoCo physics engine
 ]
 
 # Asset import and mesh processing dependencies
@@ -129,9 +129,7 @@ url = "https://pypi.nvidia.com/"
 explicit = true
 
 [tool.uv.sources]
-mujoco-warp = { git = "https://github.com/google-deepmind/mujoco_warp" }
 warp-lang = { index = "nvidia" }
-mujoco = { index = "mujoco" }
 torch = [{ index = "pytorch-cu128", extra = "torch-cu12" }]
 
 [dependency-groups]
@@ -161,7 +159,8 @@ select = [
     "PLE", # pylint error
     "PLW", # pylint warning
     "UP",  # pyupgrade
-    "RUF", # ruff-specific rules
+    "RUF",  # ruff-specific rules
+    "TID253",  # banned module-level imports
 ]
 ignore = [
     "E501",   # Many lines are over 120 characters already (TODO: Fix)
@@ -177,12 +176,38 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "asv/benchmarks/**/*" = ["RUF012", "E402"]
-"newton/examples/**/*" = ["E402"]
+"newton/examples/**/*" = ["E402", "TID253"]
+# TID253 (banned module-level imports) only applies to newton/_src and newton/tests
+"docs/**/*" = ["TID253"]
+"asv/**/*" = ["TID253"]
 
-[[tool.uv.index]]
-name = "mujoco"
-url = "https://py.mujoco.org"
-explicit = true
+[tool.ruff.lint.flake8-tidy-imports]
+banned-module-level-imports = [
+    "alphashape",
+    "coacd",
+    "fast_simplification",
+    "git",
+    "imgui_bundle",
+    "IPython",
+    "matplotlib",
+    "meshio",
+    "mujoco",
+    "mujoco_warp",
+    "networkx",
+    "open3d",
+    "openmesh",
+    "PIL",
+    "point_cloud_utils",
+    "pxr",
+    "pyfqmr",
+    "pyglet",
+    "pytetwild",
+    "requests",
+    "scipy",
+    "torch",
+    "trimesh",
+    "viser",
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -235,6 +260,8 @@ files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf
 arange = "arange"
 ba = "ba"
 HAA = "HAA"
+lod = "lod"
 
 [tool.typos.default.extend-identifiers]
 PNGs = "PNGs"
+Haa = "Haa"

@@ -67,7 +67,11 @@ release = project_version
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-# Add docs/_ext to Python import path so custom extensions can be imported
+# Add docs/ and docs/_ext to Python import path so custom extensions and
+# sibling scripts (e.g. generate_api) can be imported.
+_docs_path = str(Path(__file__).parent)
+if _docs_path not in sys.path:
+    sys.path.append(_docs_path)
 _ext_path = Path(__file__).parent / "_ext"
 if str(_ext_path) not in sys.path:
     sys.path.append(str(_ext_path))
@@ -386,5 +390,9 @@ def _on_builder_inited(_app: Any) -> None:
 
 
 def setup(app: Any) -> None:
-    # Copy on build init so `_static/viser/index.html` is always present in the built site.
+    # Regenerate API .rst files so builds always reflect the current public API.
+    from generate_api import generate_all  # noqa: PLC0415
+
+    generate_all()
+
     app.connect("builder-inited", _on_builder_inited)

@@ -52,7 +52,7 @@ def _safe_rmtree(path):
 def _get_latest_commit_via_git(git_url: str, branch: str) -> str | None:
     """Resolve latest commit SHA for a branch via 'git ls-remote'."""
     try:
-        import git  # noqa: PLC0415
+        import git
 
         out = git.cmd.Git().ls_remote("--heads", git_url, branch)
         # Output format: "<sha>\trefs/heads/<branch>\n"
@@ -65,7 +65,7 @@ def _get_latest_commit_via_git(git_url: str, branch: str) -> str | None:
 def _read_cached_commit(cache_folder: Path) -> str | None:
     """Return HEAD commit of cached repo, or None on failure."""
     try:
-        import git  # noqa: PLC0415
+        import git
 
         repo = git.Repo(cache_folder)
         try:
@@ -167,8 +167,8 @@ def download_git_folder(
         >>> print(f"Downloaded to: {folder_path}")
     """
     try:
-        import git  # noqa: PLC0415
-        from git.exc import GitCommandError  # noqa: PLC0415
+        import git
+        from git.exc import GitCommandError
     except ImportError as e:
         raise ImportError(
             "GitPython package is required for downloading git folders. Install it with: pip install GitPython"

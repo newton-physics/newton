@@ -254,9 +254,10 @@ class TestSiteNonCollision(unittest.TestCase):
 
         model = builder.finalize()
         state = model.state()
+        contacts = model.contacts()
 
         # Run collision detection
-        contacts = model.collide(state)
+        model.collide(state, contacts)
 
         # Should have no contacts (site doesn't collide)
         count = contacts.rigid_contact_count.numpy()[0]

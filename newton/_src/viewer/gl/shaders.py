@@ -494,7 +494,7 @@ class ShaderShape(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -575,7 +575,7 @@ class ShaderSky(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -621,7 +621,7 @@ class ShadowShader(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -645,7 +645,7 @@ class FrameShader(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -667,7 +667,7 @@ class ShaderLine(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
