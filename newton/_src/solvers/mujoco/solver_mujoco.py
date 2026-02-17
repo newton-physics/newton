@@ -42,6 +42,7 @@ from ...utils.import_utils import string_to_warp
 from ..flags import SolverNotifyFlags
 from ..solver import SolverBase
 from .kernels import (
+    apply_kinematic_target_kernel,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
@@ -2032,6 +2033,30 @@ class SolverMuJoCo(SolverBase):
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         # When ref is used, we rely on MuJoCo's FK (eval_fk=False) because ref is handled by MuJoCo via qpos0
         eval_fk = not self._has_ref
+
+        # Apply kinematic targets to joint velocities before syncing to MuJoCo
+        if control is not None and control.kinematic_target is not None:
+            joints_per_world = self.model.joint_count // self.model.num_worlds
+            inv_dt = 1.0 / max(dt, 1.0e-10)
+            wp.launch(
+                apply_kinematic_target_kernel,
+                dim=(self.model.num_worlds, joints_per_world),
+                inputs=[
+                    self.model.joint_kinematic_mode,
+                    self.model.joint_type,
+                    self.model.joint_q_start,
+                    self.model.joint_qd_start,
+                    self.model.joint_dof_dim,
+                    control.kinematic_target,
+                    state_in.joint_q,
+                    inv_dt,
+                    joints_per_world,
+                ],
+                outputs=[
+                    state_in.joint_qd,
+                ],
+                device=self.model.device,
+            )
 
         if self.use_mujoco_cpu:
             self.apply_mjc_control(self.model, state_in, control, self.mj_data)

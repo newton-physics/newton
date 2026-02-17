@@ -64,6 +64,17 @@ class Control:
             Support for muscle dynamics is not yet implemented.
         """
 
+        self.kinematic_target: wp.array | None = None
+        """Target values for kinematic joints, shape ``(joint_coord_count,)``, type ``float``.
+
+        Indexed by ``joint_q_start`` offsets for both :attr:`~newton.KinematicMode.VELOCITY` and
+        :attr:`~newton.KinematicMode.POSITION` modes. For VELOCITY mode, the DOF velocity values
+        are stored at ``q_start`` (extra coordinate slots unused for free/ball joints).
+        For POSITION mode, the coordinate positions are stored in the same layout as ``joint_q``.
+
+        Not zeroed by :meth:`clear` — targets persist until explicitly changed.
+        """
+
     def clear(self) -> None:
         """Reset the control inputs to zero."""
 

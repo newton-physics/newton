@@ -191,8 +191,36 @@ class ActuatorMode(IntEnum):
             return ActuatorMode.EFFORT
 
 
+class KinematicMode(IntEnum):
+    """Kinematic mode for a joint.
+
+    Kinematic joints have very high armature on all DOFs, making them effectively
+    immovable by external forces while still participating in velocity-level contact
+    resolution. The joint's motion is driven by ``control.kinematic_target``.
+
+    The ``kinematic_target`` array on :class:`~newton.Control` is indexed by
+    ``joint_q_start`` offsets for both modes:
+
+    - ``VELOCITY``: target values are per-DOF velocities written at ``q_start``
+      (extra coordinate slots unused for free/ball joints).
+    - ``POSITION``: target values are per-coordinate positions in the same
+      layout as ``joint_q``. The solver computes the required velocity internally.
+    """
+
+    NONE = 0
+    """Normal dynamic joint. No kinematic control."""
+
+    VELOCITY = 1
+    """Velocity-controlled kinematic joint. Target is per-DOF velocity."""
+
+    POSITION = 2
+    """Position-controlled kinematic joint. Target is per-coordinate position,
+    velocity is computed as ``(target - current) / dt``."""
+
+
 __all__ = [
     "ActuatorMode",
     "EqType",
     "JointType",
+    "KinematicMode",
 ]
