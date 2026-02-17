@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 
 class TestArticulationDocs(unittest.TestCase):
@@ -15,4 +15,3 @@ class TestArticulationDocs(unittest.TestCase):
         self.assertIn("set_root_transforms()", docs_text)
         self.assertIn("Model.joint_X_p", docs_text)
         self.assertIn("newton.selection.ArticulationView", docs_text)
-
