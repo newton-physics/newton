@@ -671,8 +671,8 @@ class TestModel(unittest.TestCase):
         main_builder2.end_world()
         self.assertEqual(main_builder2.world_count, 3)  # Should now be 3
 
-    def test_replicate_mode_fast_matches_legacy_path(self):
-        """Test that replicate(mode='fast') and replicate(mode='legacy') finalize to identical filters."""
+    def test_replicate_fast_matches_manual_legacy_oracle(self):
+        """Test that replicate() matches manual add_world replication for finalized collision filters."""
         template = ModelBuilder()
         body = template.add_body(mass=1.0)
         shape_a = template.add_shape_sphere(body=body, radius=0.2)
@@ -680,11 +680,11 @@ class TestModel(unittest.TestCase):
         template.add_shape_collision_filter_pair(shape_a, shape_b)
 
         fast_builder = ModelBuilder()
-        fast_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0), mode="fast")
+        fast_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0))
         fast_model = fast_builder.finalize(skip_all_validations=True)
 
         legacy_builder = ModelBuilder()
-        legacy_builder.replicate(template, num_worlds=3, spacing=(1.5, 0.0, 0.0), mode="legacy")
+        legacy_builder._replicate_per_world(template, num_worlds=3, spacing=(1.5, 0.0, 0.0))
         legacy_model = legacy_builder.finalize(skip_all_validations=True)
 
         self.assertEqual(fast_model.num_worlds, legacy_model.num_worlds)
@@ -695,37 +695,26 @@ class TestModel(unittest.TestCase):
             legacy_model.shape_collision_filter_pairs_sorted.numpy(),
         )
 
-    def test_replicate_mode_fast_fails_if_source_in_world_context(self):
-        """Fast mode should fail loudly if the source builder is mid world construction."""
+    def test_replicate_fails_if_source_in_world_context(self):
+        """replicate() should fail loudly if the source builder is mid world construction."""
         template = ModelBuilder()
         template.begin_world()
         template.add_body(mass=1.0)
 
         builder = ModelBuilder()
         with self.assertRaises(RuntimeError) as cm:
-            builder.replicate(template, num_worlds=1, mode="fast")
-        self.assertIn("replicate(mode='fast') unsupported", str(cm.exception))
+            builder.replicate(template, num_worlds=1)
+        self.assertIn("replicate() unsupported", str(cm.exception))
         self.assertIn("call end_world() first", str(cm.exception))
 
-    def test_replicate_mode_auto_falls_back_to_legacy_if_fast_unsupported(self):
-        """Auto mode should use legacy path instead of failing when fast mode is unsupported."""
-        template = ModelBuilder()
-        template.begin_world()
-        template.add_body(mass=1.0)
-
-        builder = ModelBuilder()
-        builder.replicate(template, num_worlds=2, mode="auto")
-        model = builder.finalize(skip_all_validations=True)
-        self.assertEqual(model.num_worlds, 2)
-
-    def test_replicate_mode_raises_on_invalid_mode(self):
-        """replicate() should fail loudly on unknown mode names."""
+    def test_replicate_rejects_negative_world_count(self):
+        """replicate() should fail loudly when num_worlds is negative."""
         template = ModelBuilder()
         template.add_body(mass=1.0)
 
         builder = ModelBuilder()
         with self.assertRaises(ValueError):
-            builder.replicate(template, num_worlds=1, mode="unknown")
+            builder.replicate(template, num_worlds=-1)
 
     def test_world_validation_errors(self):
         """Test that world validation catches non-contiguous and non-monotonic world indices."""

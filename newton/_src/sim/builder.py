@@ -1357,7 +1357,6 @@ class ModelBuilder:
         builder: ModelBuilder,
         num_worlds: int,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        mode: Literal["auto", "fast", "legacy"] = "auto",
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -1377,30 +1376,14 @@ class ModelBuilder:
             spacing (tuple[float, float, float], optional): The spacing between each copy along each axis.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
-            mode: Replication strategy:
-                - ``"auto"``: Use fast homogeneous replication when supported; otherwise fall back to legacy.
-                - ``"fast"``: Require fast homogeneous replication; raise with an explicit reason if unsupported.
-                - ``"legacy"``: Use the faithful per-world path (equivalent to repeatedly calling :meth:`add_world`).
         """
         if num_worlds < 0:
             raise ValueError(f"num_worlds must be >= 0, got {num_worlds}")
 
-        if mode not in ("auto", "fast", "legacy"):
-            raise ValueError(f"replicate mode must be one of ('auto', 'fast', 'legacy'), got {mode!r}")
-
-        if mode == "legacy":
-            self._replicate_per_world(builder=builder, num_worlds=num_worlds, spacing=spacing)
-            return
-
         fast_unsupported_reason = self._replicate_fast_path_unsupported_reason(builder=builder)
-        if fast_unsupported_reason is None:
-            self._replicate_homogeneous_fast(builder=builder, num_worlds=num_worlds, spacing=spacing)
-            return
-
-        if mode == "fast":
-            raise RuntimeError(f"replicate(mode='fast') unsupported: {fast_unsupported_reason}")
-
-        self._replicate_per_world(builder=builder, num_worlds=num_worlds, spacing=spacing)
+        if fast_unsupported_reason is not None:
+            raise RuntimeError(f"replicate() unsupported: {fast_unsupported_reason}")
+        self._replicate_homogeneous_fast(builder=builder, num_worlds=num_worlds, spacing=spacing)
 
     def _replicate_fast_path_unsupported_reason(self, builder: ModelBuilder) -> str | None:
         """Return None when fast replicate is valid, otherwise an explicit unsupported reason."""
@@ -1443,7 +1426,7 @@ class ModelBuilder:
         if builder.current_world != -1:
             raise RuntimeError(
                 "Cannot replicate a builder that is currently in world context. "
-                "Call end_world() on the source builder before replicate(..., mode='fast')."
+                "Call end_world() on the source builder before replicate(...)."
             )
 
         start_shape_idx = self.shape_count
@@ -9349,8 +9332,8 @@ class ModelBuilder:
         # Degenerate boxes centered at origin for all shapes: every valid pair overlaps.
         shape_lower = wp.zeros(model.shape_count, dtype=wp.vec3, device=model.device)
         shape_upper = wp.zeros(model.shape_count, dtype=wp.vec3, device=model.device)
-        candidate_pair = wp.empty(max_pairs, dtype=wp.vec2i, device=model.device)
-        num_candidate_pair = wp.zeros(1, dtype=wp.int32, device=model.device)
+        candidate_pairs = wp.empty(max_pairs, dtype=wp.vec2i, device=model.device)
+        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=model.device)
 
         filter_pairs = model.shape_collision_filter_pairs_sorted
         num_filter_pairs = int(filter_pairs.shape[0]) if filter_pairs is not None else 0
@@ -9362,20 +9345,20 @@ class ModelBuilder:
             shape_collision_group=model.shape_collision_group,
             shape_shape_world=model.shape_world,
             shape_count=model.shape_count,
-            candidate_pair=candidate_pair,
-            num_candidate_pair=num_candidate_pair,
+            candidate_pair=candidate_pairs,
+            candidate_pair_count=candidate_pair_count,
             device=model.device,
             filter_pairs=filter_pairs,
             num_filter_pairs=num_filter_pairs,
         )
 
-        pair_count = int(num_candidate_pair.numpy()[0])
+        pair_count = int(candidate_pair_count.numpy()[0])
         if pair_count <= 0:
             self._set_empty_shape_contact_pairs(model)
             return
 
         # Keep an exact-length view without an additional device allocation/copy.
-        model.shape_contact_pairs = candidate_pair[:pair_count]
+        model.shape_contact_pairs = candidate_pairs[:pair_count]
         model.shape_contact_pair_count = pair_count
 
     def _find_shape_contact_pairs_python(self, model: Model) -> None:
