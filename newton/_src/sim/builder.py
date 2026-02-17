@@ -2670,8 +2670,10 @@ class ModelBuilder:
                 merged = self.custom_attributes.get(full_key)
                 if merged is None:
                     if isinstance(freq_key, str):
-                        # String frequency: copy list as-is (no offset for sequential data)
-                        mapped_values = [transform_value(value) for value in attr.values]
+                        # String frequency: preserve global frequency indexing by padding existing slots.
+                        # None placeholders are resolved to attribute defaults in build_array().
+                        mapped_values = [None] * index_offset
+                        mapped_values.extend(transform_value(value) for value in attr.values)
                     else:
                         # Enum frequency: remap dict indices with offset
                         mapped_values = {

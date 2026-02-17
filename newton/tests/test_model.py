@@ -716,6 +716,38 @@ class TestModel(unittest.TestCase):
         with self.assertRaises(ValueError):
             builder.replicate(template, num_worlds=-1)
 
+    def test_add_builder_custom_frequency_new_key_preserves_frequency_index_alignment(self):
+        """New custom-frequency keys merged later must be padded to existing frequency count."""
+        main = ModelBuilder()
+        main.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="a",
+                namespace="test",
+                frequency="pair",
+                dtype=wp.int32,
+                default=-1,
+            )
+        )
+        main.add_custom_values(**{"test:a": 10})
+
+        sub = ModelBuilder()
+        sub.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="b",
+                namespace="test",
+                frequency="pair",
+                dtype=wp.int32,
+                default=-1,
+            )
+        )
+        sub.add_custom_values(**{"test:b": 20})
+
+        main.add_builder(sub)
+        model = main.finalize()
+
+        assert_np_equal(model.test.a.numpy(), np.array([10, -1], dtype=np.int32))
+        assert_np_equal(model.test.b.numpy(), np.array([-1, 20], dtype=np.int32))
+
     def test_world_validation_errors(self):
         """Test that world validation catches non-contiguous and non-monotonic world indices."""
         # Test non-contiguous worlds
