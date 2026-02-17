@@ -1797,7 +1797,7 @@ class TestBufferOverflowWarnings(unittest.TestCase):
         capture.begin()
         narrow_phase.launch(
             candidate_pair=candidate_pair,
-            num_candidate_pair=num_candidate_pair,
+            candidate_pair_count=num_candidate_pair,
             shape_types=arrays[0],
             shape_data=arrays[1],
             shape_transform=arrays[2],
@@ -1863,7 +1863,7 @@ class TestBufferOverflowWarnings(unittest.TestCase):
         capture.begin()
         narrow_phase.launch(
             candidate_pair=candidate_pair,
-            num_candidate_pair=num_candidate_pair,
+            candidate_pair_count=num_candidate_pair,
             shape_types=arrays[0],
             shape_data=arrays[1],
             shape_transform=arrays[2],

@@ -2013,7 +2013,7 @@ class NarrowPhase:
             kernel=verify_narrow_phase_buffers,
             dim=[1],
             inputs=[
-                num_candidate_pair,
+                candidate_pair_count,
                 candidate_pair.shape[0],
                 self.gjk_candidate_pairs_count,
                 self.gjk_candidate_pairs.shape[0],
