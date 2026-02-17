@@ -439,7 +439,7 @@ class ViewerGL(ViewerBase):
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
                         self.objects[shapes.name] = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
 
-        self._write_indices = wp.array(write_np, dtype=int, device=device)
+        self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
         self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=True)
@@ -761,7 +761,7 @@ class ViewerGL(ViewerBase):
                     self.model.shape_type,
                     self.model.shape_world,
                     self.world_offsets,
-                    self._write_indices,
+                    self._packed_write_indices,
                     GEO_MESH,
                     GEO_CONVEX_MESH,
                 ],
