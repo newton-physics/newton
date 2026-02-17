@@ -2292,7 +2292,7 @@ class SolverImplicitMPM(SolverBase):
 
             if self.gimp:
                 particle_locations = self._particle_grid_locations_gimp(
-                    domain, positions, self.mpm_model.particle_radius
+                    domain, positions, self._mpm_model.particle_radius
                 )
             else:
                 particle_locations = self._particle_grid_locations(domain, positions)
@@ -2884,7 +2884,7 @@ class SolverImplicitMPM(SolverBase):
             return None
         elif self.strain_basis[:3] == "pic":
             M_diag = scratch.strain_node_particle_volume
-            M_diag.assign(self.mpm_model.particle_volume * inv_cell_volume)
+            M_diag.assign(self._mpm_model.particle_volume * inv_cell_volume)
             return None
 
         # build mass matrix of PIC integration
