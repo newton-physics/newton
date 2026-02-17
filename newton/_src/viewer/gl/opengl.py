@@ -239,7 +239,7 @@ class MeshGL:
 
         # albedo
         gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
-        # material, roughness, metallic, checker, texture_enable
+        # material = (roughness, metallic, checker, texture_enable)
         gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
 
         gl.glBindVertexArray(0)

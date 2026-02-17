@@ -1191,7 +1191,7 @@ class ViewerBase:
 
             # Use distinct collision color palette (different from visual shapes)
             color = wp.vec3(self._collision_color_map(s))
-            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             batch.add(
                 parent=parent,
@@ -1280,7 +1280,7 @@ class ViewerBase:
             else:
                 color = wp.vec3(color)
 
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             # add render instance
             batch.add(
