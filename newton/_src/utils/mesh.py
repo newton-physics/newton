@@ -950,55 +950,125 @@ def create_mesh_cylinder(
             uvs.append([0.0, 0.0] if uv is None else [uv[0], uv[1]])
         return idx
 
-    cap_center_bottom_pos = np.array([0.0, -half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-    cap_center_top_pos = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-    cap_center_bottom_n = np.array([0.0, -1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-    cap_center_top_n = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
-    add_vertex(cap_center_bottom_pos, cap_center_bottom_n, (0.5, 0.5))
-    add_vertex(cap_center_top_pos, cap_center_top_n, (0.5, 0.5))
-
-    cap_ring_start = len(positions)
-    side_ring_bottom_start = cap_ring_start + 2 * segments
-    side_ring_top_start = side_ring_bottom_start + segments
-
     side_slope = -np.arctan2(top_radius - radius, 2 * half_height)
 
-    for j in (-1, 1):
-        center_index = max(j, 0)
-        current_radius = radius if j == -1 else top_radius
+    # Side vertices first (contiguous layout for robust indexing).
+    side_bottom_indices = []
+    for i in range(segments):
+        theta = 2 * np.pi * i / segments
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
+        position = position[[x_dir, y_dir, z_dir]]
+
+        side_normal = None
+        if compute_normals:
+            side_normal = np.array([cos_theta, side_slope, sin_theta], dtype=np.float32)
+            side_normal = side_normal / np.linalg.norm(side_normal)
+            side_normal = side_normal[[x_dir, y_dir, z_dir]]
+
+        side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
+        side_bottom_indices.append(add_vertex(position, side_normal, side_uv))
+
+    side_top_indices = []
+    side_apex_index: int | None = None
+    if top_radius > 0.0:
         for i in range(segments):
             theta = 2 * np.pi * i / segments
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
-            x = cos_theta
-            y = j * half_height
-            z = sin_theta
-            position = np.array([current_radius * x, y, current_radius * z], dtype=np.float32)
+
+            position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
             position = position[[x_dir, y_dir, z_dir]]
 
             side_normal = None
             if compute_normals:
-                side_normal = np.array([x, side_slope, z], dtype=np.float32)
+                side_normal = np.array([cos_theta, side_slope, sin_theta], dtype=np.float32)
                 side_normal = side_normal / np.linalg.norm(side_normal)
                 side_normal = side_normal[[x_dir, y_dir, z_dir]]
-            side_uv = (i / max(segments - 1, 1), (j + 1) / 2) if compute_uvs else None
-            add_vertex(position, side_normal, side_uv)
 
-            cap_normal = None
-            if compute_normals:
-                cap_normal = np.array([0.0, float(j), 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+            side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
+            side_top_indices.append(add_vertex(position, side_normal, side_uv))
+    else:
+        apex_position = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        apex_normal = None
+        if compute_normals:
+            apex_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        side_apex_index = add_vertex(apex_position, apex_normal, (0.5, 1.0) if compute_uvs else None)
+
+    # Cap vertices after side vertices (also contiguous per cap).
+    cap_center_bottom_idx: int | None = None
+    cap_center_top_idx: int | None = None
+
+    if radius > 0.0:
+        cap_center_bottom_pos = np.array([0.0, -half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        cap_center_bottom_n = (
+            np.array([0.0, -1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]] if compute_normals else None
+        )
+        cap_center_bottom_idx = add_vertex(
+            cap_center_bottom_pos, cap_center_bottom_n, (0.5, 0.5) if compute_uvs else None
+        )
+
+    if top_radius > 0.0:
+        cap_center_top_pos = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        cap_center_top_n = (
+            np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]] if compute_normals else None
+        )
+        cap_center_top_idx = add_vertex(cap_center_top_pos, cap_center_top_n, (0.5, 0.5) if compute_uvs else None)
+
+    cap_ring_bottom_indices = []
+    if radius > 0.0:
+        for i in range(segments):
+            theta = 2 * np.pi * i / segments
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
+            position = position[[x_dir, y_dir, z_dir]]
+            cap_normal = (
+                np.array([0.0, -1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]] if compute_normals else None
+            )
             cap_uv = (cos_theta * 0.5 + 0.5, sin_theta * 0.5 + 0.5) if compute_uvs else None
-            add_vertex(position, cap_normal, cap_uv)
+            cap_ring_bottom_indices.append(add_vertex(position, cap_normal, cap_uv))
 
-            cs = center_index * segments
-            indices.extend([center_index, i + cs + 2, (i + 1) % segments + cs + 2][::-j])
+    cap_ring_top_indices = []
+    if top_radius > 0.0:
+        for i in range(segments):
+            theta = 2 * np.pi * i / segments
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+            position = position[[x_dir, y_dir, z_dir]]
+            cap_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]] if compute_normals else None
+            cap_uv = (cos_theta * 0.5 + 0.5, sin_theta * 0.5 + 0.5) if compute_uvs else None
+            cap_ring_top_indices.append(add_vertex(position, cap_normal, cap_uv))
 
+    # Bottom cap
+    if cap_center_bottom_idx is not None and cap_ring_bottom_indices:
+        for i in range(segments):
+            i0 = cap_ring_bottom_indices[i]
+            i1 = cap_ring_bottom_indices[(i + 1) % segments]
+            indices.extend([i1, i0, cap_center_bottom_idx])
+
+    # Top cap
+    if cap_center_top_idx is not None and cap_ring_top_indices:
+        for i in range(segments):
+            i0 = cap_ring_top_indices[i]
+            i1 = cap_ring_top_indices[(i + 1) % segments]
+            indices.extend([cap_center_top_idx, i0, i1])
+
+    # Side faces
     for i in range(segments):
-        index1 = side_ring_top_start + i
-        index2 = side_ring_top_start + ((i + 1) % segments)
-        index3 = side_ring_bottom_start + i
-        index4 = side_ring_bottom_start + ((i + 1) % segments)
-        indices.extend([index1, index2, index3, index2, index4, index3])
+        bottom_i = side_bottom_indices[i]
+        bottom_next = side_bottom_indices[(i + 1) % segments]
+
+        if top_radius > 0.0:
+            top_i = side_top_indices[i]
+            top_next = side_top_indices[(i + 1) % segments]
+            indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
+        else:
+            assert side_apex_index is not None
+            indices.extend([side_apex_index, bottom_next, bottom_i])
 
     return (
         np.asarray(positions, dtype=np.float32),
