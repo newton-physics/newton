@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import unittest
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -194,14 +195,14 @@ def _make_straight_cable_along_x(num_elements: int, segment_length: float, z_hei
         - Points are centered about x=0 (first point is at x=-0.5*cable_length).
         - Capsules have local +Z as their axis; quaternions rotate local +Z to world +X.
     """
-    cable_length = num_elements * segment_length
-    start_x = -0.5 * cable_length
-    points = [wp.vec3(start_x + i * segment_length, 0.0, z_height) for i in range(num_elements + 1)]
-
-    # Capsule internal axis is +Z; rotate so rod axis aligns with +X
-    rot_z_to_x = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(1.0, 0.0, 0.0))
-    edge_q = [rot_z_to_x] * num_elements
-    return points, edge_q
+    length = float(num_elements * segment_length)
+    start = wp.vec3(-0.5 * length, 0.0, float(z_height))
+    return newton.utils.create_straight_cable_points_and_quaternions(
+        start=start,
+        direction=wp.vec3(1.0, 0.0, 0.0),
+        length=length,
+        num_segments=int(num_elements),
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -289,16 +290,7 @@ def _build_cable_loop(device, num_links: int = 6):
         y = radius * wp.sin(angle)
         points.append(wp.vec3(x, y, z_height))
 
-    # Orient capsules tangentially along the circle
-    edge_q = []
-    for i in range(num_elements):
-        p0 = points[i]
-        p1 = points[i + 1]
-        dir_vec = wp.normalize(p1 - p0)
-
-        # Capsule internal axis is +Z; rotate +Z into dir_vec
-        q = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), dir_vec)
-        edge_q.append(q)
+    edge_q = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
 
     _rod_bodies, _rod_joints = builder.add_rod(
         positions=points,
@@ -527,6 +519,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
 
     state0, state1 = model.state(), model.state()
     control = model.control()
+    contacts = model.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
     frame_dt = 1.0 / 60.0
@@ -538,7 +531,7 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device):
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -580,6 +573,7 @@ def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     """Cable VBD: pinned chain should sag under gravity while remaining numerically stable."""
     segment_length = 0.2
     model, state0, state1, control, _rod_bodies = _build_cable_chain(device, num_links=6, segment_length=segment_length)
+    contacts = model.contacts()
     solver = newton.solvers.SolverVBD(model, iterations=10)
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -593,7 +587,7 @@ def _cable_sagging_and_stability_impl(test: unittest.TestCase, device):
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -664,6 +658,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     solver = newton.solvers.SolverVBD(model, iterations=10)
 
@@ -699,7 +694,7 @@ def _cable_twist_response_impl(test: unittest.TestCase, device):
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -870,6 +865,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     solver = newton.solvers.SolverVBD(model, iterations=10, friction_epsilon=0.1)
     frame_dt = 1.0 / 60.0
@@ -881,7 +877,7 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device):
     for _step in range(num_steps):
         for _substep in range(sim_substeps):
             state0.clear_forces()
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, sim_dt)
             state0, state1 = state1, state0
 
@@ -971,6 +967,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     segment_length = 0.05
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=anchor_pos[2])
     rod_radius = 0.01
+    cable_width = 2.0 * rod_radius
     # Attach the cable endpoint to the sphere surface (not the center), accounting for cable radius so the
     # capsule endcap surface and the sphere surface are coincident along the rod axis (+X).
     attach_offset = wp.float32(anchor_radius + rod_radius)
@@ -1013,6 +1010,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     solver = newton.solvers.SolverVBD(
         model,
@@ -1038,7 +1036,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
                 device=device,
             )
 
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, dt=sim_dt)
             state0, state1 = state1, state0
 
@@ -1061,7 +1059,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
         test,
         body_q=final_q,
         body_ids=rod_bodies,
-        margin=0.25 * segment_length,
+        margin=0.25 * cable_width,
         context="Cable BALL joint attachment",
     )
     _assert_capsule_attachments(
@@ -1097,6 +1095,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     builder.add_shape_sphere(anchor, radius=anchor_radius)
 
     rod_radius = 0.01
+    cable_width = 2.0 * rod_radius
     # Attach the cable endpoint to the sphere surface (not the center), accounting for cable radius so the
     # capsule endcap surface and the sphere surface are coincident along the rod axis (+X).
     # The rod axis is world +X, and anchor_rot maps parent-local +Z -> world +X, so use +Z in parent local.
@@ -1138,6 +1137,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     # Stiffen both linear and angular caps for non-cable joints so FIXED behaves near-hard.
     solver = newton.solvers.SolverVBD(
@@ -1171,7 +1171,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
                 device=device,
             )
 
-            contacts = model.collide(state0)
+            model.collide(state0, contacts)
             solver.step(state0, state1, control, contacts, dt=sim_dt)
             state0, state1 = state1, state0
 
@@ -1194,7 +1194,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         test,
         body_q=final_q,
         body_ids=rod_bodies,
-        margin=0.25 * segment_length,
+        margin=0.25 * cable_width,
         context="Cable FIXED joint attachment",
     )
     _assert_capsule_attachments(
@@ -1290,6 +1290,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
     state0 = model.state()
     state1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     solver = newton.solvers.SolverVBD(
         model,
@@ -1343,7 +1344,7 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
             device=device,
         )
 
-        contacts = model.collide(state0)
+        model.collide(state0, contacts)
         solver.step(state0, state1, control, contacts, sim_dt)
         state0, state1 = state1, state0
 
@@ -1369,6 +1370,318 @@ def _cable_kinematic_gripper_picks_capsule_impl(test: unittest.TestCase, device)
         0.01,
         msg=f"Capsule Z does not track grippers: capsule_z={capsule_zf:.4f}, gripper_z={gripper_z:.4f}",
     )
+
+
+def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
+    """Cable graph: Y-junction should build (and simulate) with wrap_in_articulation=True."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    # Simple Y: 0-1-2 and 1-3
+    node_positions = [
+        wp.vec3(0.0, 0.0, 0.5),
+        wp.vec3(0.2, 0.0, 0.5),
+        wp.vec3(0.4, 0.0, 0.5),
+        wp.vec3(0.2, 0.2, 0.5),
+    ]
+    edges = [(0, 1), (1, 2), (1, 3)]
+
+    node_positions_any: list[Any] = node_positions
+
+    cable_radius = 0.05
+    cable_width = 2.0 * cable_radius
+    rod_bodies, rod_joints = builder.add_rod_graph(
+        node_positions=node_positions_any,
+        edges=edges,
+        radius=cable_radius,
+        cfg=builder.default_shape_cfg.copy(),
+        bend_stiffness=1.0e2,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e6,
+        stretch_damping=1.0e-2,
+        key="ut_cable_graph_y",
+        wrap_in_articulation=True,
+    )
+
+    test.assertEqual(len(rod_bodies), len(edges))
+
+    # Spanning forest on a tree with E=3 => E-1 joints.
+    test.assertEqual(len(rod_joints), 2)
+
+    # Also verify the produced joints connect edge-bodies consistently:
+    # - every rod joint connects two rod_bodies
+    # - each such pair corresponds to two input edges sharing a node (sanity check)
+    # - the resulting rod-body graph is connected (so E-1 joints => spanning tree)
+    body_to_edge = {int(body): edges[i] for i, body in enumerate(rod_bodies)}
+    rod_body_set = set(body_to_edge.keys())
+
+    # Union-find over rod bodies (treat joints as undirected edges for connectivity).
+    parent_uf = {b: b for b in rod_body_set}
+
+    def find_uf(x: int) -> int:
+        while parent_uf[x] != x:
+            parent_uf[x] = parent_uf[parent_uf[x]]
+            x = parent_uf[x]
+        return x
+
+    def union_uf(a: int, b: int):
+        ra, rb = find_uf(a), find_uf(b)
+        if ra != rb:
+            parent_uf[rb] = ra
+
+    for j in rod_joints:
+        jb = int(j)
+        a = int(builder.joint_parent[jb])
+        b = int(builder.joint_child[jb])
+
+        test.assertIn(a, rod_body_set, msg=f"Y-junction rod joint {jb} parent body {a} not in rod_bodies")
+        test.assertIn(b, rod_body_set, msg=f"Y-junction rod joint {jb} child body {b} not in rod_bodies")
+        test.assertNotEqual(a, b, msg=f"Y-junction rod joint {jb} connects body {a} to itself")
+
+        eu0, ev0 = body_to_edge[a]
+        eu1, ev1 = body_to_edge[b]
+        shared = {eu0, ev0}.intersection({eu1, ev1})
+        test.assertTrue(
+            shared,
+            msg=(
+                f"Y-junction rod joint {jb} connects edges {body_to_edge[a]} and {body_to_edge[b]} "
+                f"that do not share a graph node"
+            ),
+        )
+
+        union_uf(a, b)
+
+    roots = {find_uf(b) for b in rod_body_set}
+    test.assertEqual(len(roots), 1, msg=f"Y-junction rod bodies not connected by rod joints, roots={sorted(roots)}")
+
+    builder.add_ground_plane()
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0, state1 = model.state(), model.state()
+    control = model.control()
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    q_init = state0.body_q.numpy()
+    z_init_min = float(np.min(q_init[rod_bodies, 2]))
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 5
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    contacts = model.contacts()
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            model.collide(state0, contacts)
+            state0.clear_forces()
+            solver.step(state0, state1, control, contacts, sim_dt)
+            state0, state1 = state1, state0
+
+    qf = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(qf).all(), "Non-finite body transforms detected in Y-junction graph simulation")
+
+    z_min = float(np.min(qf[rod_bodies, 2]))
+    test.assertLess(z_min, z_init_min - 0.01, msg="Y-junction did not fall noticeably under gravity")
+    _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
+
+
+def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device):
+    """Closed ring via add_rod(closed=True) should build and simulate."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e2
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 1.0
+
+    # Build a planar ring polyline (duplicate last point so the last segment returns to the start).
+    num_segments = 16
+    radius = 0.35
+    z0 = 0.5
+    theta = np.linspace(0.0, 2.0 * np.pi, num_segments + 1, endpoint=True)
+    points = [wp.vec3(float(radius * np.cos(t)), float(radius * np.sin(t)), float(z0)) for t in theta]
+    quats = newton.utils.create_parallel_transport_cable_quaternions(points)
+
+    # Avoid list[Vec3] invariance issues in static checking.
+    points_any: list[Any] = points
+    quats_any: list[Any] = quats
+
+    cable_radius = 0.05
+    cable_width = 2.0 * cable_radius
+    rod_bodies, rod_joints = builder.add_rod(
+        positions=points_any,
+        quaternions=quats_any,
+        radius=cable_radius,
+        cfg=builder.default_shape_cfg.copy(),
+        bend_stiffness=1.0e2,
+        bend_damping=1.0e-2,
+        stretch_stiffness=1.0e6,
+        stretch_damping=1.0e-2,
+        closed=True,
+        key="ut_cable_rod_ring_closed",
+        wrap_in_articulation=True,
+    )
+
+    test.assertEqual(len(rod_bodies), num_segments)
+    test.assertEqual(len(rod_joints), num_segments)
+
+    # Ensure the loop-closing joint exists (added after articulation wrapping).
+    first_body = int(rod_bodies[0])
+    last_body = int(rod_bodies[-1])
+    loop_pairs = {(int(builder.joint_parent[int(j)]), int(builder.joint_child[int(j)])) for j in rod_joints}
+    test.assertIn(
+        (last_body, first_body),
+        loop_pairs,
+        msg="Closed ring is missing the loop-closing joint between the last and first segment bodies",
+    )
+
+    builder.add_ground_plane()
+    builder.color()
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    # Drop the ring onto the ground and ensure stable simulation.
+    state0, state1 = model.state(), model.state()
+    control = model.control()
+    solver = newton.solvers.SolverVBD(model, iterations=10)
+
+    frame_dt = 1.0 / 60.0
+    sim_substeps = 5
+    sim_dt = frame_dt / sim_substeps
+    num_steps = 20
+
+    q_init = state0.body_q.numpy()
+    z_init_min = float(np.min(q_init[rod_bodies, 2]))
+
+    contacts = model.contacts()
+    for _step in range(num_steps):
+        for _substep in range(sim_substeps):
+            state0.clear_forces()
+            model.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, sim_dt)
+            state0, state1 = state1, state0
+
+    qf = state0.body_q.numpy()
+    test.assertTrue(np.isfinite(qf).all(), "Non-finite body transforms detected in closed-ring simulation")
+
+    z_min = float(np.min(qf[rod_bodies, 2]))
+    test.assertLess(z_min, z_init_min - 0.1, msg="Ring did not fall noticeably under gravity")
+    _assert_bodies_above_ground(test, qf, rod_bodies, context="closed-ring", margin=0.25 * cable_width)
+
+
+def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
+    """Cable graph: when quaternions are not provided, local +Z should align to the edge direction."""
+    builder = newton.ModelBuilder()
+
+    p0 = wp.vec3(0.0, 0.0, 3.0)
+    p1 = wp.vec3(0.4, 0.1, 3.0)
+    node_positions = [p0, p1]
+    edges = [(0, 1)]
+
+    # Use wp.vec3 at runtime but avoid list[Vec3] invariance issues in static checking.
+    node_positions_any: list[Any] = node_positions
+
+    rod_bodies, rod_joints = builder.add_rod_graph(
+        node_positions=node_positions_any,
+        edges=edges,
+        radius=0.05,
+        cfg=builder.default_shape_cfg.copy(),
+        bend_stiffness=0.0,
+        bend_damping=0.0,
+        stretch_stiffness=1.0e6,
+        stretch_damping=1.0e-2,
+        key="ut_cable_graph_quat",
+        wrap_in_articulation=True,
+        quaternions=None,
+    )
+    test.assertEqual(len(rod_bodies), 1)
+    test.assertEqual(len(rod_joints), 0)
+
+    builder.color()
+    model = builder.finalize(device=device)
+
+    # Read initial pose and verify axis alignment.
+    q0 = model.state().body_q.numpy()
+    body_id = int(rod_bodies[0])
+    rot = wp.quat(q0[body_id][3], q0[body_id][4], q0[body_id][5], q0[body_id][6])
+    z_world = wp.quat_rotate(rot, wp.vec3(0.0, 0.0, 1.0))
+    d_hat = wp.normalize(p1 - p0)
+    dot = float(wp.dot(z_world, d_hat))
+    test.assertGreater(dot, 0.999, msg=f"Default quaternion does not align +Z with edge direction (dot={dot:.6f})")
+
+
+def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
+    """Cable graph: collision filtering should be applied at junctions.
+
+    For a Y-junction (degree-3 node): two pairs are jointed; the remaining sibling pair should also be
+    collision-filtered automatically by `add_rod_graph()`'s junction filtering.
+    """
+
+    def assert_body_pair_filtered(builder: newton.ModelBuilder, model: newton.Model, body_a: int, body_b: int):
+        test.assertIn(body_a, builder.body_shapes)
+        test.assertIn(body_b, builder.body_shapes)
+        test.assertEqual(len(builder.body_shapes[body_a]), 1, msg="expected one shape per rod body in this test")
+        test.assertEqual(len(builder.body_shapes[body_b]), 1, msg="expected one shape per rod body in this test")
+        sa = int(builder.body_shapes[body_a][0])
+        sb = int(builder.body_shapes[body_b][0])
+        pair = (min(sa, sb), max(sa, sb))
+        test.assertIn(
+            pair, model.shape_collision_filter_pairs, msg=f"missing collision filter pair for bodies {body_a}-{body_b}"
+        )
+
+    # Y-junction (3 edges).
+    builder = newton.ModelBuilder()
+    node_positions = [
+        wp.vec3(0.0, 0.0, 0.5),
+        wp.vec3(0.25, 0.0, 0.5),
+        wp.vec3(-0.125, 0.21650635, 0.5),
+        wp.vec3(-0.125, -0.21650635, 0.5),
+    ]
+    edges = [(0, 1), (0, 2), (0, 3)]
+    node_positions_any = node_positions
+
+    rod_bodies, rod_joints = builder.add_rod_graph(
+        node_positions=node_positions_any,
+        edges=edges,
+        radius=0.05,
+        cfg=builder.default_shape_cfg.copy(),
+        bend_stiffness=0.0,
+        bend_damping=0.0,
+        stretch_stiffness=1.0e6,
+        stretch_damping=0.0,
+        key="ut_cable_graph_y_filter",
+        wrap_in_articulation=True,
+    )
+    test.assertEqual(len(rod_bodies), 3)
+    test.assertEqual(len(rod_joints), 2)
+
+    builder.color()
+    model = builder.finalize(device=device)
+
+    bodies = [int(b) for b in rod_bodies]
+    all_pairs = {(min(a, b), max(a, b)) for i, a in enumerate(bodies) for b in bodies[i + 1 :]}
+
+    jointed_pairs: set[tuple[int, int]] = set()
+    for j in rod_joints:
+        jb = int(j)
+        a = int(builder.joint_parent[jb])
+        b = int(builder.joint_child[jb])
+        jointed_pairs.add((min(a, b), max(a, b)))
+
+    # 1) Jointed pairs must be filtered (from collision_filter_parent=True on the joint).
+    for a, b in sorted(jointed_pairs):
+        assert_body_pair_filtered(builder, model, a, b)
+
+    # 2) The remaining sibling pair(s) at the junction should also be filtered (from junction filtering).
+    sibling_pairs = all_pairs - jointed_pairs
+    test.assertEqual(
+        len(sibling_pairs), 1, msg=f"expected exactly one non-jointed sibling pair, got {sorted(sibling_pairs)}"
+    )
+    for a, b in sibling_pairs:
+        assert_body_pair_filtered(builder, model, a, b)
 
 
 class TestCable(unittest.TestCase):
@@ -1427,6 +1740,30 @@ add_function_test(
     TestCable,
     "test_cable_kinematic_gripper_picks_capsule",
     _cable_kinematic_gripper_picks_capsule_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_graph_y_junction_spanning_tree",
+    _cable_graph_y_junction_spanning_tree_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_ring_closed_in_articulation",
+    _cable_rod_ring_closed_in_articulation_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_graph_default_quat_aligns_z",
+    _cable_graph_default_quat_aligns_z_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_graph_collision_filter_pairs",
+    _cable_graph_collision_filter_pairs_impl,
     devices=devices,
 )
 

@@ -140,16 +140,6 @@ def _auto_scale(mesh, target_diameter: float) -> float:
     return (target_diameter / max_dim) if max_dim > 1.0e-8 else 1.0
 
 
-def _make_straight_cable_down(anchor_world: wp.vec3, num_segments: int, segment_length: float):
-    """Rod centerline going downwards in world -Z, with per-segment quats for add_rod()."""
-    # Segment direction is -Z, so rotate local +Z -> world -Z (180deg around X)
-    q_seg = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi)
-
-    points = [anchor_world + wp.vec3(0.0, 0.0, -segment_length * i) for i in range(num_segments + 1)]
-    quats = [q_seg for _ in range(num_segments)]
-    return points, quats
-
-
 class Example:
     """Visual test for VBD FIXED joints with kinematic anchors.
 
@@ -338,7 +328,13 @@ class Example:
                     # Use the actual body pose (x,y,z), not the uniform z0, so the cable touches the shape.
                     anchor_world = wp.vec3(x + x_local, y, z + z_local)
 
-                rod_points, rod_quats = _make_straight_cable_down(anchor_world, num_segments, segment_length)
+                rod_points, rod_quats = newton.utils.create_straight_cable_points_and_quaternions(
+                    start=anchor_world,
+                    direction=wp.vec3(0.0, 0.0, -1.0),
+                    length=float(num_segments) * float(segment_length),
+                    num_segments=int(num_segments),
+                    twist_total=0.0,
+                )
 
                 rod_bodies, rod_joints = builder.add_rod(
                     positions=rod_points,
@@ -407,7 +403,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -462,7 +458,7 @@ class Example:
             update_step_history = (substep % self.update_step_interval) == 0
 
             if update_step_history:
-                self.contacts = self.model.collide(self.state_0)
+                self.model.collide(self.state_0, self.contacts)
 
             self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)

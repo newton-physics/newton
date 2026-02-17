@@ -40,7 +40,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 80,
         "nconmax": 25,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "g1": {
@@ -48,7 +48,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 210,
         "nconmax": 35,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "h1": {
@@ -56,7 +56,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 65,
         "nconmax": 15,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "cartpole": {
@@ -64,7 +64,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 5,
         "nconmax": 0,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "ant": {
@@ -72,7 +72,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 38,
         "nconmax": 15,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "quadruped": {
@@ -80,7 +80,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 75,
         "nconmax": 50,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "pyramidal",
     },
     "allegro": {
@@ -88,7 +88,7 @@ ROBOT_CONFIGS = {
         "integrator": "implicitfast",
         "njmax": 60,
         "nconmax": 40,
-        "ls_parallel": True,
+        "ls_parallel": False,
         "cone": "elliptic",
     },
     "kitchen": {
@@ -279,7 +279,7 @@ class Example:
         robot="humanoid",
         environment="None",
         stage_path=None,
-        num_worlds=1,
+        world_count=1,
         use_cuda_graph=True,
         use_mujoco_cpu=False,
         randomize=False,
@@ -302,7 +302,7 @@ class Example:
         self.sim_substeps = 10
         self.contacts = None
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.num_worlds = num_worlds
+        self.world_count = world_count
         self.use_cuda_graph = use_cuda_graph
         self.use_mujoco_cpu = use_mujoco_cpu
         self.actuation = actuation
@@ -315,7 +315,7 @@ class Example:
             stage_path = "example_" + robot + ".usd"
 
         if builder is None:
-            builder = Example.create_model_builder(robot, num_worlds, environment, randomize, self.seed)
+            builder = Example.create_model_builder(robot, world_count, environment, randomize, self.seed)
 
         # finalize model
         self.model = builder.finalize()
@@ -389,7 +389,7 @@ class Example:
         self.renderer.end_frame()
 
     @staticmethod
-    def create_model_builder(robot, num_worlds, environment="None", randomize=False, seed=123) -> newton.ModelBuilder:
+    def create_model_builder(robot, world_count, environment="None", randomize=False, seed=123) -> newton.ModelBuilder:
         rng = np.random.default_rng(seed)
 
         articulation_builder = newton.ModelBuilder()
@@ -418,10 +418,10 @@ class Example:
             custom_setup_fn(articulation_builder)
 
         builder = newton.ModelBuilder()
-        builder.replicate(articulation_builder, num_worlds)
+        builder.replicate(articulation_builder, world_count)
         if randomize:
             njoint = len(articulation_builder.joint_q)
-            for i in range(num_worlds):
+            for i in range(world_count):
                 istart = i * njoint
                 builder.joint_q[istart + root_dofs : istart + njoint] = rng.uniform(
                     -1.0, 1.0, size=(njoint - root_dofs)
@@ -508,7 +508,7 @@ if __name__ == "__main__":
         help="Path to the output USD file.",
     )
     parser.add_argument("--num-frames", type=int, default=12000, help="Total number of frames.")
-    parser.add_argument("--num-worlds", type=int, default=1, help="Total number of simulated worlds.")
+    parser.add_argument("--world-count", type=int, default=1, help="Total number of simulated worlds.")
     parser.add_argument("--use-cuda-graph", default=True, action=argparse.BooleanOptionalAction)
     parser.add_argument(
         "--use-mujoco-cpu",
@@ -559,7 +559,7 @@ if __name__ == "__main__":
                 robot=args.robot,
                 environment=args.env,
                 stage_path=args.stage_path,
-                num_worlds=args.num_worlds,
+                world_count=args.world_count,
                 use_cuda_graph=args.use_cuda_graph,
                 use_mujoco_cpu=args.use_mujoco_cpu,
                 randomize=args.random_init,
@@ -581,7 +581,7 @@ if __name__ == "__main__":
             title = " Simulation Configuration "
             print(f"\n{title.center(TOTAL_WIDTH, '=')}")
             print(f"{'Simulation Steps':<{LABEL_WIDTH}}: {args.num_frames * example.sim_substeps}")
-            print(f"{'World Count':<{LABEL_WIDTH}}: {args.num_worlds}")
+            print(f"{'World Count':<{LABEL_WIDTH}}: {args.world_count}")
             print(f"{'Robot Type':<{LABEL_WIDTH}}: {args.robot}")
             print(f"{'Timestep (dt)':<{LABEL_WIDTH}}: {example.sim_dt:.6f}s")
             print(f"{'Randomize Initial Pose':<{LABEL_WIDTH}}: {args.random_init!s}")
@@ -606,8 +606,8 @@ if __name__ == "__main__":
             # Get actual max constraints and contacts from MuJoCo Warp data
             actual_njmax = example.solver.mjw_data.njmax
             actual_nconmax = (
-                example.solver.mjw_data.naconmax // args.num_worlds
-                if args.num_worlds > 0
+                example.solver.mjw_data.naconmax // args.world_count
+                if args.world_count > 0
                 else example.solver.mjw_data.naconmax
             )
             print(f"{'Solver':<{LABEL_WIDTH}}: {actual_solver}")

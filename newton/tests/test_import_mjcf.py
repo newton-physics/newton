@@ -35,8 +35,8 @@ class TestImportMjcf(unittest.TestCase):
         builder.default_shape_cfg.ke = 123.0
         builder.default_shape_cfg.kd = 456.0
         builder.default_shape_cfg.mu = 789.0
-        builder.default_shape_cfg.torsional_friction = 0.999
-        builder.default_shape_cfg.rolling_friction = 0.888
+        builder.default_shape_cfg.mu_torsional = 0.999
+        builder.default_shape_cfg.mu_rolling = 0.888
         builder.default_joint_cfg.armature = 42.0
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
         builder.add_mjcf(
@@ -56,8 +56,8 @@ class TestImportMjcf(unittest.TestCase):
         # Check friction values from nv_humanoid.xml: friction="1.0 0.05 0.05"
         # mu = 1.0, torsional = 0.05, rolling = 0.05
         self.assertTrue(np.allclose(np.array(builder.shape_material_mu)[non_site_indices], 1.0))
-        self.assertTrue(np.allclose(np.array(builder.shape_material_torsional_friction)[non_site_indices], 0.05))
-        self.assertTrue(np.allclose(np.array(builder.shape_material_rolling_friction)[non_site_indices], 0.05))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_mu_torsional)[non_site_indices], 0.05))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_mu_rolling)[non_site_indices], 0.05))
         self.assertTrue(all(np.array(builder.joint_armature[:6]) == 0.0))
         self.assertEqual(
             builder.joint_armature[6:],
@@ -1205,8 +1205,8 @@ class TestImportMjcf(unittest.TestCase):
         # tendon_invweight0 is computed by MuJoCo based on the mass matrix and tendon geometry.
         # The formula accounts for: sum(coef^2 * effective_dof_inv_weight) / (1 + armature)
         # where effective_dof_inv_weight depends on the full articulated body inertia.
-        # These expected values are verified against the Newton -> MuJoCo pipeline.
-        expected_invweight0 = [4.6796, 5.9226]  # Values after Newton's inertia processing
+        # These expected values are verified against the Newton -> MuJoCo pipeline using MJCF-defined inertia.
+        expected_invweight0 = [4.5780, 5.7940]  # Values when using MJCF-defined inertia
         invweight0 = solver.mj_model.tendon_invweight0
         for i, expected in enumerate(expected_invweight0):
             self.assertAlmostEqual(
@@ -1513,12 +1513,12 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        # Newton hard-codes spec.compiler.automlimits=1.
-        # 1) With automlimits=1 we should not have to specify limited="true" on each tendon. It should be sufficient
+        # MuJoCo defaults spec.compiler.autolimits=true (Newton now parses this from <compiler>).
+        # 1) With autolimits=true we should not have to specify limited="true" on each tendon. It should be sufficient
         # just to set the range. coupling_tendon1 is the test for this.
-        # 2) With compiler.autolimits=1 it shouldn't matter if we do specify limited="true.  We should still end up
+        # 2) With compiler.autolimits=true it shouldn't matter if we do specify limited="true". We should still end up
         # with an active limit with limited="true". coupling_tendon2 is the test for this.
-        # 3) With compiler.autolimits=1  and limited="false" we should end up with an inactive limit. coupling_tendon3
+        # 3) With compiler.autolimits=true and limited="false" we should end up with an inactive limit. coupling_tendon3
         # is the test for this.
         # 4) repeat the test with actuatorfrclimited.
 
@@ -1583,6 +1583,184 @@ class TestImportMjcf(unittest.TestCase):
                 expected,
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
+
+    def test_autolimits_false_tendon(self):
+        """Tests autolimits=false handling for tendon limit flags.
+
+        Verifies that explicit limited/actuatorfrclimited values are respected:
+            - explicit ``limited="true"`` -> limited=1
+            - explicit ``limited="false"`` -> limited=0
+            - same logic applies to ``actuatorfrclimited``
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+      <body name="link2" pos="0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <fixed limited="true" range="-10.0 11.0"
+           actuatorfrclimited="true" actuatorfrcrange="-2.2 2.2"
+           name="tendon_explicit_true">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="-1"/>
+    </fixed>
+  </tendon>
+
+  <tendon>
+    <fixed limited="false" range="-12.0 13.0"
+           actuatorfrclimited="false" actuatorfrcrange="-3.3 3.3"
+           name="tendon_explicit_false">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+"""
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_world(individual_builder)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # Tendon with explicit limited="true" -> limited=1
+        self.assertEqual(
+            solver.mjw_model.tendon_limited.numpy()[0],
+            1,
+            msg="Tendon with explicit limited='true' should have limited=1",
+        )
+        # Tendon with explicit limited="false" -> limited=0
+        self.assertEqual(
+            solver.mjw_model.tendon_limited.numpy()[1],
+            0,
+            msg="Tendon with explicit limited='false' should have limited=0",
+        )
+        # Same for actuatorfrclimited
+        self.assertEqual(
+            solver.mjw_model.tendon_actfrclimited.numpy()[0],
+            1,
+            msg="Tendon with explicit actuatorfrclimited='true' should have actfrclimited=1",
+        )
+        self.assertEqual(
+            solver.mjw_model.tendon_actfrclimited.numpy()[1],
+            0,
+            msg="Tendon with explicit actuatorfrclimited='false' should have actfrclimited=0",
+        )
+
+    def test_autolimits_false_actuator(self):
+        """Test that autolimits=false is respected for actuator ctrllimited."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5" limited="true"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="act_explicit_true" joint="joint1"
+              ctrllimited="true" ctrlrange="-1 1"/>
+    <position name="act_explicit_false" joint="joint1"
+              ctrllimited="false" ctrlrange="-1 1"/>
+  </actuator>
+
+</mujoco>
+"""
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf, ctrl_direct=True)
+        builder = newton.ModelBuilder()
+        builder.add_world(individual_builder)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # MuJoCo stores ctrllimited as boolean after compilation
+        # Actuator with explicit ctrllimited="true" -> True
+        self.assertTrue(
+            solver.mjw_model.actuator_ctrllimited.numpy()[0],
+            msg="Actuator with explicit ctrllimited='true' should be limited",
+        )
+        # Actuator with explicit ctrllimited="false" -> False
+        self.assertFalse(
+            solver.mjw_model.actuator_ctrllimited.numpy()[1],
+            msg="Actuator with explicit ctrllimited='false' should not be limited",
+        )
+
+    def test_autolimits_false_joint_effort_limit(self):
+        """Test that autolimits=false prevents auto-applying effort_limit from actuatorfrcrange."""
+        mjcf_autolimits_true = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-1 1"
+               actuatorfrcrange="-100 100"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+        mjcf_autolimits_false = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-1 1" limited="true"
+               actuatorfrcrange="-100 100"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+        # With autolimits=true (default), actuatorfrclimited="auto" resolves to true
+        builder_true = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder_true)
+        builder_true.add_mjcf(mjcf_autolimits_true)
+        model_true = newton.ModelBuilder()
+        model_true.add_world(builder_true)
+        model_true = model_true.finalize()
+        effort_limit_true = model_true.joint_effort_limit.numpy()[0]
+        self.assertAlmostEqual(effort_limit_true, 100.0, places=4)
+
+        # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
+        builder_false = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder_false)
+        builder_false.add_mjcf(mjcf_autolimits_false)
+        model_false = newton.ModelBuilder()
+        model_false.add_world(builder_false)
+        model_false = model_false.finalize()
+        effort_limit_false = model_false.joint_effort_limit.numpy()[0]
+        # Should use default effort limit, not 100.0 from actuatorfrcrange
+        self.assertNotAlmostEqual(effort_limit_false, 100.0, places=4)
 
     def test_single_mujoco_fixed_tendon_auto_springlength(self):
         """Test that springlength=-1 auto-computes the spring length from initial joint positions.
@@ -2024,28 +2202,28 @@ class TestImportMjcf(unittest.TestCase):
 
         # 3-element: friction="0.5 0.1 0.01" → absolute values
         self.assertAlmostEqual(builder.shape_material_mu[0], 0.5, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[0], 0.1, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[0], 0.01, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[0], 0.1, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[0], 0.01, places=5)
 
         # 3-element: friction="0.8 0.2 0.05" → absolute values
         self.assertAlmostEqual(builder.shape_material_mu[1], 0.8, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[1], 0.2, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[1], 0.05, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[1], 0.2, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[1], 0.05, places=5)
 
         # 3-element with zeros
         self.assertAlmostEqual(builder.shape_material_mu[2], 0.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[2], 0.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[2], 0.0, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[2], 0.0, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[2], 0.0, places=5)
 
         # 1-element: friction="1.0" → others use ShapeConfig defaults (0.25, 0.0005)
         self.assertAlmostEqual(builder.shape_material_mu[3], 1.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[3], 0.25, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[3], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[3], 0.25, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[3], 0.0005, places=5)
 
         # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0005)
         self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[4], 0.15, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0005, places=5)
 
     def test_mjcf_geom_solref_parsing(self):
         """Test MJCF geom solref parsing for contact stiffness/damping.
@@ -3569,25 +3747,152 @@ class TestImportMjcf(unittest.TestCase):
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
         np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
 
+    def test_floating_true_creates_free_joint(self):
+        """Test that floating=True creates a free joint for the root body."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_floating">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=True)
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FREE)
+
+    def test_floating_false_creates_fixed_joint(self):
+        """Test that floating=False creates a fixed joint for the root body."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_fixed">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, floating=False)
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
+
+    def test_base_joint_dict_creates_d6_joint(self):
+        """Test that base_joint dict with linear and angular axes creates a D6 joint."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_dict">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            mjcf_content,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+
+    def test_base_joint_dict_creates_custom_joint(self):
+        """Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with custom axis."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_dict">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            mjcf_content,
+            base_joint={
+                "joint_type": newton.JointType.REVOLUTE,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0, 0, 1])],
+            },
+        )
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 1)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.REVOLUTE)
+
+    def test_floating_and_base_joint_mutually_exclusive(self):
+        """Test that specifying both base_joint and floating raises an error."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_base_joint_override">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Specifying both parameters should raise ValueError
+        builder = newton.ModelBuilder()
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(
+                mjcf_content,
+                floating=True,
+                base_joint={
+                    "joint_type": newton.JointType.D6,
+                    "linear_axes": [
+                        newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                        newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    ],
+                },
+            )
+        self.assertIn("both 'floating' and 'base_joint'", str(cm.exception))
+
     def test_base_joint_respects_import_xform(self):
         """Test that base joints (parent == -1) correctly use the import xform.
 
-        This is a regression test for a bug where root bodies with base_joint
-        ignored the import xform parameter, using raw body pos/ori instead of
-        the composed world_xform.
+            This is a regression test for a bug where root bodies with base_joint
+            ignored the import xform parameter, using raw body pos/ori instead of
+            the composed world_xform.
 
-        Setup:
-        - Root body at (1, 0, 0) with no rotation
-        - Import xform: translate by (10, 20, 30) and rotate 90° around Z
-        - Using base_joint="lx,ly,lz" (D6 joint with linear axes)
+            Setup:
+            - Root body at (1, 0, 0) with no rotation
+            - Import xform: translate by (10, 20, 30) and rotate 90° around Z
+            - Using base_joint={
+            "joint_type": newton.JointType.D6,
+            "linear_axes": [
+                newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])
+            ],
+        } (D6 joint with linear axes)
 
-        Expected final body transform after FK:
-        - world_xform = import_xform * body_local_xform
-        - = transform((10,20,30), rot_90z) * transform((1,0,0), identity)
-        - Position: (10,20,30) + rotate_90z(1,0,0) = (10,20,30) + (0,1,0) = (10, 21, 30)
-        - Orientation: 90° Z rotation
+            Expected final body transform after FK:
+            - world_xform = import_xform * body_local_xform
+            - = transform((10,20,30), rot_90z) * transform((1,0,0), identity)
+            - Position: (10,20,30) + rotate_90z(1,0,0) = (10,20,30) + (0,1,0) = (10, 21, 30)
+            - Orientation: 90° Z rotation
 
-        Bug would give: position = (1, 0, 0), orientation = identity (ignoring import xform)
+            Bug would give: position = (1, 0, 0), orientation = identity (ignoring import xform)
         """
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_base_joint_xform">
@@ -3606,7 +3911,18 @@ class TestImportMjcf(unittest.TestCase):
 
         # Use base_joint to convert freejoint to a D6 joint
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, xform=import_xform, base_joint="lx,ly,lz")
+        builder.add_mjcf(
+            mjcf_content,
+            xform=import_xform,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
 
         # Verify body transform after forward kinematics
@@ -3665,7 +3981,17 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>"""
 
         builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf_content, base_joint="lx,ly,lz")
+        builder.add_mjcf(
+            mjcf_content,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0]),
+                ],
+            },
+        )
         model = builder.finalize()
 
         # Verify body transform after forward kinematics
@@ -3691,6 +4017,145 @@ class TestImportMjcf(unittest.TestCase):
             actual_quat, -expected_quat, atol=1e-5
         )
         self.assertTrue(quat_match, f"Body orientation should include frame rotation. Got {actual_quat}")
+
+    def test_parent_body_attaches_to_existing_body(self):
+        """Test that parent_body attaches the MJCF root to an existing body."""
+        # First MJCF: a simple robot arm
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot_arm">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Second MJCF: a gripper
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.025 0.025 0.01" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # First, load the robot
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        # Get the end effector body index
+        ee_body_idx = builder.body_key.index("end_effector")
+
+        # Remember the body count before adding gripper
+        robot_body_count = builder.body_count
+        robot_joint_count = builder.joint_count
+
+        # Now load the gripper attached to the end effector
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx)
+
+        model = builder.finalize()
+
+        # Verify body counts
+        self.assertEqual(model.body_count, robot_body_count + 1)  # Robot + gripper
+
+        # Verify the gripper's base joint has the end effector as parent
+        gripper_joint_idx = robot_joint_count  # First joint after robot
+        self.assertEqual(model.joint_parent.numpy()[gripper_joint_idx], ee_body_idx)
+
+        # Verify all joints belong to the same articulation
+        joint_articulations = model.joint_articulation.numpy()
+        robot_articulation = joint_articulations[0]
+        gripper_articulation = joint_articulations[gripper_joint_idx]
+        self.assertEqual(robot_articulation, gripper_articulation)
+
+    def test_parent_body_with_base_joint_creates_d6(self):
+        """Test that parent_body with base_joint creates a D6 joint to parent."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot_body_idx = 0
+
+        # Attach gripper with a D6 joint (rotation around Z)
+        builder.add_mjcf(
+            gripper_mjcf,
+            parent_body=robot_body_idx,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
+
+        model = builder.finalize()
+
+        # The second joint should be a D6 connecting to the robot body
+        self.assertEqual(model.joint_count, 2)  # Fixed base + D6
+        self.assertEqual(model.joint_type.numpy()[1], newton.JointType.D6)
+        self.assertEqual(model.joint_parent.numpy()[1], robot_body_idx)
+
+    def test_parent_body_creates_joint_to_parent(self):
+        """Test that parent_body creates a joint connecting to the parent body."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base_link">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="0 1 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        ee_body_idx = builder.body_key.index("end_effector")
+        initial_joint_count = builder.joint_count
+
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx)
+
+        # Verify a new joint was created connecting to the parent
+        self.assertEqual(builder.joint_count, initial_joint_count + 1)
+        self.assertEqual(builder.joint_parent[initial_joint_count], ee_body_idx)
+
+        # Both should be in the same articulation
+        model = builder.finalize()
+        joint_articulation = model.joint_articulation.numpy()
+        self.assertEqual(joint_articulation[0], joint_articulation[initial_joint_count])
 
     def test_exclude_tag(self):
         """Test that <exclude> tags properly filter collisions between specified body pairs."""
@@ -3878,6 +4343,548 @@ class TestImportMjcf(unittest.TestCase):
         # Check that warnings were printed for invalid exclude entries
         self.assertIn("Warning", output)
         self.assertIn("<exclude>", output)
+
+    def test_base_joint_on_fixed_root(self):
+        """Test that base_joint works on MJCF with fixed root (no freejoint)."""
+        fixed_root_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="fixed_root_robot">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link1" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(
+            fixed_root_mjcf,
+            base_joint={
+                "joint_type": newton.JointType.D6,
+                "linear_axes": [
+                    newton.ModelBuilder.JointDofConfig(axis=[1.0, 0.0, 0.0]),
+                    newton.ModelBuilder.JointDofConfig(axis=[0.0, 1.0, 0.0]),
+                ],
+                "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
+            },
+        )
+        model = builder.finalize()
+
+        self.assertEqual(model.joint_count, 2)
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
+        self.assertEqual(model.joint_dof_count, 4)
+
+    def test_xform_relative_to_parent_body(self):
+        """Test that xform is interpreted relative to parent_body when attaching."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="0 1 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False)
+
+        ee_body_idx = builder.body_key.index("end_effector")
+
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_body_idx, xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
+
+        gripper_body_idx = builder.body_key.index("gripper_base")
+
+        # Finalize and compute forward kinematics to get world-space positions
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        ee_world_pos = body_q[ee_body_idx, :3]  # Extract x, y, z
+        gripper_world_pos = body_q[gripper_body_idx, :3]  # Extract x, y, z
+
+        self.assertAlmostEqual(gripper_world_pos[0], ee_world_pos[0], places=5)
+        self.assertAlmostEqual(gripper_world_pos[1], ee_world_pos[1], places=5)
+        self.assertAlmostEqual(gripper_world_pos[2], ee_world_pos[2] + 0.1, places=5)
+
+    def test_non_sequential_articulation_attachment(self):
+        """Test that attaching to a non-sequential articulation raises an error."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <freejoint/>
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot1_link_idx = builder.body_key.index("robot_link")
+
+        # Add more robots to make robot1_link_idx not part of the most recent articulation
+        builder.add_mjcf(robot_mjcf, floating=False)
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        # Attempting to attach to a non-sequential articulation should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(gripper_mjcf, parent_body=robot1_link_idx, floating=False)
+        self.assertIn("most recent", str(cm.exception))
+
+    def test_floating_true_with_parent_body_raises_error(self):
+        """Test that floating=True with parent_body raises an error."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("robot_link")
+
+        # Attempting to use floating=True with parent_body should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(gripper_mjcf, parent_body=link_idx, floating=True)
+        self.assertIn("FREE joint", str(cm.exception))
+        self.assertIn("parent_body", str(cm.exception))
+
+    def test_floating_none_preserves_mjcf_default(self):
+        """Test that floating=None honors MJCF freejoint tags."""
+        # Test with freejoint
+        mjcf_with_freejoint = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_with_freejoint">
+    <worldbody>
+        <body name="floating_body" pos="0 0 0">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_with_freejoint, floating=None)
+        model = builder.finalize()
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FREE)
+
+        # Test without freejoint
+        mjcf_without_freejoint = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test_without_freejoint">
+    <worldbody>
+        <body name="fixed_body" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_without_freejoint, floating=None)
+        model = builder.finalize()
+        self.assertEqual(model.joint_type.numpy()[0], newton.JointType.FIXED)
+
+    def test_sequential_attachment_succeeds(self):
+        """Test that attaching to the most recent articulation succeeds."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+            <body name="gripper_finger">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="box" size="0.01 0.01 0.03" mass="0.1"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("robot_link")
+
+        # Attach gripper immediately - should succeed
+        builder.add_mjcf(gripper_mjcf, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify both are in the same articulation
+        # articulation_start has one extra element as an end marker, so length-1 = number of articulations
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+        # Should have 4 joints: robot FIXED base + robot hinge + gripper FIXED base + gripper hinge
+        self.assertEqual(model.joint_count, 4)
+
+    def test_parent_body_not_in_articulation_raises_error(self):
+        """Test that attaching to a body not in any articulation raises an error."""
+        builder = newton.ModelBuilder()
+
+        # Create a standalone body (not in any articulation)
+        standalone_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(
+            body=standalone_body,
+            radius=0.1,
+        )
+
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        # Attempting to attach to standalone body should raise ValueError
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(robot_mjcf, parent_body=standalone_body, floating=False)
+
+        self.assertIn("not part of any articulation", str(cm.exception))
+
+    def test_floating_false_with_parent_body_succeeds(self):
+        """Test that floating=False with parent_body is explicitly allowed."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("robot_link")
+
+        # Explicitly using floating=False with parent_body should succeed
+        builder.add_mjcf(gripper_mjcf, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify it worked - gripper should be attached with FIXED joint
+        self.assertIn("gripper_base", builder.body_key)
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
+
+    def test_three_level_hierarchical_composition(self):
+        """Test attaching multiple levels: arm → gripper → sensor."""
+        arm_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="arm">
+    <worldbody>
+        <body name="arm_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="arm_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+                <body name="end_effector" pos="0.5 0 0">
+                    <joint type="hinge" axis="0 0 1"/>
+                    <geom type="sphere" size="0.03" mass="0.2"/>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.1"/>
+            <body name="gripper_finger" pos="0.05 0 0">
+                <joint type="hinge" axis="0 1 0"/>
+                <geom type="box" size="0.01 0.01 0.03" mass="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        sensor_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="sensor">
+    <worldbody>
+        <body name="sensor_mount" pos="0 0 0">
+            <geom type="box" size="0.005 0.005 0.005" mass="0.01"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+
+        # Level 1: Add arm
+        builder.add_mjcf(arm_mjcf, floating=False)
+        ee_idx = builder.body_key.index("end_effector")
+
+        # Level 2: Attach gripper to end effector
+        builder.add_mjcf(gripper_mjcf, parent_body=ee_idx, floating=False)
+        finger_idx = builder.body_key.index("gripper_finger")
+
+        # Level 3: Attach sensor to gripper finger
+        builder.add_mjcf(sensor_mjcf, parent_body=finger_idx, floating=False)
+
+        model = builder.finalize()
+
+        # All should be in ONE articulation
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+        # Verify joint count: arm (3 joints) + gripper (2 joints) + sensor (1 joint) = 6
+        # arm: FIXED base + 2 hinges = 3
+        # gripper: FIXED base + 1 hinge = 2
+        # sensor: FIXED base = 1
+        self.assertEqual(model.joint_count, 6)
+
+        # Verify all bodies present
+        self.assertIn("arm_base", builder.body_key)
+        self.assertIn("end_effector", builder.body_key)
+        self.assertIn("gripper_base", builder.body_key)
+        self.assertIn("gripper_finger", builder.body_key)
+        self.assertIn("sensor_mount", builder.body_key)
+
+    def test_many_independent_articulations(self):
+        """Test creating many (5) independent articulations and verifying indexing."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+
+        # Add 5 independent robots
+        for i in range(5):
+            builder.add_mjcf(
+                robot_mjcf,
+                xform=wp.transform(wp.vec3(float(i * 2), 0.0, 0.0), wp.quat_identity()),
+                floating=False,
+            )
+
+        model = builder.finalize()
+
+        # Should have 5 articulations
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 5)
+
+        # Each articulation has 2 joints (FIXED base + hinge)
+        self.assertEqual(model.joint_count, 10)
+
+        # Verify we can identify the first robot's link
+        # (Body names might be deduplicated with suffixes)
+        link_bodies = [name for name in builder.body_key if "link" in name]
+        self.assertEqual(len(link_bodies), 5)
+
+    def test_multi_root_mjcf_with_parent_body(self):
+        """Test MJCF with multiple root bodies and parent_body parameter."""
+        # MJCF with two root bodies under worldbody
+        multi_root_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="multi_root">
+    <worldbody>
+        <body name="root1" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="root2" pos="1 0 0">
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        link_idx = builder.body_key.index("link")
+
+        # Add multi-root MJCF - both root bodies should attach to the same parent
+        builder.add_mjcf(multi_root_mjcf, parent_body=link_idx, floating=False)
+        model = builder.finalize()
+
+        # Verify both root bodies were added
+        self.assertIn("root1", builder.body_key)
+        self.assertIn("root2", builder.body_key)
+        # Should still be one articulation
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+    def test_frame_bodies_with_parent_body(self):
+        """Test that bodies inside worldbody frames are correctly attached to parent_body."""
+        # Create a simple arm
+        arm_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="arm">
+    <worldbody>
+        <body name="arm_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="arm_link" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # MJCF with body inside a worldbody frame
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <frame name="gripper_frame" pos="0.1 0 0" euler="0 0 45">
+            <body name="gripper_body" pos="0.05 0 0">
+                <geom type="box" size="0.02 0.02 0.05" mass="0.1"/>
+                <body name="gripper_finger" pos="0 0.03 0">
+                    <joint type="slide" axis="0 1 0"/>
+                    <geom type="box" size="0.01 0.01 0.04" mass="0.05"/>
+                </body>
+            </body>
+        </frame>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+
+        # Add arm
+        builder.add_mjcf(arm_mjcf, floating=False)
+        arm_link_idx = builder.body_key.index("arm_link")
+
+        # Add gripper with body inside frame - should attach to arm_link
+        builder.add_mjcf(gripper_mjcf, parent_body=arm_link_idx, floating=False)
+
+        model = builder.finalize()
+
+        # All should be in ONE articulation (frame bodies attached to parent)
+        self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)
+
+        # Verify bodies from frame were added
+        self.assertIn("gripper_body", builder.body_key)
+        self.assertIn("gripper_finger", builder.body_key)
+
+        # Verify joint count: arm (2 joints) + gripper (2 joints) = 4
+        # arm: FIXED base + hinge = 2
+        # gripper: FIXED base (to arm_link) + slide = 2
+        self.assertEqual(model.joint_count, 4)
+
+    def test_error_messages_are_informative(self):
+        """Test that error messages contain helpful information."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="robot_base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="robot_link" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        robot1_link_idx = builder.body_key.index("robot_link")
+
+        # Add more robots to make robot1_link_idx not the most recent
+        builder.add_mjcf(robot_mjcf, floating=False)
+        builder.add_mjcf(robot_mjcf, floating=False)
+
+        # Try to attach to non-sequential articulation
+        gripper_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper">
+    <worldbody>
+        <body name="gripper_base">
+            <geom type="box" size="0.02 0.02 0.02" mass="0.2"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        with self.assertRaises(ValueError) as cm:
+            builder.add_mjcf(gripper_mjcf, parent_body=robot1_link_idx, floating=False)
+
+        # Check that error message is informative
+        error_msg = str(cm.exception)
+        self.assertIn("most recent", error_msg)
+        self.assertIn("articulation", error_msg)
+        # Should mention the body name
+        self.assertIn("robot_link", error_msg)
 
 
 class TestMjcfInclude(unittest.TestCase):
@@ -4083,6 +5090,148 @@ f 4 1 5 8
             model = builder.finalize()
             mesh = model.shape_source[0]
             self.assertEqual(len(mesh.vertices), 8)
+
+    def test_include_with_parent_body(self):
+        """Test that parent_body works correctly when the MJCF uses <include> tags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the included file with gripper bodies
+            gripper_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <geom type="box" size="0.025 0.025 0.01" mass="0.2"/>
+            <body name="finger_left" pos="0 0.025 0">
+                <joint type="slide" axis="0 1 0"/>
+                <geom type="box" size="0.01 0.01 0.02" mass="0.05"/>
+            </body>
+            <body name="finger_right" pos="0 -0.025 0">
+                <joint type="slide" axis="0 1 0"/>
+                <geom type="box" size="0.01 0.01 0.02" mass="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+            gripper_path = os.path.join(tmpdir, "gripper.xml")
+            with open(gripper_path, "w") as f:
+                f.write(gripper_content)
+
+            # Create the main file that includes the gripper
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper_with_include">
+    <include file="gripper.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # First, load a robot arm
+            robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot_arm">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(robot_mjcf, floating=False)
+
+            robot_body_count = builder.body_count
+            robot_joint_count = builder.joint_count
+
+            # Attach gripper (via <include>) to end effector
+            ee_body_idx = builder.body_key.index("end_effector")
+            builder.add_mjcf(main_path, parent_body=ee_body_idx)
+
+            model = builder.finalize()
+
+            # Verify included bodies were added (gripper_base + finger_left + finger_right)
+            self.assertEqual(model.body_count, robot_body_count + 3)
+
+            # Verify the gripper's base joint has the end effector as parent
+            gripper_joint_idx = robot_joint_count
+            self.assertEqual(model.joint_parent.numpy()[gripper_joint_idx], ee_body_idx)
+
+            # Verify all gripper bodies are reachable in the kinematic tree
+            body_names = ["gripper_base", "finger_left", "finger_right"]
+            for name in body_names:
+                self.assertIn(name, builder.body_key)
+
+    def test_include_with_freejoint_and_parent_body(self):
+        """Test that a freejoint in an <include>d file is replaced when using parent_body."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the included file with a freejoint on the root body
+            gripper_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco>
+    <worldbody>
+        <body name="gripper_base" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.025 0.025 0.01" mass="0.2"/>
+            <body name="finger_left" pos="0 0.025 0">
+                <joint type="slide" axis="0 1 0"/>
+                <geom type="box" size="0.01 0.01 0.02" mass="0.05"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+            gripper_path = os.path.join(tmpdir, "gripper_free.xml")
+            with open(gripper_path, "w") as f:
+                f.write(gripper_content)
+
+            # Create the main file that includes the gripper
+            main_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="gripper_free_include">
+    <include file="gripper_free.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Load a robot arm
+            robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot_arm">
+    <worldbody>
+        <body name="base_link" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="end_effector" pos="1 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(robot_mjcf, floating=False)
+
+            robot_joint_count = builder.joint_count
+
+            # Attach gripper (with freejoint via <include>) to end effector
+            ee_body_idx = builder.body_key.index("end_effector")
+            builder.add_mjcf(main_path, parent_body=ee_body_idx)
+
+            model = builder.finalize()
+
+            # Verify the freejoint was replaced: the gripper's base joint should be
+            # a fixed joint parented to end_effector, not a free joint
+            gripper_joint_idx = robot_joint_count
+            self.assertEqual(model.joint_parent.numpy()[gripper_joint_idx], ee_body_idx)
+
+            # If freejoint were kept: 7 (free) + 1 (slide) = 8 DOFs from gripper.
+            # With freejoint replaced by fixed: 0 + 1 (slide) = 1 DOF from gripper.
+            # Total = 1 (arm hinge) + 1 (gripper slide) = 2.
+            self.assertEqual(model.joint_dof_count, 2)
+
+            # Verify both gripper bodies are present
+            self.assertIn("gripper_base", builder.body_key)
+            self.assertIn("finger_left", builder.body_key)
+
+            # Verify all joints belong to the same articulation
+            joint_articulations = model.joint_articulation.numpy()
+            self.assertEqual(joint_articulations[0], joint_articulations[gripper_joint_idx])
 
 
 class TestMjcfIncludeNested(unittest.TestCase):
@@ -4523,8 +5672,11 @@ class TestMjcfMultipleWorldbody(unittest.TestCase):
 class TestMjcfActuatorAutoLimited(unittest.TestCase):
     """Test auto-enabling of actuator *limited flags when *range is specified."""
 
-    def test_ctrllimited_auto_enabled_when_ctrlrange_specified(self):
-        """Test that ctrllimited is auto-enabled when ctrlrange is specified."""
+    def test_ctrllimited_auto_when_ctrlrange_specified(self):
+        """Test that ctrllimited is auto (2) when ctrlrange is specified but ctrllimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -4543,12 +5695,15 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
-        # ctrllimited should be auto-enabled (1) because ctrlrange was specified
+        # ctrllimited should be auto (2) — MuJoCo resolves it during compilation
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
-        self.assertEqual(ctrllimited[0], 1)
+        self.assertEqual(ctrllimited[0], 2)
 
-    def test_ctrllimited_not_auto_enabled_without_ctrlrange(self):
-        """Test that ctrllimited stays disabled when ctrlrange is not specified."""
+    def test_ctrllimited_auto_without_ctrlrange(self):
+        """Test that ctrllimited defaults to auto (2) when ctrlrange is not specified.
+
+        MuJoCo resolves auto to false during model.compile() when no ctrlrange is present.
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -4567,9 +5722,9 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
-        # ctrllimited should be disabled (0) because ctrlrange was not specified
+        # ctrllimited should be auto (2) — MuJoCo resolves it during compilation
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
-        self.assertEqual(ctrllimited[0], 0)
+        self.assertEqual(ctrllimited[0], 2)
 
     def test_ctrllimited_explicit_false_not_overridden(self):
         """Test that explicit ctrllimited=false is not overridden."""
@@ -4595,8 +5750,11 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
         self.assertEqual(ctrllimited[0], 0)
 
-    def test_forcelimited_auto_enabled_when_forcerange_specified(self):
-        """Test that forcelimited is auto-enabled when forcerange is specified."""
+    def test_forcelimited_auto_when_forcerange_specified(self):
+        """Test that forcelimited is auto (2) when forcerange is specified but forcelimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -4614,11 +5772,15 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
+        # forcelimited should be auto (2) — MuJoCo resolves it during compilation
         forcelimited = model.mujoco.actuator_forcelimited.numpy()
-        self.assertEqual(forcelimited[0], 1)
+        self.assertEqual(forcelimited[0], 2)
 
-    def test_actlimited_auto_enabled_when_actrange_specified(self):
-        """Test that actlimited is auto-enabled when actrange is specified."""
+    def test_actlimited_auto_when_actrange_specified(self):
+        """Test that actlimited is auto (2) when actrange is specified but actlimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -4636,132 +5798,234 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
+        # actlimited should be auto (2) — MuJoCo resolves it during compilation
         actlimited = model.mujoco.actuator_actlimited.numpy()
-        self.assertEqual(actlimited[0], 1)
+        self.assertEqual(actlimited[0], 2)
 
 
-class TestMjcfActuatorClassDefaults(unittest.TestCase):
-    """Test that actuator elements properly inherit from default classes."""
+class TestMjcfDefaultCustomAttributes(unittest.TestCase):
+    """Verify that MJCF <default> classes properly propagate MuJoCo custom attribute values."""
 
-    def test_general_actuator_inherits_biasprm_from_class(self):
-        """Test that general actuators inherit biasprm from default class."""
-        # This MJCF mirrors the pattern used in UR5e and other menagerie robots
-        mjcf_content = """
-        <mujoco>
-            <default>
-                <default class="robot">
-                    <general gaintype="fixed" biastype="affine" gainprm="2000" biasprm="0 -2000 -400"/>
-                    <default class="small">
-                        <general gainprm="500" biasprm="0 -500 -100"/>
-                    </default>
+    DEG2RAD = np.pi / 180.0
+    RAD2DEG = 180.0 / np.pi
+
+    MJCF = """
+    <mujoco>
+        <default>
+            <geom condim="4" priority="5" solmix="2.0" gap="0.01"
+                  solimp="0.8 0.9 0.01 0.4 1.0"/>
+            <body gravcomp="0.5"/>
+            <joint margin="1.0" solimplimit="0.8 0.9 0.01 0.4 1.0"
+                   solreffriction="0.05 2.0" solimpfriction="0.7 0.85 0.02 0.3 1.5"
+                   stiffness="2.0" damping="3.0" springref="45" ref="30"
+                   actuatorgravcomp="true"/>
+            <general gainprm="100" biasprm="0 -100 -10" dyntype="filter"
+                     ctrllimited="true" forcelimited="true" ctrlrange="-2 2"
+                     forcerange="-100 100" gear="2 0 0 0 0 0"
+                     dynprm="0.5 0 0 0 0 0 0 0 0 0"
+                     actlimited="true" actrange="-1 1" actdim="2" actearly="true"/>
+            <position kp="50"/>
+            <default class="special">
+                <geom condim="6" solmix="5.0"
+                      solimp="0.7 0.85 0.005 0.3 1.5"/>
+                <body gravcomp="1.0"/>
+                <joint margin="10.0" stiffness="20.0" damping="30.0"
+                       springref="90" ref="60"/>
+                <general gainprm="200" biasprm="0 -200 -20"
+                         ctrllimited="false" ctrlrange="-5 5"
+                         gear="3 0 0 0 0 0"/>
+                <position kp="500"/>
+                <default class="special_child">
+                    <geom priority="99" gap="0.05"/>
+                    <general gainprm="300" biasprm="0 -300 -30"/>
+                    <position kp="3000"/>
                 </default>
             </default>
-            <worldbody>
-                <body name="base">
-                    <joint name="joint1" type="hinge" axis="0 0 1"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                    <body name="link1" pos="0.2 0 0">
-                        <joint name="joint2" type="hinge" axis="0 0 1"/>
-                        <geom type="box" size="0.1 0.1 0.1"/>
-                        <body name="link2" pos="0.2 0 0">
-                            <joint name="joint3" type="hinge" axis="0 0 1"/>
-                            <geom type="box" size="0.1 0.1 0.1"/>
+        </default>
+        <worldbody>
+            <body name="b_default" pos="0 0 0">
+                <joint name="j_default" type="hinge" axis="0 0 1"/>
+                <geom name="g_default" type="sphere" size="0.1"/>
+                <body name="b_class" class="special" pos="0 0 1">
+                    <joint name="j_class" type="hinge" axis="0 0 1" class="special"/>
+                    <geom name="g_class" type="sphere" size="0.1" class="special"/>
+                    <body name="b_override" class="special" pos="0 0 1" gravcomp="0.75">
+                        <joint name="j_override" type="hinge" axis="0 0 1"
+                               class="special" margin="99.0"/>
+                        <geom name="g_override" type="sphere" size="0.1"
+                              class="special" condim="1"/>
+                        <body name="b_child" pos="0 0 1">
+                            <joint name="j_child" type="hinge" axis="0 0 1"/>
+                            <geom name="g_child" type="sphere" size="0.1"
+                                  class="special_child"/>
+                            <body name="b_child2" pos="0 0 1">
+                                <joint name="j_child2" type="hinge" axis="0 0 1"/>
+                                <geom type="sphere" size="0.1"/>
+                            </body>
                         </body>
                     </body>
                 </body>
-            </worldbody>
-            <actuator>
-                <general class="robot" name="act1" joint="joint1"/>
-                <general class="robot" name="act2" joint="joint2"/>
-                <general class="small" name="act3" joint="joint3"/>
-            </actuator>
-        </mujoco>
-        """
-        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
+            </body>
+        </worldbody>
+        <actuator>
+            <general name="act_default" joint="j_default"
+                     gaintype="fixed" biastype="affine"/>
+            <general name="act_class" joint="j_class" class="special"
+                     gaintype="fixed" biastype="affine"/>
+            <general name="act_override" joint="j_override" class="special"
+                     gaintype="fixed" biastype="affine"
+                     gainprm="999" biasprm="0 -999 -99"/>
+            <general name="act_child" joint="j_child" class="special_child"
+                     gaintype="fixed" biastype="affine"/>
+            <position name="pos_default" joint="j_child2"/>
+            <position name="pos_class" joint="j_class" class="special"/>
+            <position name="pos_override" joint="j_override" class="special"
+                      kp="9999"/>
+            <position name="pos_child" joint="j_child" class="special_child"/>
+        </actuator>
+    </mujoco>
+    """
 
+    @classmethod
+    def setUpClass(cls):
+        cls.builder = newton.ModelBuilder()
+        cls.builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        cls.model = cls.builder.finalize()
+
+    def test_shape_defaults(self):
+        """SHAPE: condim, priority, solmix, gap, solimp."""
+        m = self.model.mujoco
+        idx = self.builder.shape_key.index
+
+        g_def = idx("g_default")
+        self.assertEqual(m.condim.numpy()[g_def], 4)
+        self.assertEqual(m.geom_priority.numpy()[g_def], 5)
+        self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_def]), 2.0, places=5)
+        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_def]), 0.01, places=5)
+        np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
+
+        g_cls = idx("g_class")
+        self.assertEqual(m.condim.numpy()[g_cls], 6)
+        self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
+        self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
+        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_cls]), 0.01, places=5)
+        np.testing.assert_allclose(m.geom_solimp.numpy()[g_cls], [0.7, 0.85, 0.005, 0.3, 1.5], atol=1e-4)
+
+        g_ovr = idx("g_override")
+        self.assertEqual(m.condim.numpy()[g_ovr], 1)
+
+        g_child = idx("g_child")
+        self.assertEqual(m.condim.numpy()[g_child], 6)
+        self.assertEqual(m.geom_priority.numpy()[g_child], 99)
+        self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
+        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_child]), 0.05, places=5)
+
+    def test_body_defaults(self):
+        """BODY: gravcomp."""
+        gravcomp = self.model.mujoco.gravcomp.numpy()
+        idx = self.builder.body_key.index
+
+        self.assertAlmostEqual(float(gravcomp[idx("b_default")]), 0.5, places=5)
+        self.assertAlmostEqual(float(gravcomp[idx("b_class")]), 1.0, places=5)
+        self.assertAlmostEqual(float(gravcomp[idx("b_override")]), 0.75, places=5)
+
+    def test_joint_dof_defaults(self):
+        """JOINT_DOF: margin, solimplimit, solreffriction, solimpfriction,
+        stiffness, damping, springref, ref, actuatorgravcomp."""
+        m = self.model.mujoco
+        idx = self.builder.joint_key.index
+
+        j_def = idx("j_default")
+        self.assertAlmostEqual(float(m.limit_margin.numpy()[j_def]), 1.0, places=5)
+        np.testing.assert_allclose(m.solimplimit.numpy()[j_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
+        np.testing.assert_allclose(m.solreffriction.numpy()[j_def], [0.05, 2.0], atol=1e-4)
+        np.testing.assert_allclose(m.solimpfriction.numpy()[j_def], [0.7, 0.85, 0.02, 0.3, 1.5], atol=1e-4)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_def]), 2.0 * self.RAD2DEG, places=2)
+        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_def]), 3.0 * self.RAD2DEG, places=2)
+        self.assertAlmostEqual(float(m.dof_springref.numpy()[j_def]), 45.0 * self.DEG2RAD, places=4)
+        self.assertAlmostEqual(float(m.dof_ref.numpy()[j_def]), 30.0 * self.DEG2RAD, places=4)
+        self.assertEqual(bool(m.jnt_actgravcomp.numpy()[j_def]), True)
+
+        j_cls = idx("j_class")
+        self.assertAlmostEqual(float(m.limit_margin.numpy()[j_cls]), 10.0, places=5)
+        self.assertAlmostEqual(float(m.dof_passive_stiffness.numpy()[j_cls]), 20.0 * self.RAD2DEG, places=1)
+        self.assertAlmostEqual(float(m.dof_passive_damping.numpy()[j_cls]), 30.0 * self.RAD2DEG, places=1)
+        self.assertAlmostEqual(float(m.dof_springref.numpy()[j_cls]), 90.0 * self.DEG2RAD, places=4)
+        self.assertAlmostEqual(float(m.dof_ref.numpy()[j_cls]), 60.0 * self.DEG2RAD, places=4)
+
+        j_ovr = idx("j_override")
+        self.assertAlmostEqual(float(m.limit_margin.numpy()[j_ovr]), 99.0, places=5)
+
+    def test_general_actuator_defaults(self):
+        """ACTUATOR (general): gainprm, biasprm, dyntype, ctrllimited, forcelimited,
+        ctrlrange, forcerange, gear, dynprm, actlimited, actrange, actdim, actearly."""
+        m = self.model.mujoco
+
+        np.testing.assert_allclose(m.actuator_gainprm.numpy()[0, 0], 100.0, atol=1.0)
+        np.testing.assert_allclose(m.actuator_biasprm.numpy()[0, :3], [0.0, -100.0, -10.0], atol=1.0)
+        self.assertEqual(m.actuator_dyntype.numpy()[0], 2)
+        self.assertEqual(m.actuator_ctrllimited.numpy()[0], 1)
+        self.assertEqual(m.actuator_forcelimited.numpy()[0], 1)
+        np.testing.assert_allclose(m.actuator_ctrlrange.numpy()[0], [-2.0, 2.0], atol=1e-4)
+        np.testing.assert_allclose(m.actuator_forcerange.numpy()[0], [-100.0, 100.0], atol=1e-4)
+        np.testing.assert_allclose(m.actuator_gear.numpy()[0, :2], [2.0, 0.0], atol=1e-4)
+        self.assertAlmostEqual(float(m.actuator_dynprm.numpy()[0, 0]), 0.5, places=4)
+        self.assertEqual(m.actuator_actlimited.numpy()[0], 1)
+        np.testing.assert_allclose(m.actuator_actrange.numpy()[0], [-1.0, 1.0], atol=1e-4)
+        self.assertEqual(m.actuator_actdim.numpy()[0], 2)
+        self.assertEqual(m.actuator_actearly.numpy()[0], 1)
+
+        np.testing.assert_allclose(m.actuator_gainprm.numpy()[1, 0], 200.0, atol=1.0)
+        np.testing.assert_allclose(m.actuator_biasprm.numpy()[1, :3], [0.0, -200.0, -20.0], atol=1.0)
+        self.assertEqual(m.actuator_ctrllimited.numpy()[1], 0)
+        np.testing.assert_allclose(m.actuator_ctrlrange.numpy()[1], [-5.0, 5.0], atol=1e-4)
+        np.testing.assert_allclose(m.actuator_gear.numpy()[1, :2], [3.0, 0.0], atol=1e-4)
+
+        np.testing.assert_allclose(m.actuator_gainprm.numpy()[2, 0], 999.0, atol=1.0)
+        np.testing.assert_allclose(m.actuator_biasprm.numpy()[2, :3], [0.0, -999.0, -99.0], atol=1.0)
+
+        np.testing.assert_allclose(m.actuator_gainprm.numpy()[3, 0], 300.0, atol=1.0)
+        np.testing.assert_allclose(m.actuator_biasprm.numpy()[3, :3], [0.0, -300.0, -30.0], atol=1.0)
+
+    def test_position_actuator_defaults(self):
+        """ACTUATOR (position): kp inherited from <position> defaults."""
+        gainprm = self.model.mujoco.actuator_gainprm.numpy()
+
+        self.assertAlmostEqual(float(gainprm[4, 0]), 50.0, places=1)
+        self.assertAlmostEqual(float(gainprm[5, 0]), 500.0, places=1)
+        self.assertAlmostEqual(float(gainprm[6, 0]), 9999.0, places=1)
+        self.assertAlmostEqual(float(gainprm[7, 0]), 3000.0, places=1)
+
+    def test_base_joint_dict_conflicting_keys_fails(self):
+        """Test that base_joint dict with conflicting keys raises ValueError."""
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <worldbody>
+        <body name="body1" pos="0 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
         builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf_content)
-        model = builder.finalize()
 
-        # Get biasprm values from the finalized model
-        biasprm_values = model.mujoco.actuator_biasprm.numpy()
+        # Test with 'parent' key
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint={"joint_type": newton.JointType.REVOLUTE, "parent": 5})
+        self.assertIn("cannot specify", str(ctx.exception))
+        self.assertIn("parent", str(ctx.exception))
 
-        # Should have 3 actuators
-        self.assertEqual(biasprm_values.shape[0], 3)
+        # Test with 'child' key
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(mjcf_content, base_joint={"joint_type": newton.JointType.REVOLUTE, "child": 3})
+        self.assertIn("cannot specify", str(ctx.exception))
+        self.assertIn("child", str(ctx.exception))
 
-        # act1 and act2 use "robot" class: biasprm="0 -2000 -400"
-        np.testing.assert_allclose(biasprm_values[0, :3], [0, -2000, -400], rtol=1e-5)
-        np.testing.assert_allclose(biasprm_values[1, :3], [0, -2000, -400], rtol=1e-5)
-
-        # act3 uses "small" class (nested under robot): biasprm="0 -500 -100"
-        np.testing.assert_allclose(biasprm_values[2, :3], [0, -500, -100], rtol=1e-5)
-
-    def test_general_actuator_class_with_gainprm_override(self):
-        """Test that gainprm can be inherited from class and overridden inline."""
-        mjcf_content = """
-        <mujoco>
-            <default>
-                <default class="strong">
-                    <general gainprm="5000"/>
-                </default>
-            </default>
-            <worldbody>
-                <body name="base">
-                    <joint name="joint1" type="hinge" axis="0 0 1"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </worldbody>
-            <actuator>
-                <general class="strong" name="act1" joint="joint1"/>
-            </actuator>
-        </mujoco>
-        """
-        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
-
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf_content)
-        model = builder.finalize()
-
-        gainprm_values = model.mujoco.actuator_gainprm.numpy()
-
-        self.assertEqual(gainprm_values.shape[0], 1)
-        self.assertAlmostEqual(gainprm_values[0, 0], 5000.0, places=1)
-
-    def test_position_actuator_inherits_kp_from_class(self):
-        """Test that position actuators inherit kp from default class."""
-        mjcf_content = """
-        <mujoco>
-            <default>
-                <default class="stiff">
-                    <position kp="1000"/>
-                </default>
-            </default>
-            <worldbody>
-                <body name="base">
-                    <joint name="joint1" type="hinge" axis="0 0 1"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
-            </worldbody>
-            <actuator>
-                <position class="stiff" name="pos1" joint="joint1"/>
-            </actuator>
-        </mujoco>
-        """
-        from newton.solvers import SolverMuJoCo  # noqa: PLC0415
-
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf_content, ctrl_direct=True)
-        model = builder.finalize()
-
-        # For position actuators with ctrl_direct, gainprm[0] = kp
-        gainprm_values = model.mujoco.actuator_gainprm.numpy()
-
-        self.assertEqual(gainprm_values.shape[0], 1)
-        self.assertAlmostEqual(gainprm_values[0, 0], 1000.0, places=1)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+        # Test with 'parent_xform' key
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_mjcf(
+                mjcf_content,
+                base_joint={"joint_type": newton.JointType.REVOLUTE, "parent_xform": wp.transform_identity()},
+            )
+        self.assertIn("cannot specify", str(ctx.exception))
+        self.assertIn("parent_xform", str(ctx.exception))

@@ -22,6 +22,13 @@
 - **Follow PEP 8 for Python code.**
 - **Use Google-style docstrings.**
   - Write clear, concise docstrings that explain what the function does, its parameters, and its return value.
+- **State SI units for all physical quantities in docstrings.**
+  - Use inline `[unit]` notation, e.g. `"""Particle positions [m], shape [particle_count, 3], float."""`.
+  - For joint-type-dependent quantities use `[m or rad, depending on joint type]`.
+  - For spatial vectors annotate both components, e.g. `[N, N·m]`.
+  - For compound arrays list per-component units, e.g. `[0] k_mu [Pa], [1] k_lambda [Pa], ...`.
+  - When a parameter's interpretation varies across solvers, document each solver's convention instead of a single unit.
+  - Skip non-physical fields (indices, keys, counts, flags).
 - **Keep the documentation up-to-date.**
   - When adding new files or symbols that are part of the public-facing API, make sure to keep the auto-generated documentation updated by running `docs/generate_api.py`.
 - **Add examples to README.md**
@@ -39,6 +46,7 @@
 We standardize on `uv` for local workflows when available. If `uv` is not installed, fall back to a virtual environment created with `venv` or `conda`.
 
 - **Use `uv run python -c` for inline Python**: When running one-off Python commands, use `uv run python -c "..."` instead of `python3 -c "..."`.
+- **Use `uv run --no-project`** to run standalone Python scripts without a `pyproject.toml` (e.g., in CI after switching to a branch with no project files). Combine with `--with` for one-off tool usage: `uv run --no-project --with yamllint yamllint <file>`.
 
 Example commands using `uv` (from `docs/guide/development.rst`):
 
@@ -68,6 +76,18 @@ uv run --extra dev -m newton.tests -k test_viewer_log_shapes
 
 # run a specific example test
 uv run --extra dev -m newton.tests -k test_basic.example_basic_shapes
+```
+
+**Warp kernel cache:**
+
+Use a session-specific cache directory to avoid interference with parallel sessions:
+```bash
+export WARP_CACHE_ROOT=/tmp/claude/warp-cache-$$
+```
+
+Use `--no-cache-clear` to skip clearing the kernel cache for faster turnaround:
+```bash
+uv run --extra dev -m newton.tests --no-cache-clear -k test_model
 ```
 
 ### Pre-commit (lint/format hooks)
@@ -136,6 +156,24 @@ Follow conventional commit message practices.
   ```
 - Do not change the year in existing file headers.
 
+## Sandbox & Networking
+
+- Network access (e.g., `git push`) is blocked by the sandbox. Use `dangerouslyDisableSandbox: true` so the user gets an approval prompt — don't ask them to run it manually.
+
 ## GitHub Actions and CI/CD
 
 - IMPORTANT: Pin actions by SHA hash. Use `action@<sha>  # vX.Y.Z` format for supply-chain security. Check existing workflows in `.github/workflows/` for the allowlisted hashes. New actions or versions require repo admin approval to be added to the allowlist.
+
+## Testing Guidelines
+
+- **Always verify regression tests fail without the fix.** When writing a regression test for a bug fix, temporarily revert the fix and run the test to confirm it fails. Then reapply the fix and verify the test passes. This ensures the test actually covers the bug.
+
+### Debugging Warp kernels
+
+**Do not add `wp.printf` to kernels and run via the test runner.** Newton's test infrastructure captures stdout at the file-descriptor level (`os.dup2`) via `CheckOutput`/`StdOutCapture` in `newton/tests/unittest_utils.py`. By default (`check_output=True`), any unexpected stdout — including `wp.printf` — **causes the test to fail** with `"Unexpected output"`. Tests that opt out with `check_output=False` avoid that failure, but their stdout is still lost because `unittest-parallel` runs tests in spawned child processes.
+
+To debug Warp kernel behavior:
+
+1. **Write a standalone reproduction script** and run it directly with `uv run python -c "..."` or `uv run python script.py`. This keeps stdout visible and avoids the test framework entirely.
+2. **Use high-precision format strings** for floating-point debugging (e.g., `wp.printf("val=%.15e\n", x)`) — the default `%f` format hides values smaller than ~1e-6 that can still affect control flow.
+3. **Remove debug prints before committing.** `wp.printf` in kernels affects performance and will cause `check_output=True` tests to fail.

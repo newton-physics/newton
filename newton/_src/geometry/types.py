@@ -86,10 +86,6 @@ class GeoType(enum.IntEnum):
     """No geometry (placeholder)."""
 
 
-# Default maximum vertices for convex hull approximation
-MESH_MAXHULLVERT = 64
-
-
 class SDF:
     """
     Represents a signed distance field (SDF) for simulation.
@@ -102,7 +98,7 @@ class SDF:
     def __init__(
         self,
         volume: wp.Volume | None = None,
-        I: Mat33 | None = None,
+        inertia: Mat33 | None = None,
         mass: float = 1.0,
         com: Vec3 | None = None,
     ):
@@ -111,12 +107,12 @@ class SDF:
 
         Args:
             volume: The Warp volume object representing the SDF.
-            I: 3x3 inertia matrix. Defaults to identity.
+            inertia: 3x3 inertia matrix. Defaults to identity.
             mass: Total mass. Defaults to 1.0.
             com: Center of mass. Defaults to zero vector.
         """
         self.volume = volume
-        self.I = I if I is not None else wp.mat33(np.eye(3))
+        self.I = inertia if inertia is not None else wp.mat33(np.eye(3))
         self.mass = mass
         self.com = com if com is not None else wp.vec3()
 
@@ -161,6 +157,7 @@ class Mesh:
             mesh = newton.Mesh(mesh_points, mesh_indices)
     """
 
+    MAX_HULL_VERTICES = 64
     _color: Vec3 | None = None
 
     def __init__(
@@ -171,7 +168,7 @@ class Mesh:
         uvs: Sequence[Vec2] | nparray | None = None,
         compute_inertia: bool = True,
         is_solid: bool = True,
-        maxhullvert: int = MESH_MAXHULLVERT,
+        maxhullvert: int | None = None,
         color: Vec3 | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
@@ -191,7 +188,7 @@ class Mesh:
             uvs: Optional per-vertex UVs, shape (N, 2).
             compute_inertia: If True, compute mass, inertia tensor, and center of mass (default: True).
             is_solid: If True, mesh is assumed solid for inertia computation (default: True).
-            maxhullvert: Max vertices for convex hull approximation (default: 64).
+            maxhullvert: Max vertices for convex hull approximation (default: :attr:`~newton.Mesh.MAX_HULL_VERTICES`).
             color: Optional per-mesh base color (values in [0, 1]).
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
@@ -211,6 +208,8 @@ class Mesh:
         self.is_solid = is_solid
         self.has_inertia = compute_inertia
         self.mesh = None
+        if maxhullvert is None:
+            maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._texture_hash = None
@@ -402,6 +401,165 @@ class Mesh:
                     self._compute_texture_hash(),
                     self._roughness,
                     self._metallic,
+                )
+            )
+        return self._cached_hash
+
+
+class Heightfield:
+    """
+    Represents a heightfield (2D elevation grid) for terrain and large static surfaces.
+
+    Heightfields are efficient representations of terrain using a 2D grid of elevation values.
+    They are always static (zero mass, zero inertia) and more memory-efficient than equivalent
+    triangle meshes.
+
+    The elevation data is always normalized to [0, 1] internally. World-space heights are
+    computed as: ``z = min_z + data[r, c] * (max_z - min_z)``.
+
+    Example:
+        Create a heightfield from raw elevation data (auto-normalizes):
+
+        .. code-block:: python
+
+            import numpy as np
+            import newton
+
+            nrow, ncol = 10, 10
+            elevation = np.random.rand(nrow, ncol).astype(np.float32) * 5.0  # 0-5 meters
+
+            hfield = newton.Heightfield(
+                data=elevation,
+                nrow=nrow,
+                ncol=ncol,
+                hx=5.0,  # half-extent X (field spans [-5, +5] meters)
+                hy=5.0,  # half-extent Y
+            )
+            # min_z and max_z are auto-derived from the data (0.0 and 5.0)
+
+        Create with explicit height range:
+
+        .. code-block:: python
+
+            hfield = newton.Heightfield(
+                data=normalized_data,  # any values, will be normalized
+                nrow=nrow,
+                ncol=ncol,
+                hx=5.0,
+                hy=5.0,
+                min_z=-1.0,
+                max_z=3.0,
+            )
+    """
+
+    def __init__(
+        self,
+        data: Sequence[Sequence[float]] | nparray,
+        nrow: int,
+        ncol: int,
+        hx: float = 1.0,
+        hy: float = 1.0,
+        min_z: float | None = None,
+        max_z: float | None = None,
+    ):
+        """
+        Construct a Heightfield object from a 2D elevation grid.
+
+        The input data is normalized to [0, 1]. If ``min_z`` and ``max_z`` are not provided,
+        they are derived from the data's minimum and maximum values.
+
+        Args:
+            data: 2D array of elevation values, shape (nrow, ncol). Any numeric values are
+                accepted and will be normalized to [0, 1] internally.
+            nrow: Number of rows in the heightfield grid.
+            ncol: Number of columns in the heightfield grid.
+            hx: Half-extent in X direction. The heightfield spans [-hx, +hx].
+            hy: Half-extent in Y direction. The heightfield spans [-hy, +hy].
+            min_z: World-space Z value corresponding to data minimum. Must be provided
+                together with ``max_z``, or both omitted to auto-derive from data.
+            max_z: World-space Z value corresponding to data maximum. Must be provided
+                together with ``min_z``, or both omitted to auto-derive from data.
+        """
+        if (min_z is None) != (max_z is None):
+            raise ValueError("min_z and max_z must both be provided or both omitted")
+
+        raw = np.array(data, dtype=np.float32).reshape(nrow, ncol)
+        d_min, d_max = float(raw.min()), float(raw.max())
+
+        # Normalize data to [0, 1]
+        if d_max > d_min:
+            self._data = (raw - d_min) / (d_max - d_min)
+        else:
+            self._data = np.zeros_like(raw)
+
+        self.nrow = nrow
+        self.ncol = ncol
+        self.hx = hx
+        self.hy = hy
+        self.min_z = d_min if min_z is None else float(min_z)
+        self.max_z = d_max if max_z is None else float(max_z)
+
+        self.is_solid = True
+        self.has_inertia = False
+        self.warp_array = None  # Will be set by finalize()
+        self._cached_hash = None
+
+        # Heightfields are always static
+        self.I = wp.mat33()
+        self.mass = 0.0
+        self.com = wp.vec3()
+
+    @property
+    def data(self):
+        """Get the normalized [0, 1] elevation data as a 2D numpy array."""
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        """Set the elevation data from a 2D array. Data is normalized to [0, 1]."""
+        raw = np.array(value, dtype=np.float32).reshape(self.nrow, self.ncol)
+        d_min, d_max = float(raw.min()), float(raw.max())
+        if d_max > d_min:
+            self._data = (raw - d_min) / (d_max - d_min)
+        else:
+            self._data = np.zeros_like(raw)
+        self.min_z = d_min
+        self.max_z = d_max
+        self._cached_hash = None
+
+    def finalize(self, device: Devicelike = None, requires_grad: bool = False) -> wp.uint64:
+        """
+        Construct a simulation-ready Warp array from the heightfield data and return its ID.
+
+        Args:
+            device: Device on which to allocate heightfield buffers.
+            requires_grad: If True, data is allocated with gradient tracking.
+
+        Returns:
+            The ID (pointer) of the simulation-ready Warp array.
+        """
+        with wp.ScopedDevice(device):
+            self.warp_array = wp.array(self._data.flatten(), requires_grad=requires_grad, dtype=wp.float32)
+            return self.warp_array.ptr
+
+    @override
+    def __hash__(self) -> int:
+        """
+        Compute a hash of the heightfield data for use in caching.
+
+        Returns:
+            The hash value for the heightfield.
+        """
+        if self._cached_hash is None:
+            self._cached_hash = hash(
+                (
+                    tuple(self._data.flatten()),
+                    self.nrow,
+                    self.ncol,
+                    self.hx,
+                    self.hy,
+                    self.min_z,
+                    self.max_z,
                 )
             )
         return self._cached_hash

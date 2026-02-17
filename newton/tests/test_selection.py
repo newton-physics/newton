@@ -83,7 +83,7 @@ class TestSelection(unittest.TestCase):
 
         # scene with one ant per world
         single_ant_per_world_scene = newton.ModelBuilder()
-        single_ant_per_world_scene.replicate(ant, num_worlds=W)
+        single_ant_per_world_scene.replicate(ant, world_count=W)
         single_ant_per_world_model = single_ant_per_world_scene.finalize()
 
         single_ant_per_world_view = ArticulationView(single_ant_per_world_model, "ant")
@@ -119,7 +119,7 @@ class TestSelection(unittest.TestCase):
         for i in range(A):
             multi_ant_world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
         multi_ant_per_world_scene = newton.ModelBuilder()
-        multi_ant_per_world_scene.replicate(multi_ant_world, num_worlds=W)
+        multi_ant_per_world_scene.replicate(multi_ant_world, world_count=W)
         multi_ant_per_world_model = multi_ant_per_world_scene.finalize()
 
         multi_ant_per_world_view = ArticulationView(multi_ant_per_world_model, "ant")
@@ -148,6 +148,73 @@ class TestSelection(unittest.TestCase):
             multi_ant_per_world_view.get_attribute("shape_thickness", multi_ant_per_world_model).shape, (W, A, S)
         )
 
+    def test_selection_shape_values_noncontiguous(self):
+        """Test that shape attribute values are correct when shape selection is non-contiguous."""
+        # Build a 3-link chain: base -> link1 -> link2
+        # Each link has one shape with a distinct thickness value
+        robot = newton.ModelBuilder()
+
+        thicknesses = [0.001, 0.002, 0.003]
+
+        base = robot.add_link(xform=wp.transform([0, 0, 0], wp.quat_identity()), mass=1.0, key="base")
+        robot.add_shape_box(
+            base,
+            hx=0.1,
+            hy=0.1,
+            hz=0.1,
+            cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[0]),
+            key="shape_base",
+        )
+
+        link1 = robot.add_link(xform=wp.transform([0, 0, 0.5], wp.quat_identity()), mass=0.5, key="link1")
+        robot.add_shape_capsule(
+            link1,
+            radius=0.05,
+            half_height=0.2,
+            cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[1]),
+            key="shape_link1",
+        )
+
+        link2 = robot.add_link(xform=wp.transform([0, 0, 1.0], wp.quat_identity()), mass=0.3, key="link2")
+        robot.add_shape_sphere(
+            link2,
+            radius=0.05,
+            cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[2]),
+            key="shape_link2",
+        )
+
+        j0 = robot.add_joint_free(child=base)
+        j1 = robot.add_joint_revolute(parent=base, child=link1, axis=[0, 1, 0])
+        j2 = robot.add_joint_revolute(parent=link1, child=link2, axis=[0, 1, 0])
+        robot.add_articulation([j0, j1, j2], key="robot")
+
+        W = 3
+        scene = newton.ModelBuilder()
+        # add a ground plane first so shape indices are offset
+        scene.add_shape_plane()
+        scene.replicate(robot, world_count=W)
+        model = scene.finalize()
+
+        # exclude the middle link to make shape indices non-contiguous: [0, 2]
+        view = ArticulationView(model, "robot", exclude_links=["link1"])
+        self.assertFalse(view.shapes_contiguous, "Expected non-contiguous shape selection")
+        self.assertEqual(view.shape_count, 2)
+
+        # read shape_thickness through ArticulationView and check values
+        vals = view.get_attribute("shape_thickness", model)
+        self.assertEqual(vals.shape, (W, 1, 2))
+        vals_np = vals.numpy()
+
+        expected = [thicknesses[0], thicknesses[2]]  # base and link2 (link1 excluded)
+        for w in range(W):
+            for s, expected_thickness in enumerate(expected):
+                self.assertAlmostEqual(
+                    float(vals_np[w, 0, s]),
+                    expected_thickness,
+                    places=6,
+                    msg=f"world={w}, shape={s}",
+                )
+
     def test_selection_mask(self):
         # load articulation
         ant = newton.ModelBuilder()
@@ -156,16 +223,16 @@ class TestSelection(unittest.TestCase):
             ignore_names=["floor", "ground"],
         )
 
-        num_worlds = 4
+        world_count = 4
         num_per_world = 3
-        num_artis = num_worlds * num_per_world
+        num_artis = world_count * num_per_world
 
         # scene with multiple ants per world
         world = newton.ModelBuilder()
         for i in range(num_per_world):
             world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
         scene = newton.ModelBuilder()
-        scene.replicate(world, num_worlds=num_worlds)
+        scene.replicate(world, world_count=world_count)
         model = scene.finalize()
 
         view = ArticulationView(model, "ant")
@@ -293,7 +360,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         W = 4  # num worlds
         scene = newton.ModelBuilder(gravity=0.0)
-        scene.replicate(individual_builder, num_worlds=W)
+        scene.replicate(individual_builder, world_count=W)
         model = scene.finalize()
 
         view = ArticulationView(model, "two_prismatic_links")
@@ -318,7 +385,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         W = 2  # num worlds
         scene = newton.ModelBuilder(gravity=0.0)
-        scene.replicate(individual_builder, num_worlds=W)
+        scene.replicate(individual_builder, world_count=W)
         model = scene.finalize()
 
         view = ArticulationView(model, "two_prismatic_links")
@@ -415,7 +482,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
         # Replicate to multiple worlds
         W = 2  # num worlds
         scene = newton.ModelBuilder(gravity=0.0)
-        scene.replicate(multi_robot_world, num_worlds=W)
+        scene.replicate(multi_robot_world, world_count=W)
         model = scene.finalize()
 
         # Select all articulations

@@ -96,6 +96,7 @@ uniform mat4 light_space_matrix;
 
 out vec3 Normal;
 out vec3 FragPos;
+out vec3 LocalPos;
 out vec2 TexCoord;
 out vec3 ObjectColor;
 out vec4 FragPosLightSpace;
@@ -108,6 +109,7 @@ void main()
     vec4 worldPos = transform * vec4(aPos, 1.0);
     gl_Position = projection * view * worldPos;
     FragPos = vec3(worldPos);
+    LocalPos = aPos;
 
     mat3 rotation = mat3(transform);
     Normal = mat3(transpose(inverse(rotation))) * aNormal;
@@ -124,6 +126,7 @@ out vec4 FragColor;
 
 in vec3 Normal;
 in vec3 FragPos;
+in vec3 LocalPos;
 in vec2 TexCoord;
 in vec3 ObjectColor; // used as albedo
 in vec4 FragPosLightSpace;
@@ -287,10 +290,10 @@ void main()
         albedo *= pow(tex_color, vec3(2.2));
     }
 
-    // Optional checker_enable pattern based on surface UVs
+    // Optional checker pattern in object-space so it follows instance transforms
     if (checker_enable > 0.0)
     {
-        vec2 uv = FragPos.xy * checker_scale;
+        vec2 uv = LocalPos.xy * checker_scale;
         float cb = checker(uv);
         vec3 albedo2 = albedo*0.7;
         // pick between the two colors
@@ -494,7 +497,7 @@ class ShaderShape(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -575,7 +578,7 @@ class ShaderSky(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -621,7 +624,7 @@ class ShadowShader(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -645,7 +648,7 @@ class FrameShader(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(
@@ -667,7 +670,7 @@ class ShaderLine(ShaderGL):
 
     def __init__(self, gl):
         super().__init__()
-        from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: PLC0415
+        from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
         self.shader_program = ShaderProgram(

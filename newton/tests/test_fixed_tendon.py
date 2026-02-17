@@ -74,7 +74,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
         individual_builder = newton.ModelBuilder(gravity=0.0)
         SolverMuJoCo.register_custom_attributes(individual_builder)
-        individual_builder.add_mjcf(mjcf)
+        # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
+        individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
         builder = newton.ModelBuilder(gravity=0.0)
         for _i in range(0, 2):
             builder.add_world(individual_builder)
@@ -82,7 +83,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.collide(state_in)
+        contacts = model.contacts()
+        model.collide(state_in, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 
@@ -202,7 +204,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
 
         individual_builder = newton.ModelBuilder(gravity=0.0)
         SolverMuJoCo.register_custom_attributes(individual_builder)
-        individual_builder.add_mjcf(mjcf)
+        # Use geometry-based inertia since MJCF-defined values are unrealistic (20x too high)
+        individual_builder.add_mjcf(mjcf, ignore_inertial_definitions=True)
         builder = newton.ModelBuilder(gravity=0.0)
         for _i in range(0, 2):
             builder.add_world(individual_builder)
@@ -210,7 +213,8 @@ class TestMujocoFixedTendon(unittest.TestCase):
         state_in = model.state()
         state_out = model.state()
         control = model.control()
-        contacts = model.collide(state_in)
+        contacts = model.contacts()
+        model.collide(state_in, contacts)
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
 

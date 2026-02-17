@@ -89,7 +89,7 @@ def random_forces_kernel(
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=16):
+    def __init__(self, viewer, world_count=16):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -97,7 +97,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         # increase contact stiffness
         contact_ke = 1.0e4
@@ -122,7 +122,7 @@ class Example:
         scene.default_shape_cfg.ke = contact_ke
 
         scene.add_ground_plane()
-        scene.replicate(world, num_worlds=self.num_worlds)
+        scene.replicate(world, world_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()
@@ -134,6 +134,8 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        # Contacts only needed for non-MuJoCo solvers
+        self.contacts = self.model.contacts() if not isinstance(self.solver, newton.solvers.SolverMuJoCo) else None
 
         self.next_reset = 0.0
         self.step_count = 0
@@ -166,10 +168,10 @@ class Example:
             self.default_hum_dof_velocities = wp.to_torch(self.hums.get_dof_velocities(self.model)).clone()
 
             # create disjoint subsets to alternate resets
-            all_indices = torch.arange(num_worlds, dtype=torch.int32)
-            self.mask_0 = torch.zeros(num_worlds, dtype=bool)
+            all_indices = torch.arange(world_count, dtype=torch.int32)
+            self.mask_0 = torch.zeros(world_count, dtype=bool)
             self.mask_0[all_indices[::2]] = True
-            self.mask_1 = torch.zeros(num_worlds, dtype=bool)
+            self.mask_1 = torch.zeros(world_count, dtype=bool)
             self.mask_1[all_indices[1::2]] = True
         else:
             # default ant root states
@@ -194,9 +196,9 @@ class Example:
             self.default_hum_dof_velocities = wp.clone(self.hums.get_dof_velocities(self.model))
 
             # create disjoint subsets to alternate resets
-            self.mask_0 = wp.empty(num_worlds, dtype=bool)
-            self.mask_1 = wp.empty(num_worlds, dtype=bool)
-            wp.launch(init_masks, dim=num_worlds, inputs=[self.mask_0, self.mask_1])
+            self.mask_0 = wp.empty(world_count, dtype=bool)
+            self.mask_1 = wp.empty(world_count, dtype=bool)
+            wp.launch(init_masks, dim=world_count, inputs=[self.mask_0, self.mask_1])
 
         self.viewer.set_model(self.model)
 
@@ -218,12 +220,10 @@ class Example:
             self.state_0.clear_forces()
 
             # explicit collisions needed without MuJoCo solver
-            if not isinstance(self.solver, newton.solvers.SolverMuJoCo):
-                contacts = self.model.collide(self.state_0)
-            else:
-                contacts = None
+            if self.contacts is not None:
+                self.model.collide(self.state_0, self.contacts)
 
-            self.solver.step(self.state_0, self.state_1, self.control, contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -238,7 +238,7 @@ class Example:
         if USE_TORCH:
             import torch  # noqa: PLC0415
 
-            dof_forces = 5.0 - 10.0 * torch.rand((self.num_worlds, self.ants.joint_dof_count))
+            dof_forces = 5.0 - 10.0 * torch.rand((self.world_count, self.ants.joint_dof_count))
         else:
             dof_forces = self.ants.get_dof_forces(self.control)
             wp.launch(
@@ -266,8 +266,8 @@ class Example:
             import torch  # noqa: PLC0415
 
             # randomize ant velocities
-            self.default_ant_root_velocities[..., 2] = 3.0 * torch.rand(self.num_worlds, 1)
-            self.default_ant_root_velocities[..., 5] = 4.0 * torch.pi * (0.5 - torch.rand(self.num_worlds, 1))
+            self.default_ant_root_velocities[..., 2] = 3.0 * torch.rand(self.world_count, 1)
+            self.default_ant_root_velocities[..., 5] = 4.0 * torch.pi * (0.5 - torch.rand(self.world_count, 1))
 
             # humanoids move up at the same speed
             self.default_hum_root_velocities[..., 2] = self.default_ant_root_velocities[..., 2]
@@ -276,7 +276,7 @@ class Example:
         else:
             wp.launch(
                 reset_kernel,
-                dim=self.num_worlds,
+                dim=self.world_count,
                 inputs=[self.default_ant_root_velocities, self.default_hum_root_velocities, mask, self.step_count],
             )
 
@@ -310,7 +310,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=16, help="Total number of simulated worlds.")
+    parser.add_argument("--world-count", type=int, default=16, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
@@ -319,6 +319,6 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, num_worlds=args.num_worlds)
+    example = Example(viewer, world_count=args.world_count)
 
     newton.examples.run(example, args)

@@ -280,7 +280,7 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.collide(self.state_0)
+        self.contacts = self.model.contacts()
 
         # Set model in viewer
         self.viewer.set_model(self.model)
@@ -325,7 +325,7 @@ class Example:
 
     def simulate(self):
         """Simulate performs one frame's worth of updates."""
-        self.contacts = self.model.collide(self.state_0)
+        self.model.collide(self.state_0, self.contacts)
 
         need_state_copy = self.use_cuda_graph and self.sim_substeps % 2 == 1
 
@@ -455,7 +455,10 @@ if __name__ == "__main__":
 
     if args.physx:
         if "physx" not in robot_config.policy_path or "physx_joint_names" not in config:
-            raise ValueError(f"PhysX policy/joint mapping not available for robot '{args.robot}'.")
+            physx_robots = [name for name, cfg in ROBOT_CONFIGS.items() if "physx" in cfg.policy_path]
+            print(f"[ERROR] PhysX policy not available for robot '{args.robot}'.")
+            print(f"[INFO] Robots with PhysX support: {physx_robots}")
+            exit(1)
         policy_path = f"{asset_directory}/{robot_config.policy_path['physx']}"
         mjc_to_physx, physx_to_mjc = find_physx_mjwarp_mapping(config["mjw_joint_names"], config["physx_joint_names"])
     else:
