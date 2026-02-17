@@ -2699,6 +2699,11 @@ class ModelBuilder:
             To infer mass from shape density, pass ``mass=None``.
 
         """
+        # Explicit zero mass indicates a kinematic free body, so lock inertia to
+        # prevent subsequent shape additions from mutating inertial properties.
+        if mass == 0.0:
+            lock_inertia = True
+
         # Create the link
         body_id = self.add_link(
             xform=xform,
