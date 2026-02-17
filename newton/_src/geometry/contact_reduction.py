@@ -63,7 +63,6 @@ See Also:
     :class:`ContactReductionFunctions` for the main API and detailed documentation.
 """
 
-import numpy as np
 import warp as wp
 
 
@@ -286,18 +285,15 @@ NUM_NORMAL_BINS = 20  # Icosahedron faces
 NUM_VOXEL_DEPTH_SLOTS = 100  # Voxel-based depth slots for spatial coverage
 
 
-def compute_num_reduction_slots(num_betas: int) -> int:
-    """Compute the number of reduction slots for a given number of beta values.
-
-    Args:
-        num_betas: Number of beta values
+def compute_num_reduction_slots() -> int:
+    """Compute the number of reduction slots.
 
     Returns:
         Total number of reduction slots:
-        - 20 normal bins * (6 spatial directions * num_betas + 1 max-depth) (per-bin slots)
+        - 20 normal bins * (6 spatial directions + 1 max-depth) (per-bin slots)
         - + 100 voxel-based depth slots (deepest contact per voxel region)
     """
-    return NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS * num_betas + 1) + NUM_VOXEL_DEPTH_SLOTS
+    return NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS + 1) + NUM_VOXEL_DEPTH_SLOTS
 
 
 @wp.func
@@ -338,20 +334,6 @@ def compute_voxel_index(
     vz = wp.clamp(int(rel[2] * float(nz)), 0, nz - 1)
 
     return vx + vy * nx + vz * nx * ny
-
-
-def create_betas_array(betas: tuple = (10.0,), device=None) -> wp.array:
-    """Create a warp array with the beta values for contact reduction.
-
-    Args:
-        betas: Tuple of beta values (default: (10.0,))
-        device: Device to create the array on (default: current device)
-
-    Returns:
-        wp.array of shape (num_betas,) with dtype float32
-    """
-    betas_np = np.array(betas, dtype=np.float32)
-    return wp.array(betas_np, dtype=wp.float32, device=device)
 
 
 def create_shared_memory_pointer_func_4_byte_aligned(
@@ -528,42 +510,42 @@ class ContactReductionFunctions:
         hashtable-based variant used for mesh-mesh (SDF) collisions.
     """
 
-    # Fixed beta threshold - small positive value to avoid flickering from numerical noise
     BETA_THRESHOLD = 0.0001
+    """Penetration depth threshold for spatial extreme slot competition.
+
+    Only contacts with depth below this value (i.e., penetrating or near-touching)
+    compete for spatial extreme slots that build the support polygon boundary.
+    A small positive value (rather than zero) accounts for numerical tolerances,
+    preventing contact flickering when stacked objects have near-zero depths.
+    """
 
     def __init__(self):
-        self.betas = (self.BETA_THRESHOLD,)
-        self.num_betas = 1
-        self.num_reduction_slots = compute_num_reduction_slots(self.num_betas)
+        self.reduction_slot_count = compute_num_reduction_slots()
 
         # Shared memory pointers
-        self.get_smem_slots_plus_1 = create_shared_memory_pointer_func_4_byte_aligned(self.num_reduction_slots + 1)
-        self.get_smem_slots_contacts = create_shared_memory_pointer_func_4_byte_aligned(self.num_reduction_slots * 9)
-        self.get_smem_reduction = create_shared_memory_pointer_func_8_byte_aligned(self.num_reduction_slots)
+        self.get_smem_slots_plus_1 = create_shared_memory_pointer_func_4_byte_aligned(self.reduction_slot_count + 1)
+        self.get_smem_slots_contacts = create_shared_memory_pointer_func_4_byte_aligned(self.reduction_slot_count * 9)
+        self.get_smem_reduction = create_shared_memory_pointer_func_8_byte_aligned(self.reduction_slot_count)
 
         # Warp functions
         self.store_reduced_contact = self._create_store_reduced_contact()
         self.filter_unique_contacts = self._create_filter_unique_contacts()
 
-    def create_betas_array(self, device=None) -> wp.array:
-        """Create a warp array with the beta value."""
-        return create_betas_array(self.betas, device)
-
     def _create_store_reduced_contact(self):
         """Create the store_reduced_contact warp function.
 
         The returned function competes contacts for reduction slots using atomic max.
-        Each thread with a contact computes scores for all (direction, beta) combinations
+        Each thread with a contact computes scores for all spatial directions
         and atomically competes for the corresponding slots. Additionally, contacts
         compete for voxel-based depth slots.
 
         Winners write their contact to the shared buffer.
         """
-        NUM_REDUCTION_SLOTS = self.num_reduction_slots
-        num_betas = self.num_betas
+        NUM_REDUCTION_SLOTS = self.reduction_slot_count
+        BETA = self.BETA_THRESHOLD
         get_smem = self.get_smem_reduction
-        # Number of per-bin slots (spatial extremes + max-depth per bin)
-        num_per_bin_slots = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS * num_betas + 1)
+        # Number of per-bin slots (6 spatial directions + 1 max-depth per bin)
+        num_per_bin_slots = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS + 1)
 
         @wp.func
         def store_reduced_contact(
@@ -572,7 +554,6 @@ class ContactReductionFunctions:
             c: ContactStruct,
             buffer: wp.array(dtype=ContactStruct),
             active_ids: wp.array(dtype=int),
-            betas_arr: wp.array(dtype=wp.float32),
             empty_marker: float,
             voxel_index: int,
         ):
@@ -584,12 +565,11 @@ class ContactReductionFunctions:
                 c: Contact data (position, normal, depth, mode)
                 buffer: Shared memory buffer for winning contacts
                 active_ids: Tracks which slots contain valid contacts
-                betas_arr: Array of depth thresholds (contact participates if depth < beta)
                 empty_marker: Sentinel value indicating empty slots
                 voxel_index: Voxel index for the contact position (0 to NUM_VOXEL_DEPTH_SLOTS-1)
             """
-            # Slot layout per bin: 6 spatial directions * num_betas + 1 max-depth
-            slots_per_bin = wp.static(NUM_SPATIAL_DIRECTIONS * num_betas + 1)
+            # Slot layout per bin: 6 spatial directions + 1 max-depth
+            slots_per_bin = wp.static(NUM_SPATIAL_DIRECTIONS + 1)
 
             winner_slots = wp.array(
                 ptr=wp.static(get_smem)(),
@@ -610,15 +590,14 @@ class ContactReductionFunctions:
 
             if active:
                 base_key = bin_id * slots_per_bin
-                # Compete for spatial direction + beta slots
+                # Compete for spatial direction slots (contacts with depth < beta)
+                use_beta = c.depth < wp.static(BETA)
                 for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                    dir_2d = get_spatial_direction_2d(dir_i)
-                    spatial_dp = wp.dot(pos_2d, dir_2d)
-                    for beta_i in range(num_betas):
-                        if c.depth < betas_arr[beta_i]:
-                            score = spatial_dp
-                            key = base_key + dir_i * wp.static(num_betas) + beta_i
-                            wp.atomic_max(winner_slots, key, pack_value_thread_id(score, thread_id))
+                    if use_beta:
+                        dir_2d = get_spatial_direction_2d(dir_i)
+                        score = wp.dot(pos_2d, dir_2d)
+                        key = base_key + dir_i
+                        wp.atomic_max(winner_slots, key, pack_value_thread_id(score, thread_id))
 
                 # Compete for per-bin max-depth slot (last slot in bin)
                 max_depth_key = base_key + slots_per_bin - 1
@@ -635,23 +614,21 @@ class ContactReductionFunctions:
 
             if active:
                 base_key = bin_id * slots_per_bin
-                # Check spatial direction + beta slots
+                # Check spatial direction slots
                 for dir_i in range(wp.static(NUM_SPATIAL_DIRECTIONS)):
-                    dir_2d = get_spatial_direction_2d(dir_i)
-                    spatial_dp = wp.dot(pos_2d, dir_2d)
-                    for beta_i in range(num_betas):
-                        if c.depth < betas_arr[beta_i]:
-                            key = base_key + dir_i * wp.static(num_betas) + beta_i
-                            if unpack_thread_id(winner_slots[key]) == thread_id:
-                                p = buffer[key].projection
-                                if p == empty_marker:
-                                    slot_id = wp.atomic_add(active_ids, NUM_REDUCTION_SLOTS, 1)
-                                    if slot_id < NUM_REDUCTION_SLOTS:
-                                        active_ids[slot_id] = key
-                                score = spatial_dp
-                                if score > p:
-                                    c.projection = score
-                                    buffer[key] = c
+                    if use_beta:
+                        key = base_key + dir_i
+                        if unpack_thread_id(winner_slots[key]) == thread_id:
+                            p = buffer[key].projection
+                            if p == empty_marker:
+                                slot_id = wp.atomic_add(active_ids, NUM_REDUCTION_SLOTS, 1)
+                                if slot_id < NUM_REDUCTION_SLOTS:
+                                    active_ids[slot_id] = key
+                            dir_2d = get_spatial_direction_2d(dir_i)
+                            score = wp.dot(pos_2d, dir_2d)
+                            if score > p:
+                                c.projection = score
+                                buffer[key] = c
 
                 # Check per-bin max-depth slot
                 max_depth_key = base_key + slots_per_bin - 1
@@ -691,11 +668,10 @@ class ContactReductionFunctions:
         but originate from the same geometric feature (e.g., same triangle).
         Only the first occurrence per feature is kept.
         """
-        NUM_REDUCTION_SLOTS = self.num_reduction_slots
-        num_betas = self.num_betas
+        NUM_REDUCTION_SLOTS = self.reduction_slot_count
         get_smem = self.get_smem_reduction
-        # Number of per-bin slots (spatial extremes + max-depth per bin)
-        num_per_bin_slots = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS * num_betas + 1)
+        # Number of per-bin slots (6 spatial directions + 1 max-depth per bin)
+        num_per_bin_slots = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS + 1)
 
         @wp.func
         def filter_unique_contacts(
@@ -712,8 +688,8 @@ class ContactReductionFunctions:
                 active_ids: Output array of unique contact slot indices
                 empty_marker: Sentinel value indicating empty slots
             """
-            # Slot layout per bin: 6 spatial directions * num_betas + 1 max-depth
-            slots_per_bin = wp.static(NUM_SPATIAL_DIRECTIONS * num_betas + 1)
+            # Slot layout per bin: 6 spatial directions + 1 max-depth
+            slots_per_bin = wp.static(NUM_SPATIAL_DIRECTIONS + 1)
 
             keep_flags = wp.array(
                 ptr=wp.static(get_smem)(),

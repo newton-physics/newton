@@ -154,7 +154,7 @@ class Example:
         self.soft_contact_kd = 2e-3
 
         self.robot_friction = 1.0
-        self.table_friction = 0.5
+        self.table_friction = 1.0
         self.self_contact_friction = 0.25
 
         #   elasticity
@@ -228,15 +228,20 @@ class Example:
 
         shape_ke = self.model.shape_material_ke.numpy()
         shape_kd = self.model.shape_material_kd.numpy()
+        shape_mu = self.model.shape_material_mu.numpy()
 
         shape_ke[...] = self.soft_contact_ke
         shape_kd[...] = self.soft_contact_kd
+        shape_mu[...] = 1.0
 
         self.model.shape_material_ke = wp.array(
             shape_ke, dtype=self.model.shape_material_ke.dtype, device=self.model.shape_material_ke.device
         )
         self.model.shape_material_kd = wp.array(
             shape_kd, dtype=self.model.shape_material_kd.dtype, device=self.model.shape_material_kd.device
+        )
+        self.model.shape_material_mu = wp.array(
+            shape_mu, dtype=self.model.shape_material_mu.dtype, device=self.model.shape_material_mu.device
         )
 
         self.state_0 = self.model.state()
@@ -245,9 +250,11 @@ class Example:
 
         self.control = self.model.control()
 
-        # Create collision pipeline (default: unified)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        # Create collision pipeline (default)
+        self.collision_pipeline = newton.examples.create_collision_pipeline(
+            self.model, args, soft_contact_margin=self.cloth_body_contact_margin
+        )
+        self.contacts = self.collision_pipeline.contacts()
 
         self.sim_time = 0.0
 
@@ -542,13 +549,7 @@ class Example:
                 self.model.gravity.assign(self.gravity_earth)
 
             # cloth sim
-            if self.collision_pipeline is not None:
-                self.collision_pipeline.soft_contact_margin = self.cloth_body_contact_margin
-            self.contacts = self.model.collide(
-                self.state_0,
-                collision_pipeline=self.collision_pipeline,
-                soft_contact_margin=self.cloth_body_contact_margin,
-            )
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
             if self.add_cloth:
                 self.cloth_solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -566,12 +567,12 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        p_lower = wp.vec3(-0.34, -0.9, 0.0)
-        p_upper = wp.vec3(0.34, 0.0, 0.51)
+        p_lower = wp.vec3(-0.36, -0.95, -0.05)
+        p_upper = wp.vec3(0.36, 0.05, 0.56)
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
-            lambda q, qd: newton.utils.vec_inside_limits(q, p_lower, p_upper),
+            lambda q, qd: newton.math.vec_inside_limits(q, p_lower, p_upper),
         )
         newton.examples.test_particle_state(
             self.state_0,

@@ -19,17 +19,61 @@ from .types import Axis, AxisType
 
 
 @wp.func
+def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float = 1.0e-8) -> wp.quat:
+    """Robustly compute the quaternion that rotates ``from_vec`` to ``to_vec``.
+
+    This is a safer version of :func:`warp.quat_between_vectors` that handles the
+    anti-parallel (180-degree) singularity by selecting a deterministic axis
+    orthogonal to ``from_vec``.
+
+    Args:
+        from_vec: Source vector (assumed normalized).
+        to_vec: Target vector (assumed normalized).
+        eps: Tolerance for parallel/anti-parallel checks.
+
+    Returns:
+        wp.quat: Rotation quaternion q such that q * from_vec = to_vec.
+    """
+    d = wp.dot(from_vec, to_vec)
+
+    if d >= 1.0 - eps:
+        return wp.quat_identity()
+
+    if d <= -1.0 + eps:
+        # Deterministic axis orthogonal to from_vec.
+        # Prefer cross with X, fallback to Y if nearly parallel.
+        helper = wp.vec3(1.0, 0.0, 0.0)
+        if wp.abs(from_vec[0]) >= 0.9:
+            helper = wp.vec3(0.0, 1.0, 0.0)
+
+        axis = wp.cross(from_vec, helper)
+        axis_len = wp.length(axis)
+        if axis_len <= eps:
+            axis = wp.cross(from_vec, wp.vec3(0.0, 0.0, 1.0))
+            axis_len = wp.length(axis)
+
+        # Final fallback: if axis is still degenerate, pick an arbitrary axis.
+        if axis_len <= eps:
+            return wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi)
+
+        axis = axis / axis_len
+        return wp.quat_from_axis_angle(axis, wp.pi)
+
+    return wp.quat_between_vectors(from_vec, to_vec)
+
+
+@wp.func
 def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3):
     """
     Return the velocity of a point relative to the frame that owns the
     provided spatial velocity.
 
     Args:
-        qd (spatial_vector): The spatial velocity of the frame.
-        r (vec3): The position of the point relative to the frame.
+        qd: The spatial velocity of the frame.
+        r: The position of the point relative to the frame.
 
     Returns:
-        vec3: The velocity of the point.
+        The velocity of the point.
     """
     return wp.spatial_top(qd) + wp.cross(wp.spatial_bottom(qd), r)
 
@@ -66,7 +110,7 @@ def quat_velocity(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
         dt: Time step [s].
 
     Returns:
-        wp.vec3: Angular velocity omega in world frame [rad/s].
+        Angular velocity omega in world frame [rad/s].
     """
     # Normalize inputs
     q1 = wp.normalize(q_now)
@@ -97,10 +141,10 @@ def quat_decompose(q: wp.quat):
        v_{\\text{rotated}} = R_z(\\text{angle}_z) R_y(\\text{angle}_y) R_x(\\text{angle}_x) v
 
     Args:
-        q (wp.quat): The input quaternion to decompose.
+        q: The input quaternion to decompose.
 
     Returns:
-        wp.vec3: The Euler angles :math:`(\\text{angle}_x, \\text{angle}_y, \\text{angle}_z)` in radians.
+        The Euler angles :math:`(\\text{angle}_x, \\text{angle}_y, \\text{angle}_z)` in radians.
     """
 
     R = wp.matrix_from_cols(
@@ -136,10 +180,10 @@ def quat_to_rpy(q: wp.quat):
     quaternion components are stored in `(x, y, z, w)` order.
 
     Args:
-        q (wp.quat): The input quaternion to convert.
+        q: The input quaternion to convert.
 
     Returns:
-        wp.vec3: The Euler angles `(roll, pitch, yaw)` in radians.
+        The Euler angles `(roll, pitch, yaw)` in radians.
     """
 
     x = q[0]
@@ -171,13 +215,13 @@ def quat_to_euler(q: wp.quat, i: int, j: int, k: int) -> wp.vec3:
     Reference: https://doi.org/10.1371/journal.pone.0276302
 
     Args:
-        q (quat): The quaternion to convert
-        i (int): The index of the first axis
-        j (int): The index of the second axis
-        k (int): The index of the third axis
+        q: The quaternion to convert.
+        i: The index of the first axis.
+        j: The index of the second axis.
+        k: The index of the third axis.
 
     Returns:
-        vec3: The Euler angles (in radians)
+        The Euler angles (in radians).
     """
     # i, j, k are actually assumed to follow 1-based indexing but
     # we want to be compatible with quat_from_euler
@@ -225,13 +269,13 @@ def quat_from_euler(e: wp.vec3, i: int, j: int, k: int) -> wp.quat:
     ``j ≠ k``.  For example, the XYZ sequence corresponds to ``(0, 1, 2)``.
 
     Args:
-        e (vec3): The Euler angles (in radians)
-        i (int): The index of the first axis
-        j (int): The index of the second axis
-        k (int): The index of the third axis
+        e: The Euler angles (in radians).
+        i: The index of the first axis.
+        j: The index of the second axis.
+        k: The index of the third axis.
 
     Returns:
-        quat: The quaternion
+        The quaternion.
     """
     # Half angles
     half_e = e / 2.0
@@ -273,12 +317,12 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector):
     ``[p]_x`` is the skew-symmetric matrix of *p*.
 
     Args:
-        t (transform): The transform from the **source** frame to the
+        t: The transform from the **source** frame to the
             **destination** frame.
-        x (spatial_vector): The spatial twist expressed in the source frame.
+        x: The spatial twist expressed in the source frame.
 
     Returns:
-        spatial_vector: The twist expressed in the destination frame.
+        The twist expressed in the destination frame.
     """
 
     q = wp.transform_get_rotation(t)
@@ -309,12 +353,12 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
        x' = \\begin{bmatrix} R & 0 \\\\ [p]_{\\times} R & R \\end{bmatrix} x
 
     Args:
-        t (transform): The transform from the **source** frame to the
+        t: The transform from the **source** frame to the
             **destination** frame.
-        x (spatial_vector): The spatial wrench expressed in the source frame.
+        x: The spatial wrench expressed in the source frame.
 
     Returns:
-        spatial_vector: The wrench expressed in the destination frame.
+        The wrench expressed in the destination frame.
     """
 
     q = wp.transform_get_rotation(t)
@@ -340,10 +384,10 @@ def quat_between_axes(*axes: AxisType) -> wp.quat:
     the rotation from a to c by composing the rotation from a to b and b to c.
 
     Args:
-        axes (AxisType): A sequence of axes, e.g., ('x', 'y', 'z').
+        axes: A sequence of axes, e.g., ('x', 'y', 'z').
 
     Returns:
-        wp.quat: The total rotation quaternion.
+        The total rotation quaternion.
     """
     q = wp.quat_identity()
     for i in range(len(axes) - 1):
@@ -360,6 +404,7 @@ def quat_between_axes(*axes: AxisType) -> wp.quat:
 
 __all__ = [
     "quat_between_axes",
+    "quat_between_vectors_robust",
     "quat_decompose",
     "quat_from_euler",
     "quat_to_euler",

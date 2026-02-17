@@ -120,12 +120,12 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline from command-line args (default: CollisionPipelineUnified with EXPLICIT)
+        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
         self.collision_pipeline = newton.examples.create_collision_pipeline(
             self.model,
             args,
         )
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -146,7 +146,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states
@@ -167,7 +167,7 @@ class Example:
             self.model,
             self.state_0,
             "sphere at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, sphere_q, atol=2e-4),
+            lambda q, qd: newton.math.vec_allclose(q, sphere_q, atol=2e-4),
             [0],
         )
         # Ellipsoid with a=b=0.5, c=0.25 is stable (flat disk), rests at z=0.25
@@ -177,7 +177,7 @@ class Example:
             self.model,
             self.state_0,
             "ellipsoid at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, ellipsoid_q, atol=2e-2),
+            lambda q, qd: newton.math.vec_allclose(q, ellipsoid_q, atol=2e-2),
             [1],
         )
         self.capsule_pos[2] = 1.0
@@ -186,7 +186,7 @@ class Example:
             self.model,
             self.state_0,
             "capsule at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, capsule_q, atol=2e-4),
+            lambda q, qd: newton.math.vec_allclose(q, capsule_q, atol=2e-4),
             [2],
         )
         # Custom test for cylinder: allow 0.01 error for X and Y, strict for Z and rotation
@@ -211,7 +211,7 @@ class Example:
             self.model,
             self.state_0,
             "box at rest pose",
-            lambda q, qd: newton.utils.vec_allclose(q, box_q, atol=0.1),
+            lambda q, qd: newton.math.vec_allclose(q, box_q, atol=0.1),
             [4],
         )
         # we only test that the bunny didn't fall through the ground and didn't slide too far

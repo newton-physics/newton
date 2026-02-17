@@ -1090,22 +1090,78 @@ def repeat_array_kernel(
 
 @wp.kernel
 def update_solver_options_kernel(
+    # WORLD frequency inputs (None if overridden/unavailable)
     newton_impratio: wp.array(dtype=float),
-    # outputs
+    newton_tolerance: wp.array(dtype=float),
+    newton_ls_tolerance: wp.array(dtype=float),
+    newton_ccd_tolerance: wp.array(dtype=float),
+    newton_density: wp.array(dtype=float),
+    newton_viscosity: wp.array(dtype=float),
+    newton_wind: wp.array(dtype=wp.vec3),
+    newton_magnetic: wp.array(dtype=wp.vec3),
+    # outputs - MuJoCo per-world arrays
     opt_impratio_invsqrt: wp.array(dtype=float),
+    opt_tolerance: wp.array(dtype=float),
+    opt_ls_tolerance: wp.array(dtype=float),
+    opt_ccd_tolerance: wp.array(dtype=float),
+    opt_density: wp.array(dtype=float),
+    opt_viscosity: wp.array(dtype=float),
+    opt_wind: wp.array(dtype=wp.vec3),
+    opt_magnetic: wp.array(dtype=wp.vec3),
 ):
     """Update per-world solver options from Newton model.
 
     Args:
         newton_impratio: Per-world impratio values from Newton model (None if overridden)
-        opt_impratio_invsqrt: MuJoCo Warp opt.impratio_invsqrt array to update (shape: nworld)
+        newton_tolerance: Per-world tolerance values (None if overridden)
+        newton_ls_tolerance: Per-world line search tolerance values (None if overridden)
+        newton_ccd_tolerance: Per-world CCD tolerance values (None if overridden)
+        newton_density: Per-world medium density values (None if overridden)
+        newton_viscosity: Per-world medium viscosity values (None if overridden)
+        newton_wind: Per-world wind velocity vectors (None if overridden)
+        newton_magnetic: Per-world magnetic flux vectors (None if overridden)
+        opt_impratio_invsqrt: MuJoCo Warp opt.impratio_invsqrt array (shape: nworld)
+        opt_tolerance: MuJoCo Warp opt.tolerance array (shape: nworld)
+        opt_ls_tolerance: MuJoCo Warp opt.ls_tolerance array (shape: nworld)
+        opt_ccd_tolerance: MuJoCo Warp opt.ccd_tolerance array (shape: nworld)
+        opt_density: MuJoCo Warp opt.density array (shape: nworld)
+        opt_viscosity: MuJoCo Warp opt.viscosity array (shape: nworld)
+        opt_wind: MuJoCo Warp opt.wind array (shape: nworld)
+        opt_magnetic: MuJoCo Warp opt.magnetic array (shape: nworld)
     """
     worldid = wp.tid()
 
     # Only update if Newton array exists (None means overridden or not available)
     if newton_impratio:
         # MuJoCo stores impratio as inverse square root
-        opt_impratio_invsqrt[worldid] = 1.0 / wp.sqrt(newton_impratio[worldid])
+        # Guard against zero/negative values to avoid NaN/Inf
+        impratio_val = newton_impratio[worldid]
+        if impratio_val > 0.0:
+            opt_impratio_invsqrt[worldid] = 1.0 / wp.sqrt(impratio_val)
+        # else: skip update, keep existing MuJoCo default value
+
+    if newton_tolerance:
+        # MuJoCo Warp clamps tolerance to 1e-6 for float32 precision
+        # See mujoco_warp/_src/io.py: opt.tolerance = max(opt.tolerance, 1e-6)
+        opt_tolerance[worldid] = wp.max(newton_tolerance[worldid], 1.0e-6)
+
+    if newton_ls_tolerance:
+        opt_ls_tolerance[worldid] = newton_ls_tolerance[worldid]
+
+    if newton_ccd_tolerance:
+        opt_ccd_tolerance[worldid] = newton_ccd_tolerance[worldid]
+
+    if newton_density:
+        opt_density[worldid] = newton_density[worldid]
+
+    if newton_viscosity:
+        opt_viscosity[worldid] = newton_viscosity[worldid]
+
+    if newton_wind:
+        opt_wind[worldid] = newton_wind[worldid]
+
+    if newton_magnetic:
+        opt_magnetic[worldid] = newton_magnetic[worldid]
 
 
 @wp.kernel
@@ -1454,8 +1510,8 @@ def update_geom_properties_kernel(
     geom_dataid: wp.array(dtype=int),
     mesh_pos: wp.array(dtype=wp.vec3),
     mesh_quat: wp.array(dtype=wp.quat),
-    shape_torsional_friction: wp.array(dtype=float),
-    shape_rolling_friction: wp.array(dtype=float),
+    shape_mu_torsional: wp.array(dtype=float),
+    shape_mu_rolling: wp.array(dtype=float),
     shape_geom_solimp: wp.array(dtype=vec5),
     shape_geom_solmix: wp.array(dtype=float),
     shape_geom_gap: wp.array(dtype=float),
@@ -1486,8 +1542,8 @@ def update_geom_properties_kernel(
 
     # update friction (slide, torsion, roll)
     mu = shape_mu[shape_idx]
-    torsional = shape_torsional_friction[shape_idx]
-    rolling = shape_rolling_friction[shape_idx]
+    torsional = shape_mu_torsional[shape_idx]
+    rolling = shape_mu_rolling[shape_idx]
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # update geom_solref (timeconst, dampratio) using stiffness and damping
@@ -1712,6 +1768,42 @@ def update_eq_data_and_active_kernel(
 
     eq_data_out[world, mjc_eq] = data
     eq_active_out[world, mjc_eq] = eq_constraint_enabled[newton_eq]
+
+
+@wp.kernel
+def update_mimic_eq_data_and_active_kernel(
+    mjc_eq_to_newton_mimic: wp.array2d(dtype=wp.int32),
+    # Newton mimic constraint data
+    constraint_mimic_coef0: wp.array(dtype=wp.float32),
+    constraint_mimic_coef1: wp.array(dtype=wp.float32),
+    constraint_mimic_enabled: wp.array(dtype=wp.bool),
+    # outputs
+    eq_data_out: wp.array2d(dtype=vec11),
+    eq_active_out: wp.array2d(dtype=wp.bool),
+):
+    """Update MuJoCo equality constraint data and active status from Newton mimic constraint properties.
+
+    Iterates over MuJoCo equality constraints [world, eq], looks up Newton mimic constraint,
+    and copies:
+    - eq_data: polycoef = [coef0, coef1, 0, 0, 0] (linear mimic relationship)
+    - eq_active from constraint_mimic_enabled
+    """
+    world, mjc_eq = wp.tid()
+    newton_mimic = mjc_eq_to_newton_mimic[world, mjc_eq]
+    if newton_mimic < 0:
+        return
+
+    data = eq_data_out[world, mjc_eq]
+
+    # polycoef: data[0] + data[1]*q2 - q1 = 0  =>  q1 = coef0 + coef1*q2
+    data[0] = constraint_mimic_coef0[newton_mimic]
+    data[1] = constraint_mimic_coef1[newton_mimic]
+    data[2] = 0.0
+    data[3] = 0.0
+    data[4] = 0.0
+
+    eq_data_out[world, mjc_eq] = data
+    eq_active_out[world, mjc_eq] = constraint_mimic_enabled[newton_mimic]
 
 
 @wp.func

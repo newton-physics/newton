@@ -21,6 +21,7 @@ import copy
 import ctypes
 import math
 import warnings
+from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
@@ -28,6 +29,7 @@ from typing import Any, Literal
 import numpy as np
 import warp as wp
 
+from ..core.spatial import quat_between_vectors_robust
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -44,7 +46,6 @@ from ..core.types import (
     nparray,
 )
 from ..geometry import (
-    MESH_MAXHULLVERT,
     SDF,
     GeoType,
     Mesh,
@@ -59,14 +60,17 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.mesh import MeshAdjacency
-from .graph_coloring import ColoringAlgorithm, color_rigid_bodies, color_trimesh, combine_independent_particle_coloring
+from .graph_coloring import (
+    ColoringAlgorithm,
+    color_graph,
+    color_rigid_bodies,
+    combine_independent_particle_coloring,
+    construct_particle_graph,
+)
 from .joints import (
     ActuatorMode,
     EqType,
     JointType,
-    get_joint_constraint_count,
-    get_joint_dof_count,
-    infer_actuator_mode,
 )
 from .model import Model
 
@@ -103,10 +107,11 @@ class ModelBuilder:
         state_0, state_1 = model.state(), model.state()
         control = model.control()
         solver = SolverXPBD(model)
+        contacts = model.contacts()
 
         for i in range(10):
             state_0.clear_forces()
-            contacts = model.collide(state_0)
+            model.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, dt=1.0 / 60.0)
             state_0, state_1 = state_1, state_0
 
@@ -142,6 +147,7 @@ class ModelBuilder:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
         than creating your own Model object directly, however it is possible to do so if
         desired.
+
     """
 
     @dataclass
@@ -152,7 +158,7 @@ class ModelBuilder:
 
         density: float = 1000.0
         """The density of the shape material."""
-        ke: float = 1.0e3
+        ke: float = 2.5e3
         """The contact elastic stiffness. Used by SemiImplicit, Featherstone, MuJoCo."""
         kd: float = 100.0
         """The contact damping coefficient. Used by SemiImplicit, Featherstone, MuJoCo."""
@@ -164,9 +170,9 @@ class ModelBuilder:
         """The coefficient of friction. Used by all solvers."""
         restitution: float = 0.0
         """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
-        torsional_friction: float = 0.25
+        mu_torsional: float = 0.25
         """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
-        rolling_friction: float = 0.0005
+        mu_rolling: float = 0.0005
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
         thickness: float = 1e-5
         """Outward offset from the shape's surface for collision detection.
@@ -208,23 +214,67 @@ class ModelBuilder:
             Hydroelastic collision handling only works with volumetric shapes and in particular will not work for shapes like flat meshes or cloth.
             This flag will be automatically set to False for planes and heightfields in :meth:`ModelBuilder.add_shape`.
         """
-        k_hydro: float = 1.0e10
+        kh: float = 1.0e10
         """Contact stiffness coefficient for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when is_hydroelastic is True.
 
         .. note::
             For MuJoCo, stiffness values will internally be scaled by masses.
-            Users should choose k_hydro to match their desired force-to-penetration ratio.
+            Users should choose kh to match their desired force-to-penetration ratio.
         """
 
-        def validate(self) -> None:
-            """Validate ShapeConfig parameters."""
+        def configure_sdf(
+            self,
+            *,
+            max_resolution: int | None = None,
+            target_voxel_size: float | None = None,
+            is_hydroelastic: bool = False,
+            kh: float = 1.0e10,
+        ) -> None:
+            """Enable SDF-based collision for this shape.
+
+            Sets SDF and hydroelastic options in one place. Call this when the shape
+            should use SDF mesh-mesh collision and optionally hydroelastic contacts.
+
+            Args:
+                max_resolution: Maximum dimension for sparse SDF grid (must be divisible by 8).
+                    If provided, enables SDF-based mesh-mesh collision and clears any
+                    previous target_voxel_size setting.
+                target_voxel_size: Target voxel size for sparse SDF grid. If provided, enables
+                    SDF generation and clears any previous max_resolution setting.
+                is_hydroelastic: Whether to use SDF-based hydroelastic contacts. Both shapes
+                    in a pair must have this enabled.
+                kh: Contact stiffness coefficient for hydroelastic collisions.
+
+            Raises:
+                ValueError: If both max_resolution and target_voxel_size are provided.
+            """
+            if max_resolution is not None and target_voxel_size is not None:
+                raise ValueError("configure_sdf accepts either max_resolution or target_voxel_size, not both.")
+            if max_resolution is not None:
+                self.sdf_max_resolution = max_resolution
+                self.sdf_target_voxel_size = None
+            if target_voxel_size is not None:
+                self.sdf_target_voxel_size = target_voxel_size
+                self.sdf_max_resolution = None
+            self.is_hydroelastic = is_hydroelastic
+            self.kh = kh
+
+        def validate(self, shape_type: int | None = None) -> None:
+            """Validate ShapeConfig parameters.
+
+            Args:
+                shape_type: Optional shape geometry type used for context-specific
+                    validation.
+            """
             if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
                 raise ValueError(
                     f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
                     "This is required because SDF volumes are allocated in 8x8x8 tiles."
                 )
+            hydroelastic_supported = shape_type not in (GeoType.PLANE, GeoType.HFIELD)
             if (
                 self.is_hydroelastic
+                and hydroelastic_supported
                 and self.has_shape_collision
                 and self.sdf_max_resolution is None
                 and self.sdf_target_voxel_size is None
@@ -374,7 +424,8 @@ class ModelBuilder:
         """Variable name to expose on the Model. Must be a valid Python identifier."""
 
         dtype: type
-        """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays."""
+        """Warp dtype (e.g., wp.float32, wp.int32, wp.bool, wp.vec3) that is compatible with Warp arrays,
+        or ``str`` for string attributes that remain as Python lists."""
 
         frequency: Model.AttributeFrequency | str
         """Frequency category that determines how the attribute is indexed in the Model.
@@ -397,7 +448,7 @@ class ModelBuilder:
 
         Built-in entity types (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``, ``"equality_constraint"``,
-              ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
+              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
 
         Special handling:
             - ``"world"``: Values are replaced with ``current_world`` (not offset)
@@ -439,13 +490,13 @@ class ModelBuilder:
 
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
-            # ensure dtype is a valid Warp dtype
-            try:
-                _size = wp.types.type_size_in_bytes(self.dtype)
-            except TypeError as e:
-                raise ValueError(
-                    f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype that is compatible with Warp arrays."
-                ) from e
+            # Allow str dtype for string attributes (stored as Python lists, not warp arrays)
+            if self.dtype is not str:
+                # ensure dtype is a valid Warp dtype
+                try:
+                    _size = wp.types.type_size_in_bytes(self.dtype)
+                except TypeError as e:
+                    raise ValueError(f"Invalid dtype: {self.dtype}. Must be a valid Warp dtype or str.") from e
 
             # Set dtype-specific default value if none was provided
             if self.default is None:
@@ -464,6 +515,9 @@ class ModelBuilder:
         @staticmethod
         def _default_for_dtype(dtype: object) -> Any:
             """Get default value for dtype when not specified."""
+            # string type gets empty string
+            if dtype is str:
+                return ""
             # quaternions get identity quaternion
             if wp.types.type_is_quaternion(dtype):
                 return wp.quat_identity(dtype._wp_scalar_type_)
@@ -512,8 +566,13 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
-        def build_array(self, count: int, device: Devicelike | None = None, requires_grad: bool = False) -> wp.array:
-            """Build wp.array from count, dtype, default and overrides."""
+        def build_array(
+            self, count: int, device: Devicelike | None = None, requires_grad: bool = False
+        ) -> wp.array | list:
+            """Build wp.array (or list for string dtype) from count, dtype, default and overrides.
+
+            For string dtype, returns a Python list[str] instead of a Warp array.
+            """
             if self.values is None or len(self.values) == 0:
                 # No values provided, use default for all
                 arr = [self.default] * count
@@ -525,6 +584,11 @@ class ModelBuilder:
             else:
                 # Enum frequency: vals is a dict, use get() to fill gaps with defaults
                 arr = [self.values.get(i, self.default) for i in range(count)]
+
+            # String dtype: return as Python list instead of warp array
+            if self.dtype is str:
+                return arr
+
             return wp.array(arr, dtype=self.dtype, requires_grad=requires_grad, device=device)
 
     def __init__(self, up_axis: AxisType = Axis.Z, gravity: float = -9.81):
@@ -537,32 +601,48 @@ class ModelBuilder:
             gravity (float, optional): The magnitude of gravity to apply along the up axis.
                 Defaults to -9.81.
         """
-        self.num_worlds = 0
+        self.world_count = 0
 
         # region defaults
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
+        """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
+        Update this object before adding shapes to set default contact/material properties."""
+
         self.default_joint_cfg = ModelBuilder.JointDofConfig()
+        """Default joint DoF configuration used when joint DoF configuration is omitted."""
 
-        # Default particle settings
         self.default_particle_radius = 0.1
+        """Default particle radius used when particle radius is not provided explicitly."""
 
-        # Default triangle soft mesh settings
         self.default_tri_ke = 100.0
+        """Default triangle elastic stiffness for cloth/soft-triangle constraints."""
+
         self.default_tri_ka = 100.0
+        """Default triangle area stiffness for cloth/soft-triangle constraints."""
+
         self.default_tri_kd = 10.0
+        """Default triangle damping for cloth/soft-triangle constraints."""
+
         self.default_tri_drag = 0.0
+        """Default aerodynamic drag coefficient for triangle elements."""
+
         self.default_tri_lift = 0.0
+        """Default aerodynamic lift coefficient for triangle elements."""
 
-        # Default distance constraint properties
         self.default_spring_ke = 100.0
+        """Default spring elastic stiffness for distance constraints."""
+
         self.default_spring_kd = 0.0
+        """Default spring damping for distance constraints."""
 
-        # Default edge bending properties
         self.default_edge_ke = 100.0
-        self.default_edge_kd = 0.0
+        """Default edge-bending elastic stiffness."""
 
-        # Default body settings
+        self.default_edge_kd = 0.0
+        """Default edge-bending damping."""
+
         self.default_body_armature = 0.0
+        """Default body armature value used when body armature is not provided."""
         # endregion
 
         # region compiler settings (similar to MuJoCo)
@@ -618,9 +698,9 @@ class ModelBuilder:
         self.shape_material_ka = []
         self.shape_material_mu = []
         self.shape_material_restitution = []
-        self.shape_material_torsional_friction = []
-        self.shape_material_rolling_friction = []
-        self.shape_material_k_hydro = []
+        self.shape_material_mu_torsional = []
+        self.shape_material_mu_rolling = []
+        self.shape_material_kh = []
         self.shape_contact_margin = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
@@ -690,13 +770,15 @@ class ModelBuilder:
 
         # rigid joints
         self.joint_parent = []  # index of the parent body                      (constant)
-        self.joint_parents = {}  # mapping from joint to parent bodies
+        self.joint_parents = {}  # mapping from child body to parent bodies
+        self.joint_children = {}  # mapping from parent body to child bodies
         self.joint_child = []  # index of the child body                       (constant)
         self.joint_axis = []  # joint axis in joint parent anchor frame        (constant)
         self.joint_X_p = []  # frame of joint in parent                      (constant)
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
         self.joint_qd = []
+        self.joint_cts = []
         self.joint_f = []
 
         self.joint_type = []
@@ -767,6 +849,26 @@ class ModelBuilder:
         self.equality_constraint_key = []
         self.equality_constraint_enabled = []
         self.equality_constraint_world = []
+
+        # mimic constraints
+        self.constraint_mimic_joint0 = []
+        self.constraint_mimic_joint1 = []
+        self.constraint_mimic_coef0 = []
+        self.constraint_mimic_coef1 = []
+        self.constraint_mimic_enabled = []
+        self.constraint_mimic_key = []
+        self.constraint_mimic_world = []
+
+        # per-world entity start indices
+        self.particle_world_start = []
+        self.body_world_start = []
+        self.shape_world_start = []
+        self.joint_world_start = []
+        self.articulation_world_start = []
+        self.equality_constraint_world_start = []
+        self.joint_dof_world_start = []
+        self.joint_coord_world_start = []
+        self.joint_constraint_world_start = []
 
         # Custom attributes (user-defined per-frequency arrays)
         self.custom_attributes: dict[str, ModelBuilder.CustomAttribute] = {}
@@ -1079,95 +1181,53 @@ class ModelBuilder:
                     expected_frequency=Model.AttributeFrequency.JOINT,
                 )
 
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_DOF:
-                # Values per DOF - can be list or dict
-                dof_start = self.joint_qd_start[joint_index]
-                if joint_index + 1 < len(self.joint_qd_start):
-                    dof_end = self.joint_qd_start[joint_index + 1]
-                else:
-                    dof_end = self.joint_dof_count
+            elif custom_attr.frequency in (
+                Model.AttributeFrequency.JOINT_DOF,
+                Model.AttributeFrequency.JOINT_COORD,
+                Model.AttributeFrequency.JOINT_CONSTRAINT,
+            ):
+                freq = custom_attr.frequency
+                freq_config = {
+                    Model.AttributeFrequency.JOINT_DOF: (
+                        self.joint_qd_start,
+                        self.joint_dof_count,
+                        "DOF",
+                        "DOFs",
+                    ),
+                    Model.AttributeFrequency.JOINT_COORD: (
+                        self.joint_q_start,
+                        self.joint_coord_count,
+                        "coord",
+                        "coordinates",
+                    ),
+                    Model.AttributeFrequency.JOINT_CONSTRAINT: (
+                        self.joint_cts_start,
+                        self.joint_constraint_count,
+                        "constraint",
+                        "constraints",
+                    ),
+                }
+                start_array, total_count, index_label, count_label = freq_config[freq]
 
-                dof_count = dof_end - dof_start
+                index_start = start_array[joint_index]
+                if joint_index + 1 < len(start_array):
+                    index_end = start_array[joint_index + 1]
+                else:
+                    index_end = total_count
+
                 apply_indexed_values(
                     value=value,
                     attr_key=attr_key,
-                    expected_frequency=Model.AttributeFrequency.JOINT_DOF,
-                    index_start=dof_start,
-                    index_count=dof_count,
-                    index_label="DOF",
-                    count_label="DOFs",
-                    length_error_template="JOINT_DOF '{attr_key}': got {actual}, expected {expected}",
-                )
-
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_COORD:
-                # Values per coordinate - can be list or dict
-                coord_start = self.joint_q_start[joint_index]
-                if joint_index + 1 < len(self.joint_q_start):
-                    coord_end = self.joint_q_start[joint_index + 1]
-                else:
-                    coord_end = self.joint_coord_count
-
-                coord_count = coord_end - coord_start
-                apply_indexed_values(
-                    value=value,
-                    attr_key=attr_key,
-                    expected_frequency=Model.AttributeFrequency.JOINT_COORD,
-                    index_start=coord_start,
-                    index_count=coord_count,
-                    index_label="coord",
-                    count_label="coordinates",
+                    expected_frequency=freq,
+                    index_start=index_start,
+                    index_count=index_end - index_start,
+                    index_label=index_label,
+                    count_label=count_label,
                     length_error_template=(
-                        "JOINT_COORD attribute '{attr_key}' has {actual} values but joint has {expected} coordinates"
+                        f"{freq.name} attribute '{{attr_key}}' has {{actual}} values "
+                        f"but joint has {{expected}} {count_label}"
                     ),
                 )
-
-            elif custom_attr.frequency == Model.AttributeFrequency.JOINT_CONSTRAINT:
-                # Values per constraint - can be list or dict
-                cts_start = self.joint_cts_start[joint_index]
-                if joint_index + 1 < len(self.joint_cts_start):
-                    cts_end = self.joint_cts_start[joint_index + 1]
-                else:
-                    cts_end = self.joint_constraint_count
-
-                cts_count = cts_end - cts_start
-
-                # Check if value is a dict (mapping cts index to value)
-                if isinstance(value, dict):
-                    # Dict format: only specified cts indices have values, rest use defaults
-                    for cts_offset, cts_value in value.items():
-                        if not isinstance(cts_offset, int):
-                            raise TypeError(
-                                f"JOINT_CONSTRAINT attribute '{attr_key}' dict keys must be integers (constraint indices), got {type(cts_offset)}"
-                            )
-                        if cts_offset < 0 or cts_offset >= cts_count:
-                            raise ValueError(
-                                f"JOINT_CONSTRAINT attribute '{attr_key}' has invalid constraint index {cts_offset} (joint has {cts_count} constraints)"
-                            )
-                        single_attr = {attr_key: cts_value}
-                        self._process_custom_attributes(
-                            entity_index=cts_start + cts_offset,
-                            custom_attrs=single_attr,
-                            expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
-                        )
-                else:
-                    # List format or single value for single-constraint joints
-                    value_sanitized = value
-                    if not isinstance(value_sanitized, (list, tuple)) and cts_count == 1:
-                        value_sanitized = [value_sanitized]
-
-                    if len(value_sanitized) != cts_count:
-                        raise ValueError(
-                            f"JOINT_CONSTRAINT attribute '{attr_key}' has {len(value_sanitized)} values but joint has {cts_count} constraints"
-                        )
-
-                    # Apply each value to its corresponding constraint
-                    for i, cts_value in enumerate(value_sanitized):
-                        single_attr = {attr_key: cts_value}
-                        self._process_custom_attributes(
-                            entity_index=cts_start + i,
-                            custom_attrs=single_attr,
-                            expected_frequency=Model.AttributeFrequency.JOINT_CONSTRAINT,
-                        )
 
             else:
                 raise ValueError(
@@ -1287,7 +1347,7 @@ class ModelBuilder:
     def replicate(
         self,
         builder: ModelBuilder,
-        num_worlds: int,
+        world_count: int,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ):
         """
@@ -1304,14 +1364,14 @@ class ModelBuilder:
 
         Args:
             builder (ModelBuilder): The builder to replicate. All entities from this builder will be copied.
-            num_worlds (int): The number of worlds to create.
+            world_count (int): The number of worlds to create.
             spacing (tuple[float, float, float], optional): The spacing between each copy along each axis.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
         """
-        offsets = compute_world_offsets(num_worlds, spacing, self.up_axis)
+        offsets = compute_world_offsets(world_count, spacing, self.up_axis)
         xform = wp.transform_identity()
-        for i in range(num_worlds):
+        for i in range(world_count):
             xform[:3] = offsets[i]
             self.add_world(builder, xform=xform)
 
@@ -1425,21 +1485,22 @@ class ModelBuilder:
         source: str,
         *,
         xform: Transform | None = None,
-        floating: bool = False,
-        base_joint: dict | str | None = None,
+        floating: bool | None = None,
+        base_joint: dict | None = None,
+        parent_body: int = -1,
         scale: float = 1.0,
         hide_visuals: bool = False,
         parse_visuals_as_colliders: bool = False,
         up_axis: AxisType = Axis.Z,
         force_show_colliders: bool = False,
         enable_self_collisions: bool = True,
-        ignore_inertial_definitions: bool = True,
+        ignore_inertial_definitions: bool = False,
         ensure_nonstatic_links: bool = True,
         static_link_mass: float = 1e-2,
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
     ):
         """
@@ -1448,8 +1509,71 @@ class ModelBuilder:
         Args:
             source (str): The filename of the URDF file to parse, or the URDF XML string content.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-            floating (bool): If True, the root body is a free joint. If False, the root body is connected via a fixed joint to the world, unless a `base_joint` is defined.
-            base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            floating (bool or None): Controls the base joint type for the root body.
+
+                - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
+                - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+                  ``parent_body == -1`` since FREE joints must connect to world frame.
+                - ``False``: Creates a FIXED joint (0 DOF).
+
+                Cannot be specified together with ``base_joint``.
+            base_joint (dict): Custom joint specification for connecting the root body to the world
+                (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
+                custom mobility. Dictionary with joint parameters as accepted by
+                :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
+
+                Cannot be specified together with ``floating``.
+            parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+                imported root body to this existing body, making them part of the same kinematic articulation.
+                The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
+                the root connects to the world frame. **Restriction**: Only the most recently added
+                articulation can be used as parent; attempting to attach to an older articulation will raise
+                a ``ValueError``.
+
+                .. note::
+                   Valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
+
+                   .. list-table::
+                      :header-rows: 1
+                      :widths: 15 15 15 55
+
+                      * - floating
+                        - base_joint
+                        - parent_body
+                        - Result
+                      * - ``None``
+                        - ``None``
+                        - ``-1``
+                        - Format default (URDF: FIXED joint)
+                      * - ``True``
+                        - ``None``
+                        - ``-1``
+                        - FREE joint to world (6 DOF)
+                      * - ``False``
+                        - ``None``
+                        - ``-1``
+                        - FIXED joint to world (0 DOF)
+                      * - ``None``
+                        - ``{dict}``
+                        - ``-1``
+                        - Custom joint to world (e.g., D6)
+                      * - ``False``
+                        - ``None``
+                        - ``body_idx``
+                        - FIXED joint to parent body
+                      * - ``None``
+                        - ``{dict}``
+                        - ``body_idx``
+                        - Custom joint to parent body (e.g., D6)
+                      * - *explicitly set*
+                        - *explicitly set*
+                        - *any*
+                        - ❌ Error: mutually exclusive (cannot specify both)
+                      * - ``True``
+                        - ``None``
+                        - ``body_idx``
+                        - ❌ Error: FREE joints require world frame
+
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes.
             parse_visuals_as_colliders (bool): If True, the geometry defined under the `<visual>` tags is used for collision handling instead of the `<collision>` geometries.
@@ -1465,7 +1589,7 @@ class ModelBuilder:
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
                 (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
                 :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -1478,6 +1602,7 @@ class ModelBuilder:
             xform=xform,
             floating=floating,
             base_joint=base_joint,
+            parent_body=parent_body,
             scale=scale,
             hide_visuals=hide_visuals,
             parse_visuals_as_colliders=parse_visuals_as_colliders,
@@ -1499,6 +1624,9 @@ class ModelBuilder:
         source,
         *,
         xform: Transform | None = None,
+        floating: bool | None = None,
+        base_joint: dict | None = None,
+        parent_body: int = -1,
         only_load_enabled_rigid_bodies: bool = False,
         only_load_enabled_joints: bool = True,
         joint_drive_gains_scaling: float = 1.0,
@@ -1515,7 +1643,7 @@ class ModelBuilder:
         load_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
         parse_mujoco_options: bool = True,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
     ) -> dict[str, Any]:
@@ -1528,6 +1656,72 @@ class ModelBuilder:
         Args:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The transform to apply to the entire scene.
+            floating (bool or None): Controls the base joint type for the root body (bodies not connected as
+                a child to any joint).
+
+                - ``None`` (default): Uses format-specific default (creates a FREE joint for USD bodies without joints).
+                - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+                  ``parent_body == -1`` since FREE joints must connect to world frame.
+                - ``False``: Creates a FIXED joint (0 DOF).
+
+                Cannot be specified together with ``base_joint``.
+            base_joint (dict): Custom joint specification for connecting the root body to the world
+                (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
+                custom mobility. Dictionary with joint parameters as accepted by
+                :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
+
+                Cannot be specified together with ``floating``.
+            parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+                imported root body to this existing body, making them part of the same kinematic articulation.
+                The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
+                the root connects to the world frame. **Restriction**: Only the most recently added
+                articulation can be used as parent; attempting to attach to an older articulation will raise
+                a ``ValueError``.
+
+                .. note::
+                   Valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
+
+                   .. list-table::
+                      :header-rows: 1
+                      :widths: 15 15 15 55
+
+                      * - floating
+                        - base_joint
+                        - parent_body
+                        - Result
+                      * - ``None``
+                        - ``None``
+                        - ``-1``
+                        - Format default (USD: FREE joint for bodies without joints)
+                      * - ``True``
+                        - ``None``
+                        - ``-1``
+                        - FREE joint to world (6 DOF)
+                      * - ``False``
+                        - ``None``
+                        - ``-1``
+                        - FIXED joint to world (0 DOF)
+                      * - ``None``
+                        - ``{dict}``
+                        - ``-1``
+                        - Custom joint to world (e.g., D6)
+                      * - ``False``
+                        - ``None``
+                        - ``body_idx``
+                        - FIXED joint to parent body
+                      * - ``None``
+                        - ``{dict}``
+                        - ``body_idx``
+                        - Custom joint to parent body (e.g., D6)
+                      * - *explicitly set*
+                        - *explicitly set*
+                        - *any*
+                        - ❌ Error: mutually exclusive (cannot specify both)
+                      * - ``True``
+                        - ``None``
+                        - ``body_idx``
+                        - ❌ Error: FREE joints require world frame
+
             only_load_enabled_rigid_bodies (bool): If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints (bool): If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling (float): The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
@@ -1557,7 +1751,7 @@ class ModelBuilder:
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
             force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
                 are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.infer_actuator_mode`:
+                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
                 :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
@@ -1607,6 +1801,9 @@ class ModelBuilder:
             self,
             source,
             xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            parent_body=parent_body,
             only_load_enabled_rigid_bodies=only_load_enabled_rigid_bodies,
             only_load_enabled_joints=only_load_enabled_joints,
             joint_drive_gains_scaling=joint_drive_gains_scaling,
@@ -1634,7 +1831,8 @@ class ModelBuilder:
         *,
         xform: Transform | None = None,
         floating: bool | None = None,
-        base_joint: dict | str | None = None,
+        base_joint: dict | None = None,
+        parent_body: int = -1,
         armature_scale: float = 1.0,
         scale: float = 1.0,
         hide_visuals: bool = False,
@@ -1651,14 +1849,14 @@ class ModelBuilder:
         no_class_as_colliders: bool = True,
         force_show_colliders: bool = False,
         enable_self_collisions: bool = True,
-        ignore_inertial_definitions: bool = True,
+        ignore_inertial_definitions: bool = False,
         ensure_nonstatic_links: bool = True,
         static_link_mass: float = 1e-2,
         collapse_fixed_joints: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
         convert_3d_hinge_to_ball_joints: bool = False,
-        mesh_maxhullvert: int = MESH_MAXHULLVERT,
+        mesh_maxhullvert: int | None = None,
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
     ):
@@ -1669,8 +1867,72 @@ class ModelBuilder:
         Args:
             source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform (Transform): The transform to apply to the imported mechanism.
-            floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
-            base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+            floating (bool or None): Controls the base joint type for the root body.
+
+                - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
+                  otherwise creates a FIXED joint).
+                - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+                  ``parent_body == -1`` since FREE joints must connect to world frame.
+                - ``False``: Creates a FIXED joint (0 DOF).
+
+                Cannot be specified together with ``base_joint``.
+            base_joint (dict): Custom joint specification for connecting the root body to the world
+                (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
+                custom mobility. Dictionary with joint parameters as accepted by
+                :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
+
+                Cannot be specified together with ``floating``.
+            parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+                imported root body to this existing body, making them part of the same kinematic articulation.
+                The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
+                the root connects to the world frame. **Restriction**: Only the most recently added
+                articulation can be used as parent; attempting to attach to an older articulation will raise
+                a ``ValueError``.
+
+                .. note::
+                   Valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
+
+                   .. list-table::
+                      :header-rows: 1
+                      :widths: 15 15 15 55
+
+                      * - floating
+                        - base_joint
+                        - parent_body
+                        - Result
+                      * - ``None``
+                        - ``None``
+                        - ``-1``
+                        - Format default (MJCF: honors ``<freejoint>``, else FIXED)
+                      * - ``True``
+                        - ``None``
+                        - ``-1``
+                        - FREE joint to world (6 DOF)
+                      * - ``False``
+                        - ``None``
+                        - ``-1``
+                        - FIXED joint to world (0 DOF)
+                      * - ``None``
+                        - ``{dict}``
+                        - ``-1``
+                        - Custom joint to world (e.g., D6)
+                      * - ``False``
+                        - ``None``
+                        - ``body_idx``
+                        - FIXED joint to parent body
+                      * - ``None``
+                        - ``{dict}``
+                        - ``body_idx``
+                        - Custom joint to parent body (e.g., D6)
+                      * - *explicitly set*
+                        - *explicitly set*
+                        - *any*
+                        - ❌ Error: mutually exclusive (cannot specify both)
+                      * - ``True``
+                        - ``None``
+                        - ``body_idx``
+                        - ❌ Error: FREE joints require world frame
+
             armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
             scale (float): The scaling factor to apply to the imported mechanism.
             hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
@@ -1712,6 +1974,7 @@ class ModelBuilder:
             xform=xform,
             floating=floating,
             base_joint=base_joint,
+            parent_body=parent_body,
             armature_scale=armature_scale,
             scale=scale,
             hide_visuals=hide_visuals,
@@ -1797,8 +2060,8 @@ class ModelBuilder:
             )
 
         # Set the current world to the next available world index
-        self.current_world = self.num_worlds
-        self.num_worlds += 1
+        self.current_world = self.world_count
+        self.world_count += 1
 
         # Store world metadata if needed (for future use)
         # Note: We might want to add world_key and world_attributes lists in __init__ if needed
@@ -1929,8 +2192,10 @@ class ModelBuilder:
         start_joint_idx = self.joint_count
         start_joint_dof_idx = self.joint_dof_count
         start_joint_coord_idx = self.joint_coord_count
+        start_joint_constraint_idx = self.joint_constraint_count
         start_articulation_idx = self.articulation_count
         start_equality_constraint_idx = len(self.equality_constraint_type)
+        start_constraint_mimic_idx = len(self.constraint_mimic_joint0)
         start_edge_idx = self.edge_count
         start_triangle_idx = self.tri_count
         start_tetrahedron_idx = self.tet_count
@@ -2002,8 +2267,24 @@ class ModelBuilder:
 
             # offset the indices
             self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
-            self.joint_parent.extend([p + self.body_count if p != -1 else -1 for p in builder.joint_parent])
-            self.joint_child.extend([c + self.body_count for c in builder.joint_child])
+
+            new_parents = [p + start_body_idx if p != -1 else -1 for p in builder.joint_parent]
+            new_children = [c + start_body_idx for c in builder.joint_child]
+
+            self.joint_parent.extend(new_parents)
+            self.joint_child.extend(new_children)
+
+            # Update parent/child lookups
+            for p, c in zip(new_parents, new_children, strict=True):
+                if c not in self.joint_parents:
+                    self.joint_parents[c] = [p]
+                else:
+                    self.joint_parents[c].append(p)
+
+                if p not in self.joint_children:
+                    self.joint_children[p] = [c]
+                elif c not in self.joint_children[p]:
+                    self.joint_children[p].append(c)
 
             self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
             self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
@@ -2080,6 +2361,23 @@ class ModelBuilder:
             self.equality_constraint_key.extend(builder.equality_constraint_key)
             self.equality_constraint_enabled.extend(builder.equality_constraint_enabled)
 
+        # For mimic constraints
+        if len(builder.constraint_mimic_joint0) > 0:
+            constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
+            self.constraint_mimic_world.extend(constraint_worlds)
+
+            # Remap joint indices in mimic constraints
+            self.constraint_mimic_joint0.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint0]
+            )
+            self.constraint_mimic_joint1.extend(
+                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint1]
+            )
+            self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
+            self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
+            self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
+            self.constraint_mimic_key.extend(builder.constraint_mimic_key)
+
         more_builder_attrs = [
             "articulation_key",
             "body_inertia",
@@ -2098,6 +2396,7 @@ class ModelBuilder:
             "joint_dof_dim",
             "joint_key",
             "joint_qd",
+            "joint_cts",
             "joint_f",
             "joint_target_pos",
             "joint_target_vel",
@@ -2124,9 +2423,9 @@ class ModelBuilder:
             "shape_material_ka",
             "shape_material_mu",
             "shape_material_restitution",
-            "shape_material_torsional_friction",
-            "shape_material_rolling_friction",
-            "shape_material_k_hydro",
+            "shape_material_mu_torsional",
+            "shape_material_mu_rolling",
+            "shape_material_kh",
             "shape_collision_radius",
             "shape_contact_margin",
             "shape_sdf_narrow_band_range",
@@ -2157,6 +2456,7 @@ class ModelBuilder:
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
+        self.joint_constraint_count += builder.joint_constraint_count
 
         # Merge custom attributes from the sub-builder
         # Shared offset map for both frequency and references
@@ -2167,8 +2467,10 @@ class ModelBuilder:
             "joint": start_joint_idx,
             "joint_dof": start_joint_dof_idx,
             "joint_coord": start_joint_coord_idx,
+            "joint_constraint": start_joint_constraint_idx,
             "articulation": start_articulation_idx,
             "equality_constraint": start_equality_constraint_idx,
+            "constraint_mimic": start_constraint_mimic_idx,
             "particle": start_particle_idx,
             "edge": start_edge_idx,
             "triangle": start_triangle_idx,
@@ -2317,7 +2619,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         armature: float | None = None,
         com: Vec3 | None = None,
-        I_m: Mat33 | None = None,
+        inertia: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
@@ -2335,7 +2637,7 @@ class ModelBuilder:
             xform: The location of the body in the world frame.
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body (optional).
             custom_attributes: Dictionary of custom attribute names to values.
@@ -2359,17 +2661,17 @@ class ModelBuilder:
             com = wp.vec3()
         else:
             com = wp.vec3(*com)
-        if I_m is None:
-            I_m = wp.mat33()
+        if inertia is None:
+            inertia = wp.mat33()
         else:
-            I_m = self._coerce_mat33(I_m)
+            inertia = self._coerce_mat33(inertia)
 
         body_id = len(self.body_mass)
 
         # body data
         if armature is None:
             armature = self.default_body_armature
-        inertia = I_m + wp.mat33(np.eye(3, dtype=np.float32)) * armature
+        inertia = inertia + wp.mat33(np.eye(3, dtype=np.float32)) * armature
         self.body_inertia.append(inertia)
         self.body_mass.append(mass)
         self.body_com.append(com)
@@ -2406,7 +2708,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         armature: float | None = None,
         com: Vec3 | None = None,
-        I_m: Mat33 | None = None,
+        inertia: Mat33 | None = None,
         mass: float = 0.0,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
@@ -2428,7 +2730,7 @@ class ModelBuilder:
             xform: The location of the body in the world frame.
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
-            I_m: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
+            inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
             mass: Mass of the body.
             key: Key of the body. When provided, the auto-created free joint and articulation
                 are assigned keys ``{key}_free_joint`` and ``{key}_articulation`` respectively.
@@ -2449,7 +2751,7 @@ class ModelBuilder:
             xform=xform,
             armature=armature,
             com=com,
-            I_m=I_m,
+            inertia=inertia,
             mass=mass,
             key=key,
             custom_attributes=custom_attributes,
@@ -2545,6 +2847,10 @@ class ModelBuilder:
             self.joint_parents[child] = [parent]
         else:
             self.joint_parents[child].append(parent)
+        if parent not in self.joint_children:
+            self.joint_children[parent] = [child]
+        elif child not in self.joint_children[parent]:
+            self.joint_children[parent].append(child)
         self.joint_child.append(child)
         self.joint_X_p.append(wp.transform(parent_xform))
         self.joint_X_c.append(wp.transform(child_xform))
@@ -2566,7 +2872,7 @@ class ModelBuilder:
                 # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
                 # This ensures freejoints (gains=0) get NONE, while joints with gains get appropriate mode.
                 has_drive = dim.target_ke != 0.0 or dim.target_kd != 0.0
-                mode = int(infer_actuator_mode(dim.target_ke, dim.target_kd, has_drive=has_drive))
+                mode = int(ActuatorMode.from_gains(dim.target_ke, dim.target_kd, has_drive=has_drive))
 
             # Store per-DOF actuator properties
             self.joint_act_mode.append(mode)
@@ -2592,14 +2898,16 @@ class ModelBuilder:
         for dim in angular_axes:
             add_axis_dim(dim)
 
-        dof_count, coord_count = get_joint_dof_count(joint_type, len(linear_axes) + len(angular_axes))
-        cts_count = get_joint_constraint_count(joint_type, len(linear_axes) + len(angular_axes))
+        dof_count, coord_count = joint_type.dof_count(len(linear_axes) + len(angular_axes))
+        cts_count = joint_type.constraint_count(len(linear_axes) + len(angular_axes))
 
         for _ in range(coord_count):
             self.joint_q.append(0.0)
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
+        for _ in range(cts_count):
+            self.joint_cts.append(0.0)
 
         if joint_type == JointType.FREE or joint_type == JointType.DISTANCE or joint_type == JointType.BALL:
             # ensure that a valid quaternion is used for the angular dofs
@@ -3350,6 +3658,67 @@ class ModelBuilder:
             enabled=enabled,
         )
 
+    def add_constraint_mimic(
+        self,
+        joint0: int,
+        joint1: int,
+        coef0: float = 0.0,
+        coef1: float = 1.0,
+        enabled: bool = True,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a mimic constraint to the model.
+
+        A mimic constraint enforces that ``joint0 = coef0 + coef1 * joint1``,
+        following URDF mimic joint semantics. Both scalar (prismatic, revolute) and
+        multi-DOF joints are supported. For multi-DOF joints, the mimic behavior is
+        applied equally to all degrees of freedom.
+
+        Args:
+            joint0: Index of the follower joint (the one being constrained)
+            joint1: Index of the leader joint (the one being mimicked)
+            coef0: Offset added after scaling
+            coef1: Scale factor applied to joint1's position/angle
+            enabled: Whether constraint is active
+            key: Optional constraint name
+            custom_attributes: Custom attributes to set on the constraint
+
+        Returns:
+            Constraint index
+        """
+        joint_count = self.joint_count
+        if joint0 < 0 or joint0 >= joint_count:
+            raise ValueError(f"Invalid follower joint index {joint0}; expected 0..{joint_count - 1}")
+        if joint1 < 0 or joint1 >= joint_count:
+            raise ValueError(f"Invalid leader joint index {joint1}; expected 0..{joint_count - 1}")
+        if self.joint_world[joint0] != self.current_world or self.joint_world[joint1] != self.current_world:
+            raise ValueError(
+                "Mimic constraint joints must belong to the current world. "
+                f"joint0_world={self.joint_world[joint0]}, joint1_world={self.joint_world[joint1]}, "
+                f"current_world={self.current_world}."
+            )
+
+        self.constraint_mimic_joint0.append(joint0)
+        self.constraint_mimic_joint1.append(joint1)
+        self.constraint_mimic_coef0.append(coef0)
+        self.constraint_mimic_coef1.append(coef1)
+        self.constraint_mimic_enabled.append(enabled)
+        self.constraint_mimic_key.append(key)
+        self.constraint_mimic_world.append(self.current_world)
+
+        constraint_idx = len(self.constraint_mimic_joint0) - 1
+
+        # Process custom attributes
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=constraint_idx,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.CONSTRAINT_MIMIC,
+            )
+
+        return constraint_idx
+
     # endregion
 
     def plot_articulation(
@@ -3376,8 +3745,8 @@ class ModelBuilder:
             show_shape_types (bool): Whether to show the shape geometry types
             show_legend (bool): Whether to show a legend
         """
-        import matplotlib.pyplot as plt  # noqa: PLC0415
-        import networkx as nx  # noqa: PLC0415
+        import matplotlib.pyplot as plt
+        import networkx as nx
 
         def joint_type_str(type):
             if type == JointType.FREE:
@@ -3531,14 +3900,17 @@ class ModelBuilder:
             if i < self.joint_count - 1:
                 q_dim = self.joint_q_start[i + 1] - q_start
                 qd_dim = self.joint_qd_start[i + 1] - qd_start
+                cts_dim = self.joint_cts_start[i + 1] - cts_start
             else:
                 q_dim = len(self.joint_q) - q_start
                 qd_dim = len(self.joint_qd) - qd_start
+                cts_dim = len(self.joint_cts) - cts_start
 
             data = {
                 "type": self.joint_type[i],
                 "q": self.joint_q[q_start : q_start + q_dim],
                 "qd": self.joint_qd[qd_start : qd_start + qd_dim],
+                "cts": self.joint_cts[cts_start : cts_start + cts_dim],
                 "armature": self.joint_armature[qd_start : qd_start + qd_dim],
                 "q_start": q_start,
                 "qd_start": qd_start,
@@ -3761,8 +4133,10 @@ class ModelBuilder:
         self.joint_child.clear()
         self.joint_q.clear()
         self.joint_qd.clear()
+        self.joint_cts.clear()
         self.joint_q_start.clear()
         self.joint_qd_start.clear()
+        self.joint_cts_start.clear()
         self.joint_enabled.clear()
         self.joint_armature.clear()
         self.joint_X_p.clear()
@@ -3788,8 +4162,10 @@ class ModelBuilder:
             self.joint_child.append(body_remap[joint["child"]])
             self.joint_q_start.append(len(self.joint_q))
             self.joint_qd_start.append(len(self.joint_qd))
+            self.joint_cts_start.append(len(self.joint_cts))
             self.joint_q.extend(joint["q"])
             self.joint_qd.extend(joint["qd"])
+            self.joint_cts.extend(joint["cts"])
             self.joint_armature.extend(joint["armature"])
             self.joint_enabled.append(joint["enabled"])
             self.joint_X_p.append(joint["parent_xform"])
@@ -3818,6 +4194,9 @@ class ModelBuilder:
                 self.joint_target_pos.append(axis["target_pos"])
                 self.joint_target_vel.append(axis["target_vel"])
                 self.joint_effort_limit.append(axis["effort_limit"])
+
+        # Reset the constraint count based on the retained joints
+        self.joint_constraint_count = len(self.joint_cts)
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies
         for i in range(len(self.equality_constraint_body1)):
@@ -3873,6 +4252,39 @@ class ModelBuilder:
                 if verbose:
                     print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
                 self.equality_constraint_enabled[i] = False
+
+        # Remap mimic constraint joint indices
+        for i in range(len(self.constraint_mimic_joint0)):
+            old_joint0 = self.constraint_mimic_joint0[i]
+            old_joint1 = self.constraint_mimic_joint1[i]
+
+            if old_joint0 in joint_remap:
+                self.constraint_mimic_joint0[i] = joint_remap[old_joint0]
+            elif old_joint0 != -1:
+                if verbose:
+                    print(f"Warning: Mimic constraint references removed joint {old_joint0}, disabling constraint")
+                self.constraint_mimic_enabled[i] = False
+
+            if old_joint1 in joint_remap:
+                self.constraint_mimic_joint1[i] = joint_remap[old_joint1]
+            elif old_joint1 != -1:
+                if verbose:
+                    print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
+                self.constraint_mimic_enabled[i] = False
+
+        # Rebuild parent/child lookups
+        self.joint_parents.clear()
+        self.joint_children.clear()
+        for p, c in zip(self.joint_parent, self.joint_child, strict=True):
+            if c not in self.joint_parents:
+                self.joint_parents[c] = [p]
+            else:
+                self.joint_parents[c].append(p)
+
+            if p not in self.joint_children:
+                self.joint_children[p] = [c]
+            elif c not in self.joint_children[p]:
+                self.joint_children[p].append(c)
 
         return {
             "body_remap": body_remap,
@@ -3956,7 +4368,7 @@ class ModelBuilder:
             xform = wp.transform(*xform)
         if cfg is None:
             cfg = self.default_shape_cfg
-        cfg.validate()
+        cfg.validate(shape_type=type)
         if scale is None:
             scale = (1.0, 1.0, 1.0)
 
@@ -4016,9 +4428,9 @@ class ModelBuilder:
         self.shape_material_ka.append(cfg.ka)
         self.shape_material_mu.append(cfg.mu)
         self.shape_material_restitution.append(cfg.restitution)
-        self.shape_material_torsional_friction.append(cfg.torsional_friction)
-        self.shape_material_rolling_friction.append(cfg.rolling_friction)
-        self.shape_material_k_hydro.append(cfg.k_hydro)
+        self.shape_material_mu_torsional.append(cfg.mu_torsional)
+        self.shape_material_mu_rolling.append(cfg.mu_rolling)
+        self.shape_material_kh.append(cfg.kh)
         self.shape_contact_margin.append(
             cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
         )
@@ -4034,6 +4446,11 @@ class ModelBuilder:
                 if parent_body > -1:
                     for parent_shape in self.body_shapes[parent_body]:
                         self.add_shape_collision_filter_pair(parent_shape, shape)
+
+        if cfg.has_shape_collision and cfg.collision_filter_parent and body > -1 and body in self.joint_children:
+            for child_body in self.joint_children[body]:
+                for child_shape in self.body_shapes[child_body]:
+                    self.add_shape_collision_filter_pair(shape, child_shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
@@ -4086,9 +4503,13 @@ class ModelBuilder:
         if xform is None:
             assert plane is not None, "Either xform or plane must be provided"
             # compute position and rotation from plane equation
+            # For plane equation ax + by + cz + d = 0, the closest point to origin is -(d/||n||) * (n/||n||)
+            # where n = (a, b, c). Both the normal and d need to be normalized.
             normal = np.array(plane[:3])
-            normal /= np.linalg.norm(normal)
-            pos = plane[3] * normal
+            norm = np.linalg.norm(normal)
+            normal /= norm
+            d_normalized = plane[3] / norm
+            pos = -d_normalized * normal
             # compute rotation from local +Z axis to plane normal
             rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), wp.vec3(*normal))
             xform = wp.transform(pos, rot)
@@ -4108,12 +4529,14 @@ class ModelBuilder:
 
     def add_ground_plane(
         self,
+        height: float = 0.0,
         cfg: ShapeConfig | None = None,
         key: str | None = None,
     ) -> int:
         """Adds a ground plane collision shape to the model.
 
         Args:
+            height (float): The vertical offset of the ground plane along the up-vector axis. Positive values raise the plane, negative values lower it. Defaults to `0.0`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
 
@@ -4121,7 +4544,7 @@ class ModelBuilder:
             int: The index of the newly added shape.
         """
         return self.add_shape_plane(
-            plane=(*self.up_vector, 0.0),
+            plane=(*self.up_vector, -height),
             width=0.0,
             length=0.0,
             cfg=cfg,
@@ -4187,7 +4610,7 @@ class ModelBuilder:
         `a`, `b`, `c` along the local X, Y, Z axes respectively.
 
         Note:
-            Ellipsoid collision is handled by the unified GJK/MPR collision pipeline,
+            Ellipsoid collision is handled by the GJK/MPR collision pipeline,
             which provides accurate collision detection for all convex shape pairs.
 
         Args:
@@ -4539,6 +4962,49 @@ class ModelBuilder:
             key=key,
         )
 
+    def add_shape_heightfield(
+        self,
+        xform: Transform | None = None,
+        heightfield: Any | None = None,  # Heightfield type, using Any to avoid circular import
+        scale: Vec3 | None = None,
+        cfg: ShapeConfig | None = None,
+        key: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Adds a heightfield (2D elevation grid) collision shape to the model.
+
+        Heightfields are efficient representations of terrain using a 2D grid of elevation values.
+        They are always static (attached to the world body) and more memory-efficient than
+        equivalent triangle meshes.
+
+        Args:
+            xform (Transform | None): The transform of the heightfield in world frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
+            heightfield: The :class:`Heightfield` object containing the elevation grid data. Defaults to `None`.
+            scale (Vec3 | None): The scale of the heightfield. Defaults to `None`, in which case the scale is `(1.0, 1.0, 1.0)`.
+            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
+            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
+            custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
+
+        Returns:
+            int: The index of the newly added shape.
+        """
+        if heightfield is None:
+            raise ValueError("add_shape_heightfield() requires a Heightfield instance.")
+        if cfg is None:
+            cfg = self.default_shape_cfg
+
+        return self.add_shape(
+            body=-1,
+            type=GeoType.HFIELD,
+            xform=xform,
+            cfg=cfg,
+            scale=scale,
+            src=heightfield,
+            is_static=True,
+            key=key,
+            custom_attributes=custom_attributes,
+        )
+
     def add_site(
         self,
         body: int,
@@ -4694,10 +5160,10 @@ class ModelBuilder:
             try:
                 if method == "coacd":
                     # convex decomposition using CoACD
-                    import coacd  # noqa: PLC0415
+                    import coacd
                 else:
                     # convex decomposition using V-HACD
-                    import trimesh  # noqa: PLC0415
+                    import trimesh
 
                 decompositions = {}
 
@@ -4748,8 +5214,9 @@ class ModelBuilder:
                             ka=self.shape_material_ka[shape],
                             mu=self.shape_material_mu[shape],
                             restitution=self.shape_material_restitution[shape],
-                            torsional_friction=self.shape_material_torsional_friction[shape],
-                            rolling_friction=self.shape_material_rolling_friction[shape],
+                            mu_torsional=self.shape_material_mu_torsional[shape],
+                            mu_rolling=self.shape_material_mu_rolling[shape],
+                            kh=self.shape_material_kh[shape],
                             thickness=self.shape_thickness[shape],
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
@@ -4842,7 +5309,7 @@ class ModelBuilder:
     def add_rod(
         self,
         positions: list[Vec3],
-        quaternions: list[Quat],
+        quaternions: list[Quat] | None = None,
         radius: float = 0.1,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
@@ -4863,9 +5330,11 @@ class ModelBuilder:
         Args:
             positions: Centerline node positions (segment endpoints) in world space. These are the
                 tip/end points of the capsules, with one extra point so that for ``N`` segments there
-                are ``N+1`` positions. Must have ``len(quaternions) + 1`` elements.
-            quaternions: Per-segment (per-edge) orientations in world space. Each quaternion should
-                align the capsule's local +Z with the segment direction ``positions[i+1] - positions[i]``.
+                are ``N+1`` positions.
+            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
+                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
+                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
+                orientations are computed automatically to align +Z with each segment direction.
             radius: Capsule radius.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Stretch stiffness for the cable joints. For rods, this is treated as a
@@ -4919,6 +5388,7 @@ class ModelBuilder:
         # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
         stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
         stretch_damping = 0.0 if stretch_damping is None else stretch_damping
+
         # Bend defaults: 0.0 (users must explicitly set for bending resistance)
         bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
         bend_damping = 0.0 if bend_damping is None else bend_damping
@@ -4927,14 +5397,20 @@ class ModelBuilder:
         if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
             raise ValueError("add_rod: stretch_stiffness and bend_stiffness must be >= 0")
 
-        # Guard against near-zero lengths: segment length is used to normalize stiffness later (EA/L, EI/L).
-        min_segment_length = 1.0e-9
-        num_segments = len(quaternions)
-        if len(positions) != num_segments + 1:
+        num_segments = len(positions) - 1
+        if num_segments < 1:
+            raise ValueError("add_rod: positions must contain at least 2 points")
+
+        # Coerce all input positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
+        # always operate on Warp vector types even if the caller passed tuples/lists.
+        positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in positions]
+
+        if quaternions is not None and len(quaternions) != num_segments:
             raise ValueError(
-                f"add_rod: positions must have {num_segments + 1} elements for {num_segments} segments, "
-                f"got {len(positions)} positions"
+                f"add_rod: quaternions must have {num_segments} elements for {num_segments} segments, "
+                f"got {len(quaternions)} quaternions"
             )
+
         if num_segments < 2:
             # A "rod" in this API is defined as multiple capsules coupled by cable joints.
             # If you want a single capsule, create a body + capsule shape directly.
@@ -4943,125 +5419,460 @@ class ModelBuilder:
                 "for a single capsule, create a body and add a capsule shape instead."
             )
 
-        link_bodies = []
-        link_joints = []
-        segment_lengths: list[float] = []
+        # Build linear graph edges: (0, 1), (1, 2), ..., (N-1, N)
+        # Note: positions has N+1 elements for N segments.
+        edges = [(i, i + 1) for i in range(num_segments)]
 
-        # Create all bodies first
-        for i in range(num_segments):
-            p0 = positions[i]
-            p1 = positions[i + 1]
-            q = quaternions[i]
+        # Delegate to add_rod_graph to create bodies and internal joints.
+        # We use wrap_in_articulation=False and let add_rod manage articulation wrapping so that:
+        # - open chains are wrapped into a single articulation (tree), and
+        # - closed loops add one extra "loop joint" after wrapping, which must not be part of an articulation.
+        link_bodies, link_joints = self.add_rod_graph(
+            node_positions=positions_wp,
+            edges=edges,
+            radius=radius,
+            cfg=cfg,
+            stretch_stiffness=stretch_stiffness,
+            stretch_damping=stretch_damping,
+            bend_stiffness=bend_stiffness,
+            bend_damping=bend_damping,
+            key=key,
+            wrap_in_articulation=False,
+            quaternions=quaternions,
+        )
 
-            # Calculate segment properties
-            segment_length = wp.length(p1 - p0)
-            if segment_length <= min_segment_length:
+        # Wrap all joints into an articulation if requested.
+        if wrap_in_articulation and link_joints:
+            rod_art_key = f"{key}_articulation" if key else None
+            self.add_articulation(link_joints, key=rod_art_key)
+
+        # For closed loops, add one extra loop-closing cable joint that is intentionally
+        # *not* part of an articulation (articulations must be trees/forests).
+        if closed:
+            if not wrap_in_articulation:
+                warnings.warn(
+                    "add_rod: wrap_in_articulation=False requires the caller to wrap joints via add_articulation() "
+                    "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
+                    "articulation.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+            if link_bodies:
+                first_body = link_bodies[0]
+                last_body = link_bodies[-1]
+
+                # Connect the end of the last segment to the start of the first segment.
+                L_last = float(wp.length(positions_wp[-1] - positions_wp[-2]))
+                min_segment_length = 1.0e-9
+                if L_last <= min_segment_length:
+                    L_last = min_segment_length
+
+                parent_xform = wp.transform(wp.vec3(0.0, 0.0, L_last), wp.quat_identity())
+                child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+
+                # Normalize stiffness by segment length, consistent with add_rod_graph().
+                stretch_ke_eff = stretch_stiffness / L_last
+                bend_ke_eff = bend_stiffness / L_last
+
+                loop_joint_key = f"{key}_cable_{len(link_joints) + 1}" if key else None
+                j_loop = self.add_joint_cable(
+                    parent=last_body,
+                    child=first_body,
+                    parent_xform=parent_xform,
+                    child_xform=child_xform,
+                    bend_stiffness=bend_ke_eff,
+                    bend_damping=bend_damping,
+                    stretch_stiffness=stretch_ke_eff,
+                    stretch_damping=stretch_damping,
+                    key=loop_joint_key,
+                    collision_filter_parent=True,
+                    enabled=True,
+                )
+                link_joints.append(j_loop)
+
+        return link_bodies, link_joints
+
+    def add_rod_graph(
+        self,
+        node_positions: list[Vec3],
+        edges: list[tuple[int, int]],
+        radius: float = 0.1,
+        cfg: ShapeConfig | None = None,
+        stretch_stiffness: float | None = None,
+        stretch_damping: float | None = None,
+        bend_stiffness: float | None = None,
+        bend_damping: float | None = None,
+        key: str | None = None,
+        wrap_in_articulation: bool = True,
+        quaternions: list[Quat] | None = None,
+        junction_collision_filter: bool = True,
+    ) -> tuple[list[int], list[int]]:
+        """Adds a rod/cable *graph* (supports junctions) from nodes + edges.
+
+        This is a generalization of :meth:`add_rod` to support branching/junction topologies.
+
+        Representation:
+
+        - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
+          ``node_positions[v]`` (body frame is placed at the start node ``u`` and local +Z points
+          toward ``v``).
+        - Cable joints are created between edge-bodies that share a node, using a spanning-tree
+          traversal so that each body has a single parent when wrapped into an articulation.
+
+        Notes:
+
+        - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
+          articulation per connected component). This keeps the joint graph articulation-safe
+          (tree/forest), avoiding cycles at junctions.
+        - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
+          ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
+          you need closed loops, build them explicitly without articulation wrapping.
+        - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
+          all incident edges. This can preserve rings/loops, but does not produce an articulation
+          tree (edges may effectively have multiple "parents" in the joint graph).
+
+        Args:
+            node_positions: Junction node positions in world space.
+            edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
+                capsule body oriented so its local +Z points from node ``u`` to node ``v``.
+            radius: Capsule radius.
+            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
+            stretch_stiffness: Material-like axial stiffness (EA) [N], normalized by edge length
+                into an effective joint stiffness [N/m]. Defaults to 1.0e9.
+            stretch_damping: Stretch damping (per joint). Defaults to 0.0.
+            bend_stiffness: Material-like bend/twist stiffness (EI) [N*m^2], normalized by edge
+                length into an effective joint stiffness [N*m]. Defaults to 0.0.
+            bend_damping: Bend/twist damping (per joint). Defaults to 0.0.
+            key: Optional key prefix for bodies, shapes, joints, and articulations.
+            wrap_in_articulation: If True, wraps the generated joint forest into one articulation
+                per connected component.
+            quaternions: Optional per-edge orientations in world space. If provided, must have
+                ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
+                the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
+                None, orientations are computed automatically to align +Z with each edge direction.
+            junction_collision_filter: If True, adds collision filters between *non-jointed* segment
+                bodies that are incident to a junction node (degree >= 3). This prevents immediate
+                self-collision impulses at welded junctions, even though the joint set is a spanning
+                tree (so not all incident body pairs are directly jointed).
+
+        Returns:
+            tuple[list[int], list[int]]: (body_indices, joint_indices) where bodies correspond to
+            edges in the same order as ``edges``.
+        """
+        if cfg is None:
+            cfg = self.default_shape_cfg
+
+        # Stretch defaults: high stiffness to keep neighboring capsules tightly coupled
+        stretch_stiffness = 1.0e9 if stretch_stiffness is None else stretch_stiffness
+        stretch_damping = 0.0 if stretch_damping is None else stretch_damping
+
+        # Bend defaults: 0.0 (users must explicitly set for bending resistance)
+        bend_stiffness = 0.0 if bend_stiffness is None else bend_stiffness
+        bend_damping = 0.0 if bend_damping is None else bend_damping
+
+        if stretch_stiffness < 0.0 or bend_stiffness < 0.0:
+            raise ValueError("add_rod_graph: stretch_stiffness and bend_stiffness must be >= 0")
+        if len(node_positions) < 2:
+            raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
+        if len(edges) < 1:
+            raise ValueError("add_rod_graph: edges must contain at least 1 edge")
+
+        num_nodes = len(node_positions)
+        num_edges = len(edges)
+        if quaternions is not None and len(quaternions) != num_edges:
+            raise ValueError(
+                f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"got {len(quaternions)} quaternions"
+            )
+
+        # Guard against near-zero lengths: edge length is used to normalize stiffness (EA/L, EI/L).
+        min_segment_length = 1.0e-9
+
+        # Coerce all input node positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
+        # always operate on Warp vector types even if the caller passed tuples/lists.
+        node_positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in node_positions]
+
+        # Build per-node incidence for spanning-tree traversal.
+        node_incidence: list[list[int]] = [[] for _ in range(num_nodes)]
+
+        # Per-edge data
+        edge_u: list[int] = []
+        edge_v: list[int] = []
+        edge_len: list[float] = []
+        edge_bodies: list[int] = []
+
+        # Create all edge bodies first.
+        for e_idx, (u, v) in enumerate(edges):
+            if u < 0 or u >= num_nodes or v < 0 or v >= num_nodes:
                 raise ValueError(
-                    f"add_rod: segment {i} has a too-small length (length={float(segment_length):.3e}); "
+                    f"add_rod_graph: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes"
+                )
+            if u == v:
+                raise ValueError(f"add_rod_graph: edge {e_idx} connects a node to itself ({u} -> {v})")
+
+            p0 = node_positions_wp[u]
+            p1 = node_positions_wp[v]
+            seg_vec = p1 - p0
+            seg_length = float(wp.length(seg_vec))
+            if seg_length <= min_segment_length:
+                raise ValueError(
+                    f"add_rod_graph: edge {e_idx} has a too-small length (length={seg_length:.3e}); "
                     f"segment length must be > {min_segment_length:.1e}"
                 )
-            segment_lengths.append(float(segment_length))
-            half_height = 0.5 * segment_length
 
-            # Sanity check: ensure the capsule orientation aligns its local +Z axis with
-            # the segment direction between positions[i] and positions[i+1]. This enforces
-            # the contract that ``quaternions[i]`` is a world-space rotation taking local +Z
-            # into ``positions[i+1] - positions[i]``; otherwise the capsules will not form
-            # a proper rod.
-            seg_dir = wp.normalize(p1 - p0)
-            local_z_world = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
-            alignment = wp.dot(seg_dir, local_z_world)
-            if alignment < 0.999:
-                raise ValueError(
-                    "add_rod: quaternion at index "
-                    f"{i} does not align capsule +Z with segment (positions[i+1] - positions[i]); "
-                    "quaternions must be world-space and constructed so that local +Z maps to the "
-                    "segment direction positions[i+1] - positions[i]."
-                )
+            if quaternions is None:
+                seg_dir = wp.normalize(seg_vec)
+                q = quat_between_vectors_robust(wp.vec3(0.0, 0.0, 1.0), seg_dir)
+            else:
+                q = quaternions[e_idx]
 
-            # Position body at start point, with COM offset to segment center
+                # Local +Z must align with the segment direction.
+                seg_dir = wp.normalize(seg_vec)
+                local_z_world = wp.quat_rotate(q, wp.vec3(0.0, 0.0, 1.0))
+                alignment = wp.dot(seg_dir, local_z_world)
+                if alignment < 0.999:
+                    raise ValueError(
+                        "add_rod_graph: quaternion at edge index "
+                        f"{e_idx} does not align capsule +Z with edge direction (node_positions[v] - node_positions[u]); "
+                        "quaternions must be world-space and constructed so that local +Z maps to the "
+                        "edge direction node_positions[v] - node_positions[u]."
+                    )
+            half_height = 0.5 * seg_length
+
+            # Position body at start node, with COM offset to segment center
             body_q = wp.transform(p0, q)
-
-            # COM offset in local coordinates: from start point to center
             com_offset = wp.vec3(0.0, 0.0, half_height)
 
-            # Generate unique keys for each entity type to avoid conflicts
-            body_key = f"{key}_body_{i}" if key else None
-            shape_key = f"{key}_capsule_{i}" if key else None
+            body_key = f"{key}_edge_body_{e_idx}" if key else None
+            shape_key = f"{key}_edge_capsule_{e_idx}" if key else None
 
-            child_body = self.add_link(xform=body_q, com=com_offset, key=body_key)
+            body_id = self.add_link(xform=body_q, com=com_offset, key=body_key)
 
             # Place capsule so it spans from start to end along +Z
             capsule_xform = wp.transform(wp.vec3(0.0, 0.0, half_height), wp.quat_identity())
+
             self.add_shape_capsule(
-                child_body,
+                body_id,
                 xform=capsule_xform,
                 radius=radius,
                 half_height=half_height,
                 cfg=cfg,
                 key=shape_key,
             )
-            link_bodies.append(child_body)
 
-        # Create joints connecting consecutive segments
-        # For open chains: num_segments - 1 joints
-        # For closed loops: num_segments joints (including closing joint)
-        num_joints = num_segments if closed else num_segments - 1
-        for i in range(num_joints):
-            parent_idx = i
-            child_idx = (i + 1) % num_segments  # Wraps around for closing joint when closed
+            edge_u.append(u)
+            edge_v.append(v)
+            edge_len.append(seg_length)
+            edge_bodies.append(body_id)
 
-            parent_body = link_bodies[parent_idx]
-            child_body = link_bodies[child_idx]
-            if parent_body == child_body:
-                raise ValueError(
-                    "add_rod: invalid rod topology; attempted to create a joint connecting a body to itself. "
-                    "This should be unreachable (add_rod requires >=2 segments)."
-                )
+            node_incidence[u].append(e_idx)
+            node_incidence[v].append(e_idx)
 
-            # Parent anchor at segment end
-            parent_xform = wp.transform(wp.vec3(0.0, 0.0, segment_lengths[parent_idx]), wp.quat_identity())
+        def _edge_anchor_xform(e_idx: int, node_idx: int) -> wp.transform:
+            # Body frame is at start node u; end node v is at local z = edge_len.
+            if node_idx == edge_u[e_idx]:
+                z = 0.0
+            elif node_idx == edge_v[e_idx]:
+                z = edge_len[e_idx]
+            else:
+                raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
+            return wp.transform(wp.vec3(0.0, 0.0, float(z)), wp.quat_identity())
 
-            # Child anchor at segment start
-            child_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
+        joint_counter = 0
+        jointed_body_pairs: set[tuple[int, int]] = set()
 
-            # Joint key: numbered 1 through num_joints
-            joint_key = f"{key}_cable_{i + 1}" if key else None
+        def _remember_jointed_pair(parent_body: int, child_body: int) -> None:
+            # Canonical order so lookups are symmetric.
+            if parent_body <= child_body:
+                jointed_body_pairs.add((parent_body, child_body))
+            else:
+                jointed_body_pairs.add((child_body, parent_body))
 
-            # Pre-scale rod stiffnesses here so solver kernels do not need per-segment length normalization.
-            # Use the parent segment length L.
-            #
-            # - Stretch: treat the user input as a material-like axial/shear stiffness (commonly EA) [N]
-            #   and store an effective per-joint (point-to-point) spring stiffness k_eff = EA / L [N/m].
-            # - Bend/twist: treat the user input as a material-like bending/twist stiffness (commonly EI) [N*m^2]
-            #   and store an effective per-joint angular stiffness k_eff = EI / L [N*m].
-            seg_len = segment_lengths[parent_idx]
-            stretch_ke_eff = stretch_stiffness / seg_len
-            bend_ke_eff = bend_stiffness / seg_len
+        def _build_joints_star() -> list[int]:
+            """Builds joints by connecting incident edges directly at each node."""
+            nonlocal joint_counter
+            all_joints: list[int] = []
 
-            joint = self.add_joint_cable(
-                parent=parent_body,
-                child=child_body,
-                parent_xform=parent_xform,
-                child_xform=child_xform,
-                bend_stiffness=bend_ke_eff,
-                bend_damping=bend_damping,
-                stretch_stiffness=stretch_ke_eff,
-                stretch_damping=stretch_damping,
-                key=joint_key,
-                collision_filter_parent=True,
-                enabled=True,
-            )
-            link_joints.append(joint)
+            # No articulation constraints: connect incident edges directly at each node.
+            # This preserves cycles (rings/loops) but can create multi-parent relationships, which is
+            # fine when not wrapping into an articulation.
+            for node_idx in range(num_nodes):
+                inc = node_incidence[node_idx]
+                if len(inc) < 2:
+                    continue
 
-        # Optionally (by default) wrap all rod joints into a single articulation.
-        if wrap_in_articulation and link_joints:
-            # Derive a default articulation key if none is provided.
-            rod_art_key = f"{key}_articulation" if key else None
+                # Deterministic parent choice: use the first edge in incidence list.
+                # Since node_incidence is built by iterating edges in order (0, 1, 2...),
+                # this implicitly picks the edge with the lowest index as the parent.
+                parent_edge = inc[0]
+                parent_body = edge_bodies[parent_edge]
+                parent_xform = _edge_anchor_xform(parent_edge, node_idx)
 
-            self.add_articulation(link_joints, key=rod_art_key)
+                for child_edge in inc[1:]:
+                    child_body = edge_bodies[child_edge]
+                    if parent_body == child_body:
+                        raise RuntimeError("add_rod_graph: internal error (self-connection)")
 
-        return link_bodies, link_joints
+                    child_xform = _edge_anchor_xform(child_edge, node_idx)
+
+                    # Normalize stiffness by segment length, consistent with add_rod().
+                    # Use a symmetric length so stiffness is traversal/order invariant.
+                    L_parent = edge_len[parent_edge]
+                    L_child = edge_len[child_edge]
+                    L_sym = 0.5 * (L_parent + L_child)
+                    stretch_ke_eff = stretch_stiffness / L_sym
+                    bend_ke_eff = bend_stiffness / L_sym
+
+                    joint_counter += 1
+                    joint_key = f"{key}_cable_{joint_counter}" if key else None
+
+                    j = self.add_joint_cable(
+                        parent=parent_body,
+                        child=child_body,
+                        parent_xform=parent_xform,
+                        child_xform=child_xform,
+                        bend_stiffness=bend_ke_eff,
+                        bend_damping=bend_damping,
+                        stretch_stiffness=stretch_ke_eff,
+                        stretch_damping=stretch_damping,
+                        key=joint_key,
+                        collision_filter_parent=True,
+                        enabled=True,
+                    )
+                    all_joints.append(j)
+                    _remember_jointed_pair(parent_body, child_body)
+            return all_joints
+
+        def _build_joints_forest() -> list[int]:
+            """Builds joints using a spanning-forest traversal to ensure articulation-safe (tree) topology."""
+            nonlocal joint_counter
+            all_joints: list[int] = []
+            visited = [False] * num_edges
+            component_index = 0
+
+            for start_edge in range(num_edges):
+                if visited[start_edge]:
+                    continue
+
+                # BFS over edges
+                queue: deque[int] = deque([start_edge])
+                visited[start_edge] = True
+                component_joints: list[int] = []
+                component_edges: list[int] = []
+
+                while queue:
+                    parent_edge = queue.popleft()
+                    component_edges.append(parent_edge)
+                    parent_body = edge_bodies[parent_edge]
+
+                    for shared_node in (edge_u[parent_edge], edge_v[parent_edge]):
+                        for child_edge in node_incidence[shared_node]:
+                            if child_edge == parent_edge or visited[child_edge]:
+                                continue
+
+                            child_body = edge_bodies[child_edge]
+                            if parent_body == child_body:
+                                raise RuntimeError("add_rod_graph: internal error (self-connection)")
+
+                            # Anchors at the shared node on each edge body
+                            parent_xform = _edge_anchor_xform(parent_edge, shared_node)
+                            child_xform = _edge_anchor_xform(child_edge, shared_node)
+
+                            # Normalize stiffness by segment length, consistent with add_rod().
+                            # Use a symmetric length so stiffness is traversal/order invariant.
+                            L_parent = edge_len[parent_edge]
+                            L_child = edge_len[child_edge]
+                            L_sym = 0.5 * (L_parent + L_child)
+                            stretch_ke_eff = stretch_stiffness / L_sym
+                            bend_ke_eff = bend_stiffness / L_sym
+
+                            joint_counter += 1
+                            joint_key = f"{key}_cable_{joint_counter}" if key else None
+
+                            j = self.add_joint_cable(
+                                parent=parent_body,
+                                child=child_body,
+                                parent_xform=parent_xform,
+                                child_xform=child_xform,
+                                bend_stiffness=bend_ke_eff,
+                                bend_damping=bend_damping,
+                                stretch_stiffness=stretch_ke_eff,
+                                stretch_damping=stretch_damping,
+                                key=joint_key,
+                                collision_filter_parent=True,
+                                enabled=True,
+                            )
+
+                            component_joints.append(j)
+                            all_joints.append(j)
+                            _remember_jointed_pair(parent_body, child_body)
+                            visited[child_edge] = True
+                            queue.append(child_edge)
+
+                # If the original node-edge graph contains a cycle, we cannot "close" it with extra
+                # joints while keeping an articulation tree. Warn so callers don't assume rings/loops
+                # are preserved under `wrap_in_articulation=True`.
+                if component_edges:
+                    component_nodes: set[int] = set()
+                    for e_idx in component_edges:
+                        component_nodes.add(edge_u[e_idx])
+                        component_nodes.add(edge_v[e_idx])
+
+                    # Undirected graph cycle condition: E > V - 1 (for any connected component).
+                    if len(component_edges) > max(0, len(component_nodes) - 1):
+                        warnings.warn(
+                            "add_rod_graph: detected a cycle (closed loop) in the edge graph. "
+                            "With wrap_in_articulation=True, joints are built as a tree/forest, so "
+                            "cycles are not closed. Use wrap_in_articulation=False and add explicit "
+                            "closure constraints if you need a ring/loop.",
+                            UserWarning,
+                            stacklevel=2,
+                        )
+
+                # Wrap the connected component into an articulation.
+                if component_joints:
+                    if key:
+                        art_key = (
+                            f"{key}_articulation_{component_index}" if component_index > 0 else f"{key}_articulation"
+                        )
+                    else:
+                        art_key = None
+                    self.add_articulation(component_joints, key=art_key)
+
+                component_index += 1
+
+            return all_joints
+
+        if not wrap_in_articulation:
+            all_joints = _build_joints_star()
+        else:
+            all_joints = _build_joints_forest()
+
+        if junction_collision_filter:
+            # Filter collisions among *non-jointed* sibling bodies incident to each junction node
+            # (degree >= 3). Jointed parent/child pairs are already filtered by
+            # add_joint_cable(collision_filter_parent=True).
+            for inc in node_incidence:
+                if len(inc) < 3:
+                    continue
+                bodies_set = {edge_bodies[e_idx] for e_idx in inc}
+                if len(bodies_set) < 2:
+                    continue
+                bodies = sorted(bodies_set)
+
+                for i in range(len(bodies)):
+                    for j in range(i + 1, len(bodies)):
+                        bi = bodies[i]
+                        bj = bodies[j]
+                        if (bi, bj) in jointed_body_pairs:
+                            # Already filtered by add_joint_cable(collision_filter_parent=True).
+                            continue
+                        for si in self.body_shapes.get(bi, []):
+                            for sj in self.body_shapes.get(bj, []):
+                                self.add_shape_collision_filter_pair(int(si), int(sj))
+
+        return edge_bodies, all_joints
 
     # endregion
 
@@ -5858,7 +6669,7 @@ class ModelBuilder:
 
         end_tri = len(self.tri_indices)
 
-        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri], end_tri - start_tri)
+        adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
 
         edge_indices = np.fromiter(
             (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
@@ -6011,11 +6822,15 @@ class ModelBuilder:
         fix_right: bool = False,
         fix_top: bool = False,
         fix_bottom: bool = False,
-        tri_ke: float | None = None,
-        tri_ka: float | None = None,
-        tri_kd: float | None = None,
-        tri_drag: float | None = None,
-        tri_lift: float | None = None,
+        tri_ke: float = 0.0,
+        tri_ka: float = 0.0,
+        tri_kd: float = 0.0,
+        tri_drag: float = 0.0,
+        tri_lift: float = 0.0,
+        add_surface_mesh_edges: bool = True,
+        edge_ke: float = 0.0,
+        edge_kd: float = 0.0,
+        particle_radius: float | None = None,
     ):
         """Helper to create a rectangular tetrahedral FEM grid
 
@@ -6041,13 +6856,23 @@ class ModelBuilder:
             fix_right: Make the right-most edge of particles kinematic
             fix_top: Make the top-most edge of particles kinematic
             fix_bottom: Make the bottom-most edge of particles kinematic
-        """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+            tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
+            tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
+            tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
+            add_surface_mesh_edges: Whether to create zero-stiffness bending edges on the
+                generated surface mesh. These edges improve collision robustness for VBD solver. Defaults to True.
+            edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
 
+        Note:
+            The generated surface triangles and optional edges are for collision purposes.
+            Their stiffness and damping values default to zero so they do not introduce additional
+            elastic forces. Set the triangle stiffness parameters above to non-zero values if you
+            want the surface to behave like a thin skin.
+        """
         start_vertex = len(self.particle_q)
 
         mass = cell_x * cell_y * cell_z * density
@@ -6072,7 +6897,7 @@ class ModelBuilder:
 
                     p = wp.quat_rotate(rot, v) + pos
 
-                    self.add_particle(p, vel, m)
+                    self.add_particle(p, vel, m, particle_radius)
 
         # dict of open faces
         faces = {}
@@ -6122,9 +6947,24 @@ class ModelBuilder:
                         add_tet(v6, v5, v2, v7)
                         add_tet(v5, v2, v7, v0)
 
-        # add triangles
+        # add surface triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
             self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        end_tri = len(self.tri_indices)
+
+        if add_surface_mesh_edges:
+            # add surface mesh edges (for collision)
+            if end_tri > start_tri:
+                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
+                edge_indices = np.fromiter(
+                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                    int,
+                ).reshape(-1, 4)
+                if len(edge_indices) > 0:
+                    # Add edges with specified stiffness/damping (for collision)
+                    for o1, o2, v1, v2 in edge_indices:
+                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     def add_soft_mesh(
         self,
@@ -6138,11 +6978,15 @@ class ModelBuilder:
         k_mu: float,
         k_lambda: float,
         k_damp: float,
-        tri_ke: float | None = None,
-        tri_ka: float | None = None,
-        tri_kd: float | None = None,
-        tri_drag: float | None = None,
-        tri_lift: float | None = None,
+        tri_ke: float = 0.0,
+        tri_ka: float = 0.0,
+        tri_kd: float = 0.0,
+        tri_drag: float = 0.0,
+        tri_lift: float = 0.0,
+        add_surface_mesh_edges: bool = True,
+        edge_ke: float = 0.0,
+        edge_kd: float = 0.0,
+        particle_radius: float | None = None,
     ) -> None:
         """Helper to create a tetrahedral model from an input tetrahedral mesh
 
@@ -6156,13 +7000,23 @@ class ModelBuilder:
             k_mu: The first elastic Lame parameter
             k_lambda: The second elastic Lame parameter
             k_damp: The damping stiffness
-        """
-        tri_ke = tri_ke if tri_ke is not None else self.default_tri_ke
-        tri_ka = tri_ka if tri_ka is not None else self.default_tri_ka
-        tri_kd = tri_kd if tri_kd is not None else self.default_tri_kd
-        tri_drag = tri_drag if tri_drag is not None else self.default_tri_drag
-        tri_lift = tri_lift if tri_lift is not None else self.default_tri_lift
+            tri_ke: Stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_ka: Area stiffness for surface mesh triangles. Defaults to 0.0.
+            tri_kd: Damping for surface mesh triangles. Defaults to 0.0.
+            tri_drag: Drag coefficient for surface mesh triangles. Defaults to 0.0.
+            tri_lift: Lift coefficient for surface mesh triangles. Defaults to 0.0.
+            add_surface_mesh_edges: Whether to create zero-stiffness bending edges on the
+                generated surface mesh. These edges improve collision robustness for VBD solver. Defaults to True.
+            edge_ke: Bending edge stiffness used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            edge_kd: Bending edge damping used when ``add_surface_mesh_edges`` is True. Defaults to 0.0.
+            particle_radius: particle's contact radius (controls rigidbody-particle contact distance)
 
+        Note:
+            The generated surface triangles and optional edges are for collision purposes.
+            Their stiffness and damping values default to zero so they do not introduce additional
+            elastic forces. Set the stiffness parameters above to non-zero values if you
+            want the surface to behave like a thin skin.
+        """
         num_tets = int(len(indices) / 4)
 
         start_vertex = len(self.particle_q)
@@ -6183,7 +7037,7 @@ class ModelBuilder:
         for v in vertices:
             p = wp.quat_rotate(rot, wp.vec3(v[0], v[1], v[2]) * scale) + pos
 
-            self.add_particle(p, vel, 0.0)
+            self.add_particle(p, vel, 0.0, particle_radius)
 
         # add tetrahedra
         for t in range(num_tets):
@@ -6207,12 +7061,24 @@ class ModelBuilder:
                 add_face(v0, v1, v3)
                 add_face(v0, v3, v2)
 
-        # add triangles
+        # add surface triangles
+        start_tri = len(self.tri_indices)
         for _k, v in faces.items():
-            try:
-                self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
-            except np.linalg.LinAlgError:
-                continue
+            self.add_triangle(v[0], v[1], v[2], tri_ke, tri_ka, tri_kd, tri_drag, tri_lift)
+        end_tri = len(self.tri_indices)
+
+        if add_surface_mesh_edges:
+            # add surface mesh edges (for collision)
+            if end_tri > start_tri:
+                adj = MeshAdjacency(self.tri_indices[start_tri:end_tri])
+                edge_indices = np.fromiter(
+                    (x for e in adj.edges.values() for x in (e.o0, e.o1, e.v0, e.v1)),
+                    int,
+                ).reshape(-1, 4)
+                if len(edge_indices) > 0:
+                    # Add edges with specified stiffness/damping (for collision)
+                    for o1, o2, v1, v2 in edge_indices:
+                        self.add_edge(o1, o2, v1, v2, None, edge_ke, edge_kd)
 
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i, m, I, p, q):
@@ -6249,26 +7115,359 @@ class ModelBuilder:
         else:
             self.body_inv_inertia[i] = new_inertia
 
-    def add_free_joints_to_floating_bodies(self, new_bodies: Iterable[int] | None = None):
+    def _validate_parent_body(self, parent_body: int, child: int) -> None:
         """
-        Adds a free joint and single-joint articulation to every rigid body that is not a child in any joint
+        Validate that parent_body is a valid body index.
+
+        Args:
+            parent_body: The parent body index to validate (-1 for world is OK).
+            child: The child body index (to check for self-reference).
+
+        Raises:
+            ValueError: If validation fails.
+        """
+        if parent_body == -1:
+            return  # -1 is valid (world reference)
+
+        # Check bounds
+        if parent_body < -1:
+            raise ValueError(f"Invalid parent_body index: {parent_body}. Must be >= -1 (use -1 for world).")
+
+        if parent_body >= len(self.body_mass):
+            raise ValueError(
+                f"Invalid parent_body index: {parent_body}. "
+                f"Body index out of bounds (model has {len(self.body_mass)} bodies)."
+            )
+
+        # Check self-reference
+        if parent_body == child:
+            raise ValueError(f"Cannot attach body {child} to itself (parent_body == child).")
+
+        # Validate body has positive mass (optional warning)
+        if self.body_mass[parent_body] <= 0.0:
+            warnings.warn(
+                f"parent_body {parent_body} has zero or negative mass ({self.body_mass[parent_body]}). "
+                f"This may cause unexpected behavior.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    def _find_articulation_for_body(self, body_id: int) -> int | None:
+        """
+        Find which articulation (if any) contains the given body.
+
+        A body "belongs to" the articulation where it appears as a child in a joint.
+        If a body is only a parent (e.g., root body of an articulation), it belongs
+        to the articulation of its child joints.
+
+        Args:
+            body_id: The body index to search for.
+
+        Returns:
+            int: Articulation index if found, or None if body is not in any articulation.
+
+        Algorithm:
+            1. Priority 1: Find articulation where body is a child (most common case)
+               - A body can only be a child in ONE joint (tree structure)
+               - This uniquely identifies the body's home articulation
+            2. Priority 2: Find articulation where body is a parent (for root bodies)
+               - Root bodies are parents but not children
+               - If parent in multiple articulations, returns the first found
+               - This should be rare; most bodies are children in exactly one articulation
+
+        Note:
+            In valid tree structures, a body should be a child in at most one joint,
+            making this lookup deterministic. Bodies that are only parents (root bodies)
+            may appear in multiple articulations; in such cases, the first articulation
+            found is returned.
+        """
+        # Priority 1: Check if body is a child in any joint
+        # A body should be a child in at most ONE joint (tree structure)
+        for joint_idx in range(len(self.joint_child)):
+            if self.joint_child[joint_idx] == body_id:
+                art_id = self.joint_articulation[joint_idx]
+                if art_id >= 0:  # -1 means no articulation
+                    return art_id  # Body found as child - this is its home articulation
+
+        # Priority 2: If not found as child, check if body is a parent in any joint
+        # This handles root bodies that are parents but not children
+        parent_articulations = []
+        for joint_idx in range(len(self.joint_parent)):
+            if self.joint_parent[joint_idx] == body_id:
+                art_id = self.joint_articulation[joint_idx]
+                if art_id >= 0 and art_id not in parent_articulations:
+                    parent_articulations.append(art_id)
+
+        # Use first articulation found, but warn if multiple (shouldn't happen in valid trees)
+        if parent_articulations:
+            result = parent_articulations[0]
+            if len(parent_articulations) > 1:
+                warnings.warn(
+                    f"Body {body_id} is a parent in multiple articulations {parent_articulations}. "
+                    f"Using articulation {result}. This may indicate an unusual model structure.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            return result
+
+        return None
+
+    @staticmethod
+    def _validate_base_joint_params(floating: bool | None, base_joint: dict | None, parent: int) -> None:
+        """
+        Validate floating and base_joint parameter combinations.
+
+        This is a shared validation function used by all importers (MJCF, URDF, USD)
+        to ensure consistent parameter validation.
+
+        Args:
+            floating: The floating parameter value (True, False, or None).
+            base_joint: Dict with joint parameters (or None).
+            parent: The parent body index (-1 for world, >= 0 for a body).
+
+        Raises:
+            ValueError: If parameter combinations are invalid:
+                - Both floating and base_joint are specified (mutually exclusive)
+                - floating=True with parent != -1 (FREE joints require world frame)
+                - base_joint dict contains conflicting keys like 'parent', 'child', etc.
+        """
+        if floating is not None and base_joint is not None:
+            raise ValueError(
+                f"Cannot specify both 'floating' and 'base_joint' parameters. "
+                f"These are mutually exclusive ways to control root attachment:\n"
+                f"  - Use 'floating' for simple FREE/FIXED joints\n"
+                f"  - Use 'base_joint' dict for custom joint parameters\n"
+                f"Current values: floating={floating}, base_joint={{dict}}"
+            )
+
+        if floating is True and parent != -1:
+            raise ValueError(
+                f"Cannot create FREE joint when parent_body={parent} (not world). "
+                f"FREE joints must connect to world frame (parent_body=-1).\n"
+                f"Did you mean:\n"
+                f"  - Use floating=False to create FIXED joint to parent\n"
+                f"  - Use base_joint dict with D6 joint parameters for 6-DOF mobility attached to parent"
+            )
+
+        # Validate base_joint dict doesn't contain conflicting keys
+        if base_joint is not None:
+            conflicting_keys = set(base_joint.keys()) & {"parent", "child", "parent_xform", "child_xform"}
+            if conflicting_keys:
+                raise ValueError(
+                    f"base_joint dict cannot specify {conflicting_keys}. "
+                    f"These parameters are automatically set based on parent_body and attachment:\n"
+                    f"  - 'parent' is set from parent_body parameter (currently {parent})\n"
+                    f"  - 'child' is set to the imported root body\n"
+                    f"  - 'parent_xform' and 'child_xform' are set from xform parameter\n"
+                    f"Please remove {conflicting_keys} from the base_joint dict and use the "
+                    f"parent_body argument instead."
+                )
+
+    def _check_sequential_composition(self, parent_body: int) -> int | None:
+        """
+        Check if attaching to parent_body is sequential (most recent articulation).
+
+        Args:
+            parent_body: The parent body index to check.
+
+        Returns:
+            The parent articulation ID, or None if parent_body is world (-1) or not in an articulation.
+
+        Raises:
+            ValueError: If attempting to attach to a non-sequential articulation.
+        """
+        if parent_body == -1:
+            return None
+
+        parent_articulation = self._find_articulation_for_body(parent_body)
+        if parent_articulation is None:
+            return None
+
+        num_articulations = len(self.articulation_start)
+        is_sequential = parent_articulation == num_articulations - 1
+
+        if is_sequential:
+            return parent_articulation
+        else:
+            body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
+            raise ValueError(
+                f"Cannot attach to parent_body {body_name} in articulation #{parent_articulation} "
+                f"(most recent is #{num_articulations - 1}). "
+                f"Attach to the most recently added articulation or build in order."
+            )
+
+    def _finalize_imported_articulation(
+        self,
+        joint_indices: list[int],
+        parent_body: int,
+        articulation_key: str | None = None,
+        custom_attributes: dict | None = None,
+    ) -> None:
+        """
+        Attach imported joints to parent articulation or create a new articulation.
+
+        This helper method encapsulates the common logic used by all importers (MJCF, URDF, USD)
+        for handling articulation creation after importing a model.
+
+        Args:
+            joint_indices: List of joint indices from the imported model.
+            parent_body: The parent body index (-1 for world, or a body index for hierarchical composition).
+            articulation_key: Optional key for the articulation (e.g., model name).
+            custom_attributes: Optional custom attributes for the articulation.
+
+        Note:
+            - If parent_body != -1 and it belongs to an articulation, the imported joints are added
+              to the parent's articulation (only works for sequential composition).
+            - If parent_body != -1 but is not in any articulation, raises ValueError.
+            - If parent_body == -1, a new articulation is created.
+            - If joint_indices is empty, does nothing.
+
+        Raises:
+            ValueError: If parent_body is specified but not part of any articulation.
+        """
+        if not joint_indices:
+            return
+
+        if parent_body != -1:
+            # Check if attachment is sequential
+            parent_articulation = self._check_sequential_composition(parent_body=parent_body)
+
+            if parent_articulation is not None:
+                # Mark all new joints as belonging to the parent's articulation
+                for joint_idx in joint_indices:
+                    self.joint_articulation[joint_idx] = parent_articulation
+            else:
+                # Parent body exists but is not in any articulation - this is an error
+                # because user explicitly specified parent_body but it can't be used
+                body_name = self.body_key[parent_body] if parent_body < len(self.body_key) else f"#{parent_body}"
+                raise ValueError(
+                    f"Cannot attach to parent_body '{body_name}': body is not part of any articulation. "
+                    f"Only bodies within articulations can be used as parent_body. "
+                    f"To create an independent articulation, use parent_body=-1 (default)."
+                )
+        else:
+            # No parent_body specified, create a new articulation
+            self.add_articulation(
+                joints=joint_indices,
+                key=articulation_key,
+                custom_attributes=custom_attributes,
+            )
+
+    def _add_base_joint(
+        self,
+        child: int,
+        floating: bool | None = None,
+        base_joint: dict | None = None,
+        key: str | None = None,
+        parent_xform: Transform | None = None,
+        child_xform: Transform | None = None,
+        parent: int = -1,
+    ) -> int:
+        """
+        Internal helper for importers to create base joints.
+
+        This method is used by importers (URDF, MJCF, USD) to attach imported bodies
+        to the world or to a parent body with the appropriate joint type.
+
+        Args:
+            child: The body index to connect.
+            floating: If None (default), behavior depends on format-specific defaults.
+                If True, creates a FREE joint (only valid when ``parent == -1``).
+                If False, always creates a fixed joint.
+            base_joint: Dict with joint parameters passed to :meth:`add_joint`.
+                Cannot be specified together with ``floating``.
+            key: A unique key for the joint.
+            parent_xform: The transform of the joint in the parent frame.
+                If None, defaults to ``body_q[child]`` when parent is world (-1),
+                or identity when parent is another body.
+            child_xform: The transform of the joint in the child frame.
+                If None, defaults to identity transform.
+            parent: The index of the parent body. Use -1 (default) to connect to world.
+
+        Returns:
+            The index of the created joint.
+
+        Raises:
+            ValueError: If both ``floating`` and ``base_joint`` are specified,
+                or if ``floating=True`` with ``parent != -1``, or if parent body
+                is not part of any articulation.
+        """
+        # Validate parameter combinations
+        self._validate_base_joint_params(floating, base_joint, parent)
+        self._validate_parent_body(parent, child)
+
+        # Validate that parent body is in an articulation (if not world)
+        if parent != -1:
+            parent_articulation = self._find_articulation_for_body(parent)
+            if parent_articulation is None:
+                body_name = self.body_key[parent] if parent < len(self.body_key) else f"#{parent}"
+                raise ValueError(
+                    f"Cannot attach to parent_body '{body_name}': body is not part of any articulation. "
+                    f"Only bodies within articulations can be used as parent_body. "
+                    f"To create an independent articulation, use parent_body=-1 (default)."
+                )
+
+        # Determine transforms
+        if parent_xform is None:
+            parent_xform = self.body_q[child] if parent == -1 else wp.transform_identity()
+        if child_xform is None:
+            child_xform = wp.transform_identity()
+
+        # Create joint based on parameters
+        if base_joint is not None:
+            # Use custom joint parameters from dict
+            joint_params = base_joint.copy()
+            joint_params["parent"] = parent
+            joint_params["child"] = child
+            joint_params["parent_xform"] = parent_xform
+            joint_params["child_xform"] = child_xform
+            if "key" not in joint_params and key is not None:
+                joint_params["key"] = key
+            return self.add_joint(**joint_params)
+        elif floating is True or (floating is None and parent == -1):
+            # FREE joint (floating=True always requires parent==-1, validated above)
+            # Note: We don't pass parent_xform here because add_joint_free initializes joint_q from body_q[child]
+            # and the caller (e.g., URDF importer) will set the correct joint_q values afterward
+            return self.add_joint_free(child, key=key)
+        else:
+            # FIXED joint (floating=False or floating=None with parent body)
+            return self.add_joint_fixed(parent, child, parent_xform, child_xform, key=key)
+
+    def _add_base_joints_to_floating_bodies(
+        self,
+        new_bodies: Iterable[int] | None = None,
+        floating: bool | None = None,
+        base_joint: dict | None = None,
+    ):
+        """
+        Adds joints and single-joint articulations to every rigid body that is not a child in any joint
         and has positive mass.
 
         Args:
-            new_bodies (Iterable[int] or None, optional): The set of body indices to consider for adding free joints.
+            new_bodies: The set of body indices to consider for adding joints.
+            floating: If True or None (default), floating bodies receive a free joint.
+                If False, floating bodies receive a fixed joint.
+            base_joint: Dict with joint parameters passed to :meth:`add_joint`.
+                When specified, this takes precedence over the ``floating`` parameter.
 
         Note:
             - Bodies that are already a child in any joint will be skipped.
-            - Only bodies with strictly positive mass will receive a free joint.
-            - Each free joint is added to its own single-joint articulation.
+            - Only bodies with strictly positive mass will receive a joint.
+            - Each joint is added to its own single-joint articulation.
             - This is useful for ensuring that all floating (unconnected) bodies are properly articulated.
         """
+        if new_bodies is None:
+            return
+
         # set(self.joint_child) is connected_bodies
         floating_bodies = set(new_bodies) - set(self.joint_child)
         for body_id in floating_bodies:
-            if self.body_mass[body_id] > 0:
-                joint = self.add_joint_free(child=body_id)
-                self.add_articulation([joint])
+            if self.body_mass[body_id] <= 0:
+                continue
+
+            joint = self._add_base_joint(body_id, floating=floating, base_joint=base_joint)
+            # Use body key as articulation key for single-body articulations
+            self.add_articulation([joint], key=self.body_key[body_id])
 
     def request_contact_attributes(self, *attributes: str) -> None:
         """
@@ -6330,8 +7529,11 @@ class ModelBuilder:
         :class:`newton.solvers.SolverVBD`; :meth:`finalize` does not implicitly color the model.
 
         Args:
-            include_bending_energy: Whether to consider bending energy for trimeshes in the coloring process. If set to `True`, the generated
-                graph will contain all the edges connecting o1 and o2; otherwise, the graph will be equivalent to the trimesh.
+            include_bending: Whether to include bending edges in the coloring graph. Set to `True` if your
+                model contains bending edges (added via :meth:`add_edge`) that participate in bending constraints.
+                When enabled, the coloring graph includes connections between opposite vertices of each edge (o1-o2),
+                ensuring proper dependency handling for parallel bending computations. Leave as `False` if your model
+                has no bending edges or if bending edges should not affect the coloring.
             balance_colors: Whether to apply the color balancing algorithm to balance the size of each color
             target_max_min_color_ratio: the color balancing algorithm will stop when the ratio between the largest color and
                 the smallest color reaches this value
@@ -6350,23 +7552,43 @@ class ModelBuilder:
             Ordered Greedy: Ton-That, Q. M., Kry, P. G., & Andrews, S. (2023). Parallel block Neo-Hookean XPBD using graph clustering. Computers & Graphics, 110, 1-10.
 
         """
-        # Color particles only if we have edges (cloth/soft bodies)
-        if len(self.edge_indices) > 0:
-            edge_indices = np.array(self.edge_indices)
-            self.particle_color_groups = color_trimesh(
-                len(self.particle_q),
-                edge_indices,
-                include_bending,
-                algorithm=coloring_algorithm,
-                balance_colors=balance_colors,
-                target_max_min_color_ratio=target_max_min_color_ratio,
+        if self.particle_count != 0:
+            tri_indices = np.array(self.tri_indices, dtype=np.int32) if self.tri_indices else None
+            tri_materials = np.array(self.tri_materials)
+            tet_indices = np.array(self.tet_indices, dtype=np.int32) if self.tet_indices else None
+            tet_materials = np.array(self.tet_materials)
+
+            bending_edge_indices = None
+            bending_edge_active_mask = None
+            if include_bending and self.edge_indices:
+                bending_edge_indices = np.array(self.edge_indices, dtype=np.int32)
+                bending_edge_props = np.array(self.edge_bending_properties)
+                # Active if either stiffness or damping is non-zero
+                bending_edge_active_mask = (bending_edge_props[:, 0] != 0.0) | (bending_edge_props[:, 1] != 0.0)
+
+            graph_edge_indices = construct_particle_graph(
+                tri_indices,
+                tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
+                bending_edge_indices,
+                bending_edge_active_mask,
+                tet_indices,
+                tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
             )
-        else:
-            # No edges to color - assign all particles to single color group
-            if len(self.particle_q) > 0:
-                self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
+
+            if len(graph_edge_indices) > 0:
+                self.particle_color_groups = color_graph(
+                    self.particle_count,
+                    graph_edge_indices,
+                    balance_colors,
+                    target_max_min_color_ratio,
+                    coloring_algorithm,
+                )
             else:
-                self.particle_color_groups = []
+                # No edges to color - assign all particles to single color group
+                if len(self.particle_q) > 0:
+                    self.particle_color_groups = [np.arange(len(self.particle_q), dtype=int)]
+                else:
+                    self.particle_color_groups = []
 
         # Also color rigid bodies based on joint connectivity
         self.body_color_groups = color_rigid_bodies(
@@ -6385,7 +7607,7 @@ class ModelBuilder:
         1. World indices are monotonic (non-decreasing after first non-negative)
         2. World indices are contiguous (no gaps in sequence)
         3. Global entities (world -1) only appear at beginning or end of arrays
-        4. All world indices are in valid range [-1, num_worlds-1]
+        4. All world indices are in valid range [-1, world_count-1]
 
         Raises:
             ValueError: If any validation check fails.
@@ -6398,6 +7620,7 @@ class ModelBuilder:
             ("joint_world", self.joint_world),
             ("articulation_world", self.articulation_world),
             ("equality_constraint_world", self.equality_constraint_world),
+            ("constraint_mimic_world", self.constraint_mimic_world),
         ]
 
         all_world_indices = set()
@@ -6408,14 +7631,14 @@ class ModelBuilder:
 
             arr = np.array(world_array, dtype=np.int32)
 
-            # Check for invalid world indices (must be in range [-1, num_worlds-1])
-            max_valid = self.num_worlds - 1
+            # Check for invalid world indices (must be in range [-1, world_count-1])
+            max_valid = self.world_count - 1
             invalid_indices = np.where((arr < -1) | (arr > max_valid))[0]
             if len(invalid_indices) > 0:
                 invalid_values = arr[invalid_indices]
                 raise ValueError(
                     f"Invalid world index in {array_name}: found value(s) {invalid_values.tolist()} "
-                    f"at indices {invalid_indices.tolist()}. Valid range is -1 to {max_valid} (num_worlds={self.num_worlds})."
+                    f"at indices {invalid_indices.tolist()}. Valid range is -1 to {max_valid} (world_count={self.world_count})."
                 )
 
             # Check for global entity positioning (world -1)
@@ -6496,7 +7719,9 @@ class ModelBuilder:
             articulated_bodies.add(-1)  # World is always reachable
             for i, art in enumerate(self.joint_articulation):
                 if art >= 0:  # Joint is in an articulation
+                    parent = self.joint_parent[i]
                     child = self.joint_child[i]
+                    articulated_bodies.add(parent)
                     articulated_bodies.add(child)
 
             # Now check for true orphan joints: non-articulated joints whose child
@@ -6558,13 +7783,483 @@ class ModelBuilder:
             )
         return len(shapes_with_bad_margin) == 0
 
+    def _validate_structure(self) -> None:
+        """Validate structural invariants of the model.
+
+        This method performs consolidated validation of all structural constraints,
+        using vectorized numpy operations for efficiency:
+
+        - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
+        - Joint references: equality_constraint_joint1/2
+        - Self-referential joints: joint_parent[i] != joint_child[i]
+        - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start
+        - Array length consistency: per-DOF and per-coord arrays
+
+        Raises:
+            ValueError: If any structural validation check fails.
+        """
+        body_count = self.body_count
+        joint_count = self.joint_count
+
+        # Validate shape_body references: must be in [-1, body_count-1]
+        if self.shape_count > 0:
+            shape_body = np.array(self.shape_body, dtype=np.int32)
+            invalid_mask = (shape_body < -1) | (shape_body >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                shape_key = self.shape_key[idx] or f"shape_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in shape_body: shape {idx} ('{shape_key}') references body {shape_body[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+        # Validate joint_parent references: must be in [-1, body_count-1]
+        if joint_count > 0:
+            joint_parent = np.array(self.joint_parent, dtype=np.int32)
+            invalid_mask = (joint_parent < -1) | (joint_parent >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in joint_parent: joint {idx} ('{joint_key}') references parent body {joint_parent[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            # Validate joint_child references: must be in [0, body_count-1] (child cannot be world)
+            joint_child = np.array(self.joint_child, dtype=np.int32)
+            invalid_mask = (joint_child < 0) | (joint_child >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in joint_child: joint {idx} ('{joint_key}') references child body {joint_child[idx]}, "
+                    f"but valid range is [0, {body_count - 1}] (body_count={body_count}). Child cannot be the world (-1)."
+                )
+
+            # Validate self-referential joints: parent != child
+            self_ref_mask = joint_parent == joint_child
+            if np.any(self_ref_mask):
+                invalid_indices = np.where(self_ref_mask)[0]
+                idx = invalid_indices[0]
+                joint_key = self.joint_key[idx] or f"joint_{idx}"
+                raise ValueError(
+                    f"Self-referential joint: joint {idx} ('{joint_key}') has parent and child both set to body {joint_parent[idx]}."
+                )
+
+        # Validate equality constraint body references
+        equality_count = len(self.equality_constraint_type)
+        if equality_count > 0:
+            eq_body1 = np.array(self.equality_constraint_body1, dtype=np.int32)
+            invalid_mask = (eq_body1 < -1) | (eq_body1 >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{eq_key}') references body {eq_body1[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            eq_body2 = np.array(self.equality_constraint_body2, dtype=np.int32)
+            invalid_mask = (eq_body2 < -1) | (eq_body2 >= body_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{eq_key}') references body {eq_body2[idx]}, "
+                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
+                )
+
+            # Validate equality constraint joint references
+            eq_joint1 = np.array(self.equality_constraint_joint1, dtype=np.int32)
+            invalid_mask = (eq_joint1 < -1) | (eq_joint1 >= joint_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{eq_key}') references joint {eq_joint1[idx]}, "
+                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
+                )
+
+            eq_joint2 = np.array(self.equality_constraint_joint2, dtype=np.int32)
+            invalid_mask = (eq_joint2 < -1) | (eq_joint2 >= joint_count)
+            if np.any(invalid_mask):
+                invalid_indices = np.where(invalid_mask)[0]
+                idx = invalid_indices[0]
+                eq_key = self.equality_constraint_key[idx] or f"equality_constraint_{idx}"
+                raise ValueError(
+                    f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{eq_key}') references joint {eq_joint2[idx]}, "
+                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
+                )
+
+        # Validate start array monotonicity
+        if joint_count > 0:
+            joint_q_start = np.array(self.joint_q_start, dtype=np.int32)
+            if len(joint_q_start) > 1:
+                diffs = np.diff(joint_q_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"joint_q_start is not monotonically increasing: "
+                        f"joint_q_start[{idx}]={joint_q_start[idx]} > joint_q_start[{idx + 1}]={joint_q_start[idx + 1]}."
+                    )
+
+            joint_qd_start = np.array(self.joint_qd_start, dtype=np.int32)
+            if len(joint_qd_start) > 1:
+                diffs = np.diff(joint_qd_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"joint_qd_start is not monotonically increasing: "
+                        f"joint_qd_start[{idx}]={joint_qd_start[idx]} > joint_qd_start[{idx + 1}]={joint_qd_start[idx + 1]}."
+                    )
+
+        articulation_count = self.articulation_count
+        if articulation_count > 0:
+            articulation_start = np.array(self.articulation_start, dtype=np.int32)
+            if len(articulation_start) > 1:
+                diffs = np.diff(articulation_start)
+                if np.any(diffs < 0):
+                    idx = np.where(diffs < 0)[0][0]
+                    raise ValueError(
+                        f"articulation_start is not monotonically increasing: "
+                        f"articulation_start[{idx}]={articulation_start[idx]} > articulation_start[{idx + 1}]={articulation_start[idx + 1]}."
+                    )
+
+        # Validate array length consistency
+        if joint_count > 0:
+            # Per-DOF arrays should have length == joint_dof_count
+            dof_arrays = [
+                ("joint_axis", self.joint_axis),
+                ("joint_armature", self.joint_armature),
+                ("joint_target_ke", self.joint_target_ke),
+                ("joint_target_kd", self.joint_target_kd),
+                ("joint_limit_lower", self.joint_limit_lower),
+                ("joint_limit_upper", self.joint_limit_upper),
+                ("joint_limit_ke", self.joint_limit_ke),
+                ("joint_limit_kd", self.joint_limit_kd),
+                ("joint_target_pos", self.joint_target_pos),
+                ("joint_target_vel", self.joint_target_vel),
+                ("joint_effort_limit", self.joint_effort_limit),
+                ("joint_velocity_limit", self.joint_velocity_limit),
+                ("joint_friction", self.joint_friction),
+                ("joint_act_mode", self.joint_act_mode),
+            ]
+            for name, arr in dof_arrays:
+                if len(arr) != self.joint_dof_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {self.joint_dof_count} (joint_dof_count)."
+                    )
+
+            # Per-coord arrays should have length == joint_coord_count
+            coord_arrays = [
+                ("joint_q", self.joint_q),
+            ]
+            for name, arr in coord_arrays:
+                if len(arr) != self.joint_coord_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {self.joint_coord_count} (joint_coord_count)."
+                    )
+
+            # Start arrays should have length == joint_count
+            start_arrays = [
+                ("joint_q_start", self.joint_q_start),
+                ("joint_qd_start", self.joint_qd_start),
+            ]
+            for name, arr in start_arrays:
+                if len(arr) != joint_count:
+                    raise ValueError(
+                        f"Array length mismatch: {name} has length {len(arr)}, "
+                        f"but expected {joint_count} (joint_count)."
+                    )
+
+    def validate_joint_ordering(self) -> bool:
+        """Validate that joints within articulations follow DFS topological ordering.
+
+        This check ensures that joints are ordered such that parent bodies are processed
+        before child bodies within each articulation. This ordering is required by some
+        solvers (e.g., MuJoCo) for correct kinematic computations.
+
+        This method is public and opt-in because the check has O(n log n) complexity
+        due to topological sorting. It is skipped by default in finalize().
+
+        Warns:
+            UserWarning: If joints are not in DFS topological order.
+
+        Returns:
+            bool: True if joints are correctly ordered, False otherwise.
+        """
+        from ..utils import topological_sort  # noqa: PLC0415
+
+        if self.joint_count == 0:
+            return True
+
+        joint_parent = np.array(self.joint_parent, dtype=np.int32)
+        joint_child = np.array(self.joint_child, dtype=np.int32)
+        joint_articulation = np.array(self.joint_articulation, dtype=np.int32)
+
+        # Get unique articulations (excluding -1 which means not in any articulation)
+        articulation_ids = np.unique(joint_articulation)
+        articulation_ids = articulation_ids[articulation_ids >= 0]
+
+        all_ordered = True
+
+        for art_id in articulation_ids:
+            # Get joints in this articulation
+            art_joints = np.where(joint_articulation == art_id)[0]
+            if len(art_joints) <= 1:
+                continue
+
+            # Build joint list for topological sort
+            joints_simple = [(int(joint_parent[i]), int(joint_child[i])) for i in art_joints]
+
+            try:
+                joint_order = topological_sort(joints_simple, use_dfs=True, custom_indices=list(art_joints))
+
+                # Check if current order matches expected DFS order
+                if any(joint_order[i] != art_joints[i] for i in range(len(joints_simple))):
+                    art_key = (
+                        self.articulation_key[art_id]
+                        if art_id < len(self.articulation_key)
+                        else f"articulation_{art_id}"
+                    )
+                    warnings.warn(
+                        f"Joints in articulation '{art_key}' (id={art_id}) are not in DFS topological order. "
+                        f"This may cause issues with some solvers (e.g., MuJoCo). "
+                        f"Current order: {list(art_joints)}, expected: {joint_order}.",
+                        stacklevel=2,
+                    )
+                    all_ordered = False
+            except ValueError as e:
+                # Topological sort failed (e.g., cycle detected)
+                art_key = (
+                    self.articulation_key[art_id] if art_id < len(self.articulation_key) else f"articulation_{art_id}"
+                )
+                warnings.warn(
+                    f"Failed to validate joint ordering for articulation '{art_key}' (id={art_id}): {e}",
+                    stacklevel=2,
+                )
+                all_ordered = False
+
+        return all_ordered
+
+    def _build_world_starts(self):
+        """
+        Constructs the per-world entity start indices.
+
+        This method validates that the per-world start index lists for various entities
+        (particles, bodies, shapes, joints, articulations, equality constraints and joint
+        coordinates/DOFs/constraints) are cumulative and match the total counts of those
+        entities. Moreover, it appends the start of tail-end global entities and the
+        overall total counts to the end of each start index lists.
+
+        The format of the start index lists is as follows (where `*` can be `body`, `shape`, `joint`, etc.):
+            .. code-block:: python
+
+                world_*_start = [ start_world_0, start_world_1, ..., start_world_N , start_global_tail, total_count]
+
+        This allows retrieval of per-world counts using:
+            .. code-block:: python
+
+                global_*_count = start_world_0 + (total_count - start_global_tail)
+                world_*_count[w] = world_*_start[w + 1] - world_*_start[w]
+
+        e.g.
+            .. code-block:: python
+
+                body_world = [-1, -1, 0, 0, ..., 1, 1, ..., N - 1, N - 1, ..., -1, -1, -1, ...]
+                body_world_start = [2, 15, 25, ..., 50, 60, 72]
+                #          world :  -1 |  0 |  1   ... |  N-1 | -1 |  total
+        """
+        # List of all world starts of entities
+        world_entity_start_arrays = [
+            (self.particle_world_start, self.particle_count, self.particle_world, "particle"),
+            (self.body_world_start, self.body_count, self.body_world, "body"),
+            (self.shape_world_start, self.shape_count, self.shape_world, "shape"),
+            (self.joint_world_start, self.joint_count, self.joint_world, "joint"),
+            (self.articulation_world_start, self.articulation_count, self.articulation_world, "articulation"),
+            (
+                self.equality_constraint_world_start,
+                len(self.equality_constraint_type),
+                self.equality_constraint_world,
+                "equality constraint",
+            ),
+        ]
+
+        def build_entity_start_array(
+            entity_count: int, entity_world: list[int], world_entity_start: list[int], name: str
+        ):
+            # Ensure that entity_world has length equal to entity_count
+            if len(entity_world) != entity_count:
+                raise ValueError(
+                    f"World array for {name}s has incorrect length: expected {entity_count}, found {len(entity_world)}."
+                )
+
+            # Initialize world_entity_start with zeros
+            world_entity_start.clear()
+            world_entity_start.extend([0] * (self.world_count + 2))
+
+            # Count global entities at the front of the entity_world array
+            front_global_entity_count = 0
+            for w in entity_world:
+                if w == -1:
+                    front_global_entity_count += 1
+                else:
+                    break
+            world_entity_start[0] = front_global_entity_count
+
+            # Compute per-world cumulative counts
+            entity_world_np = np.asarray(entity_world, dtype=np.int32)
+            world_counts = np.bincount(entity_world_np[entity_world_np >= 0], minlength=self.world_count)
+            for w in range(self.world_count):
+                world_entity_start[w + 1] = world_entity_start[w] + int(world_counts[w])
+
+            # Set the last element to the total entity counts over all worlds in the model
+            world_entity_start[-1] = entity_count
+
+        # Check that all world offset indices are cumulative and match counts
+        for world_start_array, total_count, entity_world_array, name in world_entity_start_arrays:
+            # First build the start lists by appending tail-end global and total entity counts
+            build_entity_start_array(total_count, entity_world_array, world_start_array, name)
+
+            # Ensure the world_start array has length world_count + 2 (for global entities at start/end)
+            expected_length = self.world_count + 2
+            if len(world_start_array) != expected_length:
+                raise ValueError(
+                    f"World start indices for {name}s have incorrect length: "
+                    f"expected {expected_length}, found {len(world_start_array)}."
+                )
+
+            # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
+            sum_of_counts = world_start_array[0]
+            for w in range(self.world_count + 1):
+                start_idx = world_start_array[w]
+                end_idx = world_start_array[w + 1]
+                count = end_idx - start_idx
+                if count < 0:
+                    raise ValueError(
+                        f"Invalid world start indices for {name}s: world {w} has negative count ({count}). "
+                        f"Start index: {start_idx}, end index: {end_idx}."
+                    )
+                sum_of_counts += count
+
+            # Ensure the sum of per-world counts equals the total count
+            if sum_of_counts != total_count:
+                raise ValueError(
+                    f"Sum of per-world {name} counts does not equal total count: "
+                    f"expected {total_count}, found {sum_of_counts}."
+                )
+
+            # Ensure that the last entry equals the total count
+            if world_start_array[-1] != total_count:
+                raise ValueError(
+                    f"World start indices for {name}s do not match total count: "
+                    f"expected final index {total_count}, found {world_start_array[-1]}."
+                )
+
+        # List of world starts of joints spaces, i.e. coords/DOFs/constraints
+        world_joint_space_start_arrays = [
+            (self.joint_dof_world_start, self.joint_qd_start, self.joint_dof_count, "joint DOF"),
+            (self.joint_coord_world_start, self.joint_q_start, self.joint_coord_count, "joint coordinate"),
+            (self.joint_constraint_world_start, self.joint_cts_start, self.joint_constraint_count, "joint constraint"),
+        ]
+
+        def build_joint_space_start_array(
+            space_count: int, joint_space_start: list[int], world_space_start: list[int], name: str
+        ):
+            # Ensure that joint_space_start has length equal to self.joint_count
+            if len(joint_space_start) != self.joint_count:
+                raise ValueError(
+                    f"Joint start array for {name}s has incorrect length: "
+                    f"expected {self.joint_count}, found {len(joint_space_start)}."
+                )
+
+            # Initialize world_space_start with zeros
+            world_space_start.clear()
+            world_space_start.extend([0] * (self.world_count + 2))
+
+            # Extend joint_space_start with total count to enable computing per-world counts
+            joint_space_start_ext = copy.copy(joint_space_start)
+            joint_space_start_ext.append(space_count)
+
+            # Count global entities at the front of the entity_world array
+            front_global_space_count = 0
+            for j, w in enumerate(self.joint_world):
+                if w == -1:
+                    front_global_space_count += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
+                else:
+                    break
+
+            # Compute per-world cumulative joint space counts to initialize world_space_start
+            for j, w in enumerate(self.joint_world):
+                if w >= 0:
+                    world_space_start[w + 1] += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
+
+            # Convert per-world counts to cumulative start indices
+            world_space_start[0] += front_global_space_count
+            for w in range(self.world_count):
+                world_space_start[w + 1] += world_space_start[w]
+
+            # Add total (i.e. final) entity counts to the per-world start indices
+            world_space_start[-1] = space_count
+
+        # Check that all world offset indices are cumulative and match counts
+        for world_start_array, space_start_array, total_count, name in world_joint_space_start_arrays:
+            # First finalize the start array by appending tail-end global and total entity counts
+            build_joint_space_start_array(total_count, space_start_array, world_start_array, name)
+
+            # Ensure the world_start array has length world_count + 2 (for global entities at start/end)
+            expected_length = self.world_count + 2
+            if len(world_start_array) != expected_length:
+                raise ValueError(
+                    f"World start indices for {name}s have incorrect length: "
+                    f"expected {expected_length}, found {len(world_start_array)}."
+                )
+
+            # Ensure that per-world start indices are non-decreasing and compute sum of per-world counts
+            sum_of_counts = world_start_array[0]
+            for w in range(self.world_count + 1):
+                start_idx = world_start_array[w]
+                end_idx = world_start_array[w + 1]
+                count = end_idx - start_idx
+                if count < 0:
+                    raise ValueError(
+                        f"Invalid world start indices for {name}s: world {w} has negative count ({count}). "
+                        f"Start index: {start_idx}, end index: {end_idx}."
+                    )
+                sum_of_counts += count
+
+            # Ensure the sum of per-world counts equals the total count
+            if sum_of_counts != total_count:
+                raise ValueError(
+                    f"Sum of per-world {name} counts does not equal total count: "
+                    f"expected {total_count}, found {sum_of_counts}."
+                )
+
+            # Ensure that the last entry equals the total count
+            if world_start_array[-1] != total_count:
+                raise ValueError(
+                    f"World start indices for {name}s do not match total count: "
+                    f"expected final index {total_count}, found {world_start_array[-1]}."
+                )
+
     def finalize(
         self,
         device: Devicelike | None = None,
         requires_grad: bool = False,
+        skip_all_validations: bool = False,
         skip_validation_worlds: bool = False,
         skip_validation_joints: bool = False,
         skip_validation_shapes: bool = False,
+        skip_validation_structure: bool = False,
+        skip_validation_joint_ordering: bool = True,
     ) -> Model:
         """
         Finalize the builder and create a concrete :class:`~newton.Model` for simulation.
@@ -6576,9 +8271,15 @@ class ModelBuilder:
         Args:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
+            skip_all_validations: If True, skips all validation checks. Use for maximum performance when
+                you are confident the model is valid. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips validation of joints belonging to an articulation. Default is False.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
+                array lengths, monotonicity). Default is False.
+            skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
+                articulations. Default is True (opt-in) because this check has O(n log n) complexity.
 
         Returns:
             Model: A fully constructed Model object containing all simulation data on the specified device.
@@ -6589,22 +8290,34 @@ class ModelBuilder:
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
         """
-        from .collide import count_rigid_contact_points  # noqa: PLC0415
 
         # ensure the world count is set correctly
-        self.num_worlds = max(1, self.num_worlds)
+        self.world_count = max(1, self.world_count)
 
         # validate world ordering and contiguity
-        if not skip_validation_worlds:
+        if not skip_all_validations and not skip_validation_worlds:
             self._validate_world_ordering()
 
         # validate joints belong to an articulation
-        if not skip_validation_joints:
+        if not skip_all_validations and not skip_validation_joints:
             self._validate_joints()
 
         # validate shapes have valid contact margins
-        if not skip_validation_shapes:
+        if not skip_all_validations and not skip_validation_shapes:
             self._validate_shapes()
+
+        # validate structural invariants (body/joint references, array lengths)
+        if not skip_all_validations and not skip_validation_structure:
+            self._validate_structure()
+
+        # validate DFS topological joint ordering (opt-in, skipped by default)
+        if not skip_all_validations and not skip_validation_joint_ordering:
+            self.validate_joint_ordering()
+
+        # construct world starts by ensuring they are cumulative and appending
+        # tail-end global counts and sum total counts over the entire model.
+        # This method also performs relevant validation checks on the start.
+        self._build_world_starts()
 
         # construct particle inv masses
         ms = np.array(self.particle_mass, dtype=np.float32)
@@ -6620,7 +8333,7 @@ class ModelBuilder:
             m.request_state_attributes(*self._requested_state_attributes)
             m.requires_grad = requires_grad
 
-            m.num_worlds = self.num_worlds
+            m.world_count = self.world_count
 
             # ---------------------
             # particles
@@ -6659,13 +8372,16 @@ class ModelBuilder:
 
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
-            finalized_meshes = {}  # do not duplicate meshes
+            finalized_geos = {}  # do not duplicate geometry
             for geo in self.shape_source:
                 geo_hash = hash(geo)  # avoid repeated hash computations
                 if geo:
-                    if geo_hash not in finalized_meshes:
-                        finalized_meshes[geo_hash] = geo.finalize(device=device)
-                    geo_sources.append(finalized_meshes[geo_hash])
+                    if geo_hash not in finalized_geos:
+                        if isinstance(geo, Mesh):
+                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                        else:
+                            finalized_geos[geo_hash] = geo.finalize()
+                    geo_sources.append(finalized_geos[geo_hash])
                 else:
                     # add null pointer
                     geo_sources.append(0)
@@ -6690,15 +8406,13 @@ class ModelBuilder:
             m.shape_material_restitution = wp.array(
                 self.shape_material_restitution, dtype=wp.float32, requires_grad=requires_grad
             )
-            m.shape_material_torsional_friction = wp.array(
-                self.shape_material_torsional_friction, dtype=wp.float32, requires_grad=requires_grad
+            m.shape_material_mu_torsional = wp.array(
+                self.shape_material_mu_torsional, dtype=wp.float32, requires_grad=requires_grad
             )
-            m.shape_material_rolling_friction = wp.array(
-                self.shape_material_rolling_friction, dtype=wp.float32, requires_grad=requires_grad
+            m.shape_material_mu_rolling = wp.array(
+                self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
             )
-            m.shape_material_k_hydro = wp.array(
-                self.shape_material_k_hydro, dtype=wp.float32, requires_grad=requires_grad
-            )
+            m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = {
@@ -6713,21 +8427,53 @@ class ModelBuilder:
             voxel_resolution = []
             voxel_budget = 100  # Maximum voxels per shape for contact reduction
 
-            # Cache per unique (mesh_id, scale) to avoid redundant AABB computation
-            # for instanced meshes (e.g., 256 robots sharing the same mesh sources)
-            mesh_aabb_cache = {}
+            # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
+            # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
+            shape_aabb_cache = {}
 
-            for shape_type, shape_src, shape_scale in zip(
-                self.shape_type, self.shape_source, self.shape_scale, strict=True
-            ):
-                if shape_type == GeoType.MESH and shape_src is not None:
-                    # Use mesh id and scale as cache key
-                    cache_key = (id(shape_src), tuple(shape_scale))
+            def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget):
+                """Compute voxel resolution from AABB with given budget."""
+                size = aabb_upper - aabb_lower
+                size = np.maximum(size, 1e-6)  # Avoid division by zero
 
-                    if cache_key in mesh_aabb_cache:
-                        # Reuse cached result
-                        aabb_lower, aabb_upper, nx, ny, nz = mesh_aabb_cache[cache_key]
+                # Target voxel size for approximately cubic voxels
+                volume = size[0] * size[1] * size[2]
+                v = (volume / voxel_budget) ** (1.0 / 3.0)
+                v = max(v, 1e-6)
+
+                # Initial resolution
+                nx = max(1, round(size[0] / v))
+                ny = max(1, round(size[1] / v))
+                nz = max(1, round(size[2] / v))
+
+                # Reduce until under budget (reduce largest axis first for more cubic voxels)
+                while nx * ny * nz > voxel_budget:
+                    if nx >= ny and nx >= nz and nx > 1:
+                        nx -= 1
+                    elif ny >= nz and ny > 1:
+                        ny -= 1
+                    elif nz > 1:
+                        nz -= 1
                     else:
+                        break
+
+                return nx, ny, nz
+
+            for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
+                zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
+            ):
+                # Create cache key based on shape type and parameters
+                if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
+                    cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                else:
+                    cache_key = (shape_type, tuple(shape_scale))
+
+                # Check cache first
+                if cache_key in shape_aabb_cache:
+                    aabb_lower, aabb_upper, nx, ny, nz = shape_aabb_cache[cache_key]
+                else:
+                    # Compute AABB based on shape type
+                    if shape_type == GeoType.MESH and shape_src is not None:
                         # Compute local AABB from mesh vertices
                         vertices = shape_src.vertices
                         aabb_lower = vertices.min(axis=0)
@@ -6737,46 +8483,81 @@ class ModelBuilder:
                         aabb_lower = aabb_lower * np.array(shape_scale)
                         aabb_upper = aabb_upper * np.array(shape_scale)
 
-                        # Compute voxel resolution
-                        size = aabb_upper - aabb_lower
-                        size = np.maximum(size, 1e-6)  # Avoid division by zero
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
-                        # Target voxel size for approximately cubic voxels
-                        volume = size[0] * size[1] * size[2]
-                        v = (volume / voxel_budget) ** (1.0 / 3.0)
-                        v = max(v, 1e-6)
+                    elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
+                        # Compute local AABB from convex mesh vertices (similar to MESH)
+                        vertices = shape_src.vertices
+                        aabb_lower = vertices.min(axis=0)
+                        aabb_upper = vertices.max(axis=0)
 
-                        # Initial resolution
-                        nx = max(1, round(size[0] / v))
-                        ny = max(1, round(size[1] / v))
-                        nz = max(1, round(size[2] / v))
+                        # Apply scale to get the actual local-space bounds
+                        aabb_lower = aabb_lower * np.array(shape_scale)
+                        aabb_upper = aabb_upper * np.array(shape_scale)
 
-                        # Reduce until under budget (reduce largest axis first for more cubic voxels)
-                        while nx * ny * nz > voxel_budget:
-                            if nx >= ny and nx >= nz and nx > 1:
-                                nx -= 1
-                            elif ny >= nz and ny > 1:
-                                ny -= 1
-                            elif nz > 1:
-                                nz -= 1
-                            else:
-                                break
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
 
-                        # Cache the result
-                        mesh_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
-                else:
-                    # Non-mesh shapes: use a default 1x1x1 voxel grid (effectively no voxel binning)
-                    aabb_lower = np.array([-1.0, -1.0, -1.0])
-                    aabb_upper = np.array([1.0, 1.0, 1.0])
-                    nx, ny, nz = 1, 1, 1
+                    elif shape_type == GeoType.ELLIPSOID:
+                        # Ellipsoid: shape_scale = (semi_axis_x, semi_axis_y, semi_axis_z)
+                        sx, sy, sz = shape_scale
+                        aabb_lower = np.array([-sx, -sy, -sz])
+                        aabb_upper = np.array([sx, sy, sz])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.BOX:
+                        # Box: shape_scale = (hx, hy, hz) half-extents
+                        hx, hy, hz = shape_scale
+                        aabb_lower = np.array([-hx, -hy, -hz])
+                        aabb_upper = np.array([hx, hy, hz])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.SPHERE:
+                        # Sphere: shape_scale = (radius, radius, radius)
+                        r = shape_scale[0]
+                        aabb_lower = np.array([-r, -r, -r])
+                        aabb_upper = np.array([r, r, r])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.CAPSULE:
+                        # Capsule: shape_scale = (radius, half_height, radius)
+                        # Capsule is along Z axis with hemispherical caps (matches SDF in kernels.py)
+                        r, half_height, _ = shape_scale
+                        aabb_lower = np.array([-r, -r, -half_height - r])
+                        aabb_upper = np.array([r, r, half_height + r])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.CYLINDER:
+                        # Cylinder: shape_scale = (radius, half_height, radius)
+                        # Cylinder is along Z axis (matches SDF in kernels.py)
+                        r, half_height, _ = shape_scale
+                        aabb_lower = np.array([-r, -r, -half_height])
+                        aabb_upper = np.array([r, r, half_height])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    elif shape_type == GeoType.CONE:
+                        # Cone: shape_scale = (radius, half_height, radius)
+                        # Cone is along Z axis (matches SDF in kernels.py)
+                        r, half_height, _ = shape_scale
+                        aabb_lower = np.array([-r, -r, -half_height])
+                        aabb_upper = np.array([r, r, half_height])
+                        nx, ny, nz = compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget)
+
+                    else:
+                        # Other shapes (PLANE, HFIELD, etc.): use default unit cube with 1x1x1 voxel grid
+                        aabb_lower = np.array([-1.0, -1.0, -1.0])
+                        aabb_upper = np.array([1.0, 1.0, 1.0])
+                        nx, ny, nz = 1, 1, 1
+
+                    # Cache the result for reuse by identical shapes
+                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
 
                 local_aabb_lower.append(aabb_lower)
                 local_aabb_upper.append(aabb_upper)
                 voxel_resolution.append([nx, ny, nz])
 
-            m.shape_local_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
-            m.shape_local_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
-            m.shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
+            m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
+            m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
             # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
@@ -6933,40 +8714,87 @@ class ModelBuilder:
                 m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
 
             # ---------------------
+            # heightfield collision data
+            has_heightfields = any(t == GeoType.HFIELD for t in self.shape_type)
+            if has_heightfields:
+                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+
+                hfield_data_list = []
+                elevation_chunks = []
+                offset = 0
+                empty_hfield = create_empty_heightfield_data()
+                for i in range(len(self.shape_type)):
+                    if self.shape_type[i] == GeoType.HFIELD and self.shape_source[i] is not None:
+                        hf = self.shape_source[i]
+                        hd = HeightfieldData()
+                        hd.data_offset = offset
+                        hd.nrow = hf.nrow
+                        hd.ncol = hf.ncol
+                        hd.hx = hf.hx
+                        hd.hy = hf.hy
+                        hd.min_z = hf.min_z
+                        hd.max_z = hf.max_z
+                        hfield_data_list.append(hd)
+                        elevation_chunks.append(hf.data.flatten())
+                        offset += hf.nrow * hf.ncol
+                    else:
+                        hfield_data_list.append(empty_hfield)
+                m.shape_heightfield_data = wp.array(hfield_data_list, dtype=HeightfieldData, device=device)
+                if elevation_chunks:
+                    m.heightfield_elevation_data = wp.array(
+                        np.concatenate(elevation_chunks), dtype=wp.float32, device=device
+                    )
+                else:
+                    m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
+            else:
+                from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
+
+                empty_hfield = create_empty_heightfield_data()
+                m.shape_heightfield_data = wp.array(
+                    [empty_hfield] * max(len(self.shape_type), 1), dtype=HeightfieldData, device=device
+                )
+                m.heightfield_elevation_data = wp.zeros(1, dtype=wp.float32, device=device)
+
+            # ---------------------
             # springs
 
-            m.spring_indices = wp.array(self.spring_indices, dtype=wp.int32)
-            m.spring_rest_length = wp.array(self.spring_rest_length, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_stiffness = wp.array(self.spring_stiffness, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_damping = wp.array(self.spring_damping, dtype=wp.float32, requires_grad=requires_grad)
-            m.spring_control = wp.array(self.spring_control, dtype=wp.float32, requires_grad=requires_grad)
+            def _to_wp_array(data, dtype, requires_grad):
+                if len(data) == 0:
+                    return None
+                return wp.array(data, dtype=dtype, requires_grad=requires_grad)
+
+            m.spring_indices = _to_wp_array(self.spring_indices, wp.int32, requires_grad=False)
+            m.spring_rest_length = _to_wp_array(self.spring_rest_length, wp.float32, requires_grad=requires_grad)
+            m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
+            m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
+            m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # triangles
 
-            m.tri_indices = wp.array(self.tri_indices, dtype=wp.int32)
-            m.tri_poses = wp.array(self.tri_poses, dtype=wp.mat22, requires_grad=requires_grad)
-            m.tri_activations = wp.array(self.tri_activations, dtype=wp.float32, requires_grad=requires_grad)
-            m.tri_materials = wp.array(self.tri_materials, dtype=wp.float32, requires_grad=requires_grad)
-            m.tri_areas = wp.array(self.tri_areas, dtype=wp.float32, requires_grad=requires_grad)
+            m.tri_indices = _to_wp_array(self.tri_indices, wp.int32, requires_grad=False)
+            m.tri_poses = _to_wp_array(self.tri_poses, wp.mat22, requires_grad=requires_grad)
+            m.tri_activations = _to_wp_array(self.tri_activations, wp.float32, requires_grad=requires_grad)
+            m.tri_materials = _to_wp_array(self.tri_materials, wp.float32, requires_grad=requires_grad)
+            m.tri_areas = _to_wp_array(self.tri_areas, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
             # edges
 
-            m.edge_indices = wp.array(self.edge_indices, dtype=wp.int32)
-            m.edge_rest_angle = wp.array(self.edge_rest_angle, dtype=wp.float32, requires_grad=requires_grad)
-            m.edge_rest_length = wp.array(self.edge_rest_length, dtype=wp.float32, requires_grad=requires_grad)
-            m.edge_bending_properties = wp.array(
-                self.edge_bending_properties, dtype=wp.float32, requires_grad=requires_grad
+            m.edge_indices = _to_wp_array(self.edge_indices, wp.int32, requires_grad=False)
+            m.edge_rest_angle = _to_wp_array(self.edge_rest_angle, wp.float32, requires_grad=requires_grad)
+            m.edge_rest_length = _to_wp_array(self.edge_rest_length, wp.float32, requires_grad=requires_grad)
+            m.edge_bending_properties = _to_wp_array(
+                self.edge_bending_properties, wp.float32, requires_grad=requires_grad
             )
 
             # ---------------------
             # tetrahedra
 
-            m.tet_indices = wp.array(self.tet_indices, dtype=wp.int32)
-            m.tet_poses = wp.array(self.tet_poses, dtype=wp.mat33, requires_grad=requires_grad)
-            m.tet_activations = wp.array(self.tet_activations, dtype=wp.float32, requires_grad=requires_grad)
-            m.tet_materials = wp.array(self.tet_materials, dtype=wp.float32, requires_grad=requires_grad)
+            m.tet_indices = _to_wp_array(self.tet_indices, wp.int32, requires_grad=False)
+            m.tet_poses = _to_wp_array(self.tet_poses, wp.mat33, requires_grad=requires_grad)
+            m.tet_activations = _to_wp_array(self.tet_activations, wp.float32, requires_grad=requires_grad)
+            m.tet_materials = _to_wp_array(self.tet_materials, wp.float32, requires_grad=requires_grad)
 
             # -----------------------
             # muscles
@@ -7128,13 +8956,19 @@ class ModelBuilder:
             articulation_start = copy.copy(self.articulation_start)
             articulation_start.append(self.joint_count)
 
-            # Compute max joints per articulation for IK kernel launches
+            # Compute max joints and dofs per articulation for IK/Jacobian kernel launches
             max_joints_per_articulation = 0
+            max_dofs_per_articulation = 0
             for art_idx in range(len(self.articulation_start)):
                 joint_start = articulation_start[art_idx]
                 joint_end = articulation_start[art_idx + 1]
                 num_joints = joint_end - joint_start
                 max_joints_per_articulation = max(max_joints_per_articulation, num_joints)
+                # Compute dofs for this articulation
+                dof_start = joint_qd_start[joint_start]
+                dof_end = joint_qd_start[joint_end]
+                num_dofs = dof_end - dof_start
+                max_dofs_per_articulation = max(max_dofs_per_articulation, num_dofs)
 
             m.joint_q_start = wp.array(joint_q_start, dtype=wp.int32)
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
@@ -7142,7 +8976,9 @@ class ModelBuilder:
             m.articulation_key = self.articulation_key
             m.articulation_world = wp.array(self.articulation_world, dtype=wp.int32)
             m.max_joints_per_articulation = max_joints_per_articulation
+            m.max_dofs_per_articulation = max_dofs_per_articulation
 
+            # ---------------------
             # equality constraints
             m.equality_constraint_type = wp.array(self.equality_constraint_type, dtype=wp.int32)
             m.equality_constraint_body1 = wp.array(self.equality_constraint_body1, dtype=wp.int32)
@@ -7159,6 +8995,28 @@ class ModelBuilder:
             m.equality_constraint_enabled = wp.array(self.equality_constraint_enabled, dtype=wp.bool)
             m.equality_constraint_world = wp.array(self.equality_constraint_world, dtype=wp.int32)
 
+            # mimic constraints
+            m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
+            m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
+            m.constraint_mimic_coef0 = wp.array(self.constraint_mimic_coef0, dtype=wp.float32)
+            m.constraint_mimic_coef1 = wp.array(self.constraint_mimic_coef1, dtype=wp.float32)
+            m.constraint_mimic_enabled = wp.array(self.constraint_mimic_enabled, dtype=wp.bool)
+            m.constraint_mimic_key = self.constraint_mimic_key
+            m.constraint_mimic_world = wp.array(self.constraint_mimic_world, dtype=wp.int32)
+
+            # ---------------------
+            # per-world start indices
+            m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
+            m.body_world_start = wp.array(self.body_world_start, dtype=wp.int32)
+            m.shape_world_start = wp.array(self.shape_world_start, dtype=wp.int32)
+            m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
+            m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
+            m.equality_constraint_world_start = wp.array(self.equality_constraint_world_start, dtype=wp.int32)
+            m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
+            m.joint_coord_world_start = wp.array(self.joint_coord_world_start, dtype=wp.int32)
+            m.joint_constraint_world_start = wp.array(self.joint_constraint_world_start, dtype=wp.int32)
+
+            # ---------------------
             # counts
             m.joint_count = self.joint_count
             m.joint_dof_count = self.joint_dof_count
@@ -7174,13 +9032,12 @@ class ModelBuilder:
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
             m.equality_constraint_count = len(self.equality_constraint_type)
+            m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             self.find_shape_contact_pairs(m)
-            m.rigid_contact_max = count_rigid_contact_points(m)
 
             # enable ground plane
             m.up_axis = self.up_axis
-            m.up_vector = np.array(self.up_vector, dtype=wp.float32)
 
             # set gravity - create per-world gravity array for multi-world support
             if self.world_gravity:
@@ -7189,7 +9046,7 @@ class ModelBuilder:
             else:
                 # Fallback: use scalar gravity for all worlds
                 gravity_vec = wp.vec3(*(g * self.gravity for g in self.up_vector))
-                gravity_vecs = [gravity_vec] * self.num_worlds
+                gravity_vecs = [gravity_vec] * self.world_count
             m.gravity = wp.array(
                 gravity_vecs,
                 dtype=wp.vec3,
@@ -7265,9 +9122,11 @@ class ModelBuilder:
                 elif freq_key == Model.AttributeFrequency.ARTICULATION:
                     count = m.articulation_count
                 elif freq_key == Model.AttributeFrequency.WORLD:
-                    count = m.num_worlds
+                    count = m.world_count
                 elif freq_key == Model.AttributeFrequency.EQUALITY_CONSTRAINT:
                     count = m.equality_constraint_count
+                elif freq_key == Model.AttributeFrequency.CONSTRAINT_MIMIC:
+                    count = m.constraint_mimic_count
                 elif freq_key == Model.AttributeFrequency.PARTICLE:
                     count = m.particle_count
                 elif freq_key == Model.AttributeFrequency.EDGE:
@@ -7285,8 +9144,8 @@ class ModelBuilder:
                 if count == 0:
                     continue
 
-                wp_arr = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
-                m.add_attribute(custom_attr.name, wp_arr, freq_key, custom_attr.assignment, custom_attr.namespace)
+                result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)
+                m.add_attribute(custom_attr.name, result, freq_key, custom_attr.assignment, custom_attr.namespace)
 
             return m
 

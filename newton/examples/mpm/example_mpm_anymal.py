@@ -147,6 +147,7 @@ class Example:
         mpm_options.max_iterations = 50
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
+        mpm_options.collider_velocity_mode = "finite_difference"
 
         # Set per-particle hardening via custom attributes
         self.model.mpm.hardening.fill_(0.0)
@@ -154,16 +155,10 @@ class Example:
         # setup solvers
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
-            ls_parallel=True,
             ls_iterations=50,
             njmax=50,  # ls_iterations=50 for determinism
         )
         self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
-
-        # Configure collider: treat robot bodies as kinematic
-        self.mpm_solver.setup_collider(
-            body_mass=wp.zeros_like(self.model.body_mass),
-        )
 
         # simulation state
         self.state_0 = self.model.state()
@@ -171,6 +166,12 @@ class Example:
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        # Configure collider: treat robot bodies as kinematic and update initial state
+        self.mpm_solver.setup_collider(
+            body_mass=wp.zeros_like(self.model.body_mass),
+            body_q=self.state_0.body_q,
+        )
 
         # Setup control policy
         self.control = self.model.control()
@@ -298,7 +299,7 @@ class Example:
             self.model,
             self.state_0,
             "the robot is moving forward and not falling",
-            lambda q, qd: newton.utils.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
+            lambda q, qd: newton.math.vec_inside_limits(qd, forward_vel_min, forward_vel_max),
             indices=[0],
         )
         voxel_size = self.mpm_solver.voxel_size

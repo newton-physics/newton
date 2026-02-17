@@ -15,7 +15,7 @@
 
 # generate_icons.py
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont  # noqa: TID253
 
 
 def create_and_save_emoji_png(character: str, size: int, filename: str):

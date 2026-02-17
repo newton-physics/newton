@@ -125,7 +125,7 @@ class ViewerBase:
         """
         return False
 
-    def set_model(self, model, max_worlds: int | None = None):
+    def set_model(self, model: newton.Model, max_worlds: int | None = None):
         """
         Set the model to be visualized.
 
@@ -161,8 +161,8 @@ class ViewerBase:
         if self.model is None:
             return 0
         if self.max_worlds is None:
-            return self.model.num_worlds
-        return min(self.max_worlds, self.model.num_worlds)
+            return self.model.world_count
+        return min(self.max_worlds, self.model.world_count)
 
     def _get_shape_isomesh(self, shape_idx: int):
         """Get the isomesh for a collision shape with an SDF volume.
@@ -216,7 +216,7 @@ class ViewerBase:
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        num_worlds = self._get_render_world_count()
+        world_count = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -226,7 +226,7 @@ class ViewerBase:
             spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
         # Compute offsets using the shared utility function
-        world_offsets = compute_world_offsets(num_worlds, spacing, up_axis)
+        world_offsets = compute_world_offsets(world_count, spacing, up_axis)
 
         # Convert to warp array
         self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
@@ -236,11 +236,11 @@ class ViewerBase:
         if self.model is None:
             return None
 
-        num_worlds = self.model.num_worlds
+        world_count = self.model.world_count
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), MAXVAL, dtype=wp.float32, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), -MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_min = wp.full((world_count, 3), MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((world_count, 3), -MAXVAL, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()
@@ -255,7 +255,7 @@ class ViewerBase:
                 self.model.shape_collision_radius,
                 self.model.shape_world,
                 state.body_q,
-                num_worlds,
+                world_count,
             ],
             outputs=[world_bounds_min, world_bounds_max],
             device=self.device,
@@ -468,7 +468,7 @@ class ViewerBase:
         Args:
             contact_surface_data: A HydroelasticContactSurfaceData instance containing vertex arrays
                 for visualization, or None if hydroelastic collision is not enabled.
-            penetrating_only: If True, only render penetrating contacts (depth > 0).
+            penetrating_only: If True, only render penetrating contacts (depth < 0).
         """
         if contact_surface_data is None or not self.show_hydro_contact_surface:
             self.log_lines("/hydro_contact_surface", None, None, None)
@@ -586,24 +586,26 @@ class ViewerBase:
             if arr is None:
                 return wp.array([default] * num_instances, dtype=wp.vec3, device=self.device)
             if len(arr) == 1 and num_instances > 1:
-                return wp.array([arr[0]] * num_instances, dtype=wp.vec3, device=self.device)
+                val = wp.vec3(*arr.numpy()[0])
+                return wp.array([val] * num_instances, dtype=wp.vec3, device=self.device)
             return arr
 
         def _ensure_vec4_array(arr, default):
             if arr is None:
                 return wp.array([default] * num_instances, dtype=wp.vec4, device=self.device)
             if len(arr) == 1 and num_instances > 1:
-                return wp.array([arr[0]] * num_instances, dtype=wp.vec4, device=self.device)
+                val = wp.vec4(*arr.numpy()[0])
+                return wp.array([val] * num_instances, dtype=wp.vec4, device=self.device)
             return arr
 
         # defaults
         default_color = wp.vec3(0.3, 0.8, 0.9)
-        default_material = wp.vec4(0.0, 0.7, 0.0, 0.0)
+        default_material = wp.vec4(0.5, 0.0, 0.0, 0.0)
 
         # planes default to checkerboard and mid-gray if not overridden
         if geo_type == newton.GeoType.PLANE:
             default_color = wp.vec3(0.125, 0.125, 0.25)
-            default_material = wp.vec4(0.5, 0.7, 1.0, 0.0)
+            # default_material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
         colors = _ensure_vec3_array(colors, default_color)
         materials = _ensure_vec4_array(materials, default_material)
@@ -628,6 +630,27 @@ class ViewerBase:
         and an index buffer. Slices them into separate arrays and forwards to log_mesh.
         """
 
+        # Heightfield: convert to mesh for rendering
+        if geo_type == newton.GeoType.HFIELD:
+            if geo_src is None:
+                raise ValueError(f"log_geo requires geo_src for HFIELD (name={name})")
+            from ..geometry.terrain_generator import create_mesh_heightfield  # noqa: PLC0415
+
+            # Denormalize elevation data to actual Z heights.
+            # Transpose because create_mesh_heightfield uses ij indexing (i=X, j=Y)
+            # while Heightfield uses row-major (row=Y, col=X).
+            actual_heights = geo_src.min_z + geo_src.data * (geo_src.max_z - geo_src.min_z)
+            vertices, indices = create_mesh_heightfield(
+                heightfield=actual_heights.T,
+                extent_x=geo_src.hx * 2.0,
+                extent_y=geo_src.hy * 2.0,
+                ground_z=geo_src.min_z,
+            )
+            points = wp.array(vertices, dtype=wp.vec3, device=self.device)
+            indices = wp.array(indices, dtype=wp.int32, device=self.device)
+            self.log_mesh(name, points, indices, hidden=hidden)
+            return
+
         # GEO_MESH handled by provided source geometry
         if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
             if geo_src is None:
@@ -644,6 +667,7 @@ class ViewerBase:
             indices = wp.array(indices, dtype=wp.int32, device=self.device)
             normals = None
             uvs = None
+            texture = None
 
             if geo_src._normals is not None:
                 normals = wp.array(geo_src._normals, dtype=wp.vec3, device=self.device)
@@ -651,7 +675,18 @@ class ViewerBase:
             if geo_src._uvs is not None:
                 uvs = wp.array(geo_src._uvs, dtype=wp.vec2, device=self.device)
 
-            self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+            if hasattr(geo_src, "texture"):
+                texture = geo_src.texture
+
+            self.log_mesh(
+                name,
+                points,
+                indices,
+                normals,
+                uvs,
+                hidden=hidden,
+                texture=texture,
+            )
             return
 
         # Generate vertices/indices for supported primitive types
@@ -699,7 +734,7 @@ class ViewerBase:
         uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
         indices = wp.array(indices, dtype=wp.int32, device=self.device)
 
-        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
+        self.log_mesh(name, points, indices, normals, uvs, hidden=hidden, texture=None)
 
     def log_gizmo(
         self,
@@ -717,6 +752,7 @@ class ViewerBase:
         indices: wp.array,
         normals: wp.array | None = None,
         uvs: wp.array | None = None,
+        texture: np.ndarray | str | None = None,
         hidden=False,
         backface_culling=True,
     ):
@@ -895,6 +931,7 @@ class ViewerBase:
             newton.GeoType.ELLIPSOID: "ellipsoid",
             newton.GeoType.MESH: "mesh",
             newton.GeoType.CONVEX_MESH: "convex_hull",
+            newton.GeoType.HFIELD: "heightfield",
         }.get(geo_type)
 
         if base_name is None:
@@ -907,7 +944,9 @@ class ViewerBase:
             tuple(scale_list),
             float(thickness),
             bool(is_solid),
-            geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
+            geo_src=geo_src
+            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+            else None,
             hidden=True,
         )
         self._geometry_cache[geo_hash] = mesh_path
@@ -959,7 +998,9 @@ class ViewerBase:
                     tuple(geo_scale),
                     float(geo_thickness),
                     bool(geo_is_solid),
-                    geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
+                    geo_src=geo_src
+                    if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+                    else None,
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
@@ -1004,18 +1045,26 @@ class ViewerBase:
                 # Use shape index for color to ensure each collision shape has a different color
                 color = wp.vec3(self._shape_color_map(s))
 
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
                 scale = np.asarray(geo_scale, dtype=np.float32)
 
-                if geo_src._color is not None:
-                    color = wp.vec3(geo_src._color[0:3])
+                if geo_src.color is not None:
+                    color = wp.vec3(geo_src.color[0:3])
+                if getattr(geo_src, "roughness", None) is not None:
+                    material = wp.vec4(float(geo_src.roughness), material.y, material.z, material.w)
+                if getattr(geo_src, "metallic", None) is not None:
+                    material = wp.vec4(material.x, float(geo_src.metallic), material.z, material.w)
+                if geo_src is not None and geo_src._uvs is not None:
+                    has_texture = getattr(geo_src, "texture", None) is not None
+                    if has_texture:
+                        material = wp.vec4(material.x, material.y, material.z, 1.0)
 
             # plane appearance: checkerboard + gray
             if geo_type == newton.GeoType.PLANE:
                 color = wp.vec3(0.125, 0.125, 0.15)
-                material = wp.vec4(0.5, 0.5, 1.0, 0.0)
+                material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
             # add render instance
             batch.add(

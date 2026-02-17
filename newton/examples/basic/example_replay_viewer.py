@@ -166,39 +166,30 @@ class ReplayUI:
         self.status_color = (1.0, 1.0, 1.0, 1.0)
 
     def _load_recording(self, file_path):
-        """Load a recording file for playback (same approach as example_replay_viewer.py)."""
+        """Load a recording file for playback using ViewerFile."""
         try:
-            # Create a new recorder for playback
-            playback_recorder = newton.utils.RecorderModelAndState()
-            playback_recorder.load_from_file(file_path)
+            viewer_file = newton.viewer.ViewerFile(file_path)
+            viewer_file.load_recording()
 
-            self.total_frames = len(playback_recorder.history)
+            self.total_frames = viewer_file.get_frame_count()
             self.selected_file = os.path.basename(file_path)
 
-            # Create new model and state objects (like example_replay_viewer.py)
-            if playback_recorder.deserialized_model:
+            if viewer_file.has_model() and self.total_frames > 0:
                 model = newton.Model()
-                state = newton.State()
+                viewer_file.load_model(model)
 
-                # Restore the model from the recording
-                playback_recorder.playback_model(model)
-
-                # Set the model in the viewer (this will trigger setup)
                 self.viewer.set_model(model)
-
-                # Store the playback recorder
-                self.playback_recorder = playback_recorder
+                self._viewer_file = viewer_file
                 self.current_frame = 0
 
-                # Restore the first frame's state (like example_replay_viewer.py)
-                if len(playback_recorder.history) > 0:
-                    playback_recorder.playback(state, 0)
-                    self.viewer.log_state(state)
+                state = model.state()
+                viewer_file.load_state(state, 0)
+                self.viewer.log_state(state)
 
                 self.status_message = f"Loaded {self.selected_file} ({self.total_frames} frames)"
                 self.status_color = (0.3, 1.0, 0.3, 1.0)  # Green
             else:
-                self.status_message = "Warning: No model data found in recording"
+                self.status_message = "Warning: No model data or frames found in recording"
                 self.status_color = (1.0, 1.0, 0.3, 1.0)  # Yellow
 
         except FileNotFoundError:
@@ -214,9 +205,9 @@ class ReplayUI:
 
     def _load_frame(self):
         """Load a specific frame for display."""
-        if hasattr(self, "playback_recorder") and 0 <= self.current_frame < self.total_frames:
-            state = newton.State()
-            self.playback_recorder.playback(state, self.current_frame)
+        if hasattr(self, "_viewer_file") and 0 <= self.current_frame < self.total_frames:
+            state = self.viewer.model.state()
+            self._viewer_file.load_state(state, self.current_frame)
             self.viewer.log_state(state)
 
 

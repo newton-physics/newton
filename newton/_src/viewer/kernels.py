@@ -233,8 +233,8 @@ def estimate_world_extents(
     shape_collision_radius: wp.array(dtype=float),
     shape_world: wp.array(dtype=int),
     body_q: wp.array(dtype=wp.transform),
-    num_worlds: int,
-    # outputs (num_worlds x 3 arrays for min/max xyz per world)
+    world_count: int,
+    # outputs (world_count x 3 arrays for min/max xyz per world)
     world_bounds_min: wp.array(dtype=float, ndim=2),
     world_bounds_max: wp.array(dtype=float, ndim=2),
 ):
@@ -244,7 +244,7 @@ def estimate_world_extents(
     world_idx = shape_world[tid]
 
     # Skip global shapes (world -1) or invalid world indices
-    if world_idx < 0 or world_idx >= num_worlds:
+    if world_idx < 0 or world_idx >= world_count:
         return
 
     # Get collision radius and skip shapes with unreasonably large radii
@@ -384,6 +384,7 @@ def compute_joint_basis_lines(
         joint_t != int(newton.JointType.REVOLUTE)
         and joint_t != int(newton.JointType.D6)
         and joint_t != int(newton.JointType.CABLE)
+        and joint_t != int(newton.JointType.BALL)
     ):
         # Set NaN for unsupported joints to hide them
         line_starts[tid] = wp.vec3(wp.nan, wp.nan, wp.nan)
@@ -493,11 +494,11 @@ def compute_hydro_contact_surface_lines(
     v1 = triangle_vertices[tid * 3 + 1]
     v2 = triangle_vertices[tid * 3 + 2]
 
-    # Compute color from depth
+    # Compute color from depth (standard convention: negative = penetrating)
     depth = face_depths[tid]
 
-    # Skip non-penetrating contacts if requested (only render depth > 0)
-    if penetrating_only and depth <= 0.0:
+    # Skip non-penetrating contacts if requested (only render depth < 0)
+    if penetrating_only and depth >= 0.0:
         zero = wp.vec3(0.0, 0.0, 0.0)
         line_starts[tid * 3 + 0] = zero
         line_ends[tid * 3 + 0] = zero
@@ -523,8 +524,9 @@ def compute_hydro_contact_surface_lines(
     v1 = v1 + offset
     v2 = v2 + offset
 
-    if depth > 0.0:
-        color = depth_to_color(depth, min_depth, max_depth)
+    # Use penetration magnitude (negated depth) for color - deeper = more red
+    if depth < 0.0:
+        color = depth_to_color(-depth, min_depth, max_depth)
     else:
         color = wp.vec3(0.0, 0.0, 0.0)
 

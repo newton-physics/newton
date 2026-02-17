@@ -104,8 +104,10 @@ class Model:
         """Attribute frequency follows the number of tetrahedra (see :attr:`~newton.Model.tet_count`)."""
         SPRING = 13
         """Attribute frequency follows the number of springs (see :attr:`~newton.Model.spring_count`)."""
-        WORLD = 14
-        """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.num_worlds`)."""
+        CONSTRAINT_MIMIC = 14
+        """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
+        WORLD = 15
+        """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
 
     class AttributeNamespace:
         """
@@ -138,46 +140,59 @@ class Model:
         """
         self.requires_grad = False
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
-        self.num_worlds = 0
+        self.world_count = 0
         """Number of worlds added to the ModelBuilder."""
 
         self.particle_q = None
-        """Particle positions, shape [particle_count, 3], float."""
+        """Particle positions [m], shape [particle_count, 3], float."""
         self.particle_qd = None
-        """Particle velocities, shape [particle_count, 3], float."""
+        """Particle velocities [m/s], shape [particle_count, 3], float."""
         self.particle_mass = None
-        """Particle mass, shape [particle_count], float."""
+        """Particle mass [kg], shape [particle_count], float."""
         self.particle_inv_mass = None
-        """Particle inverse mass, shape [particle_count], float."""
+        """Particle inverse mass [1/kg], shape [particle_count], float."""
         self.particle_radius = None
-        """Particle radius, shape [particle_count], float."""
+        """Particle radius [m], shape [particle_count], float."""
         self.particle_max_radius = 0.0
-        """Maximum particle radius (useful for HashGrid construction)."""
+        """Maximum particle radius [m] (useful for HashGrid construction)."""
         self.particle_ke = 1.0e3
-        """Particle normal contact stiffness (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
+        """Particle normal contact stiffness [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_kd = 1.0e2
-        """Particle normal contact damping (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
+        """Particle normal contact damping [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_kf = 1.0e2
-        """Particle friction force stiffness (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
+        """Particle friction force stiffness [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit`)."""
         self.particle_mu = 0.5
-        """Particle friction coefficient."""
+        """Particle friction coefficient [dimensionless]."""
         self.particle_cohesion = 0.0
-        """Particle cohesion strength."""
+        """Particle cohesion strength [m]."""
         self.particle_adhesion = 0.0
-        """Particle adhesion strength."""
+        """Particle adhesion strength [m]."""
         self.particle_grid: wp.HashGrid | None = None
         """HashGrid instance for accelerated simulation of particle interactions."""
         self.particle_flags: wp.array | None = None
         """Particle enabled state, shape [particle_count], int."""
         self.particle_max_velocity: float = 1e5
-        """Maximum particle velocity (to prevent instability)."""
+        """Maximum particle velocity [m/s] (to prevent instability)."""
         self.particle_world: wp.array | None = None
         """World index for each particle, shape [particle_count], int. -1 for global."""
+        self.particle_world_start = None
+        """Start index of the first particle per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the particles belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global particles (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total particle count.
+
+        The number of particles in a given world `w` can be computed as:
+            `num_particles_in_world = particle_world_start[w + 1] - particle_world_start[w]`.
+
+        The total number of global particles can be computed as:
+            `num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]`.
+        """
 
         self.shape_key = []
         """List of keys for each shape."""
         self.shape_transform = None
-        """Rigid shape transforms, shape [shape_count, 7], float."""
+        """Rigid shape transforms [m, unitless quaternion], shape [shape_count, 7], float."""
         self.shape_body = None
         """Rigid shape body index, shape [shape_count], int."""
         self.shape_flags = None
@@ -187,25 +202,28 @@ class Model:
 
         # Shape material properties
         self.shape_material_ke = None
-        """Shape contact elastic stiffness, shape [shape_count], float."""
+        """Shape contact elastic stiffness [N/m], shape [shape_count], float."""
         self.shape_material_kd = None
-        """Shape contact damping stiffness, shape [shape_count], float."""
+        """Shape contact damping stiffness, shape [shape_count], float.
+        Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
+        but multiplied by ke as a relative damping factor by VBD."""
         self.shape_material_kf = None
-        """Shape contact friction stiffness, shape [shape_count], float."""
+        """Shape contact friction stiffness [N·s/m], shape [shape_count], float."""
         self.shape_material_ka = None
-        """Shape contact adhesion distance, shape [shape_count], float."""
+        """Shape contact adhesion distance [m], shape [shape_count], float."""
         self.shape_material_mu = None
-        """Shape coefficient of friction, shape [shape_count], float."""
+        """Shape coefficient of friction [dimensionless], shape [shape_count], float."""
         self.shape_material_restitution = None
-        """Shape coefficient of restitution, shape [shape_count], float."""
-        self.shape_material_torsional_friction = None
-        """Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float."""
-        self.shape_material_rolling_friction = None
-        """Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float."""
-        self.shape_material_k_hydro = None
-        """Shape hydroelastic stiffness coefficient, shape [shape_count], float."""
+        """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
+        self.shape_material_mu_torsional = None
+        """Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float."""
+        self.shape_material_mu_rolling = None
+        """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
+        self.shape_material_kh = None
+        """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
+        Contact stiffness is computed as ``area * k_hydro``, yielding an effective spring constant [N/m]."""
         self.shape_contact_margin = None
-        """Shape contact margin for collision detection, shape [shape_count], float."""
+        """Shape contact margin for collision detection [m], shape [shape_count], float."""
 
         # Shape geometry properties
         self.shape_type = None
@@ -213,7 +231,7 @@ class Model:
         self.shape_is_solid = None
         """Whether shape is solid or hollow, shape [shape_count], bool."""
         self.shape_thickness = None
-        """Shape thickness, shape [shape_count], float."""
+        """Shape thickness [m], shape [shape_count], float."""
         self.shape_source = []
         """List of source geometry objects (e.g., :class:`~newton.Mesh`, :class:`~newton.SDF`) used for rendering and broadphase, shape [shape_count]."""
         self.shape_source_ptr = None
@@ -228,13 +246,32 @@ class Model:
         self.shape_collision_filter_pairs: set[tuple[int, int]] = set()
         """Pairs of shape indices (s1, s2) that should not collide. Pairs are in canonical order: s1 < s2."""
         self.shape_collision_radius = None
-        """Collision radius for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
+        """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
         self.shape_contact_pairs = None
         """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int."""
         self.shape_contact_pair_count = 0
         """Number of shape contact pairs."""
         self.shape_world = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
+        self.shape_world_start = None
+        """Start index of the first shape per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the shapes belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global shapes (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total shape count.
+
+        The number of shapes in a given world `w` can be computed as:
+            `num_shapes_in_world = shape_world_start[w + 1] - shape_world_start[w]`.
+
+        The total number of global shapes can be computed as:
+            `num_global_shapes = shape_world_start[-1] - shape_world_start[-2] + shape_world_start[0]`.
+        """
+
+        # Heightfield collision data
+        self.shape_heightfield_data = None
+        """Array of HeightfieldData structs, shape [shape_count]. Contains grid metadata for collision kernels."""
+        self.heightfield_elevation_data = None
+        """Concatenated 1D elevation array for all heightfields. Kernels index via HeightfieldData.data_offset."""
 
         # Mesh SDF storage
         self.shape_sdf_data = None
@@ -247,27 +284,27 @@ class Model:
         # Local AABB and voxel grid for contact reduction
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
         # computed once during finalization, not per-frame contact data.
-        self.shape_local_aabb_lower = None
-        """Local-space AABB lower bound for each shape, shape [shape_count, 3], float.
+        self.shape_collision_aabb_lower = None
+        """Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
         Computed from base geometry only (excludes thickness - thickness is added during contact
         margin calculations). Used for voxel-based contact reduction."""
-        self.shape_local_aabb_upper = None
-        """Local-space AABB upper bound for each shape, shape [shape_count, 3], float.
+        self.shape_collision_aabb_upper = None
+        """Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Computed from base geometry only (excludes thickness - thickness is added during contact
         margin calculations). Used for voxel-based contact reduction."""
-        self.shape_voxel_resolution = None
+        self._shape_voxel_resolution = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
         self.spring_indices = None
         """Particle spring indices, shape [spring_count*2], int."""
         self.spring_rest_length = None
-        """Particle spring rest length, shape [spring_count], float."""
+        """Particle spring rest length [m], shape [spring_count], float."""
         self.spring_stiffness = None
-        """Particle spring stiffness, shape [spring_count], float."""
+        """Particle spring stiffness [N/m], shape [spring_count], float."""
         self.spring_damping = None
-        """Particle spring damping, shape [spring_count], float."""
+        """Particle spring damping [N·s/m], shape [spring_count], float."""
         self.spring_control = None
-        """Particle spring activation, shape [spring_count], float."""
+        """Particle spring activation [dimensionless], shape [spring_count], float."""
         self.spring_constraint_lambdas = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
@@ -278,18 +315,21 @@ class Model:
         self.tri_activations = None
         """Triangle element activations, shape [tri_count], float."""
         self.tri_materials = None
-        """Triangle element materials, shape [tri_count, 5], float."""
+        """Triangle element materials, shape [tri_count, 5], float.
+        Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s], [3] k_drag [Pa·s], [4] k_lift [Pa].
+        Stored per-element; kernels multiply by rest area internally."""
         self.tri_areas = None
-        """Triangle element rest areas, shape [tri_count], float."""
+        """Triangle element rest areas [m²], shape [tri_count], float."""
 
         self.edge_indices = None
         """Bending edge indices, shape [edge_count*4], int, each row is [o0, o1, v1, v2], where v1, v2 are on the edge."""
         self.edge_rest_angle = None
-        """Bending edge rest angle, shape [edge_count], float."""
+        """Bending edge rest angle [rad], shape [edge_count], float."""
         self.edge_rest_length = None
-        """Bending edge rest length, shape [edge_count], float."""
+        """Bending edge rest length [m], shape [edge_count], float."""
         self.edge_bending_properties = None
-        """Bending edge stiffness and damping, shape [edge_count, 2], float."""
+        """Bending edge stiffness and damping, shape [edge_count, 2], float.
+        Components: [0] stiffness [N·m/rad], [1] damping [N·s]."""
         self.edge_constraint_lambdas = None
         """Lagrange multipliers for edge constraints (internal use)."""
 
@@ -300,48 +340,65 @@ class Model:
         self.tet_activations = None
         """Tetrahedral volumetric activations, shape [tet_count], float."""
         self.tet_materials = None
-        """Tetrahedral elastic parameters in form :math:`k_{mu}, k_{lambda}, k_{damp}`, shape [tet_count, 3]."""
+        """Tetrahedral elastic parameters in form :math:`k_{mu}, k_{lambda}, k_{damp}`, shape [tet_count, 3].
+        Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
+        Stored per-element; kernels multiply by rest volume internally."""
 
         self.muscle_start = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params = None
-        """Muscle parameters, shape [muscle_count, 5], float."""
+        """Muscle parameters, shape [muscle_count, 5], float.
+        Components: [0] f0 [N] (force scaling), [1] lm [m] (muscle fiber length), [2] lt [m] (tendon slack length),
+        [3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor)."""
         self.muscle_bodies = None
         """Body indices of the muscle waypoints, int."""
         self.muscle_points = None
         """Local body offset of the muscle waypoints, float."""
         self.muscle_activations = None
-        """Muscle activations, shape [muscle_count], float."""
+        """Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float."""
 
         self.body_q = None
-        """Rigid body poses for state initialization, shape [body_count, 7], float."""
+        """Rigid body poses [m, unitless quaternion] for state initialization, shape [body_count, 7], float."""
         self.body_qd = None
-        """Rigid body velocities for state initialization, shape [body_count, 6], float."""
+        """Rigid body velocities [m/s, rad/s] for state initialization, shape [body_count, 6], float."""
         self.body_com = None
-        """Rigid body center of mass (in local frame), shape [body_count, 3], float."""
+        """Rigid body center of mass [m] (in local frame), shape [body_count, 3], float."""
         self.body_inertia = None
-        """Rigid body inertia tensor (relative to COM), shape [body_count, 3, 3], float."""
+        """Rigid body inertia tensor [kg·m²] (relative to COM), shape [body_count, 3, 3], float."""
         self.body_inv_inertia = None
-        """Rigid body inverse inertia tensor (relative to COM), shape [body_count, 3, 3], float."""
+        """Rigid body inverse inertia tensor [1/(kg·m²)] (relative to COM), shape [body_count, 3, 3], float."""
         self.body_mass = None
-        """Rigid body mass, shape [body_count], float."""
+        """Rigid body mass [kg], shape [body_count], float."""
         self.body_inv_mass = None
-        """Rigid body inverse mass, shape [body_count], float."""
+        """Rigid body inverse mass [1/kg], shape [body_count], float."""
         self.body_key = []
         """Rigid body keys, shape [body_count], str."""
         self.body_world = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
+        self.body_world_start = None
+        """Start index of the first body per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the bodies belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global bodies (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total body count.
+
+        The number of bodies in a given world `w` can be computed as:
+            `num_bodies_in_world = body_world_start[w + 1] - body_world_start[w]`.
+
+        The total number of global bodies can be computed as:
+            `num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]`.
+        """
 
         self.joint_q = None
-        """Generalized joint positions for state initialization, shape [joint_coord_count], float."""
+        """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
         self.joint_qd = None
-        """Generalized joint velocities for state initialization, shape [joint_dof_count], float."""
+        """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float."""
         self.joint_f = None
-        """Generalized joint forces for state initialization, shape [joint_dof_count], float."""
+        """Generalized joint forces [N or N·m, depending on joint type] for state initialization, shape [joint_dof_count], float."""
         self.joint_target_pos = None
-        """Generalized joint position targets, shape [joint_dof_count], float."""
+        """Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_vel = None
-        """Generalized joint velocity targets, shape [joint_dof_count], float."""
+        """Generalized joint velocity targets [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_articulation = None
@@ -353,41 +410,41 @@ class Model:
         self.joint_ancestor = None
         """Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int."""
         self.joint_X_p = None
-        """Joint transform in parent frame, shape [joint_count, 7], float."""
+        """Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_X_c = None
-        """Joint mass frame in child frame, shape [joint_count, 7], float."""
+        """Joint mass frame in child frame [m, unitless quaternion], shape [joint_count, 7], float."""
         self.joint_axis = None
         """Joint axis in child frame, shape [joint_dof_count, 3], float."""
         self.joint_armature = None
-        """Armature for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        """Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_act_mode = None
         """Actuator mode per DOF, see :class:`newton.ActuatorMode`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke = None
-        """Joint stiffness, shape [joint_dof_count], float."""
+        """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd = None
-        """Joint damping, shape [joint_dof_count], float."""
+        """Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_effort_limit = None
-        """Joint effort (force/torque) limits, shape [joint_dof_count], float."""
+        """Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_velocity_limit = None
-        """Joint velocity limits, shape [joint_dof_count], float."""
+        """Joint velocity limits [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
         self.joint_friction = None
-        """Joint friction coefficient, shape [joint_dof_count], float."""
+        """Joint friction force/torque [N or N·m, depending on joint type], shape [joint_dof_count], float."""
         self.joint_dof_dim = None
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_enabled = None
         """Controls which joint is simulated (bodies become disconnected if False, only supported by :class:`~newton.solvers.SolverXPBD` and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
         self.joint_limit_lower = None
-        """Joint lower position limits, shape [joint_dof_count], float."""
+        """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_limit_upper = None
-        """Joint upper position limits, shape [joint_dof_count], float."""
+        """Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_limit_ke = None
-        """Joint position limit stiffness (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        """Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_limit_kd = None
-        """Joint position limit damping (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
+        """Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_twist_lower = None
-        """Joint lower twist limit, shape [joint_count], float."""
+        """Joint lower twist limit [rad], shape [joint_count], float."""
         self.joint_twist_upper = None
-        """Joint upper twist limit, shape [joint_count], float."""
+        """Joint upper twist limit [rad], shape [joint_count], float."""
         self.joint_q_start = None
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start = None
@@ -396,35 +453,103 @@ class Model:
         """Joint keys, shape [joint_count], str."""
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
+        self.joint_world_start = None
+        """Start index of the first joint per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the joints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint count.
+
+        The number of joints in a given world `w` can be computed as:
+            `num_joints_in_world = joint_world_start[w + 1] - joint_world_start[w]`.
+
+        The total number of global joints can be computed as:
+            `num_global_joints = joint_world_start[-1] - joint_world_start[-2] + joint_world_start[0]`.
+        """
+        self.joint_dof_world_start = None
+        """Start index of the first joint degree of freedom per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the joint DOFs belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint DOFs (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint DOF count.
+
+        The number of joint DOFs in a given world `w` can be computed as:
+            `num_joint_dofs_in_world = joint_dof_world_start[w + 1] - joint_dof_world_start[w]`.
+
+        The total number of global joint DOFs can be computed as:
+            `num_global_joint_dofs = joint_dof_world_start[-1] - joint_dof_world_start[-2] + joint_dof_world_start[0]`.
+        """
+        self.joint_coord_world_start = None
+        """Start index of the first joint coordinate per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the joint coordinates belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint coordinates (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint coordinate count.
+
+        The number of joint coordinates in a given world `w` can be computed as:
+            `num_joint_coords_in_world = joint_coord_world_start[w + 1] - joint_coord_world_start[w]`.
+
+        The total number of global joint coordinates can be computed as:
+            `num_global_joint_coords = joint_coord_world_start[-1] - joint_coord_world_start[-2] + joint_coord_world_start[0]`.
+        """
+        self.joint_constraint_world_start = None
+        """Start index of the first joint constraint per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the joint constraints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global joint constraints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total joint constraint count.
+
+        The number of joint constraints in a given world `w` can be computed as:
+            `num_joint_constraints_in_world = joint_constraint_world_start[w + 1] - joint_constraint_world_start[w]`.
+
+        The total number of global joint constraints can be computed as:
+            `num_global_joint_constraints = joint_constraint_world_start[-1] - joint_constraint_world_start[-2] + joint_constraint_world_start[0]`.
+        """
+
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
         self.articulation_key = []
         """Articulation keys, shape [articulation_count], str."""
         self.articulation_world = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
+        self.articulation_world_start = None
+        """Start index of the first articulation per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the articulations belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global articulations (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total articulation count.
+
+        The number of articulations in a given world `w` can be computed as:
+            `num_articulations_in_world = articulation_world_start[w + 1] - articulation_world_start[w]`.
+
+        The total number of global articulations can be computed as:
+            `num_global_articulations = articulation_world_start[-1] - articulation_world_start[-2] + articulation_world_start[0]`.
+        """
         self.max_joints_per_articulation = 0
         """Maximum number of joints in any articulation (used for IK kernel dimensioning)."""
+        self.max_dofs_per_articulation = 0
+        """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
         self.soft_contact_ke = 1.0e3
-        """Stiffness of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd = 10.0
-        """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Damping of soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`).
+        Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
+        but multiplied by ke as a relative damping factor by VBD."""
         self.soft_contact_kf = 1.0e3
-        """Stiffness of friction force in soft contacts (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
+        """Stiffness of friction force in soft contacts [N·s/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_mu = 0.5
-        """Friction coefficient of soft contacts."""
+        """Friction coefficient of soft contacts [dimensionless]."""
         self.soft_contact_restitution = 0.0
-        """Restitution coefficient of soft contacts (used by :class:`SolverXPBD`)."""
+        """Restitution coefficient of soft contacts [dimensionless] (used by :class:`SolverXPBD`)."""
 
         self.rigid_contact_max = 0
         """Number of potential contact points between rigid bodies."""
 
-        self.up_vector = np.array((0.0, 0.0, 1.0))
-        """Up vector of the world, shape [3], float."""
         self.up_axis = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
         self.gravity = None
-        """Gravity vector, shape [1], dtype vec3."""
+        """Gravity vector [m/s²], shape [1], dtype vec3."""
 
         self.equality_constraint_type = None
         """Type of equality constraint, shape [equality_constraint_count], int."""
@@ -450,6 +575,34 @@ class Model:
         """Whether constraint is active, shape [equality_constraint_count], bool."""
         self.equality_constraint_world = None
         """World index for each constraint, shape [equality_constraint_count], int."""
+        self.equality_constraint_world_start = None
+        """Start index of the first equality constraint per world, shape [world_count + 2], int.
+
+        The entries at indices `0` to `world_count - 1` store the start index of the equality constraints belonging to that world.
+        The second-last element (accessible via index `-2`) stores the start index of the global equality constraints (i.e. with
+        world index `-1`) added to the end of the model, and the last element stores the total equality constraint count.
+
+        The number of equality constraints in a given world `w` can be computed as:
+            `num_equality_constraints_in_world = equality_constraint_world_start[w + 1] - equality_constraint_world_start[w]`.
+
+        The total number of global equality constraints can be computed as:
+            `num_global_equality_constraints = equality_constraint_world_start[-1] - equality_constraint_world_start[-2] + equality_constraint_world_start[0]`.
+        """
+
+        self.constraint_mimic_joint0 = None
+        """Follower joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        self.constraint_mimic_joint1 = None
+        """Leader joint index (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], int."""
+        self.constraint_mimic_coef0 = None
+        """Offset coefficient (coef0) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        self.constraint_mimic_coef1 = None
+        """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
+        self.constraint_mimic_enabled = None
+        """Whether constraint is active, shape [constraint_mimic_count], bool."""
+        self.constraint_mimic_key = []
+        """Constraint name/key, shape [constraint_mimic_count], str."""
+        self.constraint_mimic_world = None
+        """World index for each constraint, shape [constraint_mimic_count], int."""
 
         self.particle_count = 0
         """Total number of particles in the system."""
@@ -479,6 +632,8 @@ class Model:
         """Total number of joint constraints of all joints."""
         self.equality_constraint_count = 0
         """Total number of equality constraints in the system."""
+        self.constraint_mimic_count = 0
+        """Total number of mimic constraints in the system."""
 
         # indices of particles sharing the same color
         self.particle_color_groups = []
@@ -506,6 +661,8 @@ class Model:
         If an attribute is not in this dictionary, it is assumed to be a Model attribute (assignment=Model.AttributeAssignment.MODEL)."""
 
         self._requested_state_attributes: set[str] = set()
+        self._collision_pipeline: CollisionPipeline | None = None
+        # cached collision pipeline
         self._requested_contact_attributes: set[str] = set()
 
         # attributes per body
@@ -562,9 +719,9 @@ class Model:
         self.attribute_frequency["shape_material_ka"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_mu"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_restitution"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_torsional_friction"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_rolling_friction"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_k_hydro"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_mu_torsional"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_mu_rolling"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_kh"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_contact_margin"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = Model.AttributeFrequency.SHAPE
@@ -671,7 +828,7 @@ class Model:
         Set gravity for runtime modification.
 
         Args:
-            gravity: Gravity vector (3,) or per-world array (num_worlds, 3).
+            gravity: Gravity vector (3,) or per-world array (world_count, 3).
             world: If provided, set gravity only for this world.
 
         Note:
@@ -685,79 +842,82 @@ class Model:
         if world is not None:
             if gravity_np.shape != (3,):
                 raise ValueError("Expected single gravity vector (3,) when world is specified")
-            if world < 0 or world >= self.num_worlds:
-                raise IndexError(f"world {world} out of range [0, {self.num_worlds})")
+            if world < 0 or world >= self.world_count:
+                raise IndexError(f"world {world} out of range [0, {self.world_count})")
             current = self.gravity.numpy()
             current[world] = gravity_np
             self.gravity.assign(current)
         elif gravity_np.ndim == 1:
             self.gravity.fill_(gravity_np)
         else:
-            if len(gravity_np) != self.num_worlds:
-                raise ValueError(f"Expected {self.num_worlds} gravity vectors, got {len(gravity_np)}")
+            if len(gravity_np) != self.world_count:
+                raise ValueError(f"Expected {self.world_count} gravity vectors, got {len(gravity_np)}")
             self.gravity.assign(gravity_np)
 
-    def collide(
+    def _init_collision_pipeline(self):
+        """
+        Initialize a :class:`CollisionPipeline` for this model.
+
+        This method creates a default collision pipeline for the model. The pipeline is cached on
+        the model for subsequent use by :meth:`collide`.
+
+        """
+        from .collide import CollisionPipeline  # noqa: PLC0415
+
+        self._collision_pipeline = CollisionPipeline(self, broad_phase_mode="explicit")
+
+    def contacts(
         self: Model,
-        state: State,
         collision_pipeline: CollisionPipeline | None = None,
-        rigid_contact_max_per_pair: int | None = None,
-        soft_contact_max: int | None = None,
-        soft_contact_margin: float = 0.01,
-        edge_sdf_iter: int = 10,
-        requires_grad: bool | None = None,
     ) -> Contacts:
         """
-        Generate contact points for the particles and rigid bodies in the model.
+        Create and return a :class:`Contacts` object for this model.
 
-        This method produces a :class:`Contacts` object containing collision/contact information
-        for use in contact-dynamics kernels.
-
-        Args:
-            state (State): The current state of the model.
-            collision_pipeline (CollisionPipeline, optional): Collision pipeline to use for contact generation.
-                If not provided, a new one will be created if it hasn't been constructed before for this model.
-            rigid_contact_max_per_pair (int, optional): Maximum number of rigid contacts per shape pair.
-                If None, a kernel is launched to count the number of possible contacts.
-            soft_contact_max (int, optional): Maximum number of soft contacts.
-                If None, a kernel is launched to count the number of possible contacts.
-            soft_contact_margin (float, optional): Margin for soft contact generation. Default is 0.01.
-            edge_sdf_iter (int, optional): Number of search iterations for finding closest contact points between edges and SDF. Default is 10.
-            requires_grad (bool, optional): Whether to duplicate contact arrays for gradient computation. If None, uses :attr:`Model.requires_grad`.
-
-        Returns:
-            Contacts: The contact object containing collision information.
+        This method initializes a collision pipeline with default arguments (when not already
+        cached) and allocates a contacts buffer suitable for storing collision detection results.
+        Call :meth:`collide` to run the collision detection and populate the contacts object.
 
         Note:
             Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`, which is populated
             from ``ShapeConfig.contact_margin`` during model building. If a shape doesn't specify a contact margin,
             it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
             :meth:`ModelBuilder.finalize`.
+        Returns:
+            Contacts: The contact object containing collision information.
         """
-        from .collide import CollisionPipeline  # noqa: PLC0415
-
-        if requires_grad is None:
-            requires_grad = self.requires_grad
-
         if collision_pipeline is not None:
             self._collision_pipeline = collision_pipeline
-        elif not hasattr(self, "_collision_pipeline"):
-            self._collision_pipeline = CollisionPipeline.from_model(
-                model=self,
-                rigid_contact_max_per_pair=rigid_contact_max_per_pair,
-                soft_contact_max=soft_contact_max,
-                soft_contact_margin=soft_contact_margin,
-                edge_sdf_iter=edge_sdf_iter,
-                requires_grad=requires_grad,
-            )
+        if self._collision_pipeline is None:
+            self._init_collision_pipeline()
 
-        # update any additional parameters
-        self._collision_pipeline.soft_contact_margin = soft_contact_margin
-        self._collision_pipeline.edge_sdf_iter = edge_sdf_iter
+        return self._collision_pipeline.contacts()
 
-        contacts = self._collision_pipeline.collide(self, state)
-        # attach custom attributes with assignment==CONTACT
-        self._add_custom_attributes(contacts, Model.AttributeAssignment.CONTACT, requires_grad=requires_grad)
+    def collide(
+        self,
+        state: State,
+        contacts: Contacts | None = None,
+        *,
+        collision_pipeline: CollisionPipeline | None = None,
+    ) -> Contacts:
+        """
+        Generate contact points for the particles and rigid bodies in the model using the default collision
+        pipeline.
+
+        Args:
+            state (State): The current simulation state.
+            contacts (Contacts | None): The contacts buffer to populate (will be cleared first). If None, a new
+                contacts buffer is allocated via :meth:`contacts`.
+            collision_pipeline (CollisionPipeline | None): Optional collision pipeline override.
+        """
+        if collision_pipeline is not None:
+            self._collision_pipeline = collision_pipeline
+        if self._collision_pipeline is None:
+            self._init_collision_pipeline()
+
+        if contacts is None:
+            contacts = self._collision_pipeline.contacts()
+
+        self._collision_pipeline.collide(state, contacts)
         return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
@@ -849,7 +1009,7 @@ class Model:
     def add_attribute(
         self,
         name: str,
-        attrib: wp.array,
+        attrib: wp.array | list,
         frequency: Model.AttributeFrequency | str,
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
@@ -859,7 +1019,8 @@ class Model:
 
         Args:
             name (str): Name of the attribute.
-            attrib (wp.array): The array to add as an attribute.
+            attrib (wp.array | list): The array to add as an attribute. Can be a wp.array for
+                numeric types or a list for string attributes.
             frequency (Model.AttributeFrequency | str): The frequency of the attribute.
                 Can be a Model.AttributeFrequency enum value or a string for custom frequencies.
             assignment (Model.AttributeAssignment, optional): The assignment category using Model.AttributeAssignment enum.
@@ -869,12 +1030,9 @@ class Model:
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
 
         Raises:
-            TypeError: If the attribute is not a wp.array.
             AttributeError: If the attribute already exists or is on the wrong device.
         """
-        if not isinstance(attrib, wp.array):
-            raise TypeError(f"Attribute '{name}' must be a wp.array")
-        if attrib.device != self.device:
+        if isinstance(attrib, wp.array) and attrib.device != self.device:
             raise AttributeError(f"Attribute '{name}' device mismatch (model={self.device}, got={attrib.device})")
 
         # Handle namespaced attributes

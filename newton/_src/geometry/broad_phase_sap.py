@@ -13,6 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Sweep and Prune (SAP) broad phase collision detection.
+
+Provides O(N log N) broad phase by projecting AABBs onto an axis and using
+sorted interval overlap tests. More efficient than NxN for larger scenes.
+
+See Also:
+    :class:`BroadPhaseAllPairs` in ``broad_phase_nxn.py`` for simpler O(N²) approach.
+"""
+
 from __future__ import annotations
 
 from enum import IntEnum
@@ -23,6 +32,7 @@ import warp as wp
 from .broad_phase_common import (
     binary_search,
     check_aabb_overlap,
+    is_pair_excluded,
     precompute_world_map,
     test_world_and_group_pair,
     write_pair,
@@ -252,11 +262,17 @@ def _process_single_sap_pair(
         dtype=float, ndim=1
     ),  # Optional per-shape contact margins (can be empty if AABBs pre-expanded)
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
     max_candidate_pair: int,
+    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    num_filter_pairs: int,
 ):
     shape1 = pair[0]
     shape2 = pair[1]
+
+    # Skip explicitly excluded pairs (e.g. shape_collision_filter_pairs)
+    if num_filter_pairs > 0 and is_pair_excluded(pair, filter_pairs, num_filter_pairs):
+        return
 
     # Check if margins are provided (empty array means AABBs are pre-expanded)
     margin1 = 0.0
@@ -276,7 +292,7 @@ def _process_single_sap_pair(
         write_pair(
             pair,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
             max_candidate_pair,
         )
 
@@ -294,24 +310,26 @@ def _sap_broadphase_kernel(
     world_index_map: wp.array(dtype=int, ndim=1),
     world_slice_ends: wp.array(dtype=int, ndim=1),
     sap_sort_index_in: wp.array(dtype=int, ndim=1),  # 1D array with manual indexing
-    sap_cumulative_sum_in: wp.array(dtype=int, ndim=1),  # Flattened [num_worlds * max_shapes]
-    num_worlds: int,
+    sap_cumulative_sum_in: wp.array(dtype=int, ndim=1),  # Flattened [world_count * max_shapes]
+    world_count: int,
     max_shapes_per_world: int,
     nsweep_in: int,
     num_regular_worlds: int,  # Number of regular world segments (excluding dedicated -1 segment)
+    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),  # Sorted excluded pairs (empty if none)
+    num_filter_pairs: int,
     # Output arrays
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
     max_candidate_pair: int,
 ):
     tid = wp.tid()
 
-    total_work_packages = sap_cumulative_sum_in[num_worlds * max_shapes_per_world - 1]
+    total_work_packages = sap_cumulative_sum_in[world_count * max_shapes_per_world - 1]
 
     workid = tid
     while workid < total_work_packages:
         # Binary search to find which (world, local_shape) this work package belongs to
-        flat_id = binary_search(sap_cumulative_sum_in, workid, 0, num_worlds * max_shapes_per_world)
+        flat_id = binary_search(sap_cumulative_sum_in, workid, 0, world_count * max_shapes_per_world)
 
         # Calculate j from flat_id and workid
         j = flat_id + workid + 1
@@ -385,8 +403,10 @@ def _sap_broadphase_kernel(
                 shape_bounding_box_upper,
                 shape_contact_margin,
                 candidate_pair,
-                num_candidate_pair,
+                candidate_pair_count,
                 max_candidate_pair,
+                filter_pairs,
+                num_filter_pairs,
             )
 
         workid += nsweep_in
@@ -460,7 +480,7 @@ class BroadPhaseSAP:
         self.world_slice_ends = wp.array(slice_ends_np, dtype=wp.int32, device=device)
 
         # Calculate world information
-        self.num_worlds = len(slice_ends_np)
+        self.world_count = len(slice_ends_np)
         self.num_regular_worlds = int(num_regular_worlds)
         self.max_shapes_per_world = 0
         start_idx = 0
@@ -489,7 +509,7 @@ class BroadPhaseSAP:
 
         # Allocate 1D arrays for per-world SAP data
         # Note: projection_lower and sort_index need 2x space for segmented sort scratch memory
-        total_elements = int(self.num_worlds * self.max_shapes_per_world)
+        total_elements = int(self.world_count * self.max_shapes_per_world)
         self.sap_projection_lower = wp.zeros(2 * total_elements, dtype=wp.float32, device=device)
         self.sap_projection_upper = wp.zeros(total_elements, dtype=wp.float32, device=device)
         self.sap_sort_index = wp.zeros(2 * total_elements, dtype=wp.int32, device=device)
@@ -497,9 +517,9 @@ class BroadPhaseSAP:
         self.sap_cumulative_sum = wp.zeros(total_elements, dtype=wp.int32, device=device)
 
         # Segment indices for segmented sort (needed for graph capture)
-        # [0, max_shapes_per_world, 2*max_shapes_per_world, ..., num_worlds*max_shapes_per_world]
+        # [0, max_shapes_per_world, 2*max_shapes_per_world, ..., world_count*max_shapes_per_world]
         segment_indices_np = np.array(
-            [i * self.max_shapes_per_world for i in range(self.num_worlds + 1)], dtype=np.int32
+            [i * self.max_shapes_per_world for i in range(self.world_count + 1)], dtype=np.int32
         )
         self.segment_indices = wp.array(segment_indices_np, dtype=wp.int32, device=device)
 
@@ -513,8 +533,10 @@ class BroadPhaseSAP:
         shape_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
-        num_candidate_pair: wp.array(dtype=int, ndim=1),
+        candidate_pair_count: wp.array(dtype=int, ndim=1),
         device=None,  # Device to launch on
+        filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
+        num_filter_pairs: int | None = None,
     ):
         """Launch the sweep and prune broad phase collision detection with per-world segmented sort.
 
@@ -534,12 +556,13 @@ class BroadPhaseSAP:
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             shape_count: Number of active bounding boxes to check (not used in world-based approach)
             candidate_pair: Output array to store overlapping shape pairs
-            num_candidate_pair: Output array to store number of overlapping pairs found
+            candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose worlds are
-        compatible (same world or at least one is global). The number of pairs found will be written to num_candidate_pair[0].
+        compatible (same world or at least one is global). Pairs in filter_pairs (if provided) are excluded.
+        The number of pairs found will be written to candidate_pair_count[0].
         """
         # TODO: Choose an optimal direction
         # random fixed direction
@@ -547,7 +570,7 @@ class BroadPhaseSAP:
         direction = wp.normalize(direction)
 
         max_candidate_pair = candidate_pair.shape[0]
-        num_candidate_pair.zero_()
+        candidate_pair_count.zero_()
 
         if device is None:
             device = shape_lower.device
@@ -556,10 +579,18 @@ class BroadPhaseSAP:
         if shape_contact_margin is None:
             shape_contact_margin = wp.empty(0, dtype=wp.float32, device=device)
 
+        # Exclusion filter: empty array and 0 when not provided or empty
+        if filter_pairs is None or filter_pairs.shape[0] == 0:
+            filter_pairs_arr = wp.empty(0, dtype=wp.vec2i, device=device)
+            n_filter = 0
+        else:
+            filter_pairs_arr = filter_pairs
+            n_filter = num_filter_pairs if num_filter_pairs is not None else filter_pairs.shape[0]
+
         # Project AABBs onto the sweep axis for each world
         wp.launch(
             kernel=_sap_project_kernel,
-            dim=(self.num_worlds, self.max_shapes_per_world),
+            dim=(self.world_count, self.max_shapes_per_world),
             inputs=[
                 direction,
                 shape_lower,
@@ -581,7 +612,7 @@ class BroadPhaseSAP:
             # Use tile-based sort with shared memory
             wp.launch_tiled(
                 kernel=self.tile_sort_kernel,
-                dim=self.num_worlds,
+                dim=self.world_count,
                 inputs=[
                     self.sap_projection_lower,
                     self.sap_sort_index,
@@ -596,14 +627,14 @@ class BroadPhaseSAP:
             wp.utils.segmented_sort_pairs(
                 keys=self.sap_projection_lower,
                 values=self.sap_sort_index,
-                count=self.num_worlds * self.max_shapes_per_world,
+                count=self.world_count * self.max_shapes_per_world,
                 segment_start_indices=self.segment_indices,
             )
 
         # Compute range of overlapping geometries for each geometry in each world
         wp.launch(
             kernel=_sap_range_kernel,
-            dim=(self.num_worlds, self.max_shapes_per_world),
+            dim=(self.world_count, self.max_shapes_per_world),
             inputs=[
                 self.world_slice_ends,
                 self.max_shapes_per_world,
@@ -619,7 +650,7 @@ class BroadPhaseSAP:
         wp.utils.array_scan(self.sap_range, self.sap_cumulative_sum, True)
 
         # Estimate number of sweep threads
-        total_elements = self.num_worlds * self.max_shapes_per_world
+        total_elements = self.world_count * self.max_shapes_per_world
         nsweep_in = int(self.sweep_thread_count_multiplier * total_elements)
 
         # Perform the sweep and generate candidate pairs
@@ -636,14 +667,16 @@ class BroadPhaseSAP:
                 self.world_slice_ends,
                 self.sap_sort_index,
                 self.sap_cumulative_sum,
-                self.num_worlds,
+                self.world_count,
                 self.max_shapes_per_world,
                 nsweep_in,
                 self.num_regular_worlds,
+                filter_pairs_arr,
+                n_filter,
             ],
             outputs=[
                 candidate_pair,
-                num_candidate_pair,
+                candidate_pair_count,
                 max_candidate_pair,
             ],
             device=device,

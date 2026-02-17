@@ -42,7 +42,7 @@ jobs:
           version: "0.9.0"
 
       - name: Update warp-lang in lock file
-        run: uv lock -P warp-lang
+        run: uv lock -P warp-lang --prerelease allow
 
       - name: Check if warp-lang version changed
         id: check-update
@@ -99,7 +99,6 @@ jobs:
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
           ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
           ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
-          subnet-id: subnet-051b9d2e71acf8047
           security-group-id: ${{ env.AWS_SECURITY_GROUP_IDS }}
           aws-resource-tags: >
             [
@@ -129,7 +128,7 @@ jobs:
         run: uv python install
 
       - name: Update lock file with latest warp-lang nightly build
-        run: uv lock -P warp-lang
+        run: uv lock -P warp-lang --prerelease allow
 
       - name: Run Tests
         run: uv run --extra dev --extra torch-cu12 -m newton.tests --junit-report-xml rspec.xml

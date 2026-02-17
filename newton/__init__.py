@@ -36,6 +36,7 @@ __all__ = [
 from ._src.geometry import (
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
     ParticleFlags,
     SAPSortType,
@@ -45,6 +46,7 @@ from ._src.geometry import (
 __all__ += [
     "SDF",
     "GeoType",
+    "Heightfield",
     "Mesh",
     "ParticleFlags",
     "SAPSortType",
@@ -56,9 +58,7 @@ __all__ += [
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
     ActuatorMode,
-    BroadPhaseMode,
     CollisionPipeline,
-    CollisionPipelineUnified,
     Contacts,
     Control,
     EqType,
@@ -66,19 +66,15 @@ from ._src.sim import (  # noqa: E402
     Model,
     ModelBuilder,
     State,
-    count_rigid_contact_points,
     eval_fk,
     eval_ik,
-    get_joint_constraint_count,
-    get_joint_dof_count,
-    infer_actuator_mode,
+    eval_jacobian,
+    eval_mass_matrix,
 )
 
 __all__ += [
     "ActuatorMode",
-    "BroadPhaseMode",
     "CollisionPipeline",
-    "CollisionPipelineUnified",
     "Contacts",
     "Control",
     "EqType",
@@ -86,22 +82,21 @@ __all__ += [
     "Model",
     "ModelBuilder",
     "State",
-    "count_rigid_contact_points",
     "eval_fk",
     "eval_ik",
-    "get_joint_constraint_count",
-    "get_joint_dof_count",
-    "infer_actuator_mode",
+    "eval_jacobian",
+    "eval_mass_matrix",
 ]
 
 # ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import geometry, ik, selection, sensors, solvers, utils, viewer  # noqa: E402
+from . import geometry, ik, math, selection, sensors, solvers, utils, viewer  # noqa: E402
 
 __all__ += [
     "geometry",
     "ik",
+    "math",
     "selection",
     "sensors",
     "solvers",

@@ -23,6 +23,7 @@ Newton Physics
    :hidden:
    :caption: Concepts
    
+   Worlds <concepts/worlds>
    Articulations <concepts/articulations>
    Sites <concepts/sites>
    Sensors <concepts/sensors>
@@ -40,6 +41,7 @@ Newton Physics
    api/newton
    api/newton_geometry
    api/newton_ik
+   api/newton_math
    api/newton_selection
    api/newton_sensors
    api/newton_solvers

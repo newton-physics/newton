@@ -13,6 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Common utilities for broad phase collision detection.
+
+Provides shared functions for AABB overlap tests, world/group filtering,
+and pair output used by both NxN and SAP broad phase implementations.
+"""
+
 from typing import Any
 
 import numpy as np
@@ -54,13 +60,79 @@ def binary_search(values: wp.array(dtype=Any), value: Any, lower: int, upper: in
 
 
 @wp.func
+def _vec2i_less(p: wp.vec2i, q: wp.vec2i) -> bool:
+    """Lexicographic less-than for vec2i.
+
+    Args:
+        p: First vector to compare.
+        q: Second vector to compare.
+
+    Returns:
+        True if p < q lexicographically, i.e. p[0] < q[0] or (p[0] == q[0] and p[1] < q[1]).
+    """
+    if p[0] < q[0]:
+        return True
+    if p[0] > q[0]:
+        return False
+    return p[1] < q[1]
+
+
+@wp.func
+def _vec2i_equal(p: wp.vec2i, q: wp.vec2i) -> bool:
+    """Element-wise equality for vec2i.
+
+    Args:
+        p: First vector to compare.
+        q: Second vector to compare.
+
+    Returns:
+        True if p[0] == q[0] and p[1] == q[1].
+    """
+    return p[0] == q[0] and p[1] == q[1]
+
+
+@wp.func
+def is_pair_excluded(
+    pair: wp.vec2i,
+    filter_pairs: wp.array(dtype=wp.vec2i, ndim=1),
+    num_filter_pairs: int,
+) -> bool:
+    """Check whether a shape pair is in the sorted exclusion list via binary search.
+
+    Args:
+        pair: Canonical shape pair (min, max) to look up.
+        filter_pairs: Lexicographically sorted array of excluded shape pairs.
+            Each entry must be canonical (min, max).
+        num_filter_pairs: Number of valid entries in ``filter_pairs``.
+
+    Returns:
+        True if ``pair`` is found in ``filter_pairs``, False otherwise.
+        Returns False immediately when ``num_filter_pairs`` is 0.
+    """
+    if num_filter_pairs <= 0:
+        return False
+    low = int(0)
+    high = num_filter_pairs - 1
+    while low <= high:
+        mid = (low + high) >> 1
+        m = filter_pairs[mid]
+        if _vec2i_equal(pair, m):
+            return True
+        if _vec2i_less(pair, m):
+            high = mid - 1
+        else:
+            low = mid + 1
+    return False
+
+
+@wp.func
 def write_pair(
     pair: wp.vec2i,
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
     max_candidate_pair: int,
 ):
-    pairid = wp.atomic_add(num_candidate_pair, 0, 1)
+    pairid = wp.atomic_add(candidate_pair_count, 0, 1)
 
     if pairid >= max_candidate_pair:
         return
@@ -195,22 +267,22 @@ def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None
     # Map back to original shape indices
     shared_indices = valid_indices[shared_local_indices]
 
-    # Count how many distinct positive (or zero) world IDs are in filtered set -> num_worlds
+    # Count how many distinct positive (or zero) world IDs are in filtered set -> world_count
     # Get unique positive/zero world IDs
     positive_mask = filtered_world_ids >= 0
     positive_world_ids = filtered_world_ids[positive_mask]
     unique_worlds = np.unique(positive_world_ids)
-    num_worlds = len(unique_worlds)
+    world_count = len(unique_worlds)
 
     # Calculate total size of result
     # Each world gets its own indices + all shared indices
     # Plus one additional segment at the end with only shared indices
     num_positive = np.sum(positive_mask)
-    total_size = num_positive + (num_shared * num_worlds) + num_shared
+    total_size = num_positive + (num_shared * world_count) + num_shared
 
-    # Allocate output arrays (num_worlds + 1 to include dedicated -1 segment)
+    # Allocate output arrays (world_count + 1 to include dedicated -1 segment)
     index_map = np.empty(total_size, dtype=np.int32)
-    slice_ends = np.empty(num_worlds + 1, dtype=np.int32)
+    slice_ends = np.empty(world_count + 1, dtype=np.int32)
 
     # Build the index map
     current_pos = 0
@@ -219,11 +291,11 @@ def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None
         world_local_indices = np.where(filtered_world_ids == world_id)[0]
         # Map back to original shape indices
         world_indices = valid_indices[world_local_indices]
-        num_world_shapes = len(world_indices)
+        world_shape_count = len(world_indices)
 
         # Copy world-specific indices (using original shape indices)
-        index_map[current_pos : current_pos + num_world_shapes] = world_indices
-        current_pos += num_world_shapes
+        index_map[current_pos : current_pos + world_shape_count] = world_indices
+        current_pos += world_shape_count
 
         # Append shared (negative) indices (using original shape indices)
         index_map[current_pos : current_pos + num_shared] = shared_indices
@@ -235,6 +307,6 @@ def precompute_world_map(shape_world: np.ndarray, shape_flags: np.ndarray | None
     # Add dedicated segment at the end with only world -1 objects
     index_map[current_pos : current_pos + num_shared] = shared_indices
     current_pos += num_shared
-    slice_ends[num_worlds] = current_pos
+    slice_ends[world_count] = current_pos
 
     return index_map, slice_ends

@@ -67,7 +67,11 @@ release = project_version
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
 
-# Add docs/_ext to Python import path so custom extensions can be imported
+# Add docs/ and docs/_ext to Python import path so custom extensions and
+# sibling scripts (e.g. generate_api) can be imported.
+_docs_path = str(Path(__file__).parent)
+if _docs_path not in sys.path:
+    sys.path.append(_docs_path)
 _ext_path = Path(__file__).parent / "_ext"
 if str(_ext_path) not in sys.path:
     sys.path.append(str(_ext_path))
@@ -212,6 +216,26 @@ html_theme_options = {
 
 
 html_sidebars = {"**": ["sidebar-nav-bs.html"], "index": ["sidebar-nav-bs.html"]}
+
+# Version switcher configuration for multi-version docs on GitHub Pages
+# See: https://pydata-sphinx-theme.readthedocs.io/en/stable/user_guide/version-dropdown.html
+
+# Determine if we're in a CI build and which version
+_is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+_is_release = os.environ.get("GITHUB_REF", "").startswith("refs/tags/v")
+
+# Configure version switcher
+html_theme_options["switcher"] = {
+    "json_url": "https://newton-physics.github.io/newton/switcher.json",
+    "version_match": release if _is_release else "dev",
+}
+
+# Add version switcher to navbar
+html_theme_options["navbar_end"] = ["theme-switcher", "version-switcher", "navbar-icon-links"]
+
+# Disable switcher JSON validation during local builds (file not accessible locally)
+if not _is_ci:
+    html_theme_options["check_switcher"] = False
 
 # -- Math configuration -------------------------------------------------------
 
@@ -366,5 +390,9 @@ def _on_builder_inited(_app: Any) -> None:
 
 
 def setup(app: Any) -> None:
-    # Copy on build init so `_static/viser/index.html` is always present in the built site.
+    # Regenerate API .rst files so builds always reflect the current public API.
+    from generate_api import generate_all  # noqa: PLC0415
+
+    generate_all()
+
     app.connect("builder-inited", _on_builder_inited)
