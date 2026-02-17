@@ -206,32 +206,74 @@ The velocity dofs for each joint can be queried as follows:
 Common articulation workflows
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Center ``joint_q`` at joint limits for common scalar joints
-"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+Center ``joint_q`` at joint limits with Warp kernels
+""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-Joint limits are defined per DoF (``joint_qd`` order), while ``joint_q`` may include quaternion
-coordinates for ball/free joints. A practical approach for "center at limits" initialization is to
-select only scalar joints and write through :class:`newton.selection.ArticulationView`:
+Joint limits are stored in DoF order (``joint_qd`` layout), while ``joint_q`` stores generalized
+joint coordinates (which may include quaternion coordinates for free/ball joints).
+
+A robust pattern is:
+
+1. Loop over joints.
+2. Use ``Model.joint_qd_start`` to find each joint's DoF span.
+3. Use ``Model.joint_q_start`` to find where that joint starts in ``State.joint_q``.
+4. Center only scalar coordinates (for example, revolute/prismatic axes) and skip quaternion joints.
 
 .. code-block:: python
 
-    import numpy as np
+    import warp as wp
+    import newton
 
-    view = newton.selection.ArticulationView(
-        model,
-        pattern="robot*",
-        include_joint_types=[newton.JointType.PRISMATIC, newton.JointType.REVOLUTE],
-        exclude_joint_types=[newton.JointType.FREE, newton.JointType.BALL],
+
+    @wp.kernel
+    def center_joint_q_from_limits(
+        joint_q_start: wp.array(dtype=wp.int32),
+        joint_qd_start: wp.array(dtype=wp.int32),
+        joint_type: wp.array(dtype=wp.int32),
+        joint_limit_lower: wp.array(dtype=float),
+        joint_limit_upper: wp.array(dtype=float),
+        joint_q: wp.array(dtype=float),
+    ):
+        joint_id = wp.tid()
+
+        # DoF span for this joint in qd-order arrays (limits/axes/forces)
+        qd_begin = joint_qd_start[joint_id]
+        qd_end = joint_qd_start[joint_id + 1]
+
+        # Start index for this joint in generalized coordinates q
+        q_begin = joint_q_start[joint_id]
+
+        # Skip free/ball joints because their q entries include quaternion coordinates.
+        jt = joint_type[joint_id]
+        if jt == int(newton.JointType.FREE) or jt == int(newton.JointType.BALL):
+            return
+
+        # For scalar joints, q coordinates align with this joint's DoF count.
+        for local_dof in range(qd_end - qd_begin):
+            qd_idx = qd_begin + local_dof
+            q_idx = q_begin + local_dof
+
+            lower = joint_limit_lower[qd_idx]
+            upper = joint_limit_upper[qd_idx]
+            if wp.isfinite(lower) and wp.isfinite(upper):
+                joint_q[q_idx] = 0.5 * (lower + upper)
+
+
+    # Launch over all joints in the model
+    wp.launch(
+        kernel=center_joint_q_from_limits,
+        dim=model.joint_count,
+        inputs=[
+            model.joint_q_start,
+            model.joint_qd_start,
+            model.joint_type,
+            model.joint_limit_lower,
+            model.joint_limit_upper,
+            state.joint_q,
+        ],
     )
 
-    lower = view.get_attribute("joint_limit_lower", model).numpy()
-    upper = view.get_attribute("joint_limit_upper", model).numpy()
-    q = view.get_dof_positions(state).numpy()
-
-    finite_limits = np.isfinite(lower) & np.isfinite(upper)
-    q[finite_limits] = 0.5 * (lower[finite_limits] + upper[finite_limits])
-
-    view.set_dof_positions(state, q)
+    # Recompute transforms after editing generalized coordinates
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
 Move articulations in world space
