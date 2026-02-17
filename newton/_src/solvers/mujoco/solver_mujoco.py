@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from collections.abc import Iterable
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
@@ -171,6 +172,18 @@ class SolverMuJoCo(SolverBase):
         VELOCITY = 1
         GENERAL = 2
 
+    class TrnType(IntEnum):
+        """Transmission type values for MuJoCo actuators."""
+
+        UNDEFINED = -1
+
+        JOINT = 0
+        JOINT_IN_PARENT = 1
+        TENDON = 2
+        SITE = 3
+        BODY = 4
+        SLIDERCRANK = 5
+
     # Class variables to cache the imported modules
     _mujoco = None
     _mujoco_warp = None
@@ -199,45 +212,33 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _parse_integrator(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3."""
-        if not isinstance(value, str):
-            return int(value)
-        mapping = {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3}
-        lower_value = value.lower().strip()
-        if lower_value in mapping:
-            return mapping[lower_value]
-        return int(value)
+        return SolverMuJoCo._parse_named_int(value, {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3})
 
     @staticmethod
     def _parse_solver(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse solver option: CG=1, Newton=2. PGS (0) is not supported."""
-        if not isinstance(value, str):
-            return int(value)
-        mapping = {"cg": 1, "newton": 2}
-        lower_value = value.lower().strip()
-        if lower_value in mapping:
-            return mapping[lower_value]
-        return int(value)
+        return SolverMuJoCo._parse_named_int(value, {"cg": 1, "newton": 2})
 
     @staticmethod
     def _parse_cone(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse cone option: pyramidal=0, elliptic=1."""
-        if not isinstance(value, str):
-            return int(value)
-        mapping = {"pyramidal": 0, "elliptic": 1}
-        lower_value = value.lower().strip()
-        if lower_value in mapping:
-            return mapping[lower_value]
-        return int(value)
+        return SolverMuJoCo._parse_named_int(value, {"pyramidal": 0, "elliptic": 1})
 
     @staticmethod
     def _parse_jacobian(value: str | int, context: dict[str, Any] | None = None) -> int:
         """Parse jacobian option: dense=0, sparse=1, auto=2."""
+        return SolverMuJoCo._parse_named_int(value, {"dense": 0, "sparse": 1, "auto": 2})
+
+    @staticmethod
+    def _parse_named_int(value: str | int, mapping: dict[str, int], fallback_on_unknown: int | None = None) -> int:
+        """Parse string-valued enums to int, otherwise return int(value)."""
         if not isinstance(value, str):
             return int(value)
-        mapping = {"dense": 0, "sparse": 1, "auto": 2}
         lower_value = value.lower().strip()
         if lower_value in mapping:
             return mapping[lower_value]
+        if fallback_on_unknown is not None:
+            return fallback_on_unknown
         return int(value)
 
     @staticmethod
@@ -289,6 +290,92 @@ class SolverMuJoCo(SolverBase):
         """
         return prim.GetTypeName() == "MjcActuator"
 
+    @staticmethod
+    def _is_mjc_tendon_prim(prim, _context: dict[str, Any]) -> bool:
+        """Filter for prims of type ``MjcTendon`` for USD parsing.
+
+        This is used as the ``usd_prim_filter`` for the ``mujoco:tendon`` custom frequency.
+        Returns True for USD Prim objects whose type name is ``MjcTendon``.
+
+        Args:
+            prim: The USD prim to check.
+            _context: Context dictionary with parsing results (path maps, units, etc.).
+                This matches the return value of :meth:`newton.ModelBuilder.add_usd`.
+
+        Returns:
+            True if the prim is an MjcTendon, False otherwise.
+        """
+        return prim.GetTypeName() == "MjcTendon"
+
+    @staticmethod
+    def _parse_mjc_fixed_tendon_joint_entries(prim, builder: ModelBuilder) -> list[tuple[int, float]]:
+        """Parse fixed tendon joint/coefficient entries from an MjcTendon prim.
+
+        Returns:
+            List of ``(joint_index, coef)`` entries in authored tendon path order.
+        """
+        tendon_type_attr = prim.GetAttribute("mjc:type")
+        tendon_type = tendon_type_attr.Get() if tendon_type_attr else None
+        if tendon_type is None or str(tendon_type).lower() != "fixed":
+            return []
+
+        path_rel = prim.GetRelationship("mjc:path")
+        path_targets = list(path_rel.GetTargets()) if path_rel else []
+        if len(path_targets) == 0:
+            return []
+
+        indices_attr = prim.GetAttribute("mjc:path:indices")
+        authored_indices = indices_attr.Get() if indices_attr else None
+        indices = list(authored_indices) if authored_indices is not None and len(authored_indices) > 0 else None
+        if indices is None:
+            # If indices are omitted, keep authored relationship order.
+            indices = list(range(len(path_targets)))
+
+        coef_attr = prim.GetAttribute("mjc:path:coef")
+        authored_coef = coef_attr.Get() if coef_attr else None
+        coefs = list(authored_coef) if authored_coef is not None else []
+
+        joint_entries: list[tuple[int, float]] = []
+        for i, path_idx in enumerate(indices):
+            path_idx_int = int(path_idx)
+            if path_idx_int < 0 or path_idx_int >= len(path_targets):
+                warnings.warn(
+                    f"MjcTendon {prim.GetPath()} has out-of-range mjc:path:indices entry {path_idx_int}. Skipping.",
+                    stacklevel=2,
+                )
+                continue
+
+            joint_path = str(path_targets[path_idx_int])
+            try:
+                joint_idx = builder.joint_key.index(joint_path)
+            except ValueError:
+                warnings.warn(
+                    f"MjcTendon {prim.GetPath()} references unknown joint path {joint_path}. Skipping.",
+                    stacklevel=2,
+                )
+                continue
+
+            coef = float(coefs[i]) if i < len(coefs) else 1.0
+            joint_entries.append((joint_idx, coef))
+
+        return joint_entries
+
+    @staticmethod
+    def _expand_mjc_tendon_joint_rows(prim, context: dict[str, Any]) -> Iterable[dict[str, Any]]:
+        """Expand one MjcTendon prim into 0..N mujoco:tendon_joint rows."""
+        builder = context.get("builder")
+        if not isinstance(builder, ModelBuilder):
+            return []
+
+        joint_entries = SolverMuJoCo._parse_mjc_fixed_tendon_joint_entries(prim, builder)
+        return [
+            {
+                "mujoco:tendon_joint": joint_idx,
+                "mujoco:tendon_coef": coef,
+            }
+            for joint_idx, coef in joint_entries
+        ]
+
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
@@ -299,6 +386,10 @@ class SolverMuJoCo(SolverBase):
         """
         # Register custom frequencies before adding attributes that use them
         # This is required as custom frequencies must be registered before use
+
+        # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
+
+        # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
         builder.add_custom_frequency(
             ModelBuilder.CustomFrequency(
@@ -307,9 +398,24 @@ class SolverMuJoCo(SolverBase):
                 usd_prim_filter=cls._is_mjc_actuator_prim,
             )
         )
-        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="tendon", namespace="mujoco"))
-        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="tendon_joint", namespace="mujoco"))
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="tendon",
+                namespace="mujoco",
+                usd_prim_filter=cls._is_mjc_tendon_prim,
+            )
+        )
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="tendon_joint",
+                namespace="mujoco",
+                usd_prim_filter=cls._is_mjc_tendon_prim,
+                usd_entry_expander=cls._expand_mjc_tendon_joint_rows,
+            )
+        )
+        # endregion custom frequencies
 
+        # region geom attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="condim",
@@ -514,6 +620,9 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="solimp",
             )
         )
+        # endregion geom attributes
+
+        # region solver options
         # Solver options (frequency WORLD for per-world values)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -729,7 +838,9 @@ class SolverMuJoCo(SolverBase):
                 usd_value_transformer=cls._parse_jacobian,
             )
         )
+        # endregion solver options
 
+        # region pair attributes
         # --- Pair attributes (from MJCF <pair> tag) ---
         # Explicit contact pairs with custom properties. Only pairs from the template world are used.
         # These are parsed automatically from MJCF <contact><pair> elements.
@@ -837,25 +948,33 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="friction",
             )
         )
+        # endregion pair attributes
 
+        # region actuator attributes
         # --- MuJoCo General Actuator attributes (mujoco:actuator frequency) ---
         # These are used for general/motor actuators parsed from MJCF
         # All actuator attributes share the "mujoco:actuator" custom frequency.
         # Note: actuator_trnid[0] stores the target index, actuator_trntype determines its meaning (joint/tendon/site)
-        # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
+        def parse_actuator_enum(value: Any, mapping: dict[str, int]) -> int:
+            """Parse actuator enum values, defaulting to 0 for unknown strings."""
+            return SolverMuJoCo._parse_named_int(value, mapping, fallback_on_unknown=0)
+
         def parse_trntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5}.get(
-                s.lower(), 0
+            return parse_actuator_enum(
+                s,
+                {"joint": 0, "jointinparent": 1, "tendon": 2, "site": 3, "body": 4, "slidercrank": 5},
             )
 
         def parse_dyntype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4, "user": 5}.get(s.lower(), 0)
+            return parse_actuator_enum(
+                s, {"none": 0, "integrator": 1, "filter": 2, "filterexact": 3, "muscle": 4, "user": 5}
+            )
 
         def parse_gaintype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return {"fixed": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)
+            return parse_actuator_enum(s, {"fixed": 0, "affine": 1, "muscle": 2, "user": 3})
 
         def parse_biastype(s: str, _context: dict[str, Any] | None = None) -> int:
-            return {"none": 0, "affine": 1, "muscle": 2, "user": 3}.get(s.lower(), 0)
+            return parse_actuator_enum(s, {"none": 0, "affine": 1, "muscle": 2, "user": 3})
 
         def parse_bool(value: Any, context: dict[str, Any] | None = None) -> bool:
             """Parse MJCF/USD boolean values to bool."""
@@ -863,30 +982,138 @@ class SolverMuJoCo(SolverBase):
                 return value
             if isinstance(value, (int, np.integer)):
                 return bool(value)
-            s = value.strip().lower()
+            s = str(value).strip().lower()
             if s == "auto":
-                # This can only happen when parsing USD attributes, in which case the context must be provided.
-                assert context is not None
-                prim = context["prim"]
-                attr = context["attr"]
-                raise NotImplementedError(
-                    f"Error while parsing value '{attr.usd_attribute_name}' at prim '{prim.GetPath()}'. Auto boolean values are not supported at the moment."
-                )
+                if context is not None:
+                    prim = context["prim"]
+                    attr = context["attr"]
+                    raise NotImplementedError(
+                        f"Error while parsing value '{attr.usd_attribute_name}' at prim '{prim.GetPath()}'. Auto boolean values are not supported at the moment."
+                    )
+                raise NotImplementedError("Auto boolean values are not supported at the moment.")
             return s in ("true", "1")
 
-        def usd_parse_range(_: str, context: dict[str, Any]) -> wp.vec2 | None:
-            """Parse USD range values to wp.vec2."""
-            prim = context["prim"]
-            attr = context["attr"]
-            # Note: we use the min attribute as key to discover the range attribute and then parse the range from the *:min and *:max values as a vec2.
-            range_attr_name = attr.usd_attribute_name.replace(":min", "").replace(":max", "")
-            rmin = prim.GetAttribute(f"{range_attr_name}:min").Get()
-            rmax = prim.GetAttribute(f"{range_attr_name}:max").Get()
-            if rmin is None or rmax is None:
+        def get_usd_range_if_authored(prim, range_attr_name: str) -> tuple[float, float] | None:
+            """Return (min, max) for an authored USD range or None if no bounds are authored."""
+            min_attr = prim.GetAttribute(f"{range_attr_name}:min")
+            max_attr = prim.GetAttribute(f"{range_attr_name}:max")
+            min_authored = bool(min_attr and min_attr.HasAuthoredValue())
+            max_authored = bool(max_attr and max_attr.HasAuthoredValue())
+            if not min_authored and not max_authored:
                 return None
-            return wp.vec2(rmin, rmax)
 
-        def resolve_dof_name(_: str, context: dict[str, Any]):
+            rmin = min_attr.Get() if min_attr else None
+            rmax = max_attr.Get() if max_attr else None
+            # Some USD assets omit one bound and rely on schema defaults (often 0).
+            # Mirror that behavior to avoid falling back to unrelated parser defaults.
+            if rmin is None:
+                rmin = 0.0
+            if rmax is None:
+                rmax = 0.0
+            return float(rmin), float(rmax)
+
+        def get_usd_compiler_autolimits(context: dict[str, Any]) -> bool:
+            """Return compiler autoLimits from import context (defaults to True)."""
+            result = context.get("result", {})
+            scene_attrs = result.get("scene_attributes", {}) if isinstance(result, dict) else {}
+            value = scene_attrs.get("mjc:compiler:autoLimits", True)
+            return parse_bool(value)
+
+        def make_usd_range_transformer(range_attr_name: str):
+            """Create a transformer that parses a USD min/max range pair."""
+
+            def transform(_: Any, context: dict[str, Any]) -> wp.vec2 | None:
+                range_vals = get_usd_range_if_authored(context["prim"], range_attr_name)
+                if range_vals is None:
+                    return None
+                return wp.vec2(range_vals[0], range_vals[1])
+
+            return transform
+
+        def make_usd_limited_transformer(limited_attr_name: str, range_attr_name: str):
+            """Create a transformer for MuJoCo tri-state limited tokens (true/false/auto)."""
+
+            def transform(_: Any, context: dict[str, Any]) -> bool:
+                prim = context["prim"]
+
+                limited_attr = prim.GetAttribute(limited_attr_name)
+                if limited_attr and limited_attr.HasAuthoredValue():
+                    token = limited_attr.Get()
+                    token_str = str(token).strip().lower()
+                    if token_str != "auto":
+                        return parse_bool(token)
+
+                if not get_usd_compiler_autolimits(context):
+                    return False
+
+                range_vals = get_usd_range_if_authored(prim, range_attr_name)
+                return range_vals is not None and range_vals[0] < range_vals[1]
+
+            return transform
+
+        def resolve_prim_name(_: str, context: dict[str, Any]) -> str:
+            """Return the USD prim path as the attribute value.
+
+            Used as a ``usd_value_transformer`` for custom attributes whose value
+            should simply be the scene path of the prim they are defined on (e.g.
+            tendon keys).
+
+            Args:
+                _: The attribute name (unused).
+                context: A dictionary containing at least a ``"prim"`` key with the
+                    USD prim being processed.
+
+            Returns:
+                The ``Sdf.Path`` of the prim.
+            """
+            return str(context["prim"].GetPath())
+
+        def resolve_actuator_target_path(prim) -> str:
+            """Resolve the single target path referenced by an ``MjcActuator`` prim."""
+            rel = prim.GetRelationship("mjc:target")
+            target_paths = rel.GetTargets() if rel else []
+            if len(target_paths) == 0:
+                raise ValueError(f"MjcActuator {prim.GetPath()} is missing a 'mjc:target' relationship")
+            if len(target_paths) != 1:
+                raise ValueError(f"MjcActuator {prim.GetPath()} has unsupported number of targets: {len(target_paths)}")
+            return str(target_paths[0])
+
+        def get_registered_string_values(attribute_key: str) -> list[str]:
+            """Return registered string values for a custom attribute key."""
+            attr = builder.custom_attributes.get(attribute_key)
+            if attr is None or attr.values is None:
+                return []
+            if isinstance(attr.values, dict):
+                return [str(attr.values[idx]) for idx in sorted(attr.values.keys())]
+            if isinstance(attr.values, list):
+                return [str(value) for value in attr.values]
+            return []
+
+        def resolve_actuator_target(
+            prim,
+        ) -> tuple[int, int, str]:
+            """Resolve actuator target to (trntype, target_index, target_path).
+
+            Returns (-1, -1, target_path) when the target path cannot be mapped yet.
+            This can happen during USD parsing when tendon rows are authored later in
+            prim traversal order.
+            """
+            target_path = resolve_actuator_target_path(prim)
+            joint_dof_names = get_registered_string_values("mujoco:joint_dof_key")
+            try:
+                return int(SolverMuJoCo.TrnType.JOINT), joint_dof_names.index(target_path), target_path
+            except ValueError:
+                pass
+
+            tendon_names = get_registered_string_values("mujoco:tendon_key")
+            try:
+                return int(SolverMuJoCo.TrnType.TENDON), tendon_names.index(target_path), target_path
+            except ValueError:
+                pass
+
+            return -1, -1, target_path
+
+        def resolve_joint_dof_key(_: str, context: dict[str, Any]):
             """For each DOF, return the prim path(s) of the DOF(s).
 
             The returned list length must match the joint's DOF count:
@@ -940,25 +1167,26 @@ class SolverMuJoCo(SolverBase):
         # First we get a list of all joint DOF names from USD
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="dof_name",
+                name="joint_dof_key",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=str,
                 default="",
                 namespace="mujoco",
                 usd_attribute_name="*",
-                usd_value_transformer=resolve_dof_name,
+                usd_value_transformer=resolve_joint_dof_key,
             )
         )
 
-        # Then we get the target USD path for each actuator so that we can resolve
-        # the DOF index from the path given the Model.mujoco.dof_name list
+        # Then we resolve each USD actuator transmission target from its mjc:target path.
+        # If target resolution is not possible yet (for example tendon target parsed later),
+        # we preserve sentinel values and resolve deterministically in _init_actuators
+        # using actuator_target_key.
         def resolve_actuator_transmission_index(_: str, context: dict[str, Any]) -> wp.vec2i:
-            """Resolve the transmission target DOF index for a USD actuator prim.
+            """Resolve the transmission target index for a USD actuator prim.
 
-            Reads the ``mjc:target`` relationship from the actuator prim, looks up
-            the referenced path in the already-collected DOF name list, and returns
-            the matching DOF index packed into a ``wp.vec2i``.
+            Reads the ``mjc:target`` relationship from the actuator prim and returns
+            the resolved target index packed into a ``wp.vec2i``.
 
             Args:
                 _: The attribute name (unused).
@@ -966,30 +1194,27 @@ class SolverMuJoCo(SolverBase):
                     for the actuator being processed.
 
             Returns:
-                A ``wp.vec2i`` where the first element is the DOF index of the transmission
-                target and the second element is unused (set to 0).
-
-            Raises:
-                ValueError: If the ``mjc:target`` relationship is missing or the target path
-                    cannot be found in the DOF name list.
+                A ``wp.vec2i`` where the first element is the target index and
+                the second element is unused (set to 0). Returns ``(-1, -1)`` if
+                target resolution is deferred.
             """
             prim = context["prim"]
-            rel = prim.GetRelationship("mjc:target")
+            _trntype, target_idx, _target_path = resolve_actuator_target(prim)
+            if target_idx < 0:
+                return wp.vec2i(wp.int32(-1), wp.int32(-1))
+            return wp.vec2i(wp.int32(target_idx), wp.int32(0))
 
-            dof_names_dict: dict[int, str] = builder.custom_attributes["mujoco:dof_name"].values
-            dof_names = list(dof_names_dict.values())
+        def resolve_actuator_transmission_type(_: str, context: dict[str, Any]) -> int:
+            """Resolve transmission type for a USD actuator prim from its target path."""
+            prim = context["prim"]
+            trntype, _target_idx, _target_path = resolve_actuator_target(prim)
+            if trntype < 0:
+                return int(SolverMuJoCo.TrnType.JOINT)
+            return trntype
 
-            # Get the first target as a string
-            target_paths = rel.GetTargets()
-            if len(target_paths) == 0:
-                raise ValueError(f"MjcActuator {prim.GetPath()} is missing a 'mjc:target' relationship")
-            target_path = str(target_paths[0])
-
-            try:
-                dof_index = dof_names.index(target_path)
-            except ValueError as e:
-                raise ValueError(f"Unable to resolve actuator target {target_path} for MjcActuator {prim.GetPath()}. Currently only joint dofs (not tendons) are supported.") from e
-            return wp.vec2i(wp.int32(dof_index), wp.int32(0))  # second entry is unused for joint transmission
+        def resolve_actuator_target_key(_: str, context: dict[str, Any]) -> str:
+            """Resolve target path key for a USD actuator prim."""
+            return resolve_actuator_target_path(context["prim"])
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -1006,6 +1231,19 @@ class SolverMuJoCo(SolverBase):
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="actuator_target_key",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=str,
+                default="",
+                namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_actuator_target_key,
+            )
+        )
+
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="actuator_trntype",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
@@ -1014,6 +1252,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="trntype",
                 mjcf_value_transformer=parse_trntype,
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_actuator_transmission_type,
             )
         )
         builder.add_custom_attribute(
@@ -1074,8 +1314,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="ctrllimited",
                 mjcf_value_transformer=parse_bool,
-                usd_attribute_name="mjc:ctrlLimited",
-                usd_value_transformer=parse_bool,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_limited_transformer("mjc:ctrlLimited", "mjc:ctrlRange"),
             )
         )
         builder.add_custom_attribute(
@@ -1088,6 +1328,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="forcelimited",
                 mjcf_value_transformer=parse_bool,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_limited_transformer("mjc:forceLimited", "mjc:forceRange"),
             )
         )
         builder.add_custom_attribute(
@@ -1099,10 +1341,8 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
                 mjcf_attribute_name="ctrlrange",
-                # USD stores min and max separately, we use the min as key to discover the range
-                # attribute and then parse the range from the *:min and *:max values as a vec2.
-                usd_attribute_name="mjc:ctrlRange:min",
-                usd_value_transformer=usd_parse_range,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_range_transformer("mjc:ctrlRange"),
             )
         )
         builder.add_custom_attribute(
@@ -1114,10 +1354,8 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(-1.0, 1.0),
                 namespace="mujoco",
                 mjcf_attribute_name="forcerange",
-                # USD stores min and max separately, we use the min as key to discover the range
-                # attribute and then parse the range from the *:min and *:max values as a vec2.
-                usd_attribute_name="mjc:forceRange:min",
-                usd_value_transformer=usd_parse_range,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_range_transformer("mjc:forceRange"),
             )
         )
         builder.add_custom_attribute(
@@ -1182,8 +1420,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="actlimited",
                 mjcf_value_transformer=parse_bool,
-                usd_attribute_name="mjc:actLimited",
-                usd_value_transformer=parse_bool,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_limited_transformer("mjc:actLimited", "mjc:actRange"),
             )
         )
 
@@ -1196,8 +1434,8 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="actrange",
-                usd_attribute_name="mjc:actRange:min",
-                usd_value_transformer=usd_parse_range,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_range_transformer("mjc:actRange"),
             )
         )
 
@@ -1250,7 +1488,9 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
             )
         )
+        # endregion actuator attributes
 
+        # region tendon attributes
         # --- Fixed Tendon attributes (variable-length, from MJCF <tendon><fixed> tag) ---
         # Fixed tendons compute length as a linear combination of joint positions.
         # Only tendons from the template world are used; MuJoCo replicates them across worlds.
@@ -1266,6 +1506,7 @@ class SolverMuJoCo(SolverBase):
                 references="world",
             )
         )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="tendon_stiffness",
@@ -1274,6 +1515,7 @@ class SolverMuJoCo(SolverBase):
                 default=0.0,
                 namespace="mujoco",
                 mjcf_attribute_name="stiffness",
+                usd_attribute_name="mjc:stiffness",
             )
         )
         builder.add_custom_attribute(
@@ -1284,6 +1526,7 @@ class SolverMuJoCo(SolverBase):
                 default=0.0,
                 namespace="mujoco",
                 mjcf_attribute_name="damping",
+                usd_attribute_name="mjc:damping",
             )
         )
         builder.add_custom_attribute(
@@ -1294,19 +1537,32 @@ class SolverMuJoCo(SolverBase):
                 default=0.0,
                 namespace="mujoco",
                 mjcf_attribute_name="frictionloss",
+                usd_attribute_name="mjc:frictionloss",
             )
         )
 
-        def parse_limited(value: str, context: dict[str, Any] | None = None) -> int:
+        def parse_limited(value: Any, _context: dict[str, Any] | None = None) -> int:
             """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
-            v = value.lower().strip()
-            if v in ("false", "0"):
+            return SolverMuJoCo._parse_named_int(value, {"false": 0, "true": 1, "auto": 2})
+
+        def resolve_context_builder(context: dict[str, Any]) -> ModelBuilder:
+            """Resolve builder from transformer context, falling back to current builder."""
+            context_builder = context.get("builder")
+            if isinstance(context_builder, ModelBuilder):
+                return context_builder
+            return builder
+
+        def resolve_tendon_joint_adr(_: Any, context: dict[str, Any]) -> int:
+            context_builder = resolve_context_builder(context)
+            tendon_joint_attr = context_builder.custom_attributes.get("mujoco:tendon_joint")
+            if tendon_joint_attr is None or not isinstance(tendon_joint_attr.values, list):
                 return 0
-            if v in ("true", "1"):
-                return 1
-            if v in ("auto", "2"):
-                return 2
-            return int(value)
+            return len(tendon_joint_attr.values)
+
+        def resolve_tendon_joint_num(_: Any, context: dict[str, Any]) -> int:
+            context_builder = resolve_context_builder(context)
+            joint_entries = cls._parse_mjc_fixed_tendon_joint_entries(context["prim"], context_builder)
+            return len(joint_entries)
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
@@ -1317,6 +1573,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="limited",
                 mjcf_value_transformer=parse_limited,
+                usd_attribute_name="mjc:limited",
+                usd_value_transformer=parse_limited,
             )
         )
         builder.add_custom_attribute(
@@ -1327,6 +1585,8 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="range",
+                usd_attribute_name="mjc:range:min",
+                usd_value_transformer=make_usd_range_transformer("mjc:range"),
             )
         )
         builder.add_custom_attribute(
@@ -1337,6 +1597,7 @@ class SolverMuJoCo(SolverBase):
                 default=0.0,
                 namespace="mujoco",
                 mjcf_attribute_name="margin",
+                usd_attribute_name="mjc:margin",
             )
         )
         builder.add_custom_attribute(
@@ -1347,6 +1608,7 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
                 mjcf_attribute_name="solreflimit",
+                usd_attribute_name="mjc:solreflimit",
             )
         )
         builder.add_custom_attribute(
@@ -1357,6 +1619,7 @@ class SolverMuJoCo(SolverBase):
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
                 mjcf_attribute_name="solimplimit",
+                usd_attribute_name="mjc:solimplimit",
             )
         )
         builder.add_custom_attribute(
@@ -1367,6 +1630,7 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(0.02, 1.0),
                 namespace="mujoco",
                 mjcf_attribute_name="solreffriction",
+                usd_attribute_name="mjc:solreffriction",
             )
         )
         builder.add_custom_attribute(
@@ -1377,6 +1641,7 @@ class SolverMuJoCo(SolverBase):
                 default=vec5(0.9, 0.95, 0.001, 0.5, 2.0),
                 namespace="mujoco",
                 mjcf_attribute_name="solimpfriction",
+                usd_attribute_name="mjc:solimpfriction",
             )
         )
         builder.add_custom_attribute(
@@ -1387,6 +1652,7 @@ class SolverMuJoCo(SolverBase):
                 default=0.0,
                 namespace="mujoco",
                 mjcf_attribute_name="armature",
+                usd_attribute_name="mjc:armature",
             )
         )
         builder.add_custom_attribute(
@@ -1397,6 +1663,7 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(-1.0, -1.0),  # -1 means use default (model length)
                 namespace="mujoco",
                 mjcf_attribute_name="springlength",
+                usd_attribute_name="mjc:springlength",
             )
         )
         # Addressing into joint arrays (one per tendon)
@@ -1408,6 +1675,8 @@ class SolverMuJoCo(SolverBase):
                 default=0,
                 namespace="mujoco",
                 references="mujoco:tendon_joint",  # Offset by joint entry count during merge
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_tendon_joint_adr,
             )
         )
         builder.add_custom_attribute(
@@ -1417,6 +1686,8 @@ class SolverMuJoCo(SolverBase):
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_tendon_joint_num,
             )
         )
         builder.add_custom_attribute(
@@ -1427,6 +1698,8 @@ class SolverMuJoCo(SolverBase):
                 default=wp.vec2(0.0, 0.0),
                 namespace="mujoco",
                 mjcf_attribute_name="actuatorfrcrange",
+                usd_attribute_name="mjc:actuatorfrcrange:min",
+                usd_value_transformer=make_usd_range_transformer("mjc:actuatorfrcrange"),
             )
         )
         builder.add_custom_attribute(
@@ -1438,6 +1711,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="actuatorfrclimited",
                 mjcf_value_transformer=parse_limited,
+                usd_attribute_name="mjc:actuatorfrclimited",
+                usd_value_transformer=parse_limited,
             )
         )
         # Tendon names (string attribute - stored as list[str], not warp array)
@@ -1449,6 +1724,8 @@ class SolverMuJoCo(SolverBase):
                 default="",
                 namespace="mujoco",
                 mjcf_attribute_name="name",
+                usd_attribute_name="*",
+                usd_value_transformer=resolve_prim_name,
             )
         )
 
@@ -1473,6 +1750,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="coef",
             )
         )
+        # endregion tendon attributes
 
     def _init_pairs(self, model: Model, spec, shape_mapping: dict[int, str], template_world: int) -> None:
         """
@@ -1707,6 +1985,7 @@ class SolverMuJoCo(SolverBase):
         tendon_armature_np = tendon_armature.numpy() if tendon_armature is not None else None
         tendon_springlength = getattr(mujoco_attrs, "tendon_springlength", None)
         tendon_springlength_np = tendon_springlength.numpy() if tendon_springlength is not None else None
+        tendon_key_arr = getattr(mujoco_attrs, "tendon_key", None)
         tendon_joint_adr = mujoco_attrs.tendon_joint_adr.numpy()
         tendon_joint_num = mujoco_attrs.tendon_joint_num.numpy()
 
@@ -1719,6 +1998,7 @@ class SolverMuJoCo(SolverBase):
         # Track which Newton tendon indices are added to MuJoCo and their names
         selected_tendons: list[int] = []
         tendon_names: list[str] = []
+        used_tendon_names: set[str] = set()
 
         for i in range(tendon_count):
             # Only include tendons from the template world or global tendons (world < 0)
@@ -1726,11 +2006,74 @@ class SolverMuJoCo(SolverBase):
             if tw != template_world and tw >= 0:
                 continue
 
-            # Track this tendon
+            joint_start = int(tendon_joint_adr[i])
+            joint_num = int(tendon_joint_num[i])
+            if joint_num <= 0:
+                if wp.config.verbose:
+                    print(
+                        f"Warning: Skipping tendon {i} during MuJoCo export because it has no joint wraps. "
+                        "Only fixed tendons with joint paths are currently supported."
+                    )
+                continue
+
+            wraps: list[tuple[str, float]] = []
+
+            for j in range(joint_start, joint_start + joint_num):
+                if tendon_joint is None or tendon_coef is None:
+                    break
+
+                newton_joint = int(tendon_joint[j])
+                coef = float(tendon_coef[j])
+
+                if newton_joint < 0:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                if model_joint_type_np[newton_joint] == JointType.D6:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                joint_name = joint_mapping.get(newton_joint)
+                if joint_name is None:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: Newton joint {newton_joint} "
+                        f"not found in MuJoCo joint mapping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                wraps.append((joint_name, coef))
+
+            if len(wraps) == 0:
+                if wp.config.verbose:
+                    print(
+                        f"Warning: Skipping tendon {i} during MuJoCo export because no valid joint wraps were resolved."
+                    )
+                continue
+
+            # Track this tendon only after confirming it can be exported.
             selected_tendons.append(i)
 
-            # Create tendon with a unique name
-            tendon_name = f"tendon_{i}"
+            # Prefer authored tendon names from MJCF/USD; fall back to a generic name.
+            tendon_name_base = ""
+            if isinstance(tendon_key_arr, list) and i < len(tendon_key_arr):
+                tendon_name_base = str(tendon_key_arr[i]).strip()
+            if tendon_name_base == "":
+                tendon_name_base = f"tendon_{i}"
+
+            tendon_name = tendon_name_base
+            suffix = 1
+            while tendon_name in used_tendon_names:
+                tendon_name = f"{tendon_name_base}_{suffix}"
+                suffix += 1
+            used_tendon_names.add(tendon_name)
+
             tendon_names.append(tendon_name)
             t = spec.add_tendon()
             t.name = tendon_name
@@ -1781,40 +2124,7 @@ class SolverMuJoCo(SolverBase):
                     t.springlength[0] = val[0]
                     t.springlength[1] = val[0]
 
-            # Add joints for this fixed tendon's linear combination
-            joint_start = int(tendon_joint_adr[i])
-            joint_num = int(tendon_joint_num[i])
-
-            for j in range(joint_start, joint_start + joint_num):
-                if tendon_joint is None or tendon_coef is None:
-                    break
-
-                newton_joint = int(tendon_joint[j])
-                coef = float(tendon_coef[j])
-
-                if newton_joint < 0:
-                    warnings.warn(
-                        f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
-                        stacklevel=2,
-                    )
-                    continue
-
-                if model_joint_type_np[newton_joint] == JointType.D6:
-                    warnings.warn(
-                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
-                        stacklevel=2,
-                    )
-                    continue
-
-                joint_name = joint_mapping.get(newton_joint)
-                if joint_name is None:
-                    warnings.warn(
-                        f"Skipping joint entry {j} for tendon {i}: Newton joint {newton_joint} "
-                        f"not found in MuJoCo joint mapping.",
-                        stacklevel=2,
-                    )
-                    continue
-
+            for joint_name, coef in wraps:
                 t.wrap_joint(joint_name, coef)
 
         return selected_tendons, tendon_names
@@ -1873,6 +2183,22 @@ class SolverMuJoCo(SolverBase):
         trntype_arr = mujoco_attrs.actuator_trntype.numpy() if hasattr(mujoco_attrs, "actuator_trntype") else None
         ctrl_source_arr = mujoco_attrs.ctrl_source.numpy() if hasattr(mujoco_attrs, "ctrl_source") else None
         actuator_world_arr = mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
+        actuator_target_key_arr = getattr(mujoco_attrs, "actuator_target_key", None)
+        joint_dof_key_arr = getattr(mujoco_attrs, "joint_dof_key", None)
+        tendon_key_arr = getattr(mujoco_attrs, "tendon_key", None)
+
+        def resolve_target_from_key(target_key: str) -> tuple[int, int]:
+            if isinstance(joint_dof_key_arr, list):
+                try:
+                    return int(SolverMuJoCo.TrnType.JOINT), joint_dof_key_arr.index(target_key)
+                except ValueError:
+                    pass
+            if isinstance(tendon_key_arr, list):
+                try:
+                    return int(SolverMuJoCo.TrnType.TENDON), tendon_key_arr.index(target_key)
+                except ValueError:
+                    pass
+            return -1, -1
 
         for mujoco_act_idx in range(mujoco_actuator_count):
             # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
@@ -1888,11 +2214,34 @@ class SolverMuJoCo(SolverBase):
                     continue  # Skip actuators from other worlds
 
             target_idx = int(actuator_trnid[mujoco_act_idx, 0])
+            target_idx_alt = int(actuator_trnid[mujoco_act_idx, 1])
 
-            # Determine target type from trntype (0=JOINT, 1=TENDON, 2=SITE, etc.)
+            # Determine target type from trntype enum (JOINT, TENDON, SITE, BODY, ...).
             trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
+            target_key = ""
+            if isinstance(actuator_target_key_arr, list) and mujoco_act_idx < len(actuator_target_key_arr):
+                target_key = actuator_target_key_arr[mujoco_act_idx]
 
-            if trntype == 0:  # TrnType.JOINT
+            # Backward compatibility for older USD parsing that wrote tendon index to trnid[1].
+            if trntype == int(SolverMuJoCo.TrnType.TENDON):
+                if target_idx < 0 and target_idx_alt >= 0:
+                    target_idx = target_idx_alt
+                elif target_idx == 0 and target_idx_alt > 0:
+                    target_idx = target_idx_alt
+
+            # Deferred target resolution: when USD parsing ran before tendon rows were available,
+            # keep actuator_target_key and resolve the final (type, index) here.
+            if target_idx < 0 and target_key:
+                resolved_type, resolved_idx = resolve_target_from_key(target_key)
+                if resolved_idx >= 0:
+                    trntype = resolved_type
+                    target_idx = resolved_idx
+            if target_idx < 0:
+                if wp.config.verbose:
+                    print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unresolved target '{target_key}'")
+                continue
+
+            if trntype == int(SolverMuJoCo.TrnType.JOINT):
                 # For CTRL_DIRECT joint actuators, actuator_trnid stores a DOF index
                 # (not a Newton joint index). This allows us to find the specific MuJoCo
                 # joint when Newton has combined multiple MJCF joints into one.
@@ -1908,7 +2257,7 @@ class SolverMuJoCo(SolverBase):
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} DOF {dof_idx} not mapped to MuJoCo joint")
                     continue
                 target_name = mjc_joint_names[mjc_joint_idx]
-            elif trntype == 2:  # TrnType.TENDON
+            elif trntype == int(SolverMuJoCo.TrnType.TENDON):
                 try:
                     mjc_tendon_idx = selected_tendons.index(target_idx)
                     target_name = mjc_tendon_names[mjc_tendon_idx]
@@ -1916,7 +2265,7 @@ class SolverMuJoCo(SolverBase):
                     if wp.config.verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} references tendon {target_idx} not in MuJoCo")
                     continue
-            elif trntype == 4:  # TrnType.BODY
+            elif trntype == int(SolverMuJoCo.TrnType.BODY):
                 if target_idx < 0 or target_idx >= len(model.body_key):
                     if wp.config.verbose:
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
@@ -3380,16 +3729,24 @@ class SolverMuJoCo(SolverBase):
                     name = f"{name}_{body_name_counts[name]}"
 
             inertia = body_inertia[child]
-            body = mj_bodies[body_mapping[parent]].add_body(
-                name=name,
-                pos=tf.p,
-                quat=quat_to_mjc(tf.q),
-                mass=body_mass[child],
-                ipos=body_com[child, :],
-                fullinertia=[inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]],
-                explicitinertial=True,
-                mocap=fixed_base,
-            )
+            mass = body_mass[child]
+            # MuJoCo requires positive-definite inertia. For zero-mass bodies
+            # (sensor frames, reference links), omit mass and inertia entirely
+            # and let MuJoCo handle them natively.
+            body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": fixed_base}
+            if mass > 0.0:
+                body_kwargs["mass"] = mass
+                body_kwargs["ipos"] = body_com[child, :]
+                body_kwargs["fullinertia"] = [
+                    inertia[0, 0],
+                    inertia[1, 1],
+                    inertia[2, 2],
+                    inertia[0, 1],
+                    inertia[0, 2],
+                    inertia[1, 2],
+                ]
+                body_kwargs["explicitinertial"] = True
+            body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
             if fixed_base:
                 newton_body_to_mocap_index[child] = next_mocap_index

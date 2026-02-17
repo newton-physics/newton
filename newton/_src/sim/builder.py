@@ -579,15 +579,49 @@ class ModelBuilder:
         If None, the custom frequency is registered without a namespace."""
 
         usd_prim_filter: Callable[[Usd.Prim, dict[str, Any]], bool] | None = None
-        """Optional callback to filter USD prims for this frequency during USD parsing.
+        """Select which USD prims are used for this frequency.
 
-        The callback receives a USD Prim and a context dictionary containing parsing results.
-        The context dictionary matches the return value of :meth:`newton.ModelBuilder.add_usd` and includes
-        keys such as ``path_body_map``, ``path_joint_map``, ``path_shape_map``, ``linear_unit``,
-        ``mass_unit``, etc. Return ``True`` if the prim matches this custom frequency and its
-        custom attribute values should be extracted; return ``False`` to skip this prim.
+        Called by :meth:`newton.ModelBuilder.add_usd` for each visited prim with:
 
-        If None, this frequency cannot be automatically parsed from USD files."""
+        - ``prim``: current ``Usd.Prim``
+        - ``context``: callback context dictionary with ``prim``, ``result``,
+          and ``builder``
+
+        Return ``True`` to parse this prim for the frequency, or ``False`` to skip it.
+        If this is ``None``, the frequency is not parsed automatically from USD.
+
+        Example:
+
+            .. code-block:: python
+
+                def is_actuator_prim(prim: Usd.Prim, context: dict[str, Any]) -> bool:
+                    return prim.GetTypeName() == "MjcActuator"
+        """
+
+        usd_entry_expander: Callable[[Usd.Prim, dict[str, Any]], Iterable[dict[str, Any]]] | None = None
+        """Build row entries for a matching USD prim.
+
+        Called by :meth:`newton.ModelBuilder.add_usd` after :attr:`usd_prim_filter`
+        returns ``True``. Return an iterable of dictionaries; each dictionary is one
+        row passed to :meth:`newton.ModelBuilder.add_custom_values`.
+
+        Use this when one prim should produce multiple rows. Missing keys in a row are
+        filled with ``None`` so defaults still apply. Returning an empty iterable adds
+        no rows.
+
+        See also:
+            When this callback is set, :meth:`newton.ModelBuilder.add_usd` does not run
+            default per-attribute extraction for this frequency on matched prims
+            (``usd_attribute_name`` / ``usd_value_transformer``).
+
+        Example:
+
+            .. code-block:: python
+
+                def expand_tendon_rows(prim: Usd.Prim, context: dict[str, Any]) -> Iterable[dict[str, Any]]:
+                    for joint_path in prim.GetCustomDataByKey("joint_paths") or []:
+                        yield {"joint": joint_path, "stiffness": prim.GetCustomDataByKey("stiffness")}
+        """
 
         @property
         def key(self) -> str:
@@ -1073,6 +1107,21 @@ class ModelBuilder:
             attr.values[idx] = value
             indices[key] = idx
         return indices
+
+    def add_custom_values_batch(self, entries: Sequence[dict[str, Any]]) -> list[dict[str, int]]:
+        """Append multiple custom-frequency rows in a single call.
+
+        Args:
+            entries: Sequence of rows where each row maps custom attribute keys to values.
+                Each row is forwarded to :meth:`add_custom_values`.
+
+        Returns:
+            List of index maps returned by :meth:`add_custom_values` for each row.
+        """
+        out: list[dict[str, int]] = []
+        for row in entries:
+            out.append(self.add_custom_values(**row))
+        return out
 
     def _process_custom_attributes(
         self,

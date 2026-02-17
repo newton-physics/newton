@@ -4149,6 +4149,188 @@ def Xform "Articulation" (
         self.assertIn("usd_attribute_name='*'", str(ctx.exception))
         self.assertIn("usd_value_transformer", str(ctx.exception))
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_entry_expander_multiple_rows(self):
+        """Test that usd_entry_expander can emit multiple rows per matched prim."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        item_counts = [2, 1]
+        for i, count in enumerate(item_counts):
+            prim = UsdGeom.Xform.Define(stage, f"/World/Emitter{i}").GetPrim()
+            prim.CreateAttribute("test:count", Sdf.ValueTypeNames.Int).Set(count)
+
+        def is_emitter(prim, context):
+            return prim.GetPath().pathString.startswith("/World/Emitter")
+
+        def expand_rows(prim, context):
+            count = int(prim.GetAttribute("test:count").Get())
+            return [{"test:item_value": float(i + 1)} for i in range(count)]
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_filter=is_emitter,
+                usd_entry_expander=expand_rows,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:item"), sum(item_counts))
+        values = model.test.item_value.numpy()
+        self.assertEqual(len(values), 3)
+        assert_np_equal(values, np.array([1.0, 2.0, 1.0], dtype=np.float32), tol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_filter_and_expander_context_unified(self):
+        """Test that usd_prim_filter and usd_entry_expander receive the same context contract."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        prim = UsdGeom.Xform.Define(stage, "/World/Emitter0").GetPrim()
+        prim.CreateAttribute("test:count", Sdf.ValueTypeNames.Int).Set(1)
+
+        captured_filter_contexts = []
+        captured_expander_contexts = []
+
+        def is_emitter(prim, context):
+            if not prim.GetPath().pathString.startswith("/World/Emitter"):
+                return False
+            captured_filter_contexts.append(context)
+            return True
+
+        def expand_rows(prim, context):
+            captured_expander_contexts.append(context)
+            count = int(prim.GetAttribute("test:count").Get())
+            return [{"test:item_value": float(i + 1)} for i in range(count)]
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_filter=is_emitter,
+                usd_entry_expander=expand_rows,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        import_result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:item"), 1)
+        self.assertEqual(len(captured_filter_contexts), 1)
+        self.assertEqual(len(captured_expander_contexts), 1)
+
+        filter_ctx = captured_filter_contexts[0]
+        expander_ctx = captured_expander_contexts[0]
+
+        self.assertIs(filter_ctx["builder"], builder)
+        self.assertIs(expander_ctx["builder"], builder)
+        self.assertIs(filter_ctx["result"], import_result)
+        self.assertIs(expander_ctx["result"], import_result)
+        self.assertEqual(filter_ctx["prim"].GetPath(), prim.GetPath())
+        self.assertEqual(expander_ctx["prim"].GetPath(), prim.GetPath())
+        self.assertEqual(set(filter_ctx.keys()), {"prim", "builder", "result"})
+        self.assertEqual(set(expander_ctx.keys()), {"prim", "builder", "result"})
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_ordering_producer_before_consumer(self):
+        """Test deterministic custom-frequency ordering for producer/consumer dependencies."""
+        from pxr import Usd, UsdGeom, UsdPhysics  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        UsdGeom.Xform.Define(stage, "/World/Item0")
+        UsdGeom.Xform.Define(stage, "/World/Item1")
+        UsdGeom.Xform.Define(stage, "/World/Item2")
+
+        def is_item(prim, context):
+            return prim.GetPath().pathString.startswith("/World/Item")
+
+        def expand_producer_rows(prim, context):
+            return [{"test:producer_value": 1.0}]
+
+        def read_producer_count(_value, context):
+            builder = context["builder"]
+            producer_attr = builder.custom_attributes["test:producer_value"]
+            if not isinstance(producer_attr.values, list):
+                return 0
+            return int(len(producer_attr.values))
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="producer",
+                namespace="test",
+                usd_prim_filter=is_item,
+                usd_entry_expander=expand_producer_rows,
+            )
+        )
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="consumer",
+                namespace="test",
+                usd_prim_filter=is_item,
+            )
+        )
+
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="producer_value",
+                frequency="test:producer",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="consumer_seen_producer_count",
+                frequency="test:consumer",
+                dtype=wp.int32,
+                default=0,
+                namespace="test",
+                usd_attribute_name="*",
+                usd_value_transformer=read_producer_count,
+            )
+        )
+
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:producer"), 3)
+        self.assertEqual(model.get_custom_frequency_count("test:consumer"), 3)
+        seen_counts = model.test.consumer_seen_producer_count.numpy()
+        assert_np_equal(seen_counts, np.array([1, 2, 3], dtype=np.int32), tol=0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)

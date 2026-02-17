@@ -520,7 +520,14 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 USD Parsing Support
 -------------------
 
-Custom frequencies can optionally support automatic USD parsing by providing a :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter` callback when registering the frequency. This callback is invoked during :meth:`~newton.ModelBuilder.add_usd` for each prim in the USD stage to determine whether custom attribute values should be extracted from it.
+Custom frequencies can support automatic USD parsing:
+
+In this section, a *row* means one appended set of values for a custom frequency
+(that is, one index entry across all attributes in that frequency, equivalent to
+one call to :meth:`~newton.ModelBuilder.add_custom_values`).
+
+* :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter` selects which prims should emit rows.
+* :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander` (optional) expands one prim into multiple rows.
 
 .. code-block:: python
 
@@ -536,21 +543,63 @@ Custom frequencies can optionally support automatic USD parsing by providing a :
        )
    )
 
-When :meth:`~newton.ModelBuilder.add_usd` is called, it will:
+For one-to-many mappings (one prim -> many rows):
 
-1. After parsing all standard entities (bodies, shapes, joints, etc.), iterate over registered custom frequencies
-2. For each frequency with a :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter`, traverse all prims in the stage (including instance proxies under instanceable prims)
-3. For each prim where the filter returns ``True``, extract custom attribute values and add them via :meth:`newton.ModelBuilder.add_custom_values`
+.. code-block:: python
+
+   def expand_joint_rows(prim, context):
+       return [
+           {"mujoco:tendon_joint": 4, "mujoco:tendon_coef": 0.5},
+           {"mujoco:tendon_joint": 8, "mujoco:tendon_coef": 0.5},
+       ]
+
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(
+           name="tendon_joint",
+           namespace="mujoco",
+           usd_prim_filter=is_tendon_prim,
+           usd_entry_expander=expand_joint_rows,
+       )
+   )
+
+When :meth:`~newton.ModelBuilder.add_usd` runs:
+
+1. Parses standard entities (bodies, shapes, joints, etc.).
+2. Collects custom frequencies that define :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter`.
+3. Traverses prims once (including instance proxies via ``Usd.TraverseInstanceProxies()``).
+4. For each prim, evaluate matching frequencies in registration order:
+   
+   - If :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander` is set, one row is appended per emitted dictionary,
+     and default per-attribute USD extraction for that frequency is skipped for that prim.
+   - Otherwise, one row is appended from the frequency's declared attributes.
+
+Callback inputs:
+
+* ``usd_prim_filter(prim, context)`` and ``usd_entry_expander(prim, context)`` receive
+  the same context shape.
+* ``context`` is a small dictionary:
+  
+  - ``prim``: current USD prim (same object as the ``prim`` argument)
+  - ``builder``: current :class:`~newton.ModelBuilder` instance
+  - ``result``: dictionary returned by :meth:`~newton.ModelBuilder.add_usd`
 
 .. note::
-   The traversal uses ``Usd.TraverseInstanceProxies()`` so that prims under instanceable prims are visited. This allows custom frequencies to be parsed from instanced geometry.
+   Important behavior:
 
-The :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter` callback receives:
+   - Frequency callbacks are evaluated in deterministic registration order for each visited prim.
+   - If a frequency defines :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander`, then for every matched
+     prim in that frequency, the expander output is the only source of row values.
+   - In that expander code path, the normal :class:`~newton.ModelBuilder.CustomAttribute` USD parsing path is skipped
+     for that frequency/prim. In other words,
+     :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` and
+     :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` are not evaluated for those rows.
+   - Example: if frequency ``"mujoco:tendon_joint"`` has an expander and attribute
+     ``CustomAttribute(name="tendon_coef", frequency="mujoco:tendon_joint", ...)``, then ``tendon_coef`` is populated
+     only from keys returned by the expander rows. If a row omits ``"mujoco:tendon_coef"``, the value is treated as
+     ``None`` and the attribute default is applied at finalize time.
 
-* ``prim``: The USD prim being evaluated.
-* ``context``: A dictionary with parsing results (path maps, units, etc.) that can be used to resolve references. This dictionary matches the return value of :meth:`~newton.ModelBuilder.add_usd` and includes keys such as ``path_body_map``, ``path_joint_map``, ``path_shape_map``, ``linear_unit``, ``mass_unit``, etc.
-
-This enables solvers like MuJoCo to define their own USD schemas and have them automatically parsed during model loading.
+This mechanism lets solvers such as MuJoCo define USD-native schemas and parse them automatically
+during model import.
 
 Deriving Values from Prim Data (Wildcard Attribute)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -608,12 +657,16 @@ The transformer context dictionary contains:
 
 * ``"prim"``: The current USD prim.
 * ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` being evaluated.
+* When called from :meth:`~newton.ModelBuilder.add_usd` custom-frequency parsing,
+  context also includes ``"result"`` (the ``add_usd`` return dictionary) and
+  ``"builder"`` (the current :class:`~newton.ModelBuilder`).
 
 This pattern is useful when:
 
 * The value you need doesn't exist as a single USD attribute (it must be derived from multiple attributes, prim metadata, or relationships).
 * You want to run the same computation for every prim of a given frequency without requiring an authored attribute on each prim.
-* You need to look up related entities (e.g., resolving a prim relationship to a body index using the context's ``path_body_map``).
+* You need to look up related entities (for example, resolving a prim relationship
+  to a body index through ``context["result"]["path_body_map"]``).
 
 Multi-World Merging
 -------------------

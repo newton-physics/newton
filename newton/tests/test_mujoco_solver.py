@@ -23,7 +23,7 @@ import newton
 from newton import JointType, Mesh
 from newton._src.core.types import vec5
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
 
 
 class TestMuJoCoSolver(unittest.TestCase):
@@ -4965,6 +4965,312 @@ class TestMuJoCoAttributes(unittest.TestCase):
         assert np.allclose(model.mujoco.condim.numpy(), [6])
         assert np.allclose(solver.mjw_model.geom_condim.numpy(), [6])
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_fixed_tendon_joint_addressing_from_usd(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        base = UsdGeom.Xform.Define(stage, "/World/base").GetPrim()
+        link1 = UsdGeom.Xform.Define(stage, "/World/link1").GetPrim()
+        link2 = UsdGeom.Xform.Define(stage, "/World/link2").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(base)
+        UsdPhysics.RigidBodyAPI.Apply(link1)
+        UsdPhysics.RigidBodyAPI.Apply(link2)
+        UsdPhysics.ArticulationRootAPI.Apply(base)
+
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint1")
+        joint1.CreateAxisAttr().Set("Z")
+        joint1.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
+        joint1.CreateBody1Rel().SetTargets([Sdf.Path("/World/link1")])
+
+        joint2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint2")
+        joint2.CreateAxisAttr().Set("Z")
+        joint2.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
+        joint2.CreateBody1Rel().SetTargets([Sdf.Path("/World/link2")])
+
+        tendon_prim = stage.DefinePrim("/World/fixed_tendon", "MjcTendon")
+        tendon_prim.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
+        tendon_prim.CreateRelationship("mjc:path", True).SetTargets(
+            [Sdf.Path("/World/joint1"), Sdf.Path("/World/joint2")]
+        )
+        tendon_prim.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([1, 0]))
+        tendon_prim.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(
+            Vt.DoubleArray([0.25, 0.75])
+        )
+        tendon_prim.CreateAttribute("mjc:stiffness", Sdf.ValueTypeNames.Double, True).Set(11.0)
+        tendon_prim.CreateAttribute("mjc:damping", Sdf.ValueTypeNames.Double, True).Set(0.33)
+        tendon_prim.CreateAttribute("mjc:frictionloss", Sdf.ValueTypeNames.Double, True).Set(0.07)
+        tendon_prim.CreateAttribute("mjc:limited", Sdf.ValueTypeNames.Token, True).Set("true")
+        tendon_prim.CreateAttribute("mjc:range:min", Sdf.ValueTypeNames.Double, True).Set(-0.2)
+        tendon_prim.CreateAttribute("mjc:range:max", Sdf.ValueTypeNames.Double, True).Set(0.8)
+        tendon_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double, True).Set(0.01)
+        tendon_prim.CreateAttribute("mjc:solreflimit", Sdf.ValueTypeNames.DoubleArray, True).Set(
+            Vt.DoubleArray([0.1, 0.5])
+        )
+        tendon_prim.CreateAttribute("mjc:solimplimit", Sdf.ValueTypeNames.DoubleArray, True).Set(
+            Vt.DoubleArray([0.91, 0.92, 0.003, 0.6, 2.3])
+        )
+        tendon_prim.CreateAttribute("mjc:solreffriction", Sdf.ValueTypeNames.DoubleArray, True).Set(
+            Vt.DoubleArray([0.11, 0.55])
+        )
+        tendon_prim.CreateAttribute("mjc:solimpfriction", Sdf.ValueTypeNames.DoubleArray, True).Set(
+            Vt.DoubleArray([0.81, 0.82, 0.004, 0.7, 2.4])
+        )
+        tendon_prim.CreateAttribute("mjc:armature", Sdf.ValueTypeNames.Double, True).Set(0.012)
+        tendon_prim.CreateAttribute("mjc:springlength", Sdf.ValueTypeNames.DoubleArray, True).Set(
+            Vt.DoubleArray([0.13, 0.23])
+        )
+        tendon_prim.CreateAttribute("mjc:actuatorfrcrange:min", Sdf.ValueTypeNames.Double, True).Set(-4.0)
+        tendon_prim.CreateAttribute("mjc:actuatorfrcrange:max", Sdf.ValueTypeNames.Double, True).Set(6.0)
+        tendon_prim.CreateAttribute("mjc:actuatorfrclimited", Sdf.ValueTypeNames.Token, True).Set("false")
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
+        self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 2)
+
+        tendon_joint_adr = model.mujoco.tendon_joint_adr.numpy()
+        tendon_joint_num = model.mujoco.tendon_joint_num.numpy()
+        tendon_joint = model.mujoco.tendon_joint.numpy()
+        tendon_coef = model.mujoco.tendon_coef.numpy()
+
+        self.assertEqual(int(tendon_joint_adr[0]), 0)
+        self.assertEqual(int(tendon_joint_num[0]), 2)
+
+        joint1_idx = model.joint_key.index("/World/joint1")
+        joint2_idx = model.joint_key.index("/World/joint2")
+        self.assertEqual(int(tendon_joint[0]), joint2_idx)
+        self.assertEqual(int(tendon_joint[1]), joint1_idx)
+        self.assertAlmostEqual(float(tendon_coef[0]), 0.25, places=6)
+        self.assertAlmostEqual(float(tendon_coef[1]), 0.75, places=6)
+        self.assertAlmostEqual(float(model.mujoco.tendon_stiffness.numpy()[0]), 11.0, places=6)
+        self.assertAlmostEqual(float(model.mujoco.tendon_damping.numpy()[0]), 0.33, places=6)
+        self.assertAlmostEqual(float(model.mujoco.tendon_frictionloss.numpy()[0]), 0.07, places=6)
+        self.assertEqual(int(model.mujoco.tendon_limited.numpy()[0]), 1)
+        assert_np_equal(model.mujoco.tendon_range.numpy()[0], np.array([-0.2, 0.8], dtype=np.float32), tol=1e-6)
+        self.assertAlmostEqual(float(model.mujoco.tendon_margin.numpy()[0]), 0.01, places=6)
+        assert_np_equal(model.mujoco.tendon_solref_limit.numpy()[0], np.array([0.1, 0.5], dtype=np.float32), tol=1e-6)
+        assert_np_equal(
+            model.mujoco.tendon_solimp_limit.numpy()[0],
+            np.array([0.91, 0.92, 0.003, 0.6, 2.3], dtype=np.float32),
+            tol=1e-6,
+        )
+        assert_np_equal(
+            model.mujoco.tendon_solref_friction.numpy()[0], np.array([0.11, 0.55], dtype=np.float32), tol=1e-6
+        )
+        assert_np_equal(
+            model.mujoco.tendon_solimp_friction.numpy()[0],
+            np.array([0.81, 0.82, 0.004, 0.7, 2.4], dtype=np.float32),
+            tol=1e-6,
+        )
+        self.assertAlmostEqual(float(model.mujoco.tendon_armature.numpy()[0]), 0.012, places=6)
+        assert_np_equal(model.mujoco.tendon_springlength.numpy()[0], np.array([0.13, 0.23], dtype=np.float32), tol=1e-6)
+        assert_np_equal(
+            model.mujoco.tendon_actuator_force_range.numpy()[0], np.array([-4.0, 6.0], dtype=np.float32), tol=1e-6
+        )
+        self.assertEqual(int(model.mujoco.tendon_actuator_force_limited.numpy()[0]), 0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_fixed_tendon_multi_joint_addressing_from_usd(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        base = UsdGeom.Xform.Define(stage, "/World/base").GetPrim()
+        link1 = UsdGeom.Xform.Define(stage, "/World/link1").GetPrim()
+        link2 = UsdGeom.Xform.Define(stage, "/World/link2").GetPrim()
+        link3 = UsdGeom.Xform.Define(stage, "/World/link3").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(base)
+        UsdPhysics.RigidBodyAPI.Apply(link1)
+        UsdPhysics.RigidBodyAPI.Apply(link2)
+        UsdPhysics.RigidBodyAPI.Apply(link3)
+        UsdPhysics.ArticulationRootAPI.Apply(base)
+
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint1")
+        joint1.CreateAxisAttr().Set("Z")
+        joint1.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
+        joint1.CreateBody1Rel().SetTargets([Sdf.Path("/World/link1")])
+
+        joint2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint2")
+        joint2.CreateAxisAttr().Set("Z")
+        joint2.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
+        joint2.CreateBody1Rel().SetTargets([Sdf.Path("/World/link2")])
+
+        joint3 = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint3")
+        joint3.CreateAxisAttr().Set("Z")
+        joint3.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
+        joint3.CreateBody1Rel().SetTargets([Sdf.Path("/World/link3")])
+
+        tendon_a = stage.DefinePrim("/World/fixed_tendon_a", "MjcTendon")
+        tendon_a.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
+        tendon_a.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path("/World/joint1"), Sdf.Path("/World/joint2")])
+        tendon_a.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([1, 0]))
+        tendon_a.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([0.1, 0.2]))
+
+        tendon_b = stage.DefinePrim("/World/fixed_tendon_b", "MjcTendon")
+        tendon_b.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
+        tendon_b.CreateRelationship("mjc:path", True).SetTargets(
+            [Sdf.Path("/World/joint1"), Sdf.Path("/World/joint2"), Sdf.Path("/World/joint3")]
+        )
+        tendon_b.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([2, 0, 1]))
+        tendon_b.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(
+            Vt.DoubleArray([0.3, 0.4, 0.5])
+        )
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 2)
+        self.assertEqual(model.custom_frequency_counts["mujoco:tendon_joint"], 5)
+
+        tendon_joint_adr = model.mujoco.tendon_joint_adr.numpy()
+        tendon_joint_num = model.mujoco.tendon_joint_num.numpy()
+        tendon_joint = model.mujoco.tendon_joint.numpy()
+        tendon_coef = model.mujoco.tendon_coef.numpy()
+
+        self.assertEqual(int(tendon_joint_adr[0]), 0)
+        self.assertEqual(int(tendon_joint_num[0]), 2)
+        self.assertEqual(int(tendon_joint_adr[1]), 2)
+        self.assertEqual(int(tendon_joint_num[1]), 3)
+
+        joint1_idx = model.joint_key.index("/World/joint1")
+        joint2_idx = model.joint_key.index("/World/joint2")
+        joint3_idx = model.joint_key.index("/World/joint3")
+
+        expected_joint = np.array([joint2_idx, joint1_idx, joint3_idx, joint1_idx, joint2_idx], dtype=np.int32)
+        expected_coef = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
+        assert_np_equal(tendon_joint, expected_joint, tol=0)
+        assert_np_equal(tendon_coef, expected_coef, tol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_tendon_actuator_resolution_when_actuator_comes_first(self):
+        import mujoco  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        base = UsdGeom.Xform.Define(stage, "/World/base").GetPrim()
+        link = UsdGeom.Xform.Define(stage, "/World/link").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(base)
+        UsdPhysics.RigidBodyAPI.Apply(link)
+        base_mass = UsdPhysics.MassAPI.Apply(base)
+        base_mass.CreateMassAttr().Set(1.0)
+        base_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
+        link_mass = UsdPhysics.MassAPI.Apply(link)
+        link_mass.CreateMassAttr().Set(1.0)
+        link_mass.CreateDiagonalInertiaAttr().Set((0.1, 0.1, 0.1))
+        UsdPhysics.ArticulationRootAPI.Apply(base)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint")
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
+        joint.CreateBody1Rel().SetTargets([Sdf.Path("/World/link")])
+
+        # Author actuator before tendon to exercise deferred target resolution.
+        actuator_prim = stage.DefinePrim("/World/a_tendon_actuator", "MjcActuator")
+        actuator_prim.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path("/World/z_fixed_tendon")])
+
+        tendon_prim = stage.DefinePrim("/World/z_fixed_tendon", "MjcTendon")
+        tendon_prim.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
+        tendon_prim.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path("/World/joint")])
+        tendon_prim.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([0]))
+        tendon_prim.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([1.0]))
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts["mujoco:actuator"], 1)
+        self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
+        self.assertEqual(model.mujoco.actuator_target_key[0], "/World/z_fixed_tendon")
+
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        self.assertEqual(int(solver.mj_model.nu), 1)
+        self.assertEqual(int(solver.mj_model.actuator_trntype[0]), int(mujoco.mjtTrn.mjTRN_TENDON))
+        self.assertEqual(int(solver.mj_model.actuator_trnid[0, 0]), 0)
+        tendon_name = mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, 0)
+        self.assertEqual(tendon_name, "/World/z_fixed_tendon")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_actuator_auto_limits_and_partial_ranges(self):
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+        scene_prim = scene.GetPrim()
+        scene_prim.CreateAttribute("mjc:compiler:autoLimits", Sdf.ValueTypeNames.Bool, True).Set(True)
+
+        base = UsdGeom.Xform.Define(stage, "/World/base").GetPrim()
+        link = UsdGeom.Xform.Define(stage, "/World/link").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(base)
+        UsdPhysics.RigidBodyAPI.Apply(link)
+        UsdPhysics.ArticulationRootAPI.Apply(base)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/joint")
+        joint.CreateAxisAttr().Set("Z")
+        joint.CreateBody0Rel().SetTargets([Sdf.Path("/World/base")])
+        joint.CreateBody1Rel().SetTargets([Sdf.Path("/World/link")])
+
+        tendon = stage.DefinePrim("/World/fixed_tendon", "MjcTendon")
+        tendon.CreateAttribute("mjc:type", Sdf.ValueTypeNames.Token, True).Set("fixed")
+        tendon.CreateRelationship("mjc:path", True).SetTargets([Sdf.Path("/World/joint")])
+        tendon.CreateAttribute("mjc:path:indices", Sdf.ValueTypeNames.IntArray, True).Set(Vt.IntArray([0]))
+        tendon.CreateAttribute("mjc:path:coef", Sdf.ValueTypeNames.DoubleArray, True).Set(Vt.DoubleArray([1.0]))
+
+        # Joint actuator with ctrlRange:max only (min omitted on purpose).
+        act_joint = stage.DefinePrim("/World/act_joint", "MjcActuator")
+        act_joint.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path("/World/joint")])
+        act_joint.CreateAttribute("mjc:ctrlRange:max", Sdf.ValueTypeNames.Double, True).Set(1.22173)
+        act_joint.CreateAttribute("mjc:forceRange:min", Sdf.ValueTypeNames.Double, True).Set(-2.0)
+        act_joint.CreateAttribute("mjc:forceRange:max", Sdf.ValueTypeNames.Double, True).Set(2.0)
+
+        # Tendon actuator with ctrlRange:max only (min omitted on purpose).
+        act_tendon = stage.DefinePrim("/World/act_tendon", "MjcActuator")
+        act_tendon.CreateRelationship("mjc:target", True).SetTargets([Sdf.Path("/World/fixed_tendon")])
+        act_tendon.CreateAttribute("mjc:ctrlRange:max", Sdf.ValueTypeNames.Double, True).Set(3.1415)
+        act_tendon.CreateAttribute("mjc:forceRange:min", Sdf.ValueTypeNames.Double, True).Set(-1.0)
+        act_tendon.CreateAttribute("mjc:forceRange:max", Sdf.ValueTypeNames.Double, True).Set(1.0)
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.custom_frequency_counts["mujoco:actuator"], 2)
+
+        target_keys = list(model.mujoco.actuator_target_key)
+        joint_act_idx = target_keys.index("/World/joint")
+        tendon_act_idx = target_keys.index("/World/fixed_tendon")
+
+        ctrlrange = model.mujoco.actuator_ctrlrange.numpy()
+        forcerange = model.mujoco.actuator_forcerange.numpy()
+        ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
+        forcelimited = model.mujoco.actuator_forcelimited.numpy()
+
+        assert_np_equal(ctrlrange[joint_act_idx], np.array([0.0, 1.22173], dtype=np.float32), tol=1e-6)
+        assert_np_equal(ctrlrange[tendon_act_idx], np.array([0.0, 3.1415], dtype=np.float32), tol=1e-6)
+        assert_np_equal(forcerange[joint_act_idx], np.array([-2.0, 2.0], dtype=np.float32), tol=1e-6)
+        assert_np_equal(forcerange[tendon_act_idx], np.array([-1.0, 1.0], dtype=np.float32), tol=1e-6)
+
+        self.assertTrue(bool(ctrllimited[joint_act_idx]))
+        self.assertTrue(bool(ctrllimited[tendon_act_idx]))
+        self.assertTrue(bool(forcelimited[joint_act_idx]))
+        self.assertTrue(bool(forcelimited[tendon_act_idx]))
+
     def test_ref_fk_matches_mujoco(self):
         """Test that Newton's state matches MuJoCo's FK for joints with ref attribute.
 
@@ -5848,8 +6154,8 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_dof_name_resolution_all_joint_types(self):
-        """Test that mujoco:dof_name resolves correctly for fixed, revolute, spherical, and D6 joints."""
+    def test_joint_dof_key_resolution_all_joint_types(self):
+        """Test that mujoco:joint_dof_key resolves correctly for fixed, revolute, spherical, and D6 joints."""
         from pxr import Usd  # noqa: PLC0415
 
         usd_content = """#usda 1.0
@@ -5939,7 +6245,7 @@ def Xform "R" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         # fixed=0 + fixed=0 + revolute=1 + spherical=3 + D6(transX,rotX,rotY)=3 → 7 DOFs
         self.assertEqual(builder.joint_dof_count, 7)
 
-        dof_names = set(builder.custom_attributes["mujoco:dof_name"].values.values())
+        dof_names = set(builder.custom_attributes["mujoco:joint_dof_key"].values.values())
         self.assertEqual(len(dof_names), 7)
         for expected in [
             "/R/Rev",
@@ -5958,8 +6264,8 @@ def Xform "R" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         body = builder2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
         body2 = builder2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), I_m=wp.mat33(np.eye(3)))
         builder2.add_joint_fixed(parent=-1, child=body)
-        builder2.add_joint_fixed(parent=body, child=body2, custom_attributes={"mujoco:dof_name": "ignored"})
-        self.assertEqual(len(builder2.custom_attributes["mujoco:dof_name"].values), 0)
+        builder2.add_joint_fixed(parent=body, child=body2, custom_attributes={"mujoco:joint_dof_key": "ignored"})
+        self.assertEqual(len(builder2.custom_attributes["mujoco:joint_dof_key"].values), 0)
 
 
 if __name__ == "__main__":

@@ -1591,6 +1591,42 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertIn("not registered", str(context.exception))
         self.assertIn("test:unregistered", str(context.exception))
 
+    def test_custom_frequency_add_custom_values_batch(self):
+        """Test batched custom frequency row insertion."""
+        builder = ModelBuilder()
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="row", namespace="test"))
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="row_id",
+                frequency="test:row",
+                dtype=wp.int32,
+                default=0,
+                namespace="test",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="row_value",
+                frequency="test:row",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        indices = builder.add_custom_values_batch(
+            [
+                {"test:row_id": 10, "test:row_value": 1.5},
+                {"test:row_id": 11, "test:row_value": 2.5},
+            ]
+        )
+        self.assertEqual(indices[0]["test:row_id"], 0)
+        self.assertEqual(indices[1]["test:row_id"], 1)
+
+        model = builder.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.row_id.numpy(), [10, 11])
+        np.testing.assert_array_almost_equal(model.test.row_value.numpy(), [1.5, 2.5], decimal=6)
+
     def test_custom_frequency_registration_methods(self):
         """Test different ways to register custom frequencies."""
         builder = ModelBuilder()
