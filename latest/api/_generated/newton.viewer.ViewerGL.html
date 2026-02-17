@@ -811,7 +811,7 @@
 <h1>newton.viewer.ViewerGL<a class="headerlink" href="#newton-viewer-viewergl" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerGL</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1920</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1080</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vsync</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">headless</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer_gl.py#L94"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerGL" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerGL</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1920</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1080</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vsync</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">headless</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer_gl.py#L161"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerGL" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerBase</span></code></p>
 <p>OpenGL-based interactive viewer for Newton physics models.</p>
 <p>This class provides a graphical interface for visualizing and interacting with
@@ -1078,12 +1078,10 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.log_state">
 <span class="sig-name descname"><span class="pre">log_state</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.log_state" title="Link to this definition">#</a></dt>
-<dd><p>Cache the simulation state for UI panels and call parent log_state.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>state</strong> – The current simulation state.</p>
-</dd>
-</dl>
+<dd><p>Log the current simulation state for rendering.</p>
+<p>For shape instances on CUDA, uses a batched path: 2 kernel launches +
+1 D2H copy to a shared pinned buffer, then uploads slices per instancer.
+Everything else (capsules, SDF, particles, joints, …) uses the standard path.</p>
 </dd></dl>
 
 <dl class="py method">
