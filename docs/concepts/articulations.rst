@@ -207,7 +207,7 @@ Common articulation workflows
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ArticulationView: selection interface for RL and batched control
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
 :class:`newton.selection.ArticulationView` is the high-level interface for selecting a subset
 of articulations and accessing their joints/links/DoFs with stable tensor shapes. This is
