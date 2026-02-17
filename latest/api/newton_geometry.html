@@ -814,11 +814,11 @@
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.geometry.BroadPhaseSAP.html#newton.geometry.BroadPhaseSAP" title="newton.geometry.BroadPhaseSAP"><code class="xref py py-obj docutils literal notranslate"><span class="pre">BroadPhaseSAP</span></code></a></p></td>
 <td><p>Sweep and Prune (SAP) broad phase collision detection.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.geometry.SDFData.html#newton.geometry.SDFData" title="newton.geometry.SDFData"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SDFData</span></code></a></p></td>
-<td><p>Encapsulates all data needed for SDF-based collision detection.</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF" title="newton.geometry.HydroelasticSDF"><code class="xref py py-obj docutils literal notranslate"><span class="pre">HydroelasticSDF</span></code></a></p></td>
+<td><p>Hydroelastic contact generation with SDF-based collision detection.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.geometry.SDFHydroelasticConfig.html#newton.geometry.SDFHydroelasticConfig" title="newton.geometry.SDFHydroelasticConfig"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SDFHydroelasticConfig</span></code></a></p></td>
-<td><p>Controls properties of SDF hydroelastic collision handling.</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.geometry.NarrowPhase.html#newton.geometry.NarrowPhase" title="newton.geometry.NarrowPhase"><code class="xref py py-obj docutils literal notranslate"><span class="pre">NarrowPhase</span></code></a></p></td>
+<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -862,17 +862,11 @@
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.geometry.collide_sphere_sphere.html#newton.geometry.collide_sphere_sphere" title="newton.geometry.collide_sphere_sphere"><code class="xref py py-obj docutils literal notranslate"><span class="pre">collide_sphere_sphere</span></code></a>(pos1, radius1, pos2, ...)</p></td>
 <td><p>Sphere-sphere collision calculation.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.geometry.compute_sdf.html#newton.geometry.compute_sdf" title="newton.geometry.compute_sdf"><code class="xref py py-obj docutils literal notranslate"><span class="pre">compute_sdf</span></code></a>(mesh_src, shape_type[, ...])</p></td>
-<td><p>Compute sparse and coarse SDF volumes for a mesh.</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.geometry.compute_shape_inertia.html#newton.geometry.compute_shape_inertia" title="newton.geometry.compute_shape_inertia"><code class="xref py py-obj docutils literal notranslate"><span class="pre">compute_shape_inertia</span></code></a>(type, scale, src, density)</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.geometry.compute_shape_inertia.html#newton.geometry.compute_shape_inertia" title="newton.geometry.compute_shape_inertia"><code class="xref py py-obj docutils literal notranslate"><span class="pre">compute_shape_inertia</span></code></a>(type, scale, src, density)</p></td>
 <td><p>Computes the mass, center of mass and 3x3 inertia tensor of a shape</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.geometry.create_box_mesh.html#newton.geometry.create_box_mesh" title="newton.geometry.create_box_mesh"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_box_mesh</span></code></a>(half_extents[, ...])</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.geometry.create_box_mesh.html#newton.geometry.create_box_mesh" title="newton.geometry.create_box_mesh"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_box_mesh</span></code></a>(half_extents[, ...])</p></td>
 <td><p>Create a box mesh with the given half extents.</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.geometry.create_empty_sdf_data.html#newton.geometry.create_empty_sdf_data" title="newton.geometry.create_empty_sdf_data"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_empty_sdf_data</span></code></a>()</p></td>
-<td><p>Create an empty SDFData struct for shapes that don't need SDF collision.</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.geometry.create_mesh_heightfield.html#newton.geometry.create_mesh_heightfield" title="newton.geometry.create_mesh_heightfield"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_mesh_heightfield</span></code></a>(heightfield, ...[, ...])</p></td>
 <td><p>Convert a 2D heightfield array to a watertight triangle mesh.</p></td>

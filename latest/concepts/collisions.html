@@ -813,12 +813,14 @@
 <span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
 <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
 
-<span class="c1"># Or create a pipeline explicitly for more control</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+<span class="c1"># Or create a pipeline explicitly to choose broad phase mode</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span>
 
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">)</span>
-<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
-<span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">broad_phase</span><span class="o">=</span><span class="s2">&quot;sap&quot;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -1134,16 +1136,16 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 </tbody>
 </table>
 </div>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span>
 
 <span class="c1"># Default: EXPLICIT (precomputed pairs)</span>
 <span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">)</span>
 
 <span class="c1"># NxN for small scenes</span>
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">NXN</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase</span><span class="o">=</span><span class="s2">&quot;nxn&quot;</span><span class="p">)</span>
 
 <span class="c1"># SAP for larger scenes</span>
-<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">)</span>
+<span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">broad_phase</span><span class="o">=</span><span class="s2">&quot;sap&quot;</span><span class="p">)</span>
 
 <span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
 <span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
@@ -1338,11 +1340,11 @@ via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolut
 <li><p>Representative contacts are selected using configurable depth thresholds (betas)</p></li>
 </ol>
 <p>To disable reduction, set <code class="docutils literal notranslate"><span class="pre">reduce_contacts=False</span></code> when creating the pipeline.</p>
-<p><strong>Configuring contact reduction (SDFHydroelasticConfig):</strong></p>
-<p>For hydroelastic and SDF-based contacts, use <code class="xref py py-class docutils literal notranslate"><span class="pre">SDFHydroelasticConfig</span></code> to tune reduction behavior:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">SDFHydroelasticConfig</span>
+<p><strong>Configuring contact reduction (HydroelasticSDF.Config):</strong></p>
+<p>For hydroelastic and SDF-based contacts, use <a class="reference internal" href="../api/_generated/newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">Config</span></code></a> to tune reduction behavior:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">HydroelasticSDF</span>
 
-<span class="n">config</span> <span class="o">=</span> <span class="n">SDFHydroelasticConfig</span><span class="p">(</span>
+<span class="n">config</span> <span class="o">=</span> <span class="n">HydroelasticSDF</span><span class="o">.</span><span class="n">Config</span><span class="p">(</span>
     <span class="n">reduce_contacts</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>           <span class="c1"># Enable contact reduction</span>
     <span class="n">betas</span><span class="o">=</span><span class="p">(</span><span class="mf">10.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.5</span><span class="p">),</span>             <span class="c1"># Scoring thresholds (default)</span>
     <span class="n">sticky_contacts</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>            <span class="c1"># Temporal persistence (0 = disabled)</span>
@@ -1455,7 +1457,7 @@ geometric area. This provides a floor value so they still generate repulsive for
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">is_hydroelastic</span></code></p></td>
 <td><p>Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See <a class="reference internal" href="#hydroelastic-contacts"><span class="std std-ref">Hydroelastic Contacts</span></a>. Default: False.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">k_hydro</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">kh</span></code></p></td>
 <td><p>Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when <code class="docutils literal notranslate"><span class="pre">is_hydroelastic=True</span></code>. Default: 1.0e10.</p></td>
 </tr>
 </tbody>
@@ -1672,11 +1674,11 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <p>The contacts buffer can be reused across steps — <code class="docutils literal notranslate"><span class="pre">collide</span></code> clears it each time.</p>
 <p>For control over broad phase mode, contact limits, or hydroelastic configuration, create a
 <a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> directly:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span><span class="p">,</span> <span class="n">BroadPhaseMode</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="n">CollisionPipeline</span>
 
 <span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span>
     <span class="n">model</span><span class="p">,</span>
-    <span class="n">broad_phase_mode</span><span class="o">=</span><span class="n">BroadPhaseMode</span><span class="o">.</span><span class="n">SAP</span><span class="p">,</span>
+    <span class="n">broad_phase</span><span class="o">=</span><span class="s2">&quot;sap&quot;</span><span class="p">,</span>
     <span class="n">rigid_contact_max</span><span class="o">=</span><span class="mi">50000</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
@@ -1705,7 +1707,7 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span>
     <span class="n">is_hydroelastic</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>   <span class="c1"># Opt-in to hydroelastic contacts</span>
     <span class="n">sdf_max_resolution</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>  <span class="c1"># Required for hydroelastic</span>
-    <span class="n">k_hydro</span><span class="o">=</span><span class="mf">1.0e11</span><span class="p">,</span>         <span class="c1"># Contact stiffness</span>
+    <span class="n">kh</span><span class="o">=</span><span class="mf">1.0e11</span><span class="p">,</span>              <span class="c1"># Contact stiffness</span>
 <span class="p">)</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">hx</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">cfg</span><span class="p">)</span>
 </pre></div>
@@ -1717,9 +1719,9 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <li><p>Contact points are distributed across the surface area</p></li>
 <li><p>Optional contact reduction selects representative points</p></li>
 </ol>
-<p><strong>Hydroelastic stiffness (k_hydro):</strong></p>
-<p>The <code class="docutils literal notranslate"><span class="pre">k_hydro</span></code> parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: <code class="docutils literal notranslate"><span class="pre">k_eff</span> <span class="pre">=</span> <span class="pre">2</span> <span class="pre">*</span> <span class="pre">k_a</span> <span class="pre">*</span> <span class="pre">k_b</span> <span class="pre">/</span> <span class="pre">(k_a</span> <span class="pre">+</span> <span class="pre">k_b)</span></code>. Tune this for desired penetration behavior.</p>
-<p>Contact reduction options for hydroelastic contacts are configured via <code class="xref py py-class docutils literal notranslate"><span class="pre">SDFHydroelasticConfig</span></code> (see <a class="reference internal" href="#contact-reduction"><span class="std std-ref">Contact Reduction</span></a>).</p>
+<p><strong>Hydroelastic stiffness (kh):</strong></p>
+<p>The <code class="docutils literal notranslate"><span class="pre">kh</span></code> parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: <code class="docutils literal notranslate"><span class="pre">k_eff</span> <span class="pre">=</span> <span class="pre">2</span> <span class="pre">*</span> <span class="pre">k_a</span> <span class="pre">*</span> <span class="pre">k_b</span> <span class="pre">/</span> <span class="pre">(k_a</span> <span class="pre">+</span> <span class="pre">k_b)</span></code>. Tune this for desired penetration behavior.</p>
+<p>Contact reduction options for hydroelastic contacts are configured via <a class="reference internal" href="../api/_generated/newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">Config</span></code></a> (see <a class="reference internal" href="#contact-reduction"><span class="std std-ref">Contact Reduction</span></a>).</p>
 </section>
 <section id="contact-materials">
 <span id="contact-material-properties"></span><h2>Contact Materials<a class="headerlink" href="#contact-materials" title="Link to this heading">#</a></h2>
@@ -1777,23 +1779,23 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.restitution" title="newton.ModelBuilder.ShapeConfig.restitution"><code class="xref py py-attr docutils literal notranslate"><span class="pre">restitution</span></code></a></p></td>
 <td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_restitution" title="newton.Model.shape_material_restitution"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_restitution</span></code></a></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">torsional_friction</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mu_torsional</span></code></p></td>
 <td><p>Resistance to spinning at contact</p></td>
 <td><p>XPBD, MuJoCo</p></td>
-<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.torsional_friction" title="newton.ModelBuilder.ShapeConfig.torsional_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">torsional_friction</span></code></a></p></td>
-<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_torsional_friction" title="newton.Model.shape_material_torsional_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_torsional_friction</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu_torsional" title="newton.ModelBuilder.ShapeConfig.mu_torsional"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu_torsional</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_mu_torsional" title="newton.Model.shape_material_mu_torsional"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_mu_torsional</span></code></a></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rolling_friction</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mu_rolling</span></code></p></td>
 <td><p>Resistance to rolling motion</p></td>
 <td><p>XPBD, MuJoCo</p></td>
-<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.rolling_friction" title="newton.ModelBuilder.ShapeConfig.rolling_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">rolling_friction</span></code></a></p></td>
-<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_rolling_friction" title="newton.Model.shape_material_rolling_friction"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_rolling_friction</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.mu_rolling" title="newton.ModelBuilder.ShapeConfig.mu_rolling"><code class="xref py py-attr docutils literal notranslate"><span class="pre">mu_rolling</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_mu_rolling" title="newton.Model.shape_material_mu_rolling"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_mu_rolling</span></code></a></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">k_hydro</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">kh</span></code></p></td>
 <td><p>Hydroelastic stiffness</p></td>
 <td><p>SemiImplicit, Featherstone, MuJoCo</p></td>
-<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.k_hydro" title="newton.ModelBuilder.ShapeConfig.k_hydro"><code class="xref py py-attr docutils literal notranslate"><span class="pre">k_hydro</span></code></a></p></td>
-<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_k_hydro" title="newton.Model.shape_material_k_hydro"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_k_hydro</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig.kh" title="newton.ModelBuilder.ShapeConfig.kh"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kh</span></code></a></p></td>
+<td><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.shape_material_kh" title="newton.Model.shape_material_kh"><code class="xref py py-attr docutils literal notranslate"><span class="pre">shape_material_kh</span></code></a></p></td>
 </tr>
 </tbody>
 </table>
@@ -1845,11 +1847,10 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">newton</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
     <span class="n">CollisionPipeline</span><span class="p">,</span>
-    <span class="n">BroadPhaseMode</span><span class="p">,</span>
     <span class="n">Contacts</span><span class="p">,</span>
     <span class="n">GeoType</span><span class="p">,</span>
 <span class="p">)</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">newton.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">SDFHydroelasticConfig</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">newton.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">HydroelasticSDF</span>
 </pre></div>
 </div>
 <p><strong>API Reference:</strong></p>
@@ -1857,12 +1858,12 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.contacts" title="newton.Model.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">contacts()</span></code></a> - Create a contacts buffer (default pipeline)</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.collide" title="newton.Model.collide"><code class="xref py py-meth docutils literal notranslate"><span class="pre">collide()</span></code></a> - Run collision detection (default pipeline)</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><code class="xref py py-class docutils literal notranslate"><span class="pre">CollisionPipeline</span></code></a> - Collision pipeline with configurable broad phase</p></li>
-<li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline.contacts" title="newton.CollisionPipeline.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">contacts()</span></code></a> - Allocate a contacts buffer for a custom pipeline</p></li>
-<li><p><a class="reference internal" href="../api/_generated/newton.BroadPhaseMode.html#newton.BroadPhaseMode" title="newton.BroadPhaseMode"><code class="xref py py-class docutils literal notranslate"><span class="pre">BroadPhaseMode</span></code></a> - Broad phase algorithm selection</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">broad_phase</span></code> - Broad phase algorithm: <code class="docutils literal notranslate"><span class="pre">&quot;nxn&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;sap&quot;</span></code>, or <code class="docutils literal notranslate"><span class="pre">&quot;explicit&quot;</span></code></p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> - Contact data container</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.GeoType.html#newton.GeoType" title="newton.GeoType"><code class="xref py py-class docutils literal notranslate"><span class="pre">GeoType</span></code></a> - Shape geometry types</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.ShapeConfig" title="newton.ModelBuilder.ShapeConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">ShapeConfig</span></code></a> - Shape configuration options</p></li>
-<li><p><a class="reference internal" href="../api/_generated/newton.geometry.SDFHydroelasticConfig.html#newton.geometry.SDFHydroelasticConfig" title="newton.geometry.SDFHydroelasticConfig"><code class="xref py py-class docutils literal notranslate"><span class="pre">SDFHydroelasticConfig</span></code></a> - Hydroelastic contact configuration</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">Config</span></code></a> - Hydroelastic contact configuration</p></li>
+<li><p><a class="reference internal" href="../api/_generated/newton.CollisionPipeline.html#newton.CollisionPipeline.contacts" title="newton.CollisionPipeline.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">contacts()</span></code></a> - Allocate a contacts buffer for a custom pipeline</p></li>
 </ul>
 <p><strong>Model attributes:</strong></p>
 <ul class="simple">

@@ -1036,14 +1036,16 @@ If specified, attribute is added to a namespace object (e.g., model.namespace_na
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.Model.collide">
-<span class="sig-name descname"><span class="pre">collide</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.collide" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">collide</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">collision_pipeline</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.collide" title="Link to this definition">#</a></dt>
 <dd><p>Generate contact points for the particles and rigid bodies in the model using the default collision
 pipeline.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a>) – The current simulation state.</p></li>
-<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><em>Contacts</em></a>) – The contacts buffer to populate (will be cleared first).</p></li>
+<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><em>Contacts</em></a><em> | </em><em>None</em>) – The contacts buffer to populate (will be cleared first). If None, a new
+contacts buffer is allocated via <a class="reference internal" href="#newton.Model.contacts" title="newton.Model.contacts"><code class="xref py py-meth docutils literal notranslate"><span class="pre">contacts()</span></code></a>.</p></li>
+<li><p><strong>collision_pipeline</strong> (<a class="reference internal" href="newton.CollisionPipeline.html#newton.CollisionPipeline" title="newton.CollisionPipeline"><em>CollisionPipeline</em></a><em> | </em><em>None</em>) – Optional collision pipeline override.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1051,7 +1053,7 @@ pipeline.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.Model.contacts">
-<span class="sig-name descname"><span class="pre">contacts</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.contacts" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">contacts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">collision_pipeline</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Model.contacts" title="Link to this definition">#</a></dt>
 <dd><p>Create and return a <a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> object for this model.</p>
 <p>This method initializes a collision pipeline with default arguments (when not already
 cached) and allocates a contacts buffer suitable for storing collision detection results.
@@ -2052,6 +2054,22 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_collision_aabb_lower">
+<span class="sig-name descname"><span class="pre">shape_collision_aabb_lower</span></span><a class="headerlink" href="#newton.Model.shape_collision_aabb_lower" title="Link to this definition">#</a></dt>
+<dd><p>Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
+Computed from base geometry only (excludes thickness - thickness is added during contact
+margin calculations). Used for voxel-based contact reduction.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_collision_aabb_upper">
+<span class="sig-name descname"><span class="pre">shape_collision_aabb_upper</span></span><a class="headerlink" href="#newton.Model.shape_collision_aabb_upper" title="Link to this definition">#</a></dt>
+<dd><p>Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
+Computed from base geometry only (excludes thickness - thickness is added during contact
+margin calculations). Used for voxel-based contact reduction.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_collision_filter_pairs">
 <span class="sig-name descname"><span class="pre">shape_collision_filter_pairs</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#set" title="(in Python v3.14)"><span class="pre">set</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><span class="pre">tuple</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.Model.shape_collision_filter_pairs" title="Link to this definition">#</a></dt>
 <dd><p>s1 &lt; s2.</p>
@@ -2129,29 +2147,6 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_local_aabb_lower">
-<span class="sig-name descname"><span class="pre">shape_local_aabb_lower</span></span><a class="headerlink" href="#newton.Model.shape_local_aabb_lower" title="Link to this definition">#</a></dt>
-<dd><p>Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
-Computed from base geometry only (excludes thickness - thickness is added during contact
-margin calculations). Used for voxel-based contact reduction.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_local_aabb_upper">
-<span class="sig-name descname"><span class="pre">shape_local_aabb_upper</span></span><a class="headerlink" href="#newton.Model.shape_local_aabb_upper" title="Link to this definition">#</a></dt>
-<dd><p>Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
-Computed from base geometry only (excludes thickness - thickness is added during contact
-margin calculations). Used for voxel-based contact reduction.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_material_k_hydro">
-<span class="sig-name descname"><span class="pre">shape_material_k_hydro</span></span><a class="headerlink" href="#newton.Model.shape_material_k_hydro" title="Link to this definition">#</a></dt>
-<dd><p>Shape hydroelastic stiffness coefficient [N/m³], shape [shape_count], float.
-Contact stiffness is computed as <code class="docutils literal notranslate"><span class="pre">area</span> <span class="pre">*</span> <span class="pre">k_hydro</span></code>, yielding an effective spring constant [N/m].</p>
-</dd></dl>
-
-<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_ka">
 <span class="sig-name descname"><span class="pre">shape_material_ka</span></span><a class="headerlink" href="#newton.Model.shape_material_ka" title="Link to this definition">#</a></dt>
 <dd><p>Shape contact adhesion distance [m], shape [shape_count], float.</p>
@@ -2178,27 +2173,34 @@ but multiplied by ke as a relative damping factor by VBD.</p>
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_material_kh">
+<span class="sig-name descname"><span class="pre">shape_material_kh</span></span><a class="headerlink" href="#newton.Model.shape_material_kh" title="Link to this definition">#</a></dt>
+<dd><p>Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
+Contact stiffness is computed as <code class="docutils literal notranslate"><span class="pre">area</span> <span class="pre">*</span> <span class="pre">k_hydro</span></code>, yielding an effective spring constant [N/m].</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_mu">
 <span class="sig-name descname"><span class="pre">shape_material_mu</span></span><a class="headerlink" href="#newton.Model.shape_material_mu" title="Link to this definition">#</a></dt>
 <dd><p>Shape coefficient of friction [dimensionless], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_material_restitution">
-<span class="sig-name descname"><span class="pre">shape_material_restitution</span></span><a class="headerlink" href="#newton.Model.shape_material_restitution" title="Link to this definition">#</a></dt>
-<dd><p>Shape coefficient of restitution [dimensionless], shape [shape_count], float.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_material_rolling_friction">
-<span class="sig-name descname"><span class="pre">shape_material_rolling_friction</span></span><a class="headerlink" href="#newton.Model.shape_material_rolling_friction" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py" id="newton.Model.shape_material_mu_rolling">
+<span class="sig-name descname"><span class="pre">shape_material_mu_rolling</span></span><a class="headerlink" href="#newton.Model.shape_material_mu_rolling" title="Link to this definition">#</a></dt>
 <dd><p>Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_material_torsional_friction">
-<span class="sig-name descname"><span class="pre">shape_material_torsional_friction</span></span><a class="headerlink" href="#newton.Model.shape_material_torsional_friction" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py" id="newton.Model.shape_material_mu_torsional">
+<span class="sig-name descname"><span class="pre">shape_material_mu_torsional</span></span><a class="headerlink" href="#newton.Model.shape_material_mu_torsional" title="Link to this definition">#</a></dt>
 <dd><p>Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.shape_material_restitution">
+<span class="sig-name descname"><span class="pre">shape_material_restitution</span></span><a class="headerlink" href="#newton.Model.shape_material_restitution" title="Link to this definition">#</a></dt>
+<dd><p>Shape coefficient of restitution [dimensionless], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2253,12 +2255,6 @@ but multiplied by ke as a relative damping factor by VBD.</p>
 <dt class="sig sig-object py" id="newton.Model.shape_type">
 <span class="sig-name descname"><span class="pre">shape_type</span></span><a class="headerlink" href="#newton.Model.shape_type" title="Link to this definition">#</a></dt>
 <dd><p>Shape geometry type, shape [shape_count], int32.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_voxel_resolution">
-<span class="sig-name descname"><span class="pre">shape_voxel_resolution</span></span><a class="headerlink" href="#newton.Model.shape_voxel_resolution" title="Link to this definition">#</a></dt>
-<dd><p>Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2638,6 +2634,8 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.requires_grad"><code class="docutils literal notranslate"><span class="pre">Model.requires_grad</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.rigid_contact_max"><code class="docutils literal notranslate"><span class="pre">Model.rigid_contact_max</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_body"><code class="docutils literal notranslate"><span class="pre">Model.shape_body</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_aabb_lower"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_aabb_lower</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_aabb_upper"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_aabb_upper</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_filter_pairs"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_filter_pairs</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_group"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_group</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_radius"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_radius</span></code></a></li>
@@ -2650,17 +2648,15 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_heightfield_data"><code class="docutils literal notranslate"><span class="pre">Model.shape_heightfield_data</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_is_solid"><code class="docutils literal notranslate"><span class="pre">Model.shape_is_solid</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_key"><code class="docutils literal notranslate"><span class="pre">Model.shape_key</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_local_aabb_lower"><code class="docutils literal notranslate"><span class="pre">Model.shape_local_aabb_lower</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_local_aabb_upper"><code class="docutils literal notranslate"><span class="pre">Model.shape_local_aabb_upper</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_k_hydro"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_k_hydro</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_ka"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_ka</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_kd"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_kd</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_ke"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_ke</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_kf"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_kf</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_kh"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_kh</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_mu"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_mu</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_mu_rolling"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_mu_rolling</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_mu_torsional"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_mu_torsional</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_restitution"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_restitution</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_rolling_friction"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_rolling_friction</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_torsional_friction"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_torsional_friction</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_scale"><code class="docutils literal notranslate"><span class="pre">Model.shape_scale</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_sdf_coarse_volume"><code class="docutils literal notranslate"><span class="pre">Model.shape_sdf_coarse_volume</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_sdf_data"><code class="docutils literal notranslate"><span class="pre">Model.shape_sdf_data</span></code></a></li>
@@ -2670,7 +2666,6 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_thickness"><code class="docutils literal notranslate"><span class="pre">Model.shape_thickness</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_transform"><code class="docutils literal notranslate"><span class="pre">Model.shape_transform</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_type"><code class="docutils literal notranslate"><span class="pre">Model.shape_type</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_voxel_resolution"><code class="docutils literal notranslate"><span class="pre">Model.shape_voxel_resolution</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_world"><code class="docutils literal notranslate"><span class="pre">Model.shape_world</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_world_start"><code class="docutils literal notranslate"><span class="pre">Model.shape_world_start</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.soft_contact_kd"><code class="docutils literal notranslate"><span class="pre">Model.soft_contact_kd</span></code></a></li>
