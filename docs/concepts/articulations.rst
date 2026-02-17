@@ -206,6 +206,34 @@ The velocity dofs for each joint can be queried as follows:
 Common articulation workflows
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+ArticulationView: selection interface for RL and batched control
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+
+:class:`newton.selection.ArticulationView` is the high-level interface for selecting a subset
+of articulations and accessing their joints/links/DoFs with stable tensor shapes. This is
+especially useful in RL pipelines where the same observation/action logic is applied to many
+parallel environments.
+
+Construct a view by matching articulation keys with a pattern and optional filters:
+
+.. code-block:: python
+
+    import newton
+
+    # select all articulations whose key starts with "robot"
+    view = newton.selection.ArticulationView(model, pattern="robot*")
+
+    # select only scalar-joint articulations (exclude quaternion-root joint types)
+    scalar_view = newton.selection.ArticulationView(
+        model,
+        pattern="robot*",
+        include_joint_types=[newton.JointType.PRISMATIC, newton.JointType.REVOLUTE],
+        exclude_joint_types=[newton.JointType.FREE, newton.JointType.BALL],
+    )
+
+Use views to read/write batched state slices (joint positions/velocities, root transforms,
+link transforms) without manual index bookkeeping.
+
 Center ``joint_q`` at joint limits with Warp kernels
 """"""""""""""""""""""""""""""""""""""""""""""""""""
 
