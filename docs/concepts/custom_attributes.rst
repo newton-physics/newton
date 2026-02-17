@@ -171,7 +171,7 @@ When entities don't explicitly specify custom attribute values, the default valu
 
 Before loading assets, register solver-specific attributes:
 
-.. testcode::
+.. code-block:: python
 
    from newton.solvers import SolverMuJoCo
 
@@ -187,6 +187,8 @@ Before loading assets, register solver-specific attributes:
    model_mujoco = builder_mujoco.finalize()
    assert hasattr(model_mujoco, "mujoco")
    assert hasattr(model_mujoco.mujoco, "condim")
+
+MuJoCo boolean values in custom attribute transformers are parsed with ``parse_bool``.
 
 Authoring Custom Attributes
 ----------------------------
