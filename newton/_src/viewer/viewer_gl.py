@@ -91,10 +91,6 @@ def _capsule_build_cap_xforms_and_scales(
     out_scales[tid] = wp.vec3(r, r, r)
 
 
-GEO_MESH = int(nt.GeoType.MESH)
-GEO_CONVEX_MESH = int(nt.GeoType.CONVEX_MESH)
-
-
 @wp.kernel
 def _compute_shape_vbo_xforms(
     shape_transform: wp.array(dtype=wp.transformf),
@@ -105,8 +101,6 @@ def _compute_shape_vbo_xforms(
     shape_world: wp.array(dtype=int),
     world_offsets: wp.array(dtype=wp.vec3),
     write_indices: wp.array(dtype=int),
-    geo_mesh: int,
-    geo_convex_mesh: int,
     out_world_xforms: wp.array(dtype=wp.transformf),
     out_vbo_xforms: wp.array(dtype=wp.mat44),
 ):
@@ -139,7 +133,7 @@ def _compute_shape_vbo_xforms(
     # Only mesh/convex_mesh shapes use model scale; other primitives have
     # their dimensions baked into the geometry mesh, so scale is (1,1,1).
     geo = shape_type[tid]
-    if geo == geo_mesh or geo == geo_convex_mesh:
+    if geo == int(nt.GeoType.MESH) or geo == int(nt.GeoType.CONVEX_MESH):
         s = shape_scale[tid]
     else:
         s = wp.vec3(1.0, 1.0, 1.0)
@@ -762,14 +756,12 @@ class ViewerGL(ViewerBase):
                     self.model.shape_world,
                     self.world_offsets,
                     self._packed_write_indices,
-                    GEO_MESH,
-                    GEO_CONVEX_MESH,
                 ],
                 outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
                 device=self.device,
             )
             wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
-            wp.synchronize()
+            wp.synchronize()  # copy is async (pinned destination), must sync before CPU read
 
             # ---- Upload pinned host slices to GL per instancer ----
             host_np = self._packed_vbo_xforms_host.numpy()
