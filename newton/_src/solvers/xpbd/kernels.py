@@ -29,18 +29,16 @@ from ...utils import (
 
 @wp.kernel
 def apply_particle_shape_restitution(
-    particle_x_new: wp.array(dtype=wp.vec3),
     particle_v_new: wp.array(dtype=wp.vec3),
     particle_x_old: wp.array(dtype=wp.vec3),
     particle_v_old: wp.array(dtype=wp.vec3),
-    particle_invmass: wp.array(dtype=float),
     particle_radius: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
     body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_qd_prev: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
-    body_m_inv: wp.array(dtype=float),
-    body_I_inv: wp.array(dtype=wp.mat33),
     shape_body: wp.array(dtype=int),
     particle_ka: float,
     restitution: float,
@@ -51,8 +49,6 @@ def apply_particle_shape_restitution(
     contact_body_vel: wp.array(dtype=wp.vec3),
     contact_normal: wp.array(dtype=wp.vec3),
     contact_max: int,
-    dt: float,
-    relaxation: float,
     particle_v_out: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -68,21 +64,21 @@ def apply_particle_shape_restitution(
     if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
         return
 
-    # x_new = particle_x_new[particle_index]
     v_new = particle_v_new[particle_index]
     px = particle_x_old[particle_index]
     v_old = particle_v_old[particle_index]
 
     X_wb = wp.transform_identity()
-    # X_com = wp.vec3()
+    X_wb_prev = wp.transform_identity()
+    X_com = wp.vec3()
 
     if body_index >= 0:
         X_wb = body_q[body_index]
-        # X_com = body_com[body_index]
+        X_wb_prev = body_q_prev[body_index]
+        X_com = body_com[body_index]
 
     # body position in world space
     bx = wp.transform_point(X_wb, contact_body_pos[tid])
-    # r = bx - wp.transform_point(X_wb, X_com)
 
     n = contact_normal[tid]
     c = wp.dot(n, px - bx) - particle_radius[particle_index]
@@ -90,25 +86,23 @@ def apply_particle_shape_restitution(
     if c > particle_ka:
         return
 
-    rel_vel_old = wp.dot(n, v_old)
-    rel_vel_new = wp.dot(n, v_new)
+    # lever arm from previous pose (consistent with apply_rigid_restitution)
+    bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[tid])
+    r = bx_prev - wp.transform_point(X_wb_prev, X_com)
+
+    # compute body velocity at the contact point
+    bv_contact = wp.transform_vector(X_wb_prev, contact_body_vel[tid])
+    bv_old = bv_contact
+    bv_new = bv_contact
+    if body_index >= 0:
+        bv_old = velocity_at_point(body_qd_prev[body_index], r) + bv_contact
+        bv_new = velocity_at_point(body_qd[body_index], r) + bv_contact
+
+    rel_vel_old = wp.dot(n, v_old - bv_old)
+    rel_vel_new = wp.dot(n, v_new - bv_new)
 
     if rel_vel_old < 0.0:
-        # dv = -n * wp.max(-rel_vel_new + wp.max(-restitution * rel_vel_old, 0.0), 0.0)
         dv = n * (-rel_vel_new + wp.max(-restitution * rel_vel_old, 0.0))
-
-        # compute inverse masses
-        # w1 = particle_invmass[particle_index]
-        # w2 = 0.0
-        # if body_index >= 0:
-        #     angular = wp.cross(r, n)
-        #     q = wp.transform_get_rotation(X_wb)
-        #     rot_angular = wp.quat_rotate_inv(q, angular)
-        #     I_inv = body_I_inv[body_index]
-        #     w2 = body_m_inv[body_index] + wp.dot(rot_angular, I_inv * rot_angular)
-        # denom = w1 + w2
-        # if denom == 0.0:
-        #     return
 
         wp.atomic_add(particle_v_out, particle_index, dv)
 

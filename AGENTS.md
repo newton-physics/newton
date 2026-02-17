@@ -160,3 +160,13 @@ Follow conventional commit message practices.
 ## Testing Guidelines
 
 - **Always verify regression tests fail without the fix.** When writing a regression test for a bug fix, temporarily revert the fix and run the test to confirm it fails. Then reapply the fix and verify the test passes. This ensures the test actually covers the bug.
+
+### Debugging Warp kernels
+
+**Do not add `wp.printf` to kernels and run via the test runner.** Newton's test infrastructure captures stdout at the file-descriptor level (`os.dup2`) via `CheckOutput`/`StdOutCapture` in `newton/tests/unittest_utils.py`. By default (`check_output=True`), any unexpected stdout — including `wp.printf` — **causes the test to fail** with `"Unexpected output"`. Tests that opt out with `check_output=False` avoid that failure, but their stdout is still lost because `unittest-parallel` runs tests in spawned child processes.
+
+To debug Warp kernel behavior:
+
+1. **Write a standalone reproduction script** and run it directly with `uv run python -c "..."` or `uv run python script.py`. This keeps stdout visible and avoids the test framework entirely.
+2. **Use high-precision format strings** for floating-point debugging (e.g., `wp.printf("val=%.15e\n", x)`) — the default `%f` format hides values smaller than ~1e-6 that can still affect control flow.
+3. **Remove debug prints before committing.** `wp.printf` in kernels affects performance and will cause `check_output=True` tests to fail.
