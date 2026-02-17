@@ -3897,6 +3897,10 @@ class SolverMuJoCo(SolverBase):
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
 
+        # Template-joint mapping needed by update_mjc_data()/update_newton_state().
+        if self.joint_mjc_dof_start is None:
+            self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32, device=model.device)
+
         self.update_mjc_data(self.mj_data, model, state)
 
         # fill some MjWarp model fields that are outdated after update_mjc_data.
@@ -4021,7 +4025,8 @@ class SolverMuJoCo(SolverBase):
 
             # Template-joint mapping: Newton template joint -> MuJoCo DOF start (or -1 if no MuJoCo joint).
             # Used by coordinate-conversion kernels to skip joints that are represented as mocap bodies.
-            self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32)
+            if self.joint_mjc_dof_start is None:
+                self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32, device=model.device)
 
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index
             # Mocap bodies are created from fixed-base articulations (FIXED joint to world)
