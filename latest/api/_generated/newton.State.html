@@ -899,9 +899,9 @@ If the number of substeps is odd, the last state needs to be explicitly copied f
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_f">
 <span class="sig-name descname"><span class="pre">body_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_f" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body forces (spatial), shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
-First three entries: linear force in world frame applied at the body’s center of mass (COM).
-Last three: torque (moment) in world frame.</p>
+<dd><p>Rigid body forces (spatial) [N, N·m], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
+First three entries: linear force [N] in world frame applied at the body’s center of mass (COM).
+Last three: torque (moment) [N·m] in world frame.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p><a class="reference internal" href="#newton.State.body_f" title="newton.State.body_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_f</span></code></a> represents an external wrench in world frame with the body’s center of mass (COM) as reference point.</p>
@@ -911,8 +911,8 @@ Last three: torque (moment) in world frame.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_parent_f">
 <span class="sig-name descname"><span class="pre">body_parent_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_parent_f" title="Link to this definition">#</a></dt>
-<dd><p>Parent interaction forces, shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
-First three entries: linear force; last three: torque.</p>
+<dd><p>Parent interaction forces [N, N·m], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
+First three entries: linear force [N]; last three: torque [N·m].</p>
 <p>This is an extended state attribute; see <a class="reference internal" href="../../concepts/extended_attributes.html#extended-state-attributes"><span class="std std-ref">Extended State Attributes</span></a> for more information.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -923,28 +923,30 @@ First three entries: linear force; last three: torque.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_q">
 <span class="sig-name descname"><span class="pre">body_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_q" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body transforms (7-DOF), shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">transform</span></code>.</p>
+<dd><p>Rigid body transforms (7-DOF) [m, unitless quaternion], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">transform</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_q_prev">
 <span class="sig-name descname"><span class="pre">body_q_prev</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_q_prev" title="Link to this definition">#</a></dt>
-<dd><p>Previous rigid body transforms for finite-difference velocity computation.</p>
+<dd><p>Previous rigid body transforms [m, unitless quaternion] for finite-difference velocity computation.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_qd">
 <span class="sig-name descname"><span class="pre">body_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_qd" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body velocities (spatial), shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
-First three entries: linear velocity relative to the body’s center of mass in world frame; last three: angular velocity in world frame.
+<dd><p>Rigid body velocities (spatial) [m/s, rad/s], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
+First three entries: linear velocity [m/s] relative to the body’s center of mass in world frame;
+last three: angular velocity [rad/s] in world frame.
 See <a class="reference internal" href="../../concepts/conventions.html#twist-conventions"><span class="std std-ref">Twist conventions in Newton</span></a> for more information.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.body_qdd">
 <span class="sig-name descname"><span class="pre">body_qdd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.body_qdd" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body accelerations (spatial), shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
-First three entries: linear acceleration relative to the body’s center of mass in world frame; last three: angular acceleration in world frame.</p>
+<dd><p>Rigid body accelerations (spatial) [m/s², rad/s²], shape (body_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">spatial_vector</span></code>.
+First three entries: linear acceleration [m/s²] relative to the body’s center of mass in world frame;
+last three: angular acceleration [rad/s²] in world frame.</p>
 <p>This is an extended state attribute; see <a class="reference internal" href="../../concepts/extended_attributes.html#extended-state-attributes"><span class="std std-ref">Extended State Attributes</span></a> for more information.</p>
 </dd></dl>
 
@@ -963,13 +965,13 @@ First three entries: linear acceleration relative to the body’s center of mass
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.joint_q">
 <span class="sig-name descname"><span class="pre">joint_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.joint_q" title="Link to this definition">#</a></dt>
-<dd><p>Generalized joint position coordinates, shape (joint_coord_count,), dtype float.</p>
+<dd><p>Generalized joint position coordinates [m or rad, depending on joint type], shape (joint_coord_count,), dtype float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.joint_qd">
 <span class="sig-name descname"><span class="pre">joint_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.joint_qd" title="Link to this definition">#</a></dt>
-<dd><p>Generalized joint velocity coordinates, shape (joint_dof_count,), dtype float.</p>
+<dd><p>Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float.</p>
 </dd></dl>
 
 <dl class="py property">
@@ -981,19 +983,19 @@ First three entries: linear acceleration relative to the body’s center of mass
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.particle_f">
 <span class="sig-name descname"><span class="pre">particle_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_f" title="Link to this definition">#</a></dt>
-<dd><p>3D forces on particles, shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<dd><p>3D forces on particles [N], shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.particle_q">
 <span class="sig-name descname"><span class="pre">particle_q</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_q" title="Link to this definition">#</a></dt>
-<dd><p>3D positions of particles, shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<dd><p>3D positions of particles [m], shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.State.particle_qd">
 <span class="sig-name descname"><span class="pre">particle_qd</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.State.particle_qd" title="Link to this definition">#</a></dt>
-<dd><p>3D velocities of particles, shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
+<dd><p>3D velocities of particles [m/s], shape (particle_count,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
 </dd></dl>
 
 <dl class="py property">

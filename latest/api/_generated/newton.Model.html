@@ -1298,7 +1298,7 @@ or custom frequencies for custom entity types (e.g., <code class="docutils liter
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.body_com">
 <span class="sig-name descname"><span class="pre">body_com</span></span><a class="headerlink" href="#newton.Model.body_com" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body center of mass (in local frame), shape [body_count, 3], float.</p>
+<dd><p>Rigid body center of mass [m] (in local frame), shape [body_count, 3], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1310,19 +1310,19 @@ or custom frequencies for custom entity types (e.g., <code class="docutils liter
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.body_inertia">
 <span class="sig-name descname"><span class="pre">body_inertia</span></span><a class="headerlink" href="#newton.Model.body_inertia" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body inertia tensor (relative to COM), shape [body_count, 3, 3], float.</p>
+<dd><p>Rigid body inertia tensor [kg·m²] (relative to COM), shape [body_count, 3, 3], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.body_inv_inertia">
 <span class="sig-name descname"><span class="pre">body_inv_inertia</span></span><a class="headerlink" href="#newton.Model.body_inv_inertia" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body inverse inertia tensor (relative to COM), shape [body_count, 3, 3], float.</p>
+<dd><p>Rigid body inverse inertia tensor [1/(kg·m²)] (relative to COM), shape [body_count, 3, 3], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.body_inv_mass">
 <span class="sig-name descname"><span class="pre">body_inv_mass</span></span><a class="headerlink" href="#newton.Model.body_inv_mass" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body inverse mass, shape [body_count], float.</p>
+<dd><p>Rigid body inverse mass [1/kg], shape [body_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1334,19 +1334,19 @@ or custom frequencies for custom entity types (e.g., <code class="docutils liter
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.body_mass">
 <span class="sig-name descname"><span class="pre">body_mass</span></span><a class="headerlink" href="#newton.Model.body_mass" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body mass, shape [body_count], float.</p>
+<dd><p>Rigid body mass [kg], shape [body_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.body_q">
 <span class="sig-name descname"><span class="pre">body_q</span></span><a class="headerlink" href="#newton.Model.body_q" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body poses for state initialization, shape [body_count, 7], float.</p>
+<dd><p>Rigid body poses [m, unitless quaternion] for state initialization, shape [body_count, 7], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.body_qd">
 <span class="sig-name descname"><span class="pre">body_qd</span></span><a class="headerlink" href="#newton.Model.body_qd" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body velocities for state initialization, shape [body_count, 6], float.</p>
+<dd><p>Rigid body velocities [m/s, rad/s] for state initialization, shape [body_count, 6], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1439,7 +1439,8 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.edge_bending_properties">
 <span class="sig-name descname"><span class="pre">edge_bending_properties</span></span><a class="headerlink" href="#newton.Model.edge_bending_properties" title="Link to this definition">#</a></dt>
-<dd><p>Bending edge stiffness and damping, shape [edge_count, 2], float.</p>
+<dd><p>Bending edge stiffness and damping, shape [edge_count, 2], float.
+Components: [0] stiffness [N·m/rad], [1] damping [N·s].</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1463,13 +1464,13 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.edge_rest_angle">
 <span class="sig-name descname"><span class="pre">edge_rest_angle</span></span><a class="headerlink" href="#newton.Model.edge_rest_angle" title="Link to this definition">#</a></dt>
-<dd><p>Bending edge rest angle, shape [edge_count], float.</p>
+<dd><p>Bending edge rest angle [rad], shape [edge_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.edge_rest_length">
 <span class="sig-name descname"><span class="pre">edge_rest_length</span></span><a class="headerlink" href="#newton.Model.edge_rest_length" title="Link to this definition">#</a></dt>
-<dd><p>Bending edge rest length, shape [edge_count], float.</p>
+<dd><p>Bending edge rest length [m], shape [edge_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1568,7 +1569,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.gravity">
 <span class="sig-name descname"><span class="pre">gravity</span></span><a class="headerlink" href="#newton.Model.gravity" title="Link to this definition">#</a></dt>
-<dd><p>Gravity vector, shape [1], dtype vec3.</p>
+<dd><p>Gravity vector [m/s²], shape [1], dtype vec3.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1580,13 +1581,13 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_X_c">
 <span class="sig-name descname"><span class="pre">joint_X_c</span></span><a class="headerlink" href="#newton.Model.joint_X_c" title="Link to this definition">#</a></dt>
-<dd><p>Joint mass frame in child frame, shape [joint_count, 7], float.</p>
+<dd><p>Joint mass frame in child frame [m, unitless quaternion], shape [joint_count, 7], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_X_p">
 <span class="sig-name descname"><span class="pre">joint_X_p</span></span><a class="headerlink" href="#newton.Model.joint_X_p" title="Link to this definition">#</a></dt>
-<dd><p>Joint transform in parent frame, shape [joint_count, 7], float.</p>
+<dd><p>Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1604,7 +1605,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_armature">
 <span class="sig-name descname"><span class="pre">joint_armature</span></span><a class="headerlink" href="#newton.Model.joint_armature" title="Link to this definition">#</a></dt>
-<dd><p>Armature for each joint axis (used by <a class="reference internal" href="newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>), shape [joint_dof_count], float.</p>
+<dd><p>Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by <a class="reference internal" href="newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>), shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1703,7 +1704,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_effort_limit">
 <span class="sig-name descname"><span class="pre">joint_effort_limit</span></span><a class="headerlink" href="#newton.Model.joint_effort_limit" title="Link to this definition">#</a></dt>
-<dd><p>Joint effort (force/torque) limits, shape [joint_dof_count], float.</p>
+<dd><p>Joint effort (force/torque) limits [N or N·m, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1715,13 +1716,13 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_f">
 <span class="sig-name descname"><span class="pre">joint_f</span></span><a class="headerlink" href="#newton.Model.joint_f" title="Link to this definition">#</a></dt>
-<dd><p>Generalized joint forces for state initialization, shape [joint_dof_count], float.</p>
+<dd><p>Generalized joint forces [N or N·m, depending on joint type] for state initialization, shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_friction">
 <span class="sig-name descname"><span class="pre">joint_friction</span></span><a class="headerlink" href="#newton.Model.joint_friction" title="Link to this definition">#</a></dt>
-<dd><p>Joint friction coefficient, shape [joint_dof_count], float.</p>
+<dd><p>Joint friction force/torque [N or N·m, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1733,25 +1734,25 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_limit_kd">
 <span class="sig-name descname"><span class="pre">joint_limit_kd</span></span><a class="headerlink" href="#newton.Model.joint_limit_kd" title="Link to this definition">#</a></dt>
-<dd><p>Joint position limit damping (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>), shape [joint_dof_count], float.</p>
+<dd><p>Joint position limit damping [N·s/m or N·m·s/rad, depending on joint type] (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>), shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_limit_ke">
 <span class="sig-name descname"><span class="pre">joint_limit_ke</span></span><a class="headerlink" href="#newton.Model.joint_limit_ke" title="Link to this definition">#</a></dt>
-<dd><p>Joint position limit stiffness (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>), shape [joint_dof_count], float.</p>
+<dd><p>Joint position limit stiffness [N/m or N·m/rad, depending on joint type] (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>), shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_limit_lower">
 <span class="sig-name descname"><span class="pre">joint_limit_lower</span></span><a class="headerlink" href="#newton.Model.joint_limit_lower" title="Link to this definition">#</a></dt>
-<dd><p>Joint lower position limits, shape [joint_dof_count], float.</p>
+<dd><p>Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_limit_upper">
 <span class="sig-name descname"><span class="pre">joint_limit_upper</span></span><a class="headerlink" href="#newton.Model.joint_limit_upper" title="Link to this definition">#</a></dt>
-<dd><p>Joint upper position limits, shape [joint_dof_count], float.</p>
+<dd><p>Joint upper position limits [m or rad, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1763,7 +1764,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_q">
 <span class="sig-name descname"><span class="pre">joint_q</span></span><a class="headerlink" href="#newton.Model.joint_q" title="Link to this definition">#</a></dt>
-<dd><p>Generalized joint positions for state initialization, shape [joint_coord_count], float.</p>
+<dd><p>Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1775,7 +1776,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_qd">
 <span class="sig-name descname"><span class="pre">joint_qd</span></span><a class="headerlink" href="#newton.Model.joint_qd" title="Link to this definition">#</a></dt>
-<dd><p>Generalized joint velocities for state initialization, shape [joint_dof_count], float.</p>
+<dd><p>Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1787,37 +1788,37 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_target_kd">
 <span class="sig-name descname"><span class="pre">joint_target_kd</span></span><a class="headerlink" href="#newton.Model.joint_target_kd" title="Link to this definition">#</a></dt>
-<dd><p>Joint damping, shape [joint_dof_count], float.</p>
+<dd><p>Joint damping [N·s/m or N·m·s/rad, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_target_ke">
 <span class="sig-name descname"><span class="pre">joint_target_ke</span></span><a class="headerlink" href="#newton.Model.joint_target_ke" title="Link to this definition">#</a></dt>
-<dd><p>Joint stiffness, shape [joint_dof_count], float.</p>
+<dd><p>Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_target_pos">
 <span class="sig-name descname"><span class="pre">joint_target_pos</span></span><a class="headerlink" href="#newton.Model.joint_target_pos" title="Link to this definition">#</a></dt>
-<dd><p>Generalized joint position targets, shape [joint_dof_count], float.</p>
+<dd><p>Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_target_vel">
 <span class="sig-name descname"><span class="pre">joint_target_vel</span></span><a class="headerlink" href="#newton.Model.joint_target_vel" title="Link to this definition">#</a></dt>
-<dd><p>Generalized joint velocity targets, shape [joint_dof_count], float.</p>
+<dd><p>Generalized joint velocity targets [m/s or rad/s, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_twist_lower">
 <span class="sig-name descname"><span class="pre">joint_twist_lower</span></span><a class="headerlink" href="#newton.Model.joint_twist_lower" title="Link to this definition">#</a></dt>
-<dd><p>Joint lower twist limit, shape [joint_count], float.</p>
+<dd><p>Joint lower twist limit [rad], shape [joint_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_twist_upper">
 <span class="sig-name descname"><span class="pre">joint_twist_upper</span></span><a class="headerlink" href="#newton.Model.joint_twist_upper" title="Link to this definition">#</a></dt>
-<dd><p>Joint upper twist limit, shape [joint_count], float.</p>
+<dd><p>Joint upper twist limit [rad], shape [joint_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1829,7 +1830,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_velocity_limit">
 <span class="sig-name descname"><span class="pre">joint_velocity_limit</span></span><a class="headerlink" href="#newton.Model.joint_velocity_limit" title="Link to this definition">#</a></dt>
-<dd><p>Joint velocity limits, shape [joint_dof_count], float.</p>
+<dd><p>Joint velocity limits [m/s or rad/s, depending on joint type], shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1868,7 +1869,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.muscle_activations">
 <span class="sig-name descname"><span class="pre">muscle_activations</span></span><a class="headerlink" href="#newton.Model.muscle_activations" title="Link to this definition">#</a></dt>
-<dd><p>Muscle activations, shape [muscle_count], float.</p>
+<dd><p>Muscle activations [dimensionless, 0 to 1], shape [muscle_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1886,7 +1887,9 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.muscle_params">
 <span class="sig-name descname"><span class="pre">muscle_params</span></span><a class="headerlink" href="#newton.Model.muscle_params" title="Link to this definition">#</a></dt>
-<dd><p>Muscle parameters, shape [muscle_count, 5], float.</p>
+<dd><p>Muscle parameters, shape [muscle_count, 5], float.
+Components: [0] f0 [N] (force scaling), [1] lm [m] (muscle fiber length), [2] lt [m] (tendon slack length),
+[3] lmax [m] (max efficient length), [4] pen [dimensionless] (penalty factor).</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1904,13 +1907,13 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_adhesion">
 <span class="sig-name descname"><span class="pre">particle_adhesion</span></span><a class="headerlink" href="#newton.Model.particle_adhesion" title="Link to this definition">#</a></dt>
-<dd><p>Particle adhesion strength.</p>
+<dd><p>Particle adhesion strength [m].</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_cohesion">
 <span class="sig-name descname"><span class="pre">particle_cohesion</span></span><a class="headerlink" href="#newton.Model.particle_cohesion" title="Link to this definition">#</a></dt>
-<dd><p>Particle cohesion strength.</p>
+<dd><p>Particle cohesion strength [m].</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1946,67 +1949,67 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_inv_mass">
 <span class="sig-name descname"><span class="pre">particle_inv_mass</span></span><a class="headerlink" href="#newton.Model.particle_inv_mass" title="Link to this definition">#</a></dt>
-<dd><p>Particle inverse mass, shape [particle_count], float.</p>
+<dd><p>Particle inverse mass [1/kg], shape [particle_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_kd">
 <span class="sig-name descname"><span class="pre">particle_kd</span></span><a class="headerlink" href="#newton.Model.particle_kd" title="Link to this definition">#</a></dt>
-<dd><p>Particle normal contact damping (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>).</p>
+<dd><p>Particle normal contact damping [N·s/m] (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_ke">
 <span class="sig-name descname"><span class="pre">particle_ke</span></span><a class="headerlink" href="#newton.Model.particle_ke" title="Link to this definition">#</a></dt>
-<dd><p>Particle normal contact stiffness (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>).</p>
+<dd><p>Particle normal contact stiffness [N/m] (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_kf">
 <span class="sig-name descname"><span class="pre">particle_kf</span></span><a class="headerlink" href="#newton.Model.particle_kf" title="Link to this definition">#</a></dt>
-<dd><p>Particle friction force stiffness (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>).</p>
+<dd><p>Particle friction force stiffness [N·s/m] (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a>).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_mass">
 <span class="sig-name descname"><span class="pre">particle_mass</span></span><a class="headerlink" href="#newton.Model.particle_mass" title="Link to this definition">#</a></dt>
-<dd><p>Particle mass, shape [particle_count], float.</p>
+<dd><p>Particle mass [kg], shape [particle_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_max_radius">
 <span class="sig-name descname"><span class="pre">particle_max_radius</span></span><a class="headerlink" href="#newton.Model.particle_max_radius" title="Link to this definition">#</a></dt>
-<dd><p>Maximum particle radius (useful for HashGrid construction).</p>
+<dd><p>Maximum particle radius [m] (useful for HashGrid construction).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_max_velocity">
 <span class="sig-name descname"><span class="pre">particle_max_velocity</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><span class="pre">float</span></a></em><a class="headerlink" href="#newton.Model.particle_max_velocity" title="Link to this definition">#</a></dt>
-<dd><p>Maximum particle velocity (to prevent instability).</p>
+<dd><p>Maximum particle velocity [m/s] (to prevent instability).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_mu">
 <span class="sig-name descname"><span class="pre">particle_mu</span></span><a class="headerlink" href="#newton.Model.particle_mu" title="Link to this definition">#</a></dt>
-<dd><p>Particle friction coefficient.</p>
+<dd><p>Particle friction coefficient [dimensionless].</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_q">
 <span class="sig-name descname"><span class="pre">particle_q</span></span><a class="headerlink" href="#newton.Model.particle_q" title="Link to this definition">#</a></dt>
-<dd><p>Particle positions, shape [particle_count, 3], float.</p>
+<dd><p>Particle positions [m], shape [particle_count, 3], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_qd">
 <span class="sig-name descname"><span class="pre">particle_qd</span></span><a class="headerlink" href="#newton.Model.particle_qd" title="Link to this definition">#</a></dt>
-<dd><p>Particle velocities, shape [particle_count, 3], float.</p>
+<dd><p>Particle velocities [m/s], shape [particle_count, 3], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.particle_radius">
 <span class="sig-name descname"><span class="pre">particle_radius</span></span><a class="headerlink" href="#newton.Model.particle_radius" title="Link to this definition">#</a></dt>
-<dd><p>Particle radius, shape [particle_count], float.</p>
+<dd><p>Particle radius [m], shape [particle_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2068,13 +2071,13 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_collision_radius">
 <span class="sig-name descname"><span class="pre">shape_collision_radius</span></span><a class="headerlink" href="#newton.Model.shape_collision_radius" title="Link to this definition">#</a></dt>
-<dd><p>Collision radius for bounding sphere broadphase, shape [shape_count], float. Not supported by <a class="reference internal" href="newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>.</p>
+<dd><p>Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by <a class="reference internal" href="newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_contact_margin">
 <span class="sig-name descname"><span class="pre">shape_contact_margin</span></span><a class="headerlink" href="#newton.Model.shape_contact_margin" title="Link to this definition">#</a></dt>
-<dd><p>Shape contact margin for collision detection, shape [shape_count], float.</p>
+<dd><p>Shape contact margin for collision detection [m], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2128,7 +2131,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_local_aabb_lower">
 <span class="sig-name descname"><span class="pre">shape_local_aabb_lower</span></span><a class="headerlink" href="#newton.Model.shape_local_aabb_lower" title="Link to this definition">#</a></dt>
-<dd><p>Local-space AABB lower bound for each shape, shape [shape_count, 3], float.
+<dd><p>Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
 Computed from base geometry only (excludes thickness - thickness is added during contact
 margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
@@ -2136,7 +2139,7 @@ margin calculations). Used for voxel-based contact reduction.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_local_aabb_upper">
 <span class="sig-name descname"><span class="pre">shape_local_aabb_upper</span></span><a class="headerlink" href="#newton.Model.shape_local_aabb_upper" title="Link to this definition">#</a></dt>
-<dd><p>Local-space AABB upper bound for each shape, shape [shape_count, 3], float.
+<dd><p>Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
 Computed from base geometry only (excludes thickness - thickness is added during contact
 margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
@@ -2144,55 +2147,58 @@ margin calculations). Used for voxel-based contact reduction.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_k_hydro">
 <span class="sig-name descname"><span class="pre">shape_material_k_hydro</span></span><a class="headerlink" href="#newton.Model.shape_material_k_hydro" title="Link to this definition">#</a></dt>
-<dd><p>Shape hydroelastic stiffness coefficient, shape [shape_count], float.</p>
+<dd><p>Shape hydroelastic stiffness coefficient [N/m³], shape [shape_count], float.
+Contact stiffness is computed as <code class="docutils literal notranslate"><span class="pre">area</span> <span class="pre">*</span> <span class="pre">k_hydro</span></code>, yielding an effective spring constant [N/m].</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_ka">
 <span class="sig-name descname"><span class="pre">shape_material_ka</span></span><a class="headerlink" href="#newton.Model.shape_material_ka" title="Link to this definition">#</a></dt>
-<dd><p>Shape contact adhesion distance, shape [shape_count], float.</p>
+<dd><p>Shape contact adhesion distance [m], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_kd">
 <span class="sig-name descname"><span class="pre">shape_material_kd</span></span><a class="headerlink" href="#newton.Model.shape_material_kd" title="Link to this definition">#</a></dt>
-<dd><p>Shape contact damping stiffness, shape [shape_count], float.</p>
+<dd><p>Shape contact damping stiffness, shape [shape_count], float.
+Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
+but multiplied by ke as a relative damping factor by VBD.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_ke">
 <span class="sig-name descname"><span class="pre">shape_material_ke</span></span><a class="headerlink" href="#newton.Model.shape_material_ke" title="Link to this definition">#</a></dt>
-<dd><p>Shape contact elastic stiffness, shape [shape_count], float.</p>
+<dd><p>Shape contact elastic stiffness [N/m], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_kf">
 <span class="sig-name descname"><span class="pre">shape_material_kf</span></span><a class="headerlink" href="#newton.Model.shape_material_kf" title="Link to this definition">#</a></dt>
-<dd><p>Shape contact friction stiffness, shape [shape_count], float.</p>
+<dd><p>Shape contact friction stiffness [N·s/m], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_mu">
 <span class="sig-name descname"><span class="pre">shape_material_mu</span></span><a class="headerlink" href="#newton.Model.shape_material_mu" title="Link to this definition">#</a></dt>
-<dd><p>Shape coefficient of friction, shape [shape_count], float.</p>
+<dd><p>Shape coefficient of friction [dimensionless], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_restitution">
 <span class="sig-name descname"><span class="pre">shape_material_restitution</span></span><a class="headerlink" href="#newton.Model.shape_material_restitution" title="Link to this definition">#</a></dt>
-<dd><p>Shape coefficient of restitution, shape [shape_count], float.</p>
+<dd><p>Shape coefficient of restitution [dimensionless], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_rolling_friction">
 <span class="sig-name descname"><span class="pre">shape_material_rolling_friction</span></span><a class="headerlink" href="#newton.Model.shape_material_rolling_friction" title="Link to this definition">#</a></dt>
-<dd><p>Shape rolling friction coefficient (resistance to rolling motion), shape [shape_count], float.</p>
+<dd><p>Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_material_torsional_friction">
 <span class="sig-name descname"><span class="pre">shape_material_torsional_friction</span></span><a class="headerlink" href="#newton.Model.shape_material_torsional_friction" title="Link to this definition">#</a></dt>
-<dd><p>Shape torsional friction coefficient (resistance to spinning at contact point), shape [shape_count], float.</p>
+<dd><p>Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2234,13 +2240,13 @@ margin calculations). Used for voxel-based contact reduction.</p>
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_thickness">
 <span class="sig-name descname"><span class="pre">shape_thickness</span></span><a class="headerlink" href="#newton.Model.shape_thickness" title="Link to this definition">#</a></dt>
-<dd><p>Shape thickness, shape [shape_count], float.</p>
+<dd><p>Shape thickness [m], shape [shape_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_transform">
 <span class="sig-name descname"><span class="pre">shape_transform</span></span><a class="headerlink" href="#newton.Model.shape_transform" title="Link to this definition">#</a></dt>
-<dd><p>Rigid shape transforms, shape [shape_count, 7], float.</p>
+<dd><p>Rigid shape transforms [m, unitless quaternion], shape [shape_count, 7], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2279,31 +2285,33 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.soft_contact_kd">
 <span class="sig-name descname"><span class="pre">soft_contact_kd</span></span><a class="headerlink" href="#newton.Model.soft_contact_kd" title="Link to this definition">#</a></dt>
-<dd><p>Damping of soft contacts (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>).</p>
+<dd><p>Damping of soft contacts (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>).
+Interpretation is solver-dependent: used directly as damping [N·s/m] by SemiImplicit,
+but multiplied by ke as a relative damping factor by VBD.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.soft_contact_ke">
 <span class="sig-name descname"><span class="pre">soft_contact_ke</span></span><a class="headerlink" href="#newton.Model.soft_contact_ke" title="Link to this definition">#</a></dt>
-<dd><p>Stiffness of soft contacts (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>).</p>
+<dd><p>Stiffness of soft contacts [N/m] (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.soft_contact_kf">
 <span class="sig-name descname"><span class="pre">soft_contact_kf</span></span><a class="headerlink" href="#newton.Model.soft_contact_kf" title="Link to this definition">#</a></dt>
-<dd><p>Stiffness of friction force in soft contacts (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>).</p>
+<dd><p>Stiffness of friction force in soft contacts [N·s/m] (used by <a class="reference internal" href="newton.solvers.SolverSemiImplicit.html#newton.solvers.SolverSemiImplicit" title="newton.solvers.SolverSemiImplicit"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverSemiImplicit</span></code></a> and <a class="reference internal" href="newton.solvers.SolverFeatherstone.html#newton.solvers.SolverFeatherstone" title="newton.solvers.SolverFeatherstone"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverFeatherstone</span></code></a>).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.soft_contact_mu">
 <span class="sig-name descname"><span class="pre">soft_contact_mu</span></span><a class="headerlink" href="#newton.Model.soft_contact_mu" title="Link to this definition">#</a></dt>
-<dd><p>Friction coefficient of soft contacts.</p>
+<dd><p>Friction coefficient of soft contacts [dimensionless].</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.soft_contact_restitution">
 <span class="sig-name descname"><span class="pre">soft_contact_restitution</span></span><a class="headerlink" href="#newton.Model.soft_contact_restitution" title="Link to this definition">#</a></dt>
-<dd><p>Restitution coefficient of soft contacts (used by <code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code>).</p>
+<dd><p>Restitution coefficient of soft contacts [dimensionless] (used by <code class="xref py py-class docutils literal notranslate"><span class="pre">SolverXPBD</span></code>).</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2315,7 +2323,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.spring_control">
 <span class="sig-name descname"><span class="pre">spring_control</span></span><a class="headerlink" href="#newton.Model.spring_control" title="Link to this definition">#</a></dt>
-<dd><p>Particle spring activation, shape [spring_count], float.</p>
+<dd><p>Particle spring activation [dimensionless], shape [spring_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2327,7 +2335,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.spring_damping">
 <span class="sig-name descname"><span class="pre">spring_damping</span></span><a class="headerlink" href="#newton.Model.spring_damping" title="Link to this definition">#</a></dt>
-<dd><p>Particle spring damping, shape [spring_count], float.</p>
+<dd><p>Particle spring damping [N·s/m], shape [spring_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2339,13 +2347,13 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.spring_rest_length">
 <span class="sig-name descname"><span class="pre">spring_rest_length</span></span><a class="headerlink" href="#newton.Model.spring_rest_length" title="Link to this definition">#</a></dt>
-<dd><p>Particle spring rest length, shape [spring_count], float.</p>
+<dd><p>Particle spring rest length [m], shape [spring_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.spring_stiffness">
 <span class="sig-name descname"><span class="pre">spring_stiffness</span></span><a class="headerlink" href="#newton.Model.spring_stiffness" title="Link to this definition">#</a></dt>
-<dd><p>Particle spring stiffness, shape [spring_count], float.</p>
+<dd><p>Particle spring stiffness [N/m], shape [spring_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2369,7 +2377,9 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.tet_materials">
 <span class="sig-name descname"><span class="pre">tet_materials</span></span><a class="headerlink" href="#newton.Model.tet_materials" title="Link to this definition">#</a></dt>
-<dd><p>Tetrahedral elastic parameters in form <span class="math notranslate nohighlight">\(k_{mu}, k_{lambda}, k_{damp}\)</span>, shape [tet_count, 3].</p>
+<dd><p>Tetrahedral elastic parameters in form <span class="math notranslate nohighlight">\(k_{mu}, k_{lambda}, k_{damp}\)</span>, shape [tet_count, 3].
+Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
+Stored per-element; kernels multiply by rest volume internally.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2387,7 +2397,7 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.tri_areas">
 <span class="sig-name descname"><span class="pre">tri_areas</span></span><a class="headerlink" href="#newton.Model.tri_areas" title="Link to this definition">#</a></dt>
-<dd><p>Triangle element rest areas, shape [tri_count], float.</p>
+<dd><p>Triangle element rest areas [m²], shape [tri_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2405,7 +2415,9 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.tri_materials">
 <span class="sig-name descname"><span class="pre">tri_materials</span></span><a class="headerlink" href="#newton.Model.tri_materials" title="Link to this definition">#</a></dt>
-<dd><p>Triangle element materials, shape [tri_count, 5], float.</p>
+<dd><p>Triangle element materials, shape [tri_count, 5], float.
+Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s], [3] k_drag [Pa·s], [4] k_lift [Pa].
+Stored per-element; kernels multiply by rest area internally.</p>
 </dd></dl>
 
 <dl class="py attribute">

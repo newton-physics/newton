@@ -831,12 +831,13 @@ should generally be created using the <a class="reference internal" href="newton
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Control.joint_f">
 <span class="sig-name descname"><span class="pre">joint_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Control.joint_f" title="Link to this definition">#</a></dt>
-<dd><p>Array of generalized joint forces with shape <code class="docutils literal notranslate"><span class="pre">(joint_dof_count,)</span></code> and type <code class="docutils literal notranslate"><span class="pre">float</span></code>.</p>
+<dd><p>Array of generalized joint forces [N or N·m, depending on joint type] with shape <code class="docutils literal notranslate"><span class="pre">(joint_dof_count,)</span></code>
+and type <code class="docutils literal notranslate"><span class="pre">float</span></code>.</p>
 <p>The degrees of freedom for free joints are included in this array and have the same
 convention as the <a class="reference internal" href="newton.State.html#newton.State.body_f" title="newton.State.body_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.State.body_f</span></code></a> array where the 6D wrench is defined as
 <code class="docutils literal notranslate"><span class="pre">(f_x,</span> <span class="pre">f_y,</span> <span class="pre">f_z,</span> <span class="pre">t_x,</span> <span class="pre">t_y,</span> <span class="pre">t_z)</span></code>, where <code class="docutils literal notranslate"><span class="pre">f_x</span></code>, <code class="docutils literal notranslate"><span class="pre">f_y</span></code>, and <code class="docutils literal notranslate"><span class="pre">f_z</span></code> are the components
-of the force vector (linear) and <code class="docutils literal notranslate"><span class="pre">t_x</span></code>, <code class="docutils literal notranslate"><span class="pre">t_y</span></code>, and <code class="docutils literal notranslate"><span class="pre">t_z</span></code> are the
-components of the torque vector (angular). For free joints, the wrench is applied in world frame with the
+of the force vector (linear) [N] and <code class="docutils literal notranslate"><span class="pre">t_x</span></code>, <code class="docutils literal notranslate"><span class="pre">t_y</span></code>, and <code class="docutils literal notranslate"><span class="pre">t_z</span></code> are the
+components of the torque vector (angular) [N·m]. For free joints, the wrench is applied in world frame with the
 body’s center of mass (COM) as reference point.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -848,19 +849,19 @@ center-of-mass frame, which can lead to unexpected rotation when applying linear
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Control.joint_target_pos">
 <span class="sig-name descname"><span class="pre">joint_target_pos</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Control.joint_target_pos" title="Link to this definition">#</a></dt>
-<dd><p>Per-DOF position targets, shape <code class="docutils literal notranslate"><span class="pre">(joint_dof_count,)</span></code>, type <code class="docutils literal notranslate"><span class="pre">float</span></code> (optional).</p>
+<dd><p>Per-DOF position targets [m or rad, depending on joint type], shape <code class="docutils literal notranslate"><span class="pre">(joint_dof_count,)</span></code>, type <code class="docutils literal notranslate"><span class="pre">float</span></code> (optional).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Control.joint_target_vel">
 <span class="sig-name descname"><span class="pre">joint_target_vel</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Control.joint_target_vel" title="Link to this definition">#</a></dt>
-<dd><p>Per-DOF velocity targets, shape <code class="docutils literal notranslate"><span class="pre">(joint_dof_count,)</span></code>, type <code class="docutils literal notranslate"><span class="pre">float</span></code> (optional).</p>
+<dd><p>Per-DOF velocity targets [m/s or rad/s, depending on joint type], shape <code class="docutils literal notranslate"><span class="pre">(joint_dof_count,)</span></code>, type <code class="docutils literal notranslate"><span class="pre">float</span></code> (optional).</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Control.muscle_activations">
 <span class="sig-name descname"><span class="pre">muscle_activations</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Control.muscle_activations" title="Link to this definition">#</a></dt>
-<dd><p>Array of muscle activations with shape <code class="docutils literal notranslate"><span class="pre">(muscle_count,)</span></code> and type <code class="docutils literal notranslate"><span class="pre">float</span></code>.</p>
+<dd><p>Array of muscle activations [dimensionless, 0 to 1] with shape <code class="docutils literal notranslate"><span class="pre">(muscle_count,)</span></code> and type <code class="docutils literal notranslate"><span class="pre">float</span></code>.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Support for muscle dynamics is not yet implemented.</p>
@@ -870,13 +871,13 @@ center-of-mass frame, which can lead to unexpected rotation when applying linear
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Control.tet_activations">
 <span class="sig-name descname"><span class="pre">tet_activations</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Control.tet_activations" title="Link to this definition">#</a></dt>
-<dd><p>Array of tetrahedral element activations with shape with shape <code class="docutils literal notranslate"><span class="pre">(tet_count,)</span> <span class="pre">and</span> <span class="pre">type</span> <span class="pre">``float</span></code>.</p>
+<dd><p>Array of tetrahedral element activations [dimensionless] with shape <code class="docutils literal notranslate"><span class="pre">(tet_count,)</span></code> and type <code class="docutils literal notranslate"><span class="pre">float</span></code>.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Control.tri_activations">
 <span class="sig-name descname"><span class="pre">tri_activations</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Control.tri_activations" title="Link to this definition">#</a></dt>
-<dd><p>Array of triangle element activations with shape <code class="docutils literal notranslate"><span class="pre">(tri_count,)</span></code> and type <code class="docutils literal notranslate"><span class="pre">float</span></code>.</p>
+<dd><p>Array of triangle element activations [dimensionless] with shape <code class="docutils literal notranslate"><span class="pre">(tri_count,)</span></code> and type <code class="docutils literal notranslate"><span class="pre">float</span></code>.</p>
 </dd></dl>
 
 </dd></dl>
