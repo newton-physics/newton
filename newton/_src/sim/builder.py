@@ -147,6 +147,11 @@ class ModelBuilder:
         It is strongly recommended to use the ModelBuilder to construct a simulation rather
         than creating your own Model object directly, however it is possible to do so if
         desired.
+
+    Attributes:
+        default_shape_cfg (ShapeConfig): Default shape configuration used when shape-creation
+            methods are called with ``cfg=None``. Update this object before adding shapes
+            to set default contact/material properties.
     """
 
     @dataclass
