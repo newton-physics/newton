@@ -1670,9 +1670,9 @@ class SolverMuJoCo(SolverBase):
                     )
                     continue
 
-                if model_joint_type_np[newton_joint] == JointType.D6:
+                if newton_joint >= len(model_joint_type_np):
                     warnings.warn(
-                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
+                        f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
                         stacklevel=2,
                     )
                     continue
@@ -1682,6 +1682,13 @@ class SolverMuJoCo(SolverBase):
                     warnings.warn(
                         f"Skipping joint entry {j} for tendon {i}: Newton joint {newton_joint} "
                         f"not found in MuJoCo joint mapping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                if model_joint_type_np[newton_joint] == JointType.D6:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
                         stacklevel=2,
                     )
                     continue
@@ -2377,6 +2384,7 @@ class SolverMuJoCo(SolverBase):
                 model.joint_dof_dim,
                 model.joint_child,
                 model.body_com,
+                self.joint_mjc_dof_start,
             ],
             outputs=[qpos, qvel],
             device=model.device,
@@ -2423,6 +2431,7 @@ class SolverMuJoCo(SolverBase):
                 model.joint_dof_dim,
                 model.joint_child,
                 model.body_com,
+                self.joint_mjc_dof_start,
             ],
             outputs=[state.joint_q, state.joint_qd],
             device=model.device,
@@ -3311,7 +3320,7 @@ class SolverMuJoCo(SolverBase):
             fixed_base = parent == -1 and j_type == JointType.FIXED
             # explicit kinematic free bodies (mass=0) are also exported as mocap to
             # avoid invalid MuJoCo inertial requirements on free joints.
-            kinematic_free_body = parent == -1 and j_type == JointType.FREE and body_mass[child] <= 0.0
+            kinematic_free_body = parent == -1 and j_type == JointType.FREE and body_mass[child] == 0.0
             use_mocap_body = fixed_base or kinematic_free_body
 
             # this assumes that the joint position is 0
@@ -3968,6 +3977,10 @@ class SolverMuJoCo(SolverBase):
                 body_free_qd_start_np[body_indices] = qd_starts
 
             self.body_free_qd_start = wp.array(body_free_qd_start_np, dtype=wp.int32)
+
+            # Template-joint mapping: Newton template joint -> MuJoCo DOF start (or -1 if no MuJoCo joint).
+            # Used by coordinate-conversion kernels to skip joints that are represented as mocap bodies.
+            self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32)
 
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index
             # Mocap bodies are created from fixed-base articulations (FIXED joint to world)
