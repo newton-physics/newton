@@ -60,7 +60,7 @@ from ..geometry.contact_reduction_global import (
 )
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
-from ..geometry.sdf_hydroelastic import SDFHydroelastic
+from ..geometry.sdf_hydroelastic import HydroelasticSDF as _HydroelasticSDF
 from ..geometry.sdf_utils import SDFData
 from ..geometry.support_function import (
     SupportMapDataProvider,
@@ -154,7 +154,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
     @wp.kernel(enable_backward=False)
     def narrow_phase_primitive_kernel(
         candidate_pair: wp.array(dtype=wp.vec2i),
-        num_candidate_pair: wp.array(dtype=int),
+        candidate_pair_count: wp.array(dtype=int),
         shape_types: wp.array(dtype=int),
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
@@ -193,7 +193,7 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
         """
         tid = wp.tid()
 
-        num_work_items = wp.min(candidate_pair.shape[0], num_candidate_pair[0])
+        num_work_items = wp.min(candidate_pair.shape[0], candidate_pair_count[0])
 
         # Early exit if no work
         if num_work_items == 0:
@@ -609,7 +609,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
     @wp.kernel(enable_backward=False)
     def narrow_phase_kernel_gjk_mpr(
         candidate_pair: wp.array(dtype=wp.vec2i),
-        num_candidate_pair: wp.array(dtype=int),
+        candidate_pair_count: wp.array(dtype=int),
         shape_types: wp.array(dtype=int),
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
@@ -629,7 +629,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
         """
         tid = wp.tid()
 
-        num_work_items = wp.min(candidate_pair.shape[0], num_candidate_pair[0])
+        num_work_items = wp.min(candidate_pair.shape[0], candidate_pair_count[0])
 
         # Early exit if no work (fast path for primitive-only scenes)
         if num_work_items == 0:
@@ -938,8 +938,8 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         shape_transform: wp.array(dtype=wp.transform),
         shape_source: wp.array(dtype=wp.uint64),
         shape_contact_margin: wp.array(dtype=float),
-        _shape_local_aabb_lower: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
-        _shape_local_aabb_upper: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
+        _shape_collision_aabb_lower: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
+        _shape_collision_aabb_upper: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
         _shape_voxel_resolution: wp.array(dtype=wp.vec3i),  # Unused but kept for API compatibility
         shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
@@ -953,10 +953,10 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         """
         tid = wp.tid()
 
-        num_pairs = shape_pairs_mesh_plane_count[0]
+        pair_count = shape_pairs_mesh_plane_count[0]
 
         # Iterate over all mesh-plane pairs
-        for pair_idx in range(num_pairs):
+        for pair_idx in range(pair_count):
             pair = shape_pairs_mesh_plane[pair_idx]
             mesh_shape = pair[0]
             plane_shape = pair[1]
@@ -1039,7 +1039,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
     # Extract functions and constants from the contact reduction configuration
 
-    num_reduction_slots = contact_reduction_funcs.num_reduction_slots
+    reduction_slot_count = contact_reduction_funcs.reduction_slot_count
     store_reduced_contact_func = contact_reduction_funcs.store_reduced_contact
     get_smem_slots_plus_1 = contact_reduction_funcs.get_smem_slots_plus_1
     get_smem_slots_contacts = contact_reduction_funcs.get_smem_slots_contacts
@@ -1050,8 +1050,8 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         shape_transform: wp.array(dtype=wp.transform),
         shape_source: wp.array(dtype=wp.uint64),
         shape_contact_margin: wp.array(dtype=float),
-        shape_local_aabb_lower: wp.array(dtype=wp.vec3),
-        shape_local_aabb_upper: wp.array(dtype=wp.vec3),
+        shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
+        shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
         shape_pairs_mesh_plane: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_plane_count: wp.array(dtype=int),
@@ -1068,23 +1068,23 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
         """
         block_id, t = wp.tid()
 
-        num_pairs = shape_pairs_mesh_plane_count[0]
+        pair_count = shape_pairs_mesh_plane_count[0]
 
         # Initialize shared memory buffers for contact reduction (reused across pairs)
         empty_marker = -1000000000.0
         active_contacts_shared_mem = wp.array(
             ptr=wp.static(get_smem_slots_plus_1)(),
-            shape=(wp.static(num_reduction_slots) + 1,),
+            shape=(wp.static(reduction_slot_count) + 1,),
             dtype=wp.int32,
         )
         contacts_shared_mem = wp.array(
             ptr=wp.static(get_smem_slots_contacts)(),
-            shape=(wp.static(num_reduction_slots),),
+            shape=(wp.static(reduction_slot_count),),
             dtype=ContactStruct,
         )
 
         # Grid stride loop over mesh-plane pairs
-        for pair_idx in range(block_id, num_pairs, total_num_blocks):
+        for pair_idx in range(block_id, pair_count, total_num_blocks):
             # Get the mesh-plane pair
             pair = shape_pairs_mesh_plane[pair_idx]
             mesh_shape = pair[0]
@@ -1103,8 +1103,8 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             X_ws_mesh = wp.transform_inverse(X_mesh_ws)  # World to mesh local
 
             # Load voxel binning data for mesh
-            aabb_lower_mesh = shape_local_aabb_lower[mesh_shape]
-            aabb_upper_mesh = shape_local_aabb_upper[mesh_shape]
+            aabb_lower_mesh = shape_collision_aabb_lower[mesh_shape]
+            aabb_upper_mesh = shape_collision_aabb_upper[mesh_shape]
             voxel_res_mesh = shape_voxel_resolution[mesh_shape]
 
             # Get plane world transform
@@ -1130,11 +1130,11 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
             margin = margin_mesh + margin_plane
 
             # Reset contact buffer for this pair
-            for i in range(t, wp.static(num_reduction_slots), wp.block_dim()):
+            for i in range(t, wp.static(reduction_slot_count), wp.block_dim()):
                 contacts_shared_mem[i].projection = empty_marker
 
             if t == 0:
-                active_contacts_shared_mem[wp.static(num_reduction_slots)] = 0
+                active_contacts_shared_mem[wp.static(reduction_slot_count)] = 0
 
             synchronize()
 
@@ -1189,7 +1189,7 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
 
             # Write reduced contacts to output (store_reduced_contact ends with sync)
             num_contacts_to_keep = wp.min(
-                active_contacts_shared_mem[wp.static(num_reduction_slots)], wp.static(num_reduction_slots)
+                active_contacts_shared_mem[wp.static(reduction_slot_count)], wp.static(reduction_slot_count)
             )
 
             for i in range(t, num_contacts_to_keep, wp.block_dim()):
@@ -1368,7 +1368,115 @@ def create_heightfield_triangle_contacts_kernel(writer_func: Any):
     return heightfield_triangle_contacts_kernel
 
 
+# =============================================================================
+# Verification kernel
+# =============================================================================
+
+
+@wp.kernel(enable_backward=False)
+def verify_narrow_phase_buffers(
+    broad_phase_count: wp.array(dtype=int),
+    max_broad_phase: int,
+    gjk_count: wp.array(dtype=int),
+    max_gjk: int,
+    mesh_count: wp.array(dtype=int),
+    max_mesh: int,
+    triangle_count: wp.array(dtype=int),
+    max_triangle: int,
+    mesh_plane_count: wp.array(dtype=int),
+    max_mesh_plane: int,
+    mesh_mesh_count: wp.array(dtype=int),
+    max_mesh_mesh: int,
+    hf_pairs_count: wp.array(dtype=int),
+    max_hf_pairs: int,
+    hf_cells_count: wp.array(dtype=int),
+    max_hf_cells: int,
+    sdf_sdf_count: wp.array(dtype=int),
+    max_sdf_sdf: int,
+    contact_count: wp.array(dtype=int),
+    max_contacts: int,
+):
+    """Check for buffer overflows in the collision pipeline."""
+    if broad_phase_count[0] > max_broad_phase:
+        wp.printf(
+            "Warning: Broad phase pair buffer overflowed %d > %d.\n",
+            broad_phase_count[0],
+            max_broad_phase,
+        )
+    if gjk_count[0] > max_gjk:
+        wp.printf(
+            "Warning: GJK candidate pair buffer overflowed %d > %d.\n",
+            gjk_count[0],
+            max_gjk,
+        )
+    if mesh_count:
+        if mesh_count[0] > max_mesh:
+            wp.printf(
+                "Warning: Mesh-convex shape pair buffer overflowed %d > %d.\n",
+                mesh_count[0],
+                max_mesh,
+            )
+    if triangle_count:
+        if triangle_count[0] > max_triangle:
+            wp.printf(
+                "Warning: Triangle pair buffer overflowed %d > %d.\n",
+                triangle_count[0],
+                max_triangle,
+            )
+    if mesh_plane_count:
+        if mesh_plane_count[0] > max_mesh_plane:
+            wp.printf(
+                "Warning: Mesh-plane shape pair buffer overflowed %d > %d.\n",
+                mesh_plane_count[0],
+                max_mesh_plane,
+            )
+    if mesh_mesh_count:
+        if mesh_mesh_count[0] > max_mesh_mesh:
+            wp.printf(
+                "Warning: Mesh-mesh shape pair buffer overflowed %d > %d.\n",
+                mesh_mesh_count[0],
+                max_mesh_mesh,
+            )
+    if hf_pairs_count[0] > max_hf_pairs:
+        wp.printf(
+            "Warning: Heightfield shape pair buffer overflowed %d > %d.\n",
+            hf_pairs_count[0],
+            max_hf_pairs,
+        )
+    if hf_cells_count[0] > max_hf_cells:
+        wp.printf(
+            "Warning: Heightfield cell pair buffer overflowed %d > %d.\n",
+            hf_cells_count[0],
+            max_hf_cells,
+        )
+    if sdf_sdf_count:
+        if sdf_sdf_count[0] > max_sdf_sdf:
+            wp.printf(
+                "Warning: SDF-SDF shape pair buffer overflowed %d > %d.\n",
+                sdf_sdf_count[0],
+                max_sdf_sdf,
+            )
+    if contact_count[0] > max_contacts:
+        wp.printf(
+            "Warning: Contact buffer overflowed %d > %d.\n",
+            contact_count[0],
+            max_contacts,
+        )
+
+
 class NarrowPhase:
+    class HydroelasticSDF(_HydroelasticSDF):
+        """NarrowPhase-scoped hydroelastic API wrapper.
+
+        This wrapper keeps the discoverable API path ``NarrowPhase.HydroelasticSDF``
+        without aliasing the exact same class object that is already documented in
+        ``newton.geometry``. Using a distinct subclass avoids duplicate Sphinx object
+        descriptions under ``-W`` docs builds.
+        """
+
+        class Config(_HydroelasticSDF.Config):
+            """Hydroelastic configuration namespace for NarrowPhase usage."""
+
     def __init__(
         self,
         *,
@@ -1378,8 +1486,9 @@ class NarrowPhase:
         device=None,
         shape_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
+        shape_voxel_resolution: wp.array(dtype=wp.vec3i) | None = None,
         contact_writer_warp_func: Any | None = None,
-        sdf_hydroelastic: SDFHydroelastic | None = None,
+        hydroelastic_sdf: _HydroelasticSDF | None = None,
         has_meshes: bool = True,
         has_heightfields: bool = False,
     ):
@@ -1395,8 +1504,10 @@ class NarrowPhase:
             device: Device to allocate buffers on
             shape_aabb_lower: Optional external AABB lower bounds array (if provided, AABBs won't be computed internally)
             shape_aabb_upper: Optional external AABB upper bounds array (if provided, AABBs won't be computed internally)
+            shape_voxel_resolution: Optional per-shape voxel resolution array used for mesh/SDF and
+                hydroelastic contact processing.
             contact_writer_warp_func: Optional custom contact writer function (first arg: ContactData, second arg: custom struct type)
-            sdf_hydroelastic: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
+            hydroelastic_sdf: Optional SDF hydroelastic instance. Set is_hydroelastic=True on shapes to enable hydroelastic collisions.
             has_meshes: Whether the scene contains any mesh shapes (GeoType.MESH). When False, mesh-related
                 kernel launches are skipped, improving performance for scenes with only primitive shapes.
                 Defaults to True for safety. Set to False when constructing from a model with no meshes.
@@ -1424,10 +1535,10 @@ class NarrowPhase:
         # Contact reduction requires GPU for shared memory operations and is only used for mesh contacts
         if reduce_contacts and is_gpu_device and has_meshes:
             self.contact_reduction_funcs = ContactReductionFunctions()
-            self.num_reduction_slots = self.contact_reduction_funcs.num_reduction_slots
+            self.reduction_slot_count = self.contact_reduction_funcs.reduction_slot_count
         else:
             self.contact_reduction_funcs = None
-            self.num_reduction_slots = 0
+            self.reduction_slot_count = 0
             self.reduce_contacts = False
 
         # Determine if we're using external AABBs
@@ -1442,6 +1553,7 @@ class NarrowPhase:
             with wp.ScopedDevice(device):
                 self.shape_aabb_lower = wp.zeros(0, dtype=wp.vec3, device=device)
                 self.shape_aabb_upper = wp.zeros(0, dtype=wp.vec3, device=device)
+        self.shape_voxel_resolution = shape_voxel_resolution
 
         # Determine the writer function
         if contact_writer_warp_func is None:
@@ -1500,7 +1612,7 @@ class NarrowPhase:
             self.export_reduced_contacts_kernel = None
             self.global_contact_reducer = None
 
-        self.sdf_hydroelastic = sdf_hydroelastic
+        self.hydroelastic_sdf = hydroelastic_sdf
 
         # Pre-allocate all intermediate buffers.
         # Counters live in one consolidated array for efficient zeroing.
@@ -1550,11 +1662,12 @@ class NarrowPhase:
             self.heightfield_cell_pairs = wp.zeros(hf_n * 20 if has_heightfields else 1, dtype=wp.vec4i, device=device)
 
             self.empty_tangent = None
-            self.shape_pairs_sdf_sdf = (
-                wp.zeros(sdf_hydroelastic.max_num_shape_pairs, dtype=wp.vec2i, device=device)
-                if sdf_hydroelastic is not None
-                else None
-            )
+
+            if hydroelastic_sdf is not None:
+                self.shape_pairs_sdf_sdf = wp.zeros(hydroelastic_sdf.max_num_shape_pairs, dtype=wp.vec2i, device=device)
+            else:
+                # Empty arrays for when hydroelastic is disabled
+                self.shape_pairs_sdf_sdf = None
 
         # Fixed thread count for kernel launches
         # Use a reasonable minimum for GPU occupancy (256 blocks = 32K threads)
@@ -1581,7 +1694,7 @@ class NarrowPhase:
         self,
         *,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
-        num_candidate_pair: wp.array(dtype=wp.int32, ndim=1),  # Size one array
+        candidate_pair_count: wp.array(dtype=wp.int32, ndim=1),  # Size one array
         shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
         shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
         shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
@@ -1590,8 +1703,8 @@ class NarrowPhase:
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         shape_flags: wp.array(dtype=wp.int32, ndim=1),  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
-        shape_local_aabb_lower: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB lower bounds
-        shape_local_aabb_upper: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB upper bounds
+        shape_collision_aabb_lower: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB lower bounds
+        shape_collision_aabb_upper: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB upper bounds
         shape_voxel_resolution: wp.array(dtype=wp.vec3i, ndim=1),  # Voxel grid resolution per shape
         shape_heightfield_data: wp.array(dtype=HeightfieldData, ndim=1) | None = None,
         heightfield_elevation_data: wp.array(dtype=wp.float32, ndim=1) | None = None,
@@ -1603,7 +1716,7 @@ class NarrowPhase:
 
         Args:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
-            num_candidate_pair: Single-element array containing the number of candidate pairs
+            candidate_pair_count: Single-element array containing the number of candidate pairs
             shape_types: Array of geometry types for all shapes
             shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
             shape_transform: Array of world-space transforms for each shape
@@ -1612,8 +1725,8 @@ class NarrowPhase:
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
             shape_flags: Array of shape flags for each shape (includes ShapeFlags.HYDROELASTIC)
-            shape_local_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
-            shape_local_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
+            shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
+            shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             writer_data: Custom struct instance for contact writing (type must match the custom writer function)
             device: Device to launch on
@@ -1632,7 +1745,7 @@ class NarrowPhase:
             dim=self.total_num_threads,
             inputs=[
                 candidate_pair,
-                num_candidate_pair,
+                candidate_pair_count,
                 shape_types,
                 shape_data,
                 shape_transform,
@@ -1695,8 +1808,8 @@ class NarrowPhase:
                 shape_transform,
                 shape_source,
                 shape_contact_margin,
-                shape_local_aabb_lower,
-                shape_local_aabb_upper,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
                 shape_voxel_resolution,
                 self.shape_pairs_mesh_plane,
                 self.shape_pairs_mesh_plane_count,
@@ -1780,8 +1893,8 @@ class NarrowPhase:
                     inputs=[
                         reducer_data,
                         shape_transform,
-                        shape_local_aabb_lower,
-                        shape_local_aabb_upper,
+                        shape_collision_aabb_lower,
+                        shape_collision_aabb_upper,
                         shape_voxel_resolution,
                         self.total_num_threads,
                     ],
@@ -1842,8 +1955,8 @@ class NarrowPhase:
                         shape_source,
                         shape_sdf_data,
                         shape_contact_margin,
-                        shape_local_aabb_lower,
-                        shape_local_aabb_upper,
+                        shape_collision_aabb_lower,
+                        shape_collision_aabb_upper,
                         shape_voxel_resolution,
                         self.shape_pairs_mesh_mesh,
                         self.shape_pairs_mesh_mesh_count,
@@ -1899,24 +2012,53 @@ class NarrowPhase:
                 block_dim=self.block_dim,
             )
 
-        if self.sdf_hydroelastic is not None:
-            self.sdf_hydroelastic.launch(
+        if self.hydroelastic_sdf is not None:
+            self.hydroelastic_sdf.launch(
                 shape_sdf_data,
                 shape_transform,
                 shape_contact_margin,
-                shape_local_aabb_lower,
-                shape_local_aabb_upper,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
                 shape_voxel_resolution,
                 self.shape_pairs_sdf_sdf,
                 self.shape_pairs_sdf_sdf_count,
                 writer_data,
             )
 
+        # Verify no collision pipeline buffers overflowed
+        wp.launch(
+            kernel=verify_narrow_phase_buffers,
+            dim=[1],
+            inputs=[
+                candidate_pair_count,
+                candidate_pair.shape[0],
+                self.gjk_candidate_pairs_count,
+                self.gjk_candidate_pairs.shape[0],
+                self.shape_pairs_mesh_count,
+                self.shape_pairs_mesh.shape[0] if self.shape_pairs_mesh is not None else 0,
+                self.triangle_pairs_count,
+                self.triangle_pairs.shape[0] if self.triangle_pairs is not None else 0,
+                self.shape_pairs_mesh_plane_count,
+                self.shape_pairs_mesh_plane.shape[0] if self.shape_pairs_mesh_plane is not None else 0,
+                self.shape_pairs_mesh_mesh_count,
+                self.shape_pairs_mesh_mesh.shape[0] if self.shape_pairs_mesh_mesh is not None else 0,
+                self.shape_pairs_heightfield_count,
+                self.shape_pairs_heightfield.shape[0],
+                self.heightfield_cell_pairs_count,
+                self.heightfield_cell_pairs.shape[0],
+                self.shape_pairs_sdf_sdf_count,
+                self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
+                writer_data.contact_count,
+                writer_data.contact_max,
+            ],
+            device=device,
+        )
+
     def launch(
         self,
         *,
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Maybe colliding pairs
-        num_candidate_pair: wp.array(dtype=wp.int32, ndim=1),  # Size one array
+        candidate_pair_count: wp.array(dtype=wp.int32, ndim=1),  # Size one array
         shape_types: wp.array(dtype=wp.int32, ndim=1),  # All shape types, pairs index into it
         shape_data: wp.array(dtype=wp.vec4, ndim=1),  # Shape data (scale xyz, thickness w)
         shape_transform: wp.array(dtype=wp.transform, ndim=1),  # In world space
@@ -1925,8 +2067,8 @@ class NarrowPhase:
         shape_contact_margin: wp.array(dtype=wp.float32, ndim=1),  # per-shape contact margin
         shape_collision_radius: wp.array(dtype=wp.float32, ndim=1),  # per-shape collision radius for AABB fallback
         shape_flags: wp.array(dtype=wp.int32, ndim=1),  # per-shape flags (includes ShapeFlags.HYDROELASTIC)
-        shape_local_aabb_lower: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB lower bounds
-        shape_local_aabb_upper: wp.array(dtype=wp.vec3, ndim=1),  # Local-space AABB upper bounds
+        shape_collision_aabb_lower: wp.array(dtype=wp.vec3, ndim=1) | None = None,  # Local-space AABB lower bounds
+        shape_collision_aabb_upper: wp.array(dtype=wp.vec3, ndim=1) | None = None,  # Local-space AABB upper bounds
         shape_voxel_resolution: wp.array(dtype=wp.vec3i, ndim=1),  # Voxel grid resolution per shape
         # Outputs
         contact_pair: wp.array(dtype=wp.vec2i),
@@ -1939,13 +2081,14 @@ class NarrowPhase:
         contact_tangent: wp.array(dtype=wp.vec3)
         | None = None,  # Represents x axis of local contact frame (None to disable)
         device=None,  # Device to launch on
+        **kwargs,
     ):
         """
         Launch narrow phase collision detection on candidate pairs from broad phase.
 
         Args:
             candidate_pair: Array of potentially colliding shape pairs from broad phase
-            num_candidate_pair: Single-element array containing the number of candidate pairs
+            candidate_pair_count: Single-element array containing the number of candidate pairs
             shape_types: Array of geometry types for all shapes
             shape_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
             shape_transform: Array of world-space transforms for each shape
@@ -1953,8 +2096,8 @@ class NarrowPhase:
             shape_sdf_data: Array of SDFData structs for mesh shapes
             shape_contact_margin: Array of contact margins for each shape
             shape_collision_radius: Array of collision radii for each shape (for AABB fallback for planes/meshes)
-            shape_local_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
-            shape_local_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
+            shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
+            shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
@@ -1966,6 +2109,28 @@ class NarrowPhase:
         """
         if device is None:
             device = self.device if self.device is not None else candidate_pair.device
+
+        # Backward compatibility for older call sites/tests that still pass
+        # shape_local_aabb_lower/upper.
+        shape_local_aabb_lower = kwargs.pop("shape_local_aabb_lower", None)
+        shape_local_aabb_upper = kwargs.pop("shape_local_aabb_upper", None)
+        if kwargs:
+            unknown_keys = sorted(kwargs.keys())
+            if len(unknown_keys) == 1:
+                raise TypeError(f"NarrowPhase.launch() got an unexpected keyword argument '{unknown_keys[0]}'")
+            unknown = ", ".join(unknown_keys)
+            raise TypeError(f"NarrowPhase.launch() got unexpected keyword arguments: {unknown}")
+
+        if shape_collision_aabb_lower is None:
+            shape_collision_aabb_lower = shape_local_aabb_lower
+        if shape_collision_aabb_upper is None:
+            shape_collision_aabb_upper = shape_local_aabb_upper
+        if shape_collision_aabb_lower is None or shape_collision_aabb_upper is None:
+            raise TypeError(
+                "NarrowPhase.launch() missing required AABB bounds: provide either "
+                "shape_collision_aabb_lower/shape_collision_aabb_upper or "
+                "shape_local_aabb_lower/shape_local_aabb_upper"
+            )
 
         contact_max = contact_pair.shape[0]
 
@@ -1989,7 +2154,7 @@ class NarrowPhase:
         # Delegate to launch_custom_write
         self.launch_custom_write(
             candidate_pair=candidate_pair,
-            num_candidate_pair=num_candidate_pair,
+            candidate_pair_count=candidate_pair_count,
             shape_types=shape_types,
             shape_data=shape_data,
             shape_transform=shape_transform,
@@ -1998,8 +2163,8 @@ class NarrowPhase:
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=shape_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             writer_data=writer_data,
             device=device,

@@ -36,16 +36,16 @@ from newton.viewer import ViewerGL
 
 class KpiViewerGL:
     params = (["g1"], [8192])
-    param_names = ["robot", "num_worlds"]
+    param_names = ["robot", "world_count"]
 
     rounds = 1
     repeat = 3
     number = 1
     min_run_count = 1
 
-    def setup(self, robot, num_worlds):
+    def setup(self, robot, world_count):
         wp.init()
-        builder = Example.create_model_builder(robot, num_worlds, randomize=True, seed=123)
+        builder = Example.create_model_builder(robot, world_count, randomize=True, seed=123)
 
         # finalize model
         self._model = builder.finalize()
@@ -56,14 +56,14 @@ class KpiViewerGL:
         self.renderer.set_model(self._model)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_rendering_frame(self, robot, num_worlds):
+    def time_rendering_frame(self, robot, world_count):
         # Rendering one frame
         self.renderer.begin_frame(0.0)
         self.renderer.log_state(self._state)
         self.renderer.end_frame()
         wp.synchronize_device()
 
-    def teardown(self, robot, num_worlds):
+    def teardown(self, robot, world_count):
         self.renderer.close()
         del self.renderer
         del self._model
@@ -72,16 +72,16 @@ class KpiViewerGL:
 
 class FastViewerGL:
     params = (["g1"], [256])
-    param_names = ["robot", "num_worlds"]
+    param_names = ["robot", "world_count"]
 
     rounds = 1
     repeat = 3
     number = 1
     min_run_count = 1
 
-    def setup(self, robot, num_worlds):
+    def setup(self, robot, world_count):
         wp.init()
-        builder = Example.create_model_builder(robot, num_worlds, randomize=True, seed=123)
+        builder = Example.create_model_builder(robot, world_count, randomize=True, seed=123)
 
         # finalize model
         self._model = builder.finalize()
@@ -92,14 +92,14 @@ class FastViewerGL:
         self.renderer.set_model(self._model)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_rendering_frame(self, robot, num_worlds):
+    def time_rendering_frame(self, robot, world_count):
         # Rendering one frame
         self.renderer.begin_frame(0.0)
         self.renderer.log_state(self._state)
         self.renderer.end_frame()
         wp.synchronize_device()
 
-    def teardown(self, robot, num_worlds):
+    def teardown(self, robot, world_count):
         self.renderer.close()
         del self.renderer
         del self._model
