@@ -2264,7 +2264,7 @@ class SolverMuJoCo(SolverBase):
                 except ValueError:
                     pass
             return -1, -1
-            
+
         # Pre-fetch range/limited arrays to avoid per-element .numpy() calls
         has_ctrlrange_arr = (
             mujoco_attrs.actuator_has_ctrlrange.numpy() if hasattr(mujoco_attrs, "actuator_has_ctrlrange") else None

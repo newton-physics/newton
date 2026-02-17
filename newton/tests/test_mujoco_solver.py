@@ -4972,7 +4972,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_fixed_tendon_joint_addressing_from_usd(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -5083,7 +5083,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_fixed_tendon_multi_joint_addressing_from_usd(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -5159,8 +5159,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_tendon_actuator_resolution_when_actuator_comes_first(self):
-        import mujoco  # noqa: PLC0415
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: PLC0415
+        import mujoco
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -5211,7 +5211,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_actuator_auto_limits_and_partial_ranges(self):
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: PLC0415
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -5275,6 +5275,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         self.assertTrue(bool(ctrllimited[tendon_act_idx]))
         self.assertTrue(bool(forcelimited[joint_act_idx]))
         self.assertTrue(bool(forcelimited[tendon_act_idx]))
+
     def test_mjc_damping_from_usd_via_schema_resolver(self):
         """Test mjc:damping attributes are parsed via SchemaResolverMjc."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
@@ -6204,7 +6205,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_dof_key_resolution_all_joint_types(self):
         """Test that mujoco:joint_dof_key resolves correctly for fixed, revolute, spherical, and D6 joints."""
-        from pxr import Usd  # noqa: PLC0415
+        from pxr import Usd
 
         usd_content = """#usda 1.0
 (

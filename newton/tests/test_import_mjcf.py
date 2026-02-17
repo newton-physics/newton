@@ -811,7 +811,7 @@ class TestImportMjcf(unittest.TestCase):
             builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
-        import mujoco  # noqa: PLC0415
+        import mujoco
 
         tendon_names = [
             mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, i) for i in range(solver.mj_model.ntendon)

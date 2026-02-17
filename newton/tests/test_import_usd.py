@@ -4681,6 +4681,7 @@ def Xform "Articulation" (
         Regression test: prims under instanceable prims should be visited during
         custom frequency USD parsing via TraverseInstanceProxies predicate.
         """
+
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -4894,6 +4895,7 @@ def Xform "Articulation" (
     def test_custom_frequency_usd_entry_expander_multiple_rows(self):
         """Test that usd_entry_expander can emit multiple rows per matched prim."""
         from pxr import UsdGeom, UsdPhysics
+
         body = UsdGeom.Cube.Define(stage, "/Body")
         body_prim = body.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
@@ -5068,6 +5070,7 @@ def Xform "Articulation" (
     def test_custom_frequency_usd_filter_and_expander_context_unified(self):
         """Test that usd_prim_filter and usd_entry_expander receive the same context contract."""
         from pxr import UsdGeom, UsdPhysics
+
         # Create body at position (1, 0, 0)
         body_xform = UsdGeom.Xform.Define(stage, "/FloatingBody")
         body_xform.AddTranslateOp().Set(Gf.Vec3d(1.0, 0.0, 0.0))
