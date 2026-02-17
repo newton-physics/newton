@@ -821,7 +821,7 @@ class Model:
         if self.joint_count and self.joint_kinematic_mode is not None:
             from .joints import KinematicMode  # noqa: PLC0415
 
-            target_np = self.joint_q.numpy().copy()
+            target_np = self.joint_q.numpy()
             modes = self.joint_kinematic_mode.numpy()
             vel_joints = np.where(modes == int(KinematicMode.VELOCITY))[0]
             if len(vel_joints) > 0:
