@@ -1368,6 +1368,102 @@ def create_heightfield_triangle_contacts_kernel(writer_func: Any):
     return heightfield_triangle_contacts_kernel
 
 
+# =============================================================================
+# Verification kernel
+# =============================================================================
+
+
+@wp.kernel(enable_backward=False)
+def verify_narrow_phase_buffers(
+    broad_phase_count: wp.array(dtype=int),
+    max_broad_phase: int,
+    gjk_count: wp.array(dtype=int),
+    max_gjk: int,
+    mesh_count: wp.array(dtype=int),
+    max_mesh: int,
+    triangle_count: wp.array(dtype=int),
+    max_triangle: int,
+    mesh_plane_count: wp.array(dtype=int),
+    max_mesh_plane: int,
+    mesh_mesh_count: wp.array(dtype=int),
+    max_mesh_mesh: int,
+    hf_pairs_count: wp.array(dtype=int),
+    max_hf_pairs: int,
+    hf_cells_count: wp.array(dtype=int),
+    max_hf_cells: int,
+    sdf_sdf_count: wp.array(dtype=int),
+    max_sdf_sdf: int,
+    contact_count: wp.array(dtype=int),
+    max_contacts: int,
+):
+    """Check for buffer overflows in the collision pipeline."""
+    if broad_phase_count[0] > max_broad_phase:
+        wp.printf(
+            "Warning: Broad phase pair buffer overflowed %d > %d.\n",
+            broad_phase_count[0],
+            max_broad_phase,
+        )
+    if gjk_count[0] > max_gjk:
+        wp.printf(
+            "Warning: GJK candidate pair buffer overflowed %d > %d.\n",
+            gjk_count[0],
+            max_gjk,
+        )
+    if mesh_count:
+        if mesh_count[0] > max_mesh:
+            wp.printf(
+                "Warning: Mesh-convex shape pair buffer overflowed %d > %d.\n",
+                mesh_count[0],
+                max_mesh,
+            )
+    if triangle_count:
+        if triangle_count[0] > max_triangle:
+            wp.printf(
+                "Warning: Triangle pair buffer overflowed %d > %d.\n",
+                triangle_count[0],
+                max_triangle,
+            )
+    if mesh_plane_count:
+        if mesh_plane_count[0] > max_mesh_plane:
+            wp.printf(
+                "Warning: Mesh-plane shape pair buffer overflowed %d > %d.\n",
+                mesh_plane_count[0],
+                max_mesh_plane,
+            )
+    if mesh_mesh_count:
+        if mesh_mesh_count[0] > max_mesh_mesh:
+            wp.printf(
+                "Warning: Mesh-mesh shape pair buffer overflowed %d > %d.\n",
+                mesh_mesh_count[0],
+                max_mesh_mesh,
+            )
+    if hf_pairs_count[0] > max_hf_pairs:
+        wp.printf(
+            "Warning: Heightfield shape pair buffer overflowed %d > %d.\n",
+            hf_pairs_count[0],
+            max_hf_pairs,
+        )
+    if hf_cells_count[0] > max_hf_cells:
+        wp.printf(
+            "Warning: Heightfield cell pair buffer overflowed %d > %d.\n",
+            hf_cells_count[0],
+            max_hf_cells,
+        )
+    if sdf_sdf_count:
+        if sdf_sdf_count[0] > max_sdf_sdf:
+            wp.printf(
+                "Warning: SDF-SDF shape pair buffer overflowed %d > %d.\n",
+                sdf_sdf_count[0],
+                max_sdf_sdf,
+            )
+    if contact_count[0] > max_contacts:
+        wp.printf(
+            "Warning: Contact buffer overflowed %d > %d.\n",
+            contact_count[0],
+            max_contacts,
+        )
+
+
 class NarrowPhase:
     def __init__(
         self,
@@ -1911,6 +2007,35 @@ class NarrowPhase:
                 self.shape_pairs_sdf_sdf_count,
                 writer_data,
             )
+
+        # Verify no collision pipeline buffers overflowed
+        wp.launch(
+            kernel=verify_narrow_phase_buffers,
+            dim=[1],
+            inputs=[
+                candidate_pair_count,
+                candidate_pair.shape[0],
+                self.gjk_candidate_pairs_count,
+                self.gjk_candidate_pairs.shape[0],
+                self.shape_pairs_mesh_count,
+                self.shape_pairs_mesh.shape[0] if self.shape_pairs_mesh is not None else 0,
+                self.triangle_pairs_count,
+                self.triangle_pairs.shape[0] if self.triangle_pairs is not None else 0,
+                self.shape_pairs_mesh_plane_count,
+                self.shape_pairs_mesh_plane.shape[0] if self.shape_pairs_mesh_plane is not None else 0,
+                self.shape_pairs_mesh_mesh_count,
+                self.shape_pairs_mesh_mesh.shape[0] if self.shape_pairs_mesh_mesh is not None else 0,
+                self.shape_pairs_heightfield_count,
+                self.shape_pairs_heightfield.shape[0],
+                self.heightfield_cell_pairs_count,
+                self.heightfield_cell_pairs.shape[0],
+                self.shape_pairs_sdf_sdf_count,
+                self.shape_pairs_sdf_sdf.shape[0] if self.shape_pairs_sdf_sdf is not None else 0,
+                writer_data.contact_count,
+                writer_data.contact_max,
+            ],
+            device=device,
+        )
 
     def launch(
         self,

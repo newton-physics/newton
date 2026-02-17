@@ -22,6 +22,13 @@
 - **Follow PEP 8 for Python code.**
 - **Use Google-style docstrings.**
   - Write clear, concise docstrings that explain what the function does, its parameters, and its return value.
+- **State SI units for all physical quantities in docstrings.**
+  - Use inline `[unit]` notation, e.g. `"""Particle positions [m], shape [particle_count, 3], float."""`.
+  - For joint-type-dependent quantities use `[m or rad, depending on joint type]`.
+  - For spatial vectors annotate both components, e.g. `[N, N·m]`.
+  - For compound arrays list per-component units, e.g. `[0] k_mu [Pa], [1] k_lambda [Pa], ...`.
+  - When a parameter's interpretation varies across solvers, document each solver's convention instead of a single unit.
+  - Skip non-physical fields (indices, keys, counts, flags).
 - **Keep the documentation up-to-date.**
   - When adding new files or symbols that are part of the public-facing API, make sure to keep the auto-generated documentation updated by running `docs/generate_api.py`.
 - **Add examples to README.md**
