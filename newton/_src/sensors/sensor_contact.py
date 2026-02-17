@@ -15,15 +15,13 @@
 
 import itertools
 from collections import defaultdict
-from collections.abc import Callable
 from enum import Enum
-from fnmatch import fnmatch
-from typing import Any
 
 import numpy as np
 import warp as wp
 
 from ..sim import Contacts, Model
+from ..utils.selection import match_labels
 
 
 class MatchKind(Enum):
@@ -143,6 +141,8 @@ class SensorContact:
     - **Force Matrix**: The matrix organizing the force data by rows of sensing objects and columns of counterparts.
     - **Force Reading**: An individual force measurement within the matrix.
 
+    Parameters that select bodies or shapes accept label patterns — see :ref:`label-matching`.
+
     Raises:
         ValueError: If the configuration of sensing/counterpart objects is invalid.
     """
@@ -150,11 +150,10 @@ class SensorContact:
     def __init__(
         self,
         model: Model,
-        sensing_obj_bodies: str | list[str] | None = None,
-        sensing_obj_shapes: str | list[str] | None = None,
-        counterpart_bodies: str | list[str] | None = None,
-        counterpart_shapes: str | list[str] | None = None,
-        match_fn: Callable[[str, str], bool] | None = None,
+        sensing_obj_bodies: str | list[str] | list[int] | None = None,
+        sensing_obj_shapes: str | list[str] | list[int] | None = None,
+        counterpart_bodies: str | list[str] | list[int] | None = None,
+        counterpart_shapes: str | list[str] | list[int] | None = None,
         include_total: bool = True,
         prune_noncolliding: bool = False,
         verbose: bool | None = None,
@@ -167,11 +166,14 @@ class SensorContact:
         specified, the sensor will read the net contact force for each sensing object.
 
         Args:
-            sensing_obj_bodies: Pattern(s) to select which bodies are sensing objects.
-            sensing_obj_shapes: Pattern(s) to select which shapes are sensing objects.
-            counterpart_bodies: Pattern(s) to select which bodies are considered as counterparts.
-            counterpart_shapes: Pattern(s) to select which shapes are considered as counterparts.
-            match_fn: Function to match names to patterns. If None, uses ``fnmatch``.
+            sensing_obj_bodies: List of body indices, single pattern to match
+                against body labels, or list of patterns where any one matches.
+            sensing_obj_shapes: List of shape indices, single pattern to match
+                against shape labels, or list of patterns where any one matches.
+            counterpart_bodies: List of body indices, single pattern to match
+                against body labels, or list of patterns where any one matches.
+            counterpart_shapes: List of shape indices, single pattern to match
+                against shape labels, or list of patterns where any one matches.
             include_total: If True and counterparts are specified, add a reading for the total contact force for
                 each sensing object. Does nothing when no counterparts are specified.
             prune_noncolliding: If True, omit force readings for shape pairs that never collide from the force
@@ -207,24 +209,21 @@ class SensorContact:
         if request_contact_attributes:
             model.request_contact_attributes("force")
 
-        if match_fn is None:
-            match_fn = fnmatch
-
         if sensing_obj_bodies is not None:
-            s_bodies = self._match_elem_key(match_fn, model, model.body_key, sensing_obj_bodies)
+            s_bodies = match_labels(model.body_key, sensing_obj_bodies)  # FIXME: rename to label
             s_shapes = []
         else:
             s_bodies = []
-            s_shapes = self._match_elem_key(match_fn, model, model.shape_key, sensing_obj_shapes)
+            s_shapes = match_labels(model.shape_key, sensing_obj_shapes)  # FIXME: rename to label
 
         if counterpart_bodies is not None:
-            c_bodies = self._match_elem_key(match_fn, model, model.body_key, counterpart_bodies)
+            c_bodies = match_labels(model.body_key, counterpart_bodies)  # FIXME: rename to label
             c_shapes = []
             if include_total:
                 c_bodies = [MatchAny, *c_bodies]
         elif counterpart_shapes is not None:
             c_bodies = []
-            c_shapes = self._match_elem_key(match_fn, model, model.shape_key, counterpart_shapes)
+            c_shapes = match_labels(model.shape_key, counterpart_shapes)  # FIXME: rename to label
             if include_total:
                 c_shapes = [MatchAny, *c_shapes]
         else:
@@ -365,28 +364,6 @@ class SensorContact:
             outputs=[self._net_force],
             device=contacts.device,
         )
-
-    @classmethod
-    def _match_elem_key(
-        cls,
-        match_fn: Callable[[str, str], bool],
-        model: Model,
-        elem_key: dict[str, Any],
-        pattern: str | list[str],
-    ) -> list[int]:
-        """Find the indices of elements matching the pattern."""
-        matches = []
-
-        if isinstance(pattern, list):
-            for single_pattern in pattern:
-                matches.extend(cls._match_elem_key(match_fn, model, elem_key, single_pattern))
-            return matches
-
-        for idx, elem in enumerate(elem_key):
-            if match_fn(elem, pattern):
-                matches.append(idx)
-
-        return matches
 
 
 def _lol_to_arrays(list_of_lists: list[list], dtype, **kwargs) -> tuple[wp.array, wp.array, wp.array]:

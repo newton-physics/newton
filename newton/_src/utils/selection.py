@@ -248,6 +248,35 @@ def find_matching_ids(pattern: str, keys: list[str], world_ids, world_count: int
     return grouped_ids, global_ids
 
 
+def match_labels(labels: list[str], pattern: str | list[str | int]) -> list[int]:
+    """Find indices of elements in ``labels`` that match ``pattern``.
+
+    Args:
+        labels: List of label strings to match against.
+        pattern: A ``str`` is matched via :func:`fnmatch.fnmatch` against each label.
+            A ``list`` is iterated element-wise: ``str`` elements are matched via
+            fnmatch (union of matches); ``int`` elements are used directly as indices.
+
+    Returns:
+        List of matching indices.
+
+    Raises:
+        TypeError: If a list element is neither ``str`` nor ``int``.
+    """
+    if isinstance(pattern, str):
+        return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
+
+    matches = []
+    for item in pattern:
+        if isinstance(item, str):
+            matches.extend(idx for idx, label in enumerate(labels) if fnmatch(label, item))
+        elif isinstance(item, int):
+            matches.append(item)
+        else:
+            raise TypeError(f"Pattern elements must be strings or integers, got {item!r} of type {type(item).__name__}")
+    return matches
+
+
 def all_equal(values):
     return all(x == values[0] for x in values)
 
@@ -550,16 +579,9 @@ class ArticulationView:
         else:
             joint_include_indices = set()
             if include_joints is not None:
-                for id in include_joints:
-                    if isinstance(id, str):
-                        for idx, name in enumerate(arti_joint_names):
-                            if fnmatch(name, id):
-                                joint_include_indices.add(idx)
-                    elif isinstance(id, int):
-                        if id >= 0 and id < arti_joint_count:
-                            joint_include_indices.add(id)
-                    else:
-                        raise TypeError(f"Joint ids must be strings or integers, got {id} of type {type(id)}")
+                joint_include_indices.update(
+                    idx for idx in match_labels(arti_joint_names, include_joints) if 0 <= idx < arti_joint_count
+                )
             if include_joint_types is not None:
                 for idx in range(arti_joint_count):
                     if arti_joint_types[idx] in include_joint_types:
@@ -568,16 +590,9 @@ class ArticulationView:
         # create joint exclusion set
         joint_exclude_indices = set()
         if exclude_joints is not None:
-            for id in exclude_joints:
-                if isinstance(id, str):
-                    for idx, name in enumerate(arti_joint_names):
-                        if fnmatch(name, id):
-                            joint_exclude_indices.add(idx)
-                elif isinstance(id, int):
-                    if id >= 0 and id < arti_joint_count:
-                        joint_exclude_indices.add(id)
-                else:
-                    raise TypeError(f"Joint ids must be strings or integers, got {id} of type {type(id)}")
+            joint_exclude_indices.update(
+                idx for idx in match_labels(arti_joint_names, exclude_joints) if 0 <= idx < arti_joint_count
+            )
         if exclude_joint_types is not None:
             for idx in range(arti_joint_count):
                 if arti_joint_types[idx] in exclude_joint_types:
@@ -587,32 +602,16 @@ class ArticulationView:
         if include_links is None:
             link_include_indices = set(range(arti_link_count))
         else:
-            link_include_indices = set()
-            if include_links is not None:
-                for id in include_links:
-                    if isinstance(id, str):
-                        for idx, name in enumerate(arti_link_names):
-                            if fnmatch(name, id):
-                                link_include_indices.add(idx)
-                    elif isinstance(id, int):
-                        if id >= 0 and id < arti_link_count:
-                            link_include_indices.add(id)
-                    else:
-                        raise TypeError(f"Link ids must be strings or integers, got {id} of type {type(id)}")
+            link_include_indices = {
+                idx for idx in match_labels(arti_link_names, include_links) if 0 <= idx < arti_link_count
+            }
 
         # create link exclusion set
         link_exclude_indices = set()
         if exclude_links is not None:
-            for id in exclude_links:
-                if isinstance(id, str):
-                    for idx, name in enumerate(arti_link_names):
-                        if fnmatch(name, id):
-                            link_exclude_indices.add(idx)
-                elif isinstance(id, int):
-                    if id >= 0 and id < arti_link_count:
-                        link_exclude_indices.add(id)
-                else:
-                    raise TypeError(f"Link ids must be strings or integers, got {id} of type {type(id)}")
+            link_exclude_indices.update(
+                idx for idx in match_labels(arti_link_names, exclude_links) if 0 <= idx < arti_link_count
+            )
 
         # compute selected indices
         selected_joint_indices = sorted(joint_include_indices - joint_exclude_indices)

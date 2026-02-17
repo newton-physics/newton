@@ -579,6 +579,58 @@ class TestSensorFrameTransform(unittest.TestCase):
                 err_msg=f"Site {sparse_indices[i]} at index {i} has incorrect position",
             )
 
+    def test_sensor_string_patterns(self):
+        """Test SensorFrameTransform accepts string patterns."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_site(body, key="target_a")
+        builder.add_site(body, key="target_b")
+        builder.add_site(body, key="ref")
+        model = builder.finalize()
+
+        sensor = SensorFrameTransform(model, shapes="target_*", reference_sites="ref")
+        self.assertEqual(len(sensor.transforms), 2)
+
+    def test_sensor_no_match_raises(self):
+        """Test SensorFrameTransform raises when no labels match."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_site(body, key="site")
+        ref = builder.add_site(body, key="ref")
+        model = builder.finalize()
+
+        with self.assertRaises(ValueError):
+            SensorFrameTransform(model, shapes="nonexistent_*", reference_sites=[ref])
+
+        with self.assertRaises(ValueError):
+            SensorFrameTransform(model, shapes="site", reference_sites="nonexistent_*")
+
+    def test_sensor_string_matches_int_indices(self):
+        """Test that string-resolved indices produce same results as int indices."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+            xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()),
+        )
+        target = builder.add_site(body, key="target")
+        ref = builder.add_site(body, key="ref")
+        model = builder.finalize()
+
+        state = model.state()
+        eval_fk(model, state.joint_q, state.joint_qd, state)
+
+        sensor_int = SensorFrameTransform(model, shapes=[target], reference_sites=[ref])
+        sensor_int.update(model, state)
+
+        sensor_str = SensorFrameTransform(model, shapes="target", reference_sites="ref")
+        sensor_str.update(model, state)
+
+        np.testing.assert_array_equal(
+            sensor_int.transforms.numpy(),
+            sensor_str.transforms.numpy(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

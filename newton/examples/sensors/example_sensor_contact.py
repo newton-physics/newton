@@ -26,8 +26,6 @@
 #
 ###########################################################################
 
-import re
-
 import numpy as np
 import warp as wp
 
@@ -67,9 +65,8 @@ class Example:
 
         self.plate_contact_sensor = SensorContact(
             self.model,
-            sensing_obj_shapes=".*Plate.*",
-            counterpart_shapes=".*Cube.*|.*Sphere.*",
-            match_fn=lambda string, pat: re.match(pat, string),
+            sensing_obj_shapes="*Plate*",
+            counterpart_shapes=["*Cube*", "*Sphere*"],
             include_total=False,
             verbose=True,
         )

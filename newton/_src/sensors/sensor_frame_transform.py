@@ -20,6 +20,7 @@ import warp as wp
 from ..geometry import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
+from ..utils.selection import match_labels
 
 
 @wp.kernel
@@ -96,6 +97,8 @@ class SensorFrameTransform:
     Attributes:
         transforms: Output array of relative transforms (updated after each call to update())
 
+    The ``shapes`` and ``reference_sites`` parameters accept label patterns — see :ref:`label-matching`.
+
     Example:
         Measure shapes relative to a site::
 
@@ -105,8 +108,8 @@ class SensorFrameTransform:
 
             sensor = SensorFrameTransform(
                 model,
-                shape_indices=shape_indices,
-                reference_site_indices=[reference_site_idx],
+                shapes=shape_indices,
+                reference_sites=[reference_site_idx],
             )
 
             # Update after eval_fk
@@ -119,34 +122,47 @@ class SensorFrameTransform:
     def __init__(
         self,
         model: Model,
-        shapes: list[int],
-        reference_sites: list[int],
+        shapes: str | list[str] | list[int],
+        reference_sites: str | list[str] | list[int],
         verbose: bool | None = None,
     ):
         """Initialize the SensorFrameTransform.
 
         Args:
             model: The model to measure.
-            shapes: List of shape indices to measure.
-            reference_sites: List of reference site indices (shapes with SITE flag).
-                Must match 1:1 with shape_indices, or be a single site for all shapes.
+            shapes: List of shape indices, single pattern to match against shape
+                labels, or list of patterns where any one matches.
+            reference_sites: List of shape indices, single pattern to match against
+                shape labels, or list of patterns where any one matches. Reference
+                shapes must have the SITE flag. Must match 1:1 with shapes, or be
+                a single site for all shapes.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
 
         Raises:
-            ValueError: If arguments are invalid.
+            ValueError: If arguments are invalid or no labels match.
         """
         self.model = model
         self.verbose = verbose if verbose is not None else wp.config.verbose
 
+        # Resolve label patterns to indices
+        original_shapes = shapes
+        shapes = match_labels(model.shape_key, shapes)  # FIXME: rename to label
+        original_reference_sites = reference_sites
+        reference_sites = match_labels(model.shape_key, reference_sites)  # FIXME: rename to label
+
         # Validate shape indices
         if not shapes:
-            raise ValueError("shape_indices must not be empty")
+            if isinstance(original_shapes, list) and len(original_shapes) == 0:
+                raise ValueError("'shapes' must not be empty")
+            raise ValueError(f"No shapes matched the given pattern {original_shapes!r}")
         if any(idx < 0 or idx >= model.shape_count for idx in shapes):
             raise ValueError(f"Invalid shape indices. Must be in range [0, {model.shape_count})")
 
         # Validate reference site indices
         if not reference_sites:
-            raise ValueError("reference_site_indices must not be empty")
+            if isinstance(original_reference_sites, list) and len(original_reference_sites) == 0:
+                raise ValueError("'reference_sites' must not be empty")
+            raise ValueError(f"No reference sites matched the given pattern {original_reference_sites!r}")
         if any(idx < 0 or idx >= model.shape_count for idx in reference_sites):
             raise ValueError(f"Invalid reference site indices. Must be in range [0, {model.shape_count})")
 

@@ -182,6 +182,38 @@ class TestSensorIMU(unittest.TestCase):
         expected_acc = wp.quat_rotate_inv(rot_90_z, wp.vec3(-gravity[0], -gravity[1], -gravity[2]))
         np.testing.assert_allclose(acc, [expected_acc[0], expected_acc[1], expected_acc[2]], atol=1e-5)
 
+    def test_sensor_string_pattern(self):
+        """Test SensorIMU accepts a string pattern for sites."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_site(body, key="imu_site")
+        model = builder.finalize()
+
+        sensor = SensorIMU(model, sites="imu_site")
+        self.assertEqual(sensor.n_sensors, 1)
+
+    def test_sensor_wildcard_pattern(self):
+        """Test SensorIMU with wildcard pattern."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_site(body, key="imu_a")
+        builder.add_site(body, key="imu_b")
+        builder.add_site(body, key="other")
+        model = builder.finalize()
+
+        sensor = SensorIMU(model, sites="imu_*")
+        self.assertEqual(sensor.n_sensors, 2)
+
+    def test_sensor_no_match_raises(self):
+        """Test SensorIMU raises when no labels match."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_site(body, key="site")
+        model = builder.finalize()
+
+        with self.assertRaises(ValueError):
+            SensorIMU(model, sites="nonexistent_*")
+
 
 if __name__ == "__main__":
     unittest.main()
