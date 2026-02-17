@@ -33,7 +33,7 @@ import warp as wp
 import newton
 from newton import GeoType, Mesh
 from newton._src.geometry.sdf_contact import sample_sdf_extrapolated, sample_sdf_grad_extrapolated
-from newton.geometry import SDFData, compute_sdf
+from newton._src.geometry.sdf_utils import SDFData, compute_sdf
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 # Skip all tests in this module if CUDA is not available
@@ -1212,7 +1212,7 @@ def test_brick_pyramid_stability(test, device):
     # Create collision pipeline and solver
     collision_pipeline = newton.CollisionPipeline(
         model,
-        broad_phase_mode=newton.BroadPhaseMode.NXN,
+        broad_phase="nxn",
     )
     contacts = collision_pipeline.contacts()
     solver = newton.solvers.SolverXPBD(model, iterations=10, rigid_contact_relaxation=0.8)

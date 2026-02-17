@@ -2062,8 +2062,8 @@ def solve_body_contact_positions(
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
     shape_material_mu: wp.array(dtype=float),
-    shape_material_torsional_friction: wp.array(dtype=float),
-    shape_material_rolling_friction: wp.array(dtype=float),
+    shape_material_mu_torsional: wp.array(dtype=float),
+    shape_material_mu_rolling: wp.array(dtype=float),
     relaxation: float,
     dt: float,
     # outputs
@@ -2142,22 +2142,22 @@ def solve_body_contact_positions(
     # use average contact material properties
     mat_nonzero = 0
     mu = 0.0
-    torsional_friction = 0.0
-    rolling_friction = 0.0
+    mu_torsional = 0.0
+    mu_rolling = 0.0
     if shape_a >= 0:
         mat_nonzero += 1
         mu += shape_material_mu[shape_a]
-        torsional_friction += shape_material_torsional_friction[shape_a]
-        rolling_friction += shape_material_rolling_friction[shape_a]
+        mu_torsional += shape_material_mu_torsional[shape_a]
+        mu_rolling += shape_material_mu_rolling[shape_a]
     if shape_b >= 0:
         mat_nonzero += 1
         mu += shape_material_mu[shape_b]
-        torsional_friction += shape_material_torsional_friction[shape_b]
-        rolling_friction += shape_material_rolling_friction[shape_b]
+        mu_torsional += shape_material_mu_torsional[shape_b]
+        mu_rolling += shape_material_mu_rolling[shape_b]
     if mat_nonzero > 0:
         mu /= float(mat_nonzero)
-        torsional_friction /= float(mat_nonzero)
-        rolling_friction /= float(mat_nonzero)
+        mu_torsional /= float(mat_nonzero)
+        mu_rolling /= float(mat_nonzero)
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
@@ -2229,7 +2229,7 @@ def solve_body_contact_positions(
 
     delta_omega = omega_b - omega_a
 
-    if torsional_friction > 0.0:
+    if mu_torsional > 0.0:
         err = wp.dot(delta_omega, n) * dt
 
         if wp.abs(err) > 0.0:
@@ -2238,12 +2238,12 @@ def solve_body_contact_positions(
                 err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -n, n, relaxation, dt
             )
 
-            lambda_torsion = wp.clamp(lambda_torsion, -lambda_n * torsional_friction, lambda_n * torsional_friction)
+            lambda_torsion = wp.clamp(lambda_torsion, -lambda_n * mu_torsional, lambda_n * mu_torsional)
 
             ang_delta_a -= n * lambda_torsion
             ang_delta_b += n * lambda_torsion
 
-    if rolling_friction > 0.0:
+    if mu_rolling > 0.0:
         delta_omega -= wp.dot(n, delta_omega) * n
         err = wp.length(delta_omega) * dt
         if err > 0.0:
@@ -2253,7 +2253,7 @@ def solve_body_contact_positions(
                 err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -roll_n, roll_n, relaxation, dt
             )
 
-            lambda_roll = wp.max(lambda_roll, -lambda_n * rolling_friction)
+            lambda_roll = wp.max(lambda_roll, -lambda_n * mu_rolling)
 
             ang_delta_a -= roll_n * lambda_roll
             ang_delta_b += roll_n * lambda_roll
