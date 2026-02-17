@@ -987,6 +987,143 @@ The generalized joint forces at <a class="reference internal" href="../api/_gene
 </pre></div>
 </div>
 </section>
+<section id="common-articulation-workflows">
+<h3>Common articulation workflows<a class="headerlink" href="#common-articulation-workflows" title="Link to this heading">#</a></h3>
+<section id="articulationview-selection-interface-for-rl-and-batched-control">
+<h4>ArticulationView: selection interface for RL and batched control<a class="headerlink" href="#articulationview-selection-interface-for-rl-and-batched-control" title="Link to this heading">#</a></h4>
+<p><a class="reference internal" href="../api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView" title="newton.selection.ArticulationView"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.selection.ArticulationView</span></code></a> is the high-level interface for selecting a subset
+of articulations and accessing their joints/links/DoFs with stable tensor shapes. This is
+especially useful in RL pipelines where the same observation/action logic is applied to many
+parallel environments.</p>
+<p>Construct a view by matching articulation keys with a pattern and optional filters:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+<span class="c1"># select all articulations whose key starts with &quot;robot&quot;</span>
+<span class="n">view</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">selection</span><span class="o">.</span><span class="n">ArticulationView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">pattern</span><span class="o">=</span><span class="s2">&quot;robot*&quot;</span><span class="p">)</span>
+
+<span class="c1"># select only scalar-joint articulations (exclude quaternion-root joint types)</span>
+<span class="n">scalar_view</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">selection</span><span class="o">.</span><span class="n">ArticulationView</span><span class="p">(</span>
+    <span class="n">model</span><span class="p">,</span>
+    <span class="n">pattern</span><span class="o">=</span><span class="s2">&quot;robot*&quot;</span><span class="p">,</span>
+    <span class="n">include_joint_types</span><span class="o">=</span><span class="p">[</span><span class="n">newton</span><span class="o">.</span><span class="n">JointType</span><span class="o">.</span><span class="n">PRISMATIC</span><span class="p">,</span> <span class="n">newton</span><span class="o">.</span><span class="n">JointType</span><span class="o">.</span><span class="n">REVOLUTE</span><span class="p">],</span>
+    <span class="n">exclude_joint_types</span><span class="o">=</span><span class="p">[</span><span class="n">newton</span><span class="o">.</span><span class="n">JointType</span><span class="o">.</span><span class="n">FREE</span><span class="p">,</span> <span class="n">newton</span><span class="o">.</span><span class="n">JointType</span><span class="o">.</span><span class="n">BALL</span><span class="p">],</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Use views to read/write batched state slices (joint positions/velocities, root transforms,
+link transforms) without manual index bookkeeping.</p>
+</section>
+<section id="center-joint-q-at-joint-limits-with-warp-kernels">
+<h4>Center <code class="docutils literal notranslate"><span class="pre">joint_q</span></code> at joint limits with Warp kernels<a class="headerlink" href="#center-joint-q-at-joint-limits-with-warp-kernels" title="Link to this heading">#</a></h4>
+<p>Joint limits are stored in DoF order (<code class="docutils literal notranslate"><span class="pre">joint_qd</span></code> layout), while <code class="docutils literal notranslate"><span class="pre">joint_q</span></code> stores generalized
+joint coordinates (which may include quaternion coordinates for free/ball joints).</p>
+<p>A robust pattern is:</p>
+<ol class="arabic simple">
+<li><p>Loop over joints.</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">Model.joint_qd_start</span></code> to find each joint’s DoF span.</p></li>
+<li><p>Use <code class="docutils literal notranslate"><span class="pre">Model.joint_q_start</span></code> to find where that joint starts in <code class="docutils literal notranslate"><span class="pre">State.joint_q</span></code>.</p></li>
+<li><p>Center only scalar coordinates (for example, revolute/prismatic axes) and skip quaternion joints.</p></li>
+</ol>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">newton</span>
+
+
+<span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">center_joint_q_from_limits</span><span class="p">(</span>
+    <span class="n">joint_q_start</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
+    <span class="n">joint_qd_start</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
+    <span class="n">joint_type</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span>
+    <span class="n">joint_limit_lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+    <span class="n">joint_limit_upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+    <span class="n">joint_q</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">dtype</span><span class="o">=</span><span class="nb">float</span><span class="p">),</span>
+<span class="p">):</span>
+    <span class="n">joint_id</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">tid</span><span class="p">()</span>
+
+    <span class="c1"># DoF span for this joint in qd-order arrays (limits/axes/forces)</span>
+    <span class="n">qd_begin</span> <span class="o">=</span> <span class="n">joint_qd_start</span><span class="p">[</span><span class="n">joint_id</span><span class="p">]</span>
+    <span class="n">qd_end</span> <span class="o">=</span> <span class="n">joint_qd_start</span><span class="p">[</span><span class="n">joint_id</span> <span class="o">+</span> <span class="mi">1</span><span class="p">]</span>
+
+    <span class="c1"># Start index for this joint in generalized coordinates q</span>
+    <span class="n">q_begin</span> <span class="o">=</span> <span class="n">joint_q_start</span><span class="p">[</span><span class="n">joint_id</span><span class="p">]</span>
+
+    <span class="c1"># Skip free/ball joints because their q entries include quaternion coordinates.</span>
+    <span class="n">jt</span> <span class="o">=</span> <span class="n">joint_type</span><span class="p">[</span><span class="n">joint_id</span><span class="p">]</span>
+    <span class="k">if</span> <span class="p">(</span>
+        <span class="n">jt</span> <span class="o">==</span> <span class="nb">int</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">JointType</span><span class="o">.</span><span class="n">FREE</span><span class="p">)</span>
+        <span class="ow">or</span> <span class="n">jt</span> <span class="o">==</span> <span class="nb">int</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">JointType</span><span class="o">.</span><span class="n">BALL</span><span class="p">)</span>
+        <span class="ow">or</span> <span class="n">jt</span> <span class="o">==</span> <span class="nb">int</span><span class="p">(</span><span class="n">newton</span><span class="o">.</span><span class="n">JointType</span><span class="o">.</span><span class="n">DISTANCE</span><span class="p">)</span>
+    <span class="p">):</span>
+        <span class="k">return</span>
+
+    <span class="c1"># For scalar joints, q coordinates align with this joint&#39;s DoF count.</span>
+    <span class="k">for</span> <span class="n">local_dof</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">qd_end</span> <span class="o">-</span> <span class="n">qd_begin</span><span class="p">):</span>
+        <span class="n">qd_idx</span> <span class="o">=</span> <span class="n">qd_begin</span> <span class="o">+</span> <span class="n">local_dof</span>
+        <span class="n">q_idx</span> <span class="o">=</span> <span class="n">q_begin</span> <span class="o">+</span> <span class="n">local_dof</span>
+
+        <span class="n">lower</span> <span class="o">=</span> <span class="n">joint_limit_lower</span><span class="p">[</span><span class="n">qd_idx</span><span class="p">]</span>
+        <span class="n">upper</span> <span class="o">=</span> <span class="n">joint_limit_upper</span><span class="p">[</span><span class="n">qd_idx</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">wp</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">lower</span><span class="p">)</span> <span class="ow">and</span> <span class="n">wp</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">upper</span><span class="p">):</span>
+            <span class="n">joint_q</span><span class="p">[</span><span class="n">q_idx</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">lower</span> <span class="o">+</span> <span class="n">upper</span><span class="p">)</span>
+
+
+<span class="c1"># Launch over all joints in the model</span>
+<span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+    <span class="n">kernel</span><span class="o">=</span><span class="n">center_joint_q_from_limits</span><span class="p">,</span>
+    <span class="n">dim</span><span class="o">=</span><span class="n">model</span><span class="o">.</span><span class="n">joint_count</span><span class="p">,</span>
+    <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">model</span><span class="o">.</span><span class="n">joint_q_start</span><span class="p">,</span>
+        <span class="n">model</span><span class="o">.</span><span class="n">joint_qd_start</span><span class="p">,</span>
+        <span class="n">model</span><span class="o">.</span><span class="n">joint_type</span><span class="p">,</span>
+        <span class="n">model</span><span class="o">.</span><span class="n">joint_limit_lower</span><span class="p">,</span>
+        <span class="n">model</span><span class="o">.</span><span class="n">joint_limit_upper</span><span class="p">,</span>
+        <span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span>
+    <span class="p">],</span>
+<span class="p">)</span>
+
+<span class="c1"># Recompute transforms after editing generalized coordinates</span>
+<span class="n">newton</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="move-articulations-in-world-space">
+<h4>Move articulations in world space<a class="headerlink" href="#move-articulations-in-world-space" title="Link to this heading">#</a></h4>
+<p>Use <a class="reference internal" href="../api/_generated/newton.selection.ArticulationView.html#newton.selection.ArticulationView.set_root_transforms" title="newton.selection.ArticulationView.set_root_transforms"><code class="xref py py-meth docutils literal notranslate"><span class="pre">newton.selection.ArticulationView.set_root_transforms()</span></code></a> to move selected articulations:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">view</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">selection</span><span class="o">.</span><span class="n">ArticulationView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">pattern</span><span class="o">=</span><span class="s2">&quot;robot*&quot;</span><span class="p">)</span>
+<span class="n">root_tf</span> <span class="o">=</span> <span class="n">view</span><span class="o">.</span><span class="n">get_root_transforms</span><span class="p">(</span><span class="n">state</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+
+<span class="c1"># shift +0.2 m along world x for all selected articulations</span>
+<span class="n">root_tf</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">+=</span> <span class="mf">0.2</span>
+<span class="n">view</span><span class="o">.</span><span class="n">set_root_transforms</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">root_tf</span><span class="p">)</span>
+
+<span class="c1"># recompute link transforms from generalized coordinates</span>
+<span class="n">newton</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>For floating-base articulations, this updates the root free-joint coordinates in <code class="docutils literal notranslate"><span class="pre">joint_q</span></code>.
+For fixed-base articulations, <code class="docutils literal notranslate"><span class="pre">set_root_transforms()</span></code> moves the articulation by writing
+<code class="docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code> (there is no free-joint root state to edit).</p>
+</section>
+<section id="use-articulationview-to-inspect-and-modify-selected-articulations">
+<h4>Use <code class="docutils literal notranslate"><span class="pre">ArticulationView</span></code> to inspect and modify selected articulations<a class="headerlink" href="#use-articulationview-to-inspect-and-modify-selected-articulations" title="Link to this heading">#</a></h4>
+<p><code class="docutils literal notranslate"><span class="pre">ArticulationView</span></code> provides stable, per-articulation access to links, joints, DoFs, and attributes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">view</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">selection</span><span class="o">.</span><span class="n">ArticulationView</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">pattern</span><span class="o">=</span><span class="s2">&quot;robot*&quot;</span><span class="p">)</span>
+
+<span class="c1"># inspect</span>
+<span class="n">q</span> <span class="o">=</span> <span class="n">view</span><span class="o">.</span><span class="n">get_dof_positions</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>         <span class="c1"># shape [world_count, articulation_count, dof_count]</span>
+<span class="n">qd</span> <span class="o">=</span> <span class="n">view</span><span class="o">.</span><span class="n">get_dof_velocities</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>       <span class="c1"># shape [world_count, articulation_count, dof_count]</span>
+<span class="n">link_q</span> <span class="o">=</span> <span class="n">view</span><span class="o">.</span><span class="n">get_link_transforms</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>  <span class="c1"># shape [world_count, articulation_count, link_count]</span>
+
+<span class="c1"># edit selected articulation values in-place</span>
+<span class="n">q_np</span> <span class="o">=</span> <span class="n">q</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">q_np</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="n">view</span><span class="o">.</span><span class="n">set_dof_positions</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">q_np</span><span class="p">)</span>
+
+<span class="c1"># if model attributes are edited through the view, notify the solver afterwards</span>
+<span class="c1"># solver.notify_model_changed()</span>
+</pre></div>
+</div>
+</section>
+</section>
 <section id="axis-related-quantities">
 <h3>Axis-related quantities<a class="headerlink" href="#axis-related-quantities" title="Link to this heading">#</a></h3>
 <p>Axis-related quantities include the definition of the joint axis in <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.joint_axis" title="newton.Model.joint_axis"><code class="xref py py-attr docutils literal notranslate"><span class="pre">newton.Model.joint_axis</span></code></a> and other properties
@@ -1144,6 +1281,13 @@ Generalized-coordinate solvers (<a class="reference internal" href="../api/_gene
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#joint-types">Joint types</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#definition-of-joint-q">Definition of <code class="docutils literal notranslate"><span class="pre">joint_q</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#definition-of-joint-qd">Definition of <code class="docutils literal notranslate"><span class="pre">joint_qd</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#common-articulation-workflows">Common articulation workflows</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#articulationview-selection-interface-for-rl-and-batched-control">ArticulationView: selection interface for RL and batched control</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#center-joint-q-at-joint-limits-with-warp-kernels">Center <code class="docutils literal notranslate"><span class="pre">joint_q</span></code> at joint limits with Warp kernels</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#move-articulations-in-world-space">Move articulations in world space</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#use-articulationview-to-inspect-and-modify-selected-articulations">Use <code class="docutils literal notranslate"><span class="pre">ArticulationView</span></code> to inspect and modify selected articulations</a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#axis-related-quantities">Axis-related quantities</a></li>
 </ul>
 </li>
