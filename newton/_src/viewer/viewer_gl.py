@@ -91,6 +91,79 @@ def _capsule_build_cap_xforms_and_scales(
     out_scales[tid] = wp.vec3(r, r, r)
 
 
+GEO_MESH = int(nt.GeoType.MESH)
+GEO_CONVEX_MESH = int(nt.GeoType.CONVEX_MESH)
+
+
+@wp.kernel
+def _compute_shape_vbo_xforms(
+    shape_transform: wp.array(dtype=wp.transformf),
+    shape_body: wp.array(dtype=int),
+    body_q: wp.array(dtype=wp.transformf),
+    shape_scale: wp.array(dtype=wp.vec3),
+    shape_type: wp.array(dtype=int),
+    shape_world: wp.array(dtype=int),
+    world_offsets: wp.array(dtype=wp.vec3),
+    write_indices: wp.array(dtype=int),
+    geo_mesh: int,
+    geo_convex_mesh: int,
+    out_world_xforms: wp.array(dtype=wp.transformf),
+    out_vbo_xforms: wp.array(dtype=wp.mat44),
+):
+    """Process all model shapes, write mat44 to grouped output positions."""
+    tid = wp.tid()
+    out_idx = write_indices[tid]
+    if out_idx < 0:
+        return
+
+    local_xform = shape_transform[tid]
+    parent = shape_body[tid]
+
+    if parent >= 0:
+        xform = wp.transform_multiply(body_q[parent], local_xform)
+    else:
+        xform = local_xform
+
+    if world_offsets:
+        wi = shape_world[tid]
+        if wi >= 0 and wi < world_offsets.shape[0]:
+            p = wp.transform_get_translation(xform)
+            xform = wp.transform(p + world_offsets[wi], wp.transform_get_rotation(xform))
+
+    out_world_xforms[out_idx] = xform
+
+    p = wp.transform_get_translation(xform)
+    q = wp.transform_get_rotation(xform)
+    R = wp.quat_to_matrix(q)
+
+    # Only mesh/convex_mesh shapes use model scale; other primitives have
+    # their dimensions baked into the geometry mesh, so scale is (1,1,1).
+    geo = shape_type[tid]
+    if geo == geo_mesh or geo == geo_convex_mesh:
+        s = shape_scale[tid]
+    else:
+        s = wp.vec3(1.0, 1.0, 1.0)
+
+    out_vbo_xforms[out_idx] = wp.mat44(
+        R[0, 0] * s[0],
+        R[1, 0] * s[0],
+        R[2, 0] * s[0],
+        0.0,
+        R[0, 1] * s[1],
+        R[1, 1] * s[1],
+        R[2, 1] * s[1],
+        0.0,
+        R[0, 2] * s[2],
+        R[1, 2] * s[2],
+        R[2, 2] * s[2],
+        0.0,
+        p[0],
+        p[1],
+        p[2],
+        1.0,
+    )
+
+
 class ViewerGL(ViewerBase):
     """
     OpenGL-based interactive viewer for Newton physics models.
@@ -130,6 +203,7 @@ class ViewerGL(ViewerBase):
         self.renderer.set_title("Newton Viewer")
 
         self._paused = False
+        self._packed_vbo_xforms = None
 
         # State caching for selection panel
         self._last_state = None
@@ -308,8 +382,67 @@ class ViewerGL(ViewerBase):
         self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0, world_offsets=self.world_offsets)
         self.wind = Wind(model)
 
+        # Build packed arrays for batched GPU rendering of shape instances
+        self._build_packed_vbo_arrays()
+
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
+
+    def _build_packed_vbo_arrays(self):
+        """Build write-index + output arrays for batched shape transform computation.
+
+        The kernel processes all model shapes (coalesced reads), uses a write-index
+        array to scatter results into contiguous groups in the output buffer.
+        """
+        from .gl.opengl import MeshGL, MeshInstancerGL  # noqa: PLC0415
+
+        if self.model is None:
+            self._packed_groups = []
+            return
+
+        shape_count = self.model.shape_count
+        device = self.device
+
+        groups = []
+        capsule_keys = set()
+        total = 0
+
+        for key, shapes in self._shape_instances.items():
+            n = shapes.xforms.shape[0] if isinstance(shapes.xforms, wp.array) else len(shapes.xforms)
+            if n == 0:
+                continue
+            if shapes.geo_type == nt.GeoType.CAPSULE:
+                capsule_keys.add(key)
+            groups.append((key, shapes, total, n))
+            total += n
+
+        self._capsule_keys = capsule_keys
+        self._packed_groups = groups
+
+        if total == 0:
+            return
+
+        # Write-index: maps model shape index → packed output position (-1 = skip)
+        write_np = np.full(shape_count, -1, dtype=np.int32)
+        # World xforms output (capsules read these for cap sphere computation)
+        all_world_xforms = wp.empty(total, dtype=wp.transform, device=device)
+
+        for _key, shapes, offset, n in groups:
+            model_shapes = np.asarray(shapes.model_shapes, dtype=np.int32)
+            write_np[model_shapes] = np.arange(offset, offset + n, dtype=np.int32)
+
+            if _key in capsule_keys:
+                shapes.world_xforms = all_world_xforms[offset : offset + n]
+
+            if _key not in capsule_keys:
+                if shapes.name not in self.objects:
+                    if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
+                        self.objects[shapes.name] = MeshInstancerGL(max(n, 1), self.objects[shapes.mesh])
+
+        self._write_indices = wp.array(write_np, dtype=int, device=device)
+        self._packed_world_xforms = all_world_xforms
+        self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
+        self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=True)
 
     @override
     def set_world_offsets(self, spacing: tuple[float, float, float] | list[float] | wp.vec3):
@@ -604,15 +737,77 @@ class ViewerGL(ViewerBase):
     @override
     def log_state(self, state):
         """
-        Cache the simulation state for UI panels and call parent log_state.
+        Log the current simulation state for rendering.
 
-        Args:
-            state: The current simulation state.
+        For shape instances on CUDA, uses a batched path: 2 kernel launches +
+        1 D2H copy to a shared pinned buffer, then uploads slices per instancer.
+        Everything else (capsules, SDF, particles, joints, …) uses the standard path.
         """
-        # Cache the state for selection panel use
         self._last_state = state
-        # Call parent implementation
-        super().log_state(state)
+
+        if self.model is None:
+            return
+
+        if self._packed_vbo_xforms is not None and self.device.is_cuda:
+            # ---- Single kernel over all model shapes, scatter-write to grouped output ----
+            wp.launch(
+                _compute_shape_vbo_xforms,
+                dim=self.model.shape_count,
+                inputs=[
+                    self.model.shape_transform,
+                    self.model.shape_body,
+                    state.body_q,
+                    self.model.shape_scale,
+                    self.model.shape_type,
+                    self.model.shape_world,
+                    self.world_offsets,
+                    self._write_indices,
+                    GEO_MESH,
+                    GEO_CONVEX_MESH,
+                ],
+                outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
+                device=self.device,
+            )
+            wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
+            wp.synchronize()
+
+            # ---- Upload pinned host slices to GL per instancer ----
+            host_np = self._packed_vbo_xforms_host.numpy()
+
+            for key, shapes, offset, count in self._packed_groups:
+                visible = self._should_show_shape(shapes.flags, shapes.static)
+                colors = shapes.colors if self.model_changed or shapes.colors_changed else None
+                materials = shapes.materials if self.model_changed else None
+
+                if key in self._capsule_keys:
+                    self.log_capsules(
+                        shapes.name,
+                        shapes.mesh,
+                        shapes.world_xforms,
+                        shapes.scales,
+                        colors,
+                        materials,
+                        hidden=not visible,
+                    )
+                else:
+                    instancer = self.objects.get(shapes.name)
+                    if instancer is not None:
+                        instancer.hidden = not visible
+                        instancer.update_from_pinned(
+                            host_np[offset : offset + count],
+                            count,
+                            colors,
+                            materials,
+                        )
+
+                shapes.colors_changed = False
+
+            # ---- Non-shape rendering uses standard synchronous paths ----
+            self._log_non_shape_state(state)
+            self.model_changed = False
+        else:
+            # Fallback for CPU or when no packed data is available
+            super().log_state(state)
 
         self._render_picking_line(state)
 

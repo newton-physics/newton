@@ -346,7 +346,12 @@ class ViewerBase:
 
             shapes.colors_changed = False
 
-        # render SDF isomesh instances for collision visualization (lazily populated)
+        self._log_non_shape_state(state)
+        self.model_changed = False
+
+    def _log_non_shape_state(self, state):
+        """Log SDF isomeshes, inertia boxes, triangles, particles, joints, COM."""
+
         sdf_isomesh_just_populated = False
         if self.show_collision and not self._sdf_isomesh_populated:
             self._populate_sdf_isomesh_instances()
@@ -355,11 +360,8 @@ class ViewerBase:
 
         for shapes in self._sdf_isomesh_instances.values():
             visible = self.show_collision
-
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
-
-            # Send colors/materials on model change OR when isomeshes were just populated
             send_appearance = self.model_changed or sdf_isomesh_just_populated
             self.log_instances(
                 shapes.name,
@@ -371,13 +373,10 @@ class ViewerBase:
                 hidden=not visible,
             )
 
-        # update inertia box transforms if visible
         if self.show_inertia_boxes:
             if self._inertia_box_instances is None:
-                # create instance batch on-demand
                 self._populate_inertia_boxes()
             self._inertia_box_instances.update(state, world_offsets=self.world_offsets)
-
         if self._inertia_box_instances is not None:
             self.log_instances(
                 self._inertia_box_instances.name,
@@ -393,8 +392,6 @@ class ViewerBase:
         self._log_particles(state)
         self._log_joints(state)
         self._log_com(state)
-
-        self.model_changed = False
 
     def log_contacts(self, contacts, state):
         """
