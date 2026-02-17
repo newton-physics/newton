@@ -200,9 +200,9 @@ class SensorTiledCamera:
             elif options.colors_per_shape:
                 self.assign_random_colors_per_shape()
 
-    def update_from_state(self, state: State):
+    def sync_transforms(self, state: State):
         """
-        Update data from Newton State.
+        Synchronize transforms from the current simulation state.
 
         Args:
             state: The current simulation state containing body transforms.
@@ -228,11 +228,12 @@ class SensorTiledCamera:
         if self.render_context.has_particles:
             self.render_context.particles_position = state.particle_q
 
-    def render(
+    def update(
         self,
         state: State | None,
         camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
+        *,
         color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
         shape_index_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
@@ -264,7 +265,7 @@ class SensorTiledCamera:
             clear_data: The data to clear the image buffers with (or skip if None).
         """
         if state is not None:
-            self.update_from_state(state)
+            self.sync_transforms(state)
 
         self.render_context.render(
             camera_transforms,

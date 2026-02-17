@@ -113,7 +113,7 @@ class SensorFrameTransform:
             )
 
             # Update after eval_fk
-            sensor.update(model, state)
+            sensor.update(state)
 
             # Access transforms
             transforms = sensor.transforms.numpy()  # shape: (N, 7) [pos, quat]
@@ -217,22 +217,21 @@ class SensorFrameTransform:
                 f"  Unique shapes to compute: {len(self._unique_shape_indices)} (optimized from {len(shapes) + len(reference_sites_matched)})"
             )
 
-    def update(self, model: Model, state: State):
+    def update(self, state: State):
         """Update sensor measurements based on current state.
 
         This should be called after eval_fk to compute transforms.
 
         Args:
-            model: The model (must match the one used in __init__)
             state: The current state with body_q populated by eval_fk
         """
         # Compute world transforms for all unique shapes directly into the all_shape_transforms array
         wp.launch(
             compute_shape_transforms_kernel,
             dim=len(self._unique_shape_indices),
-            inputs=[self._unique_indices_arr, model.shape_body, model.shape_transform, state.body_q],
+            inputs=[self._unique_indices_arr, self.model.shape_body, self.model.shape_transform, state.body_q],
             outputs=[self._all_shape_transforms],
-            device=model.device,
+            device=self.model.device,
         )
 
         # Compute relative transforms by indexing directly into all_shape_transforms
@@ -241,5 +240,5 @@ class SensorFrameTransform:
             dim=len(self._shape_indices_arr),
             inputs=[self._all_shape_transforms, self._shape_indices_arr, self._reference_indices_arr],
             outputs=[self.transforms],
-            device=model.device,
+            device=self.model.device,
         )

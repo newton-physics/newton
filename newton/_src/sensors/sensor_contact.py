@@ -248,8 +248,8 @@ class SensorContact:
         self._net_force = wp.zeros(self.shape[0] * self.shape[1], dtype=wp.vec3, device=self.device)
         self.net_force = self._net_force.reshape(self.shape)
 
-    def eval(self, contacts: Contacts):
-        """Evaluate the contact sensor readings based on the provided contacts.
+    def update(self, contacts: Contacts):
+        """Update the contact sensor readings based on the provided contacts.
 
         Process the given Contacts object and updates the internal net force readings for each sensing_obj-counterpart
         pair.

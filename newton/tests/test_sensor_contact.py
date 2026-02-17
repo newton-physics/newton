@@ -156,7 +156,7 @@ class TestSensorContact(unittest.TestCase):
                     forces=scenario["forces"],
                 )
 
-                contact_sensor.eval(contacts)
+                contact_sensor.update(contacts)
 
                 self.assertIsNotNone(contact_sensor.net_force)
                 self.assertEqual(contact_sensor.net_force.shape, contact_sensor.shape)
@@ -209,7 +209,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             solver.step(state_in, state_out, control, None, 1.0 / 240.0)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
-        sensor.eval(contacts)
+        sensor.update(contacts)
 
         forces = sensor.net_force.numpy()
         g = 9.81
@@ -254,8 +254,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             solver.step(state_in, state_out, control, None, 1.0 / 240.0)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
-        sensor_abc.eval(contacts)
-        sensor_base.eval(contacts)
+        sensor_abc.update(contacts)
+        sensor_base.update(contacts)
 
         forces = sensor_abc.net_force.numpy()
         g = 9.81

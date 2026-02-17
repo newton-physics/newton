@@ -254,7 +254,7 @@ class Example:
         self.viewer.end_frame()
 
     def render_sensors(self):
-        self.tiled_camera_sensor.render(
+        self.tiled_camera_sensor.update(
             self.state,
             self.get_camera_transforms(),
             self.camera_rays,

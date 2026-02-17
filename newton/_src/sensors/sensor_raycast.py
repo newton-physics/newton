@@ -152,14 +152,14 @@ class SensorRaycast:
         self.camera_up = np.cross(self.camera_right, self.camera_direction)
         self.camera_up = self.camera_up / np.linalg.norm(self.camera_up)
 
-    def eval(
+    def update(
         self,
         state: State,
         *,
         include_particles: bool = False,
         particle_march_step: float | None = None,
     ):
-        """Evaluate the raycast sensor to generate a depth image.
+        """Update the raycast sensor to generate a depth image.
 
         Casts rays from the camera through each pixel and records the distance to the closest
         intersection with the scene geometry. When ``include_particles`` is enabled (not enabled by default),

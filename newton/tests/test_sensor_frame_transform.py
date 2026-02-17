@@ -44,7 +44,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         # Both sites are at the same location (identity transform), verify they remain so
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         # Should be identity transform (same location)
@@ -169,7 +169,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         sensor = SensorFrameTransform(model, shapes=[target_site], reference_sites=[ref_site])
 
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         # Relative transform should still be local offset (both on same body)
@@ -226,7 +226,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         sensor = SensorFrameTransform(model, shapes=[target_site], reference_sites=[ref_site])
 
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         pos = wp.transform_get_translation(wp.transform(*transforms[0]))
@@ -282,7 +282,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         sensor = SensorFrameTransform(model, shapes=[geom], reference_sites=[ref_site])
 
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         pos = wp.transform_get_translation(wp.transform(*transforms[0]))
@@ -312,7 +312,7 @@ class TestSensorFrameTransform(unittest.TestCase):
             reference_sites=[ref_site],  # Single reference for all
         )
 
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         self.assertEqual(transforms.shape[0], 3)
@@ -346,7 +346,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         sensor = SensorFrameTransform(model, shapes=[moving_site], reference_sites=[world_site])
 
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         # Moving site should be at (1,2,3) relative to world site at (5,6,7)
@@ -378,7 +378,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         sensor = SensorFrameTransform(model, shapes=[target_site], reference_sites=[ref_site])
 
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         # In reference frame rotated 90° around Z, point (1,0,0) should appear as (0,1,0)
@@ -408,7 +408,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         sensor = SensorFrameTransform(model, shapes=[target_site], reference_sites=[ref_site])
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         # Target is 1 unit away in X direction (in ref frame coords)
@@ -460,7 +460,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         sensor = SensorFrameTransform(model, shapes=[site1, site2], reference_sites=[ref_site])
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         # At zero joint angles, site1 should be at (1, 0, 0) and site2 at (3, 0, 0)
@@ -477,7 +477,7 @@ class TestSensorFrameTransform(unittest.TestCase):
         state.joint_q.assign(q_np)
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         pos1 = wp.transform_get_translation(wp.transform(*transforms[0]))
@@ -564,7 +564,7 @@ class TestSensorFrameTransform(unittest.TestCase):
 
         sensor = SensorFrameTransform(model, shapes=sparse_indices, reference_sites=[ref_site])
 
-        sensor.update(model, state)
+        sensor.update(state)
         transforms = sensor.transforms.numpy()
 
         # Verify each transform corresponds to the correct site
@@ -621,10 +621,10 @@ class TestSensorFrameTransform(unittest.TestCase):
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         sensor_int = SensorFrameTransform(model, shapes=[target], reference_sites=[ref])
-        sensor_int.update(model, state)
+        sensor_int.update(state)
 
         sensor_str = SensorFrameTransform(model, shapes="target", reference_sites="ref")
-        sensor_str.update(model, state)
+        sensor_str.update(state)
 
         np.testing.assert_array_equal(
             sensor_int.transforms.numpy(),
