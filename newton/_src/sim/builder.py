@@ -148,10 +148,6 @@ class ModelBuilder:
         than creating your own Model object directly, however it is possible to do so if
         desired.
 
-    Attributes:
-        default_shape_cfg (ShapeConfig): Default shape configuration used when shape-creation
-            methods are called with ``cfg=None``. Update this object before adding shapes
-            to set default contact/material properties.
     """
 
     @dataclass
@@ -565,28 +561,44 @@ class ModelBuilder:
 
         # region defaults
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
+        """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
+        Update this object before adding shapes to set default contact/material properties."""
+
         self.default_joint_cfg = ModelBuilder.JointDofConfig()
+        """Default joint DoF configuration used when joint DoF configuration is omitted."""
 
-        # Default particle settings
         self.default_particle_radius = 0.1
+        """Default particle radius used when particle radius is not provided explicitly."""
 
-        # Default triangle soft mesh settings
         self.default_tri_ke = 100.0
+        """Default triangle elastic stiffness for cloth/soft-triangle constraints."""
+
         self.default_tri_ka = 100.0
+        """Default triangle area stiffness for cloth/soft-triangle constraints."""
+
         self.default_tri_kd = 10.0
+        """Default triangle damping for cloth/soft-triangle constraints."""
+
         self.default_tri_drag = 0.0
+        """Default aerodynamic drag coefficient for triangle elements."""
+
         self.default_tri_lift = 0.0
+        """Default aerodynamic lift coefficient for triangle elements."""
 
-        # Default distance constraint properties
         self.default_spring_ke = 100.0
+        """Default spring elastic stiffness for distance constraints."""
+
         self.default_spring_kd = 0.0
+        """Default spring damping for distance constraints."""
 
-        # Default edge bending properties
         self.default_edge_ke = 100.0
-        self.default_edge_kd = 0.0
+        """Default edge-bending elastic stiffness."""
 
-        # Default body settings
+        self.default_edge_kd = 0.0
+        """Default edge-bending damping."""
+
         self.default_body_armature = 0.0
+        """Default body armature value used when body armature is not provided."""
         # endregion
 
         # region compiler settings (similar to MuJoCo)
