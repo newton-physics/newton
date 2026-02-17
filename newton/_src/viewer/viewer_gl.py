@@ -759,6 +759,7 @@ class ViewerGL(ViewerBase):
                 ],
                 outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
                 device=self.device,
+                record_tape=False,
             )
             wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
             wp.synchronize()  # copy is async (pinned destination), must sync before CPU read
