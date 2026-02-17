@@ -2577,7 +2577,7 @@ class ModelBuilder:
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
-            mass: Mass of the body. If ``None``, mass/inertia are inferred from attached
+            mass: Mass of the body [kg]. If ``None``, mass/inertia are inferred from attached
                 shapes. If ``0.0``, the body is treated as kinematic and shape density
                 will not contribute to mass/inertia.
             key: Key of the body (optional).
@@ -2590,7 +2590,7 @@ class ModelBuilder:
             The index of the body in the model.
 
         Note:
-            Passing ``mass=0.0`` creates a kinematic body with no rigid-body dynamics.
+            Passing ``mass=0.0`` [kg] creates a kinematic body with no rigid-body dynamics.
             To infer mass from shape density, pass ``mass=None``.
 
         """
@@ -2681,7 +2681,7 @@ class ModelBuilder:
             armature: Artificial inertia added to the body. If None, the default value from :attr:`default_body_armature` is used.
             com: The center of mass of the body w.r.t its origin. If None, the center of mass is assumed to be at the origin.
             inertia: The 3x3 inertia tensor of the body (specified relative to the center of mass). If None, the inertia tensor is assumed to be zero.
-            mass: Mass of the body. If ``None``, mass/inertia are inferred from attached
+            mass: Mass of the body [kg]. If ``None``, mass/inertia are inferred from attached
                 shapes. If ``0.0``, the body is treated as kinematic and shape density
                 will not contribute to mass/inertia.
             key: Key of the body. When provided, the auto-created free joint and articulation
@@ -2695,7 +2695,7 @@ class ModelBuilder:
             The index of the body in the model.
 
         Note:
-            Passing ``mass=0.0`` creates a kinematic body with no rigid-body dynamics.
+            Passing ``mass=0.0`` [kg] creates a kinematic body with no rigid-body dynamics.
             To infer mass from shape density, pass ``mass=None``.
 
         """

@@ -2003,6 +2003,8 @@ class SolverMuJoCo(SolverBase):
         Shape [nu], dtype int32."""
         self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
+        self.joint_mjc_dof_start: wp.array(dtype=wp.int32) | None = None
+        """Mapping from Newton template joint index to MuJoCo DOF start index, or -1 for mocap-only joints."""
         self.mjc_eq_to_newton_eq: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
@@ -2353,6 +2355,11 @@ class SolverMuJoCo(SolverBase):
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
     def update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
+        if self.joint_mjc_dof_start is None:
+            raise ValueError(
+                "joint_mjc_dof_start is not initialized. Construct SolverMuJoCo via _convert_to_mjc()"
+                " or provide a mapping when reusing mjw_model/mjw_data."
+            )
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have an MjWarp Data object
@@ -2371,6 +2378,35 @@ class SolverMuJoCo(SolverBase):
             joint_q = state.joint_q
             joint_qd = state.joint_qd
         joints_per_world = model.joint_count // nworld
+
+        # Keep mocap transforms synchronized every step for kinematic-free bodies.
+        if self.mjc_mocap_to_newton_jnt is not None:
+            nmocap = self.mjc_mocap_to_newton_jnt.shape[1]
+            if nmocap > 0:
+                if is_mjwarp:
+                    mocap_pos = mj_data.mocap_pos
+                    mocap_quat = mj_data.mocap_quat
+                else:
+                    mocap_pos = wp.array([mj_data.mocap_pos], dtype=wp.vec3, device=model.device)
+                    mocap_quat = wp.array([mj_data.mocap_quat], dtype=wp.quat, device=model.device)
+                wp.launch(
+                    update_mocap_transforms_kernel,
+                    dim=(nworld, nmocap),
+                    inputs=[
+                        self.mjc_mocap_to_newton_jnt,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                    ],
+                    outputs=[
+                        mocap_pos,
+                        mocap_quat,
+                    ],
+                    device=model.device,
+                )
+                if not is_mjwarp:
+                    mj_data.mocap_pos[:] = mocap_pos.numpy()[0]
+                    mj_data.mocap_quat[:] = mocap_quat.numpy()[0]
+
         wp.launch(
             convert_warp_coords_to_mj_kernel,
             dim=(nworld, joints_per_world),
@@ -2400,6 +2436,11 @@ class SolverMuJoCo(SolverBase):
         mj_data: MjWarpData | MjData,
         eval_fk: bool = True,
     ):
+        if self.joint_mjc_dof_start is None:
+            raise ValueError(
+                "joint_mjc_dof_start is not initialized. Construct SolverMuJoCo via _convert_to_mjc()"
+                " or provide a mapping when reusing mjw_model/mjw_data."
+            )
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have an MjWarp Data object

@@ -3982,7 +3982,14 @@ class TestMuJoCoValidation(unittest.TestCase):
 
 class TestMuJoCoConversion(unittest.TestCase):
     def test_zero_mass_free_body_converts_as_kinematic(self):
-        """A zero-mass free body should export as a MuJoCo mocap (kinematic) body."""
+        """Verify zero-mass free body export semantics.
+
+        A zero-mass free body must be exported as a MuJoCo mocap body
+        (kinematic), without MuJoCo joints.
+
+        Returns:
+            None
+        """
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=0.0, inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(

@@ -403,11 +403,6 @@ def convert_mj_coords_to_warp_kernel(
     if joint_mjc_dof_start[jntid] < 0:
         return
 
-    # Kinematic free bodies are represented as MuJoCo mocap bodies and have no MuJoCo DOFs.
-    # Skip conversion for any joint without a MuJoCo counterpart.
-    if joint_mjc_dof_start[jntid] < 0:
-        return
-
     if type == JointType.FREE:
         # convert position components
         for i in range(3):
@@ -501,6 +496,11 @@ def convert_warp_coords_to_mj_kernel(
     qd_i = joint_qd_start[jntid]
     wq_i = joint_q_start[joints_per_world * worldid + jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+
+    # Kinematic free bodies are represented as MuJoCo mocap bodies and have no MuJoCo DOFs.
+    # Skip conversion for any joint without a MuJoCo counterpart.
+    if joint_mjc_dof_start[jntid] < 0:
+        return
 
     if type == JointType.FREE:
         # convert position components

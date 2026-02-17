@@ -248,8 +248,9 @@ class TestModel(unittest.TestCase):
             cfg=ModelBuilder.ShapeConfig(density=1000.0),
         )
 
-        self.assertGreater(builder.body_mass[body], 0.0)
-        self.assertGreater(builder.body_inv_mass[body], 0.0)
+        expected_mass = 1000.0 * (0.5 * 0.5 * 0.5)
+        self.assertAlmostEqual(builder.body_mass[body], expected_mass, places=6)
+        self.assertAlmostEqual(builder.body_inv_mass[body], 1.0 / expected_mass, places=6)
 
     def test_zero_mass_body_suppresses_inertia_warning(self):
         """Explicitly kinematic bodies should not emit confusing zero-mass inertia warnings."""
