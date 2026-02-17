@@ -133,7 +133,7 @@ def _compute_shape_vbo_xforms(
     # Only mesh/convex_mesh shapes use model scale; other primitives have
     # their dimensions baked into the geometry mesh, so scale is (1,1,1).
     geo = shape_type[tid]
-    if geo == int(nt.GeoType.MESH) or geo == int(nt.GeoType.CONVEX_MESH):
+    if geo == nt.GeoType.MESH or geo == nt.GeoType.CONVEX_MESH:
         s = shape_scale[tid]
     else:
         s = wp.vec3(1.0, 1.0, 1.0)
