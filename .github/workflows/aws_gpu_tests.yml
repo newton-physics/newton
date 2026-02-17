@@ -12,7 +12,6 @@ env:
   AWS_INSTANCE_TYPE: g6e.2xlarge
   AWS_VOLUME_SIZE: 92
   AWS_VOLUME_TYPE: gp3
-  AWS_PRIMARY_SUBNET_ID: subnet-051b9d2e71acf8047
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
   AWS_ROLE_DURATION: 7200
@@ -65,58 +64,17 @@ jobs:
           fi
           echo "Latest AMI ID found: $LATEST_AMI_ID"
           echo "LATEST_AMI_ID=$LATEST_AMI_ID" >> "$GITHUB_ENV"
-      - name: Build EC2 availability zones config
-        run: |
-          SECURITY_GROUP_ID=$(echo "${{ env.AWS_SECURITY_GROUP_IDS }}" | cut -d',' -f1 | xargs)
-          VPC_ID=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \
-            --group-ids "$SECURITY_GROUP_ID" \
-            --query 'SecurityGroups[0].VpcId' \
-            --output text)
-          ALL_SUBNETS_JSON=$(aws ec2 describe-subnets --region ${{ env.AWS_REGION }} \
-            --filters "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
-            --query 'Subnets[].SubnetId' \
-            --output json)
-          AWS_AVAILABILITY_ZONES_CONFIG=$(python3 - <<'PY'
-          import json
-          import os
-
-          primary_subnet = os.environ["AWS_PRIMARY_SUBNET_ID"]
-          security_group_id = os.environ["SECURITY_GROUP_ID"]
-          image_id = os.environ["LATEST_AMI_ID"]
-          region = os.environ["AWS_REGION"]
-          subnets = json.loads(os.environ["ALL_SUBNETS_JSON"])
-
-          ordered_subnets = [primary_subnet] + [s for s in subnets if s != primary_subnet]
-          unique_subnets = []
-          seen = set()
-          for subnet in ordered_subnets:
-              if subnet and subnet not in seen:
-                  seen.add(subnet)
-                  unique_subnets.append(subnet)
-
-          config = [
-              {
-                  "imageId": image_id,
-                  "subnetId": subnet,
-                  "securityGroupId": security_group_id,
-                  "region": region,
-              }
-              for subnet in unique_subnets
-          ]
-          print(json.dumps(config, separators=(",", ":")))
-          PY
-          )
-          echo "AWS_AVAILABILITY_ZONES_CONFIG=$AWS_AVAILABILITY_ZONES_CONFIG" >> "$GITHUB_ENV"
       - name: Start EC2 runner
         id: start-ec2-runner
         uses: machulav/ec2-github-runner@a6dbcefcf8a31a861f5e078bb153ed332130c512  # v2.4.3
         with:
           mode: start
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          availability-zones-config: ${{ env.AWS_AVAILABILITY_ZONES_CONFIG }}
+          ec2-image-id: ${{ env.LATEST_AMI_ID }}
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
           ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
           ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
+          subnet-id: subnet-051b9d2e71acf8047
           security-group-id: ${{ env.AWS_SECURITY_GROUP_IDS }}
           aws-resource-tags: >
             [
