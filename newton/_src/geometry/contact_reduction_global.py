@@ -138,7 +138,7 @@ def compute_effective_radius(shape_type: int, shape_scale: wp.vec4) -> float:
     Returns:
         Effective radius (scale[0] for sphere/capsule, 0 otherwise)
     """
-    if shape_type == int(wp.static(GeoType.SPHERE)) or shape_type == int(wp.static(GeoType.CAPSULE)):
+    if shape_type == GeoType.SPHERE or shape_type == GeoType.CAPSULE:
         return shape_scale[0]
     return 0.0
 

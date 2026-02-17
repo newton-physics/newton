@@ -1729,19 +1729,19 @@ def update_eq_data_and_active_kernel(
     # Read existing data to preserve fields we don't update
     data = eq_data_out[world, mjc_eq]
 
-    if constraint_type == int(EqType.CONNECT):
+    if constraint_type == EqType.CONNECT:
         # CONNECT: data[0:3] = anchor
         anchor = eq_constraint_anchor[newton_eq]
         data[0] = anchor[0]
         data[1] = anchor[1]
         data[2] = anchor[2]
 
-    elif constraint_type == int(EqType.JOINT):
+    elif constraint_type == EqType.JOINT:
         # JOINT: data[0:5] = polycoef
         for i in range(5):
             data[i] = eq_constraint_polycoef[newton_eq, i]
 
-    elif constraint_type == int(EqType.WELD):
+    elif constraint_type == EqType.WELD:
         # WELD: data[0:3] = anchor
         anchor = eq_constraint_anchor[newton_eq]
         data[0] = anchor[0]
