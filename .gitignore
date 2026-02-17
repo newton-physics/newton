@@ -58,6 +58,9 @@ asv/env
 asv/results
 asv/html
 
+# Local benchmark outputs
+benchmark_*/
+
 # Log files, settings
 MUJOCO_LOG.TXT
 imgui.ini
