@@ -689,8 +689,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_source: wp.array(dtype=wp.uint64),
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_contact_margin: wp.array(dtype=float),
-        _shape_local_aabb_lower: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
-        _shape_local_aabb_upper: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
+        _shape_collision_aabb_lower: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
+        _shape_collision_aabb_upper: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
         _shape_voxel_resolution: wp.array(dtype=wp.vec3i),  # Unused but kept for API compatibility
         shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_mesh_count: wp.array(dtype=int),
@@ -903,8 +903,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_source: wp.array(dtype=wp.uint64),
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_contact_margin: wp.array(dtype=float),
-        shape_local_aabb_lower: wp.array(dtype=wp.vec3),
-        shape_local_aabb_upper: wp.array(dtype=wp.vec3),
+        shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
+        shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
         shape_pairs_mesh_mesh: wp.array(dtype=wp.vec2i),
         shape_pairs_mesh_mesh_count: wp.array(dtype=int),
@@ -975,8 +975,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 X_ws_tri = wp.transform_inverse(X_tri_ws)  # World to triangle local
 
                 # Load voxel binning data for triangle mesh
-                aabb_lower_tri = shape_local_aabb_lower[tri_shape]
-                aabb_upper_tri = shape_local_aabb_upper[tri_shape]
+                aabb_lower_tri = shape_collision_aabb_lower[tri_shape]
+                aabb_upper_tri = shape_collision_aabb_upper[tri_shape]
                 voxel_res_tri = shape_voxel_resolution[tri_shape]
 
                 # Load SDF data and determine scale

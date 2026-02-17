@@ -1950,8 +1950,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
                 # Torsional and rolling friction should be absolute values (not scaled by mu)
-                expected_torsional = self.model.shape_material_torsional_friction.numpy()[shape_idx]
-                expected_rolling = self.model.shape_material_rolling_friction.numpy()[shape_idx]
+                expected_torsional = self.model.shape_material_mu_torsional.numpy()[shape_idx]
+                expected_rolling = self.model.shape_material_mu_rolling.numpy()[shape_idx]
 
                 self.assertAlmostEqual(
                     float(actual_friction[1]),
@@ -2087,8 +2087,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
             new_torsional[i] = 0.6 + (i + 1) * 0.02  # Pattern: 0.62, 0.64, ...
             new_rolling[i] = 0.002 + (i + 1) * 0.0001  # Pattern: 0.0021, 0.0022, ...
         self.model.shape_material_mu.assign(new_mu)
-        self.model.shape_material_torsional_friction.assign(new_torsional)
-        self.model.shape_material_rolling_friction.assign(new_rolling)
+        self.model.shape_material_mu_torsional.assign(new_torsional)
+        self.model.shape_material_mu_rolling.assign(new_rolling)
 
         # 2. Update contact stiffness/damping
         new_ke = np.ones(shape_count) * 1000.0  # High stiffness
@@ -2350,8 +2350,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 initial_rolling[shape_idx] = 0.001 + local_idx * 0.0005 + world_idx * 0.002
 
         self.model.shape_material_mu.assign(initial_mu)
-        self.model.shape_material_torsional_friction.assign(initial_torsional)
-        self.model.shape_material_rolling_friction.assign(initial_rolling)
+        self.model.shape_material_mu_torsional.assign(initial_torsional)
+        self.model.shape_material_mu_rolling.assign(initial_rolling)
 
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
         mjc_geom_to_newton_shape = solver.mjc_geom_to_newton_shape.numpy()
@@ -2409,8 +2409,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 updated_rolling[shape_idx] = 0.005 + local_idx * 0.001 + world_idx * 0.003
 
         self.model.shape_material_mu.assign(updated_mu)
-        self.model.shape_material_torsional_friction.assign(updated_torsional)
-        self.model.shape_material_rolling_friction.assign(updated_rolling)
+        self.model.shape_material_mu_torsional.assign(updated_torsional)
+        self.model.shape_material_mu_rolling.assign(updated_rolling)
 
         solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
 

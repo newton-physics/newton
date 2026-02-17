@@ -218,7 +218,7 @@ class Example:
         # Create collision pipeline for ground and cube contact
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            broad_phase_mode=newton.BroadPhaseMode.NXN,
+            broad_phase="nxn",
             soft_contact_margin=0.005,  # m (0.5 cm)
         )
         self.contacts = self.collision_pipeline.contacts()

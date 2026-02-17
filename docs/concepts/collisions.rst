@@ -22,12 +22,14 @@ Basic usage:
     contacts = model.contacts()
     model.collide(state, contacts)
 
-    # Or create a pipeline explicitly for more control
-    from newton import CollisionPipeline, BroadPhaseMode
+    # Or create a pipeline explicitly to choose broad phase mode
+    from newton import CollisionPipeline
 
-    pipeline = CollisionPipeline(model, broad_phase_mode=BroadPhaseMode.SAP)
-    contacts = pipeline.contacts()
-    pipeline.collide(state, contacts)
+    pipeline = CollisionPipeline(
+        model,
+        broad_phase="sap",
+    )
+    contacts = model.collide(state, collision_pipeline=pipeline)
 
 .. _Supported Shape Types:
 
@@ -343,16 +345,16 @@ Broad Phase and Shape Compatibility
 
 .. code-block:: python
 
-    from newton import CollisionPipeline, BroadPhaseMode
+    from newton import CollisionPipeline
 
     # Default: EXPLICIT (precomputed pairs)
     pipeline = CollisionPipeline(model)
 
     # NxN for small scenes
-    pipeline = CollisionPipeline(model, broad_phase_mode=BroadPhaseMode.NXN)
+    pipeline = CollisionPipeline(model, broad_phase="nxn")
 
     # SAP for larger scenes
-    pipeline = CollisionPipeline(model, broad_phase_mode=BroadPhaseMode.SAP)
+    pipeline = CollisionPipeline(model, broad_phase="sap")
 
     contacts = pipeline.contacts()
     pipeline.collide(state, contacts)
@@ -546,15 +548,15 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
-**Configuring contact reduction (SDFHydroelasticConfig):**
+**Configuring contact reduction (HydroelasticSDF.Config):**
 
-For hydroelastic and SDF-based contacts, use :class:`~newton.SDFHydroelasticConfig` to tune reduction behavior:
+For hydroelastic and SDF-based contacts, use :class:`~newton.geometry.HydroelasticSDF.Config` to tune reduction behavior:
 
 .. code-block:: python
 
-    from newton import SDFHydroelasticConfig
+    from newton.geometry import HydroelasticSDF
 
-    config = SDFHydroelasticConfig(
+    config = HydroelasticSDF.Config(
         reduce_contacts=True,           # Enable contact reduction
         betas=(10.0, -0.5),             # Scoring thresholds (default)
         sticky_contacts=0.0,            # Temporal persistence (0 = disabled)
@@ -641,7 +643,7 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
      - Whether shape is solid or hollow. Affects inertia and SDF sign. Default: True.
    * - ``is_hydroelastic``
      - Whether the shape uses SDF-based hydroelastic contacts. Both shapes in a pair must have this enabled. See :ref:`Hydroelastic Contacts`. Default: False.
-   * - ``k_hydro``
+   * - ``kh``
      - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
 
 .. note::
@@ -846,11 +848,11 @@ For control over broad phase mode, contact limits, or hydroelastic configuration
 
 .. code-block:: python
 
-    from newton import CollisionPipeline, BroadPhaseMode
+    from newton import CollisionPipeline
 
     pipeline = CollisionPipeline(
         model,
-        broad_phase_mode=BroadPhaseMode.SAP,
+        broad_phase="sap",
         rigid_contact_max=50000,
     )
     contacts = pipeline.contacts()
@@ -886,7 +888,7 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
     cfg = builder.ShapeConfig(
         is_hydroelastic=True,   # Opt-in to hydroelastic contacts
         sdf_max_resolution=64,  # Required for hydroelastic
-        k_hydro=1.0e11,         # Contact stiffness
+        kh=1.0e11,              # Contact stiffness
     )
     builder.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg)
 
@@ -897,11 +899,11 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 3. Contact points are distributed across the surface area
 4. Optional contact reduction selects representative points
 
-**Hydroelastic stiffness (k_hydro):**
+**Hydroelastic stiffness (kh):**
 
-The ``k_hydro`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
+The ``kh`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
 
-Contact reduction options for hydroelastic contacts are configured via :class:`~newton.SDFHydroelasticConfig` (see :ref:`Contact Reduction`).
+Contact reduction options for hydroelastic contacts are configured via :class:`~newton.geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
 
 .. _Contact Material Properties:
 
@@ -949,21 +951,21 @@ Shape material properties control contact resolution. Configure via :class:`~new
      - XPBD
      - :attr:`~newton.ModelBuilder.ShapeConfig.restitution`
      - :attr:`~newton.Model.shape_material_restitution`
-   * - ``torsional_friction``
+   * - ``mu_torsional``
      - Resistance to spinning at contact
      - XPBD, MuJoCo
-     - :attr:`~newton.ModelBuilder.ShapeConfig.torsional_friction`
-     - :attr:`~newton.Model.shape_material_torsional_friction`
-   * - ``rolling_friction``
+     - :attr:`~newton.ModelBuilder.ShapeConfig.mu_torsional`
+     - :attr:`~newton.Model.shape_material_mu_torsional`
+   * - ``mu_rolling``
      - Resistance to rolling motion
      - XPBD, MuJoCo
-     - :attr:`~newton.ModelBuilder.ShapeConfig.rolling_friction`
-     - :attr:`~newton.Model.shape_material_rolling_friction`
-   * - ``k_hydro``
+     - :attr:`~newton.ModelBuilder.ShapeConfig.mu_rolling`
+     - :attr:`~newton.Model.shape_material_mu_rolling`
+   * - ``kh``
      - Hydroelastic stiffness
      - SemiImplicit, Featherstone, MuJoCo
-     - :attr:`~newton.ModelBuilder.ShapeConfig.k_hydro`
-     - :attr:`~newton.Model.shape_material_k_hydro`
+     - :attr:`~newton.ModelBuilder.ShapeConfig.kh`
+     - :attr:`~newton.Model.shape_material_kh`
 
 Example:
 
@@ -1023,23 +1025,22 @@ See Also
     import newton
     from newton import (
         CollisionPipeline,
-        BroadPhaseMode,
         Contacts,
         GeoType,
     )
-    from newton.geometry import SDFHydroelasticConfig
+    from newton.geometry import HydroelasticSDF
 
 **API Reference:**
 
 - :meth:`~newton.Model.contacts` - Create a contacts buffer (default pipeline)
 - :meth:`~newton.Model.collide` - Run collision detection (default pipeline)
 - :class:`~newton.CollisionPipeline` - Collision pipeline with configurable broad phase
-- :meth:`~newton.CollisionPipeline.contacts` - Allocate a contacts buffer for a custom pipeline
-- :class:`~newton.BroadPhaseMode` - Broad phase algorithm selection
+- ``broad_phase`` - Broad phase algorithm: ``"nxn"``, ``"sap"``, or ``"explicit"``
 - :class:`~newton.Contacts` - Contact data container
 - :class:`~newton.GeoType` - Shape geometry types
 - :class:`~newton.ModelBuilder.ShapeConfig` - Shape configuration options
-- :class:`~newton.geometry.SDFHydroelasticConfig` - Hydroelastic contact configuration
+- :class:`~newton.geometry.HydroelasticSDF.Config` - Hydroelastic contact configuration
+- :meth:`~newton.CollisionPipeline.contacts` - Allocate a contacts buffer for a custom pipeline
 
 **Model attributes:**
 

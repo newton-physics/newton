@@ -127,7 +127,12 @@ class Example:
             )
             terrain_mesh = newton.Mesh(vertices, indices)
             terrain_offset = wp.transform(p=wp.vec3(-5, -2.0, 0.01), q=wp.quat_identity())
-            builder.add_shape_mesh(body=-1, mesh=terrain_mesh, xform=terrain_offset)
+            builder.add_shape_mesh(
+                body=-1,
+                mesh=terrain_mesh,
+                xform=terrain_offset,
+                cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False),
+            )
         builder.add_ground_plane()
 
         self.sim_time = 0.0
