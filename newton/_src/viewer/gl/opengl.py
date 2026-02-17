@@ -837,6 +837,8 @@ class MeshInstancerGL:
             materials: Optional wp.array of per-instance materials.
         """
         gl = RendererGL.gl
+        if count > self.num_instances:
+            raise ValueError(f"Active instance count ({count}) exceeds allocated capacity ({self.num_instances}).")
         self.active_instances = count
         if count > 0:
             nbytes = count * self.transform_byte_size
