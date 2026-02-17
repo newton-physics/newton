@@ -99,7 +99,6 @@ jobs:
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
           ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
           ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
-          subnet-id: subnet-051b9d2e71acf8047
           security-group-id: ${{ env.AWS_SECURITY_GROUP_IDS }}
           aws-resource-tags: >
             [
