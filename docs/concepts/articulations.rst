@@ -273,7 +273,11 @@ A robust pattern is:
 
         # Skip free/ball joints because their q entries include quaternion coordinates.
         jt = joint_type[joint_id]
-        if jt == int(newton.JointType.FREE) or jt == int(newton.JointType.BALL):
+        if (
+            jt == int(newton.JointType.FREE)
+            or jt == int(newton.JointType.BALL)
+            or jt == int(newton.JointType.DISTANCE)
+        ):
             return
 
         # For scalar joints, q coordinates align with this joint's DoF count.
