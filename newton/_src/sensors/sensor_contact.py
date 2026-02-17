@@ -150,6 +150,7 @@ class SensorContact:
     def __init__(
         self,
         model: Model,
+        *,
         sensing_obj_bodies: str | list[str] | list[int] | None = None,
         sensing_obj_shapes: str | list[str] | list[int] | None = None,
         counterpart_bodies: str | list[str] | list[int] | None = None,

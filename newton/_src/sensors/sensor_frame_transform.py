@@ -124,6 +124,7 @@ class SensorFrameTransform:
         model: Model,
         shapes: str | list[str] | list[int],
         reference_sites: str | list[str] | list[int],
+        *,
         verbose: bool | None = None,
     ):
         """Initialize the SensorFrameTransform.

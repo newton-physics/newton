@@ -112,6 +112,7 @@ class SensorIMU:
         self,
         model: Model,
         sites: str | list[str] | list[int],
+        *,
         verbose: bool | None = None,
         request_state_attributes: bool = True,
     ):

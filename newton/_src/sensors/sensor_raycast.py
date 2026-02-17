@@ -81,6 +81,7 @@ class SensorRaycast:
         fov_radians: float,
         width: int,
         height: int,
+        *,
         max_distance: float = 1000.0,
     ):
         """Initialize a SensorRaycast.
@@ -154,6 +155,7 @@ class SensorRaycast:
     def eval(
         self,
         state: State,
+        *,
         include_particles: bool = False,
         particle_march_step: float | None = None,
     ):

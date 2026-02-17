@@ -117,7 +117,7 @@ class SensorTiledCamera:
         colors_per_shape: bool = False
         backface_culling: bool = True
 
-    def __init__(self, model: Model, options: Options | None = None):
+    def __init__(self, model: Model, *, options: Options | None = None):
         self.model = model
 
         self.render_context = RenderContext(
