@@ -28,7 +28,7 @@ if USD_AVAILABLE:
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-class TestViewerUSDLogPointsColors(unittest.TestCase):
+class TestViewerUSD(unittest.TestCase):
     def _make_viewer(self):
         temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
         temp_file.close()
