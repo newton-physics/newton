@@ -1510,8 +1510,8 @@ def update_geom_properties_kernel(
     geom_dataid: wp.array(dtype=int),
     mesh_pos: wp.array(dtype=wp.vec3),
     mesh_quat: wp.array(dtype=wp.quat),
-    shape_torsional_friction: wp.array(dtype=float),
-    shape_rolling_friction: wp.array(dtype=float),
+    shape_mu_torsional: wp.array(dtype=float),
+    shape_mu_rolling: wp.array(dtype=float),
     shape_geom_solimp: wp.array(dtype=vec5),
     shape_geom_solmix: wp.array(dtype=float),
     shape_geom_gap: wp.array(dtype=float),
@@ -1542,8 +1542,8 @@ def update_geom_properties_kernel(
 
     # update friction (slide, torsion, roll)
     mu = shape_mu[shape_idx]
-    torsional = shape_torsional_friction[shape_idx]
-    rolling = shape_rolling_friction[shape_idx]
+    torsional = shape_mu_torsional[shape_idx]
+    rolling = shape_mu_rolling[shape_idx]
     geom_friction[world, geom_idx] = wp.vec3f(mu, torsional, rolling)
 
     # update geom_solref (timeconst, dampratio) using stiffness and damping

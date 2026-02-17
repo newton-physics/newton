@@ -215,12 +215,12 @@ class Model:
         """Shape coefficient of friction [dimensionless], shape [shape_count], float."""
         self.shape_material_restitution = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
-        self.shape_material_torsional_friction = None
+        self.shape_material_mu_torsional = None
         """Shape torsional friction coefficient [dimensionless] (resistance to spinning at contact point), shape [shape_count], float."""
-        self.shape_material_rolling_friction = None
+        self.shape_material_mu_rolling = None
         """Shape rolling friction coefficient [dimensionless] (resistance to rolling motion), shape [shape_count], float."""
-        self.shape_material_k_hydro = None
-        """Shape hydroelastic stiffness coefficient [N/m³], shape [shape_count], float.
+        self.shape_material_kh = None
+        """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Contact stiffness is computed as ``area * k_hydro``, yielding an effective spring constant [N/m]."""
         self.shape_contact_margin = None
         """Shape contact margin for collision detection [m], shape [shape_count], float."""
@@ -284,15 +284,15 @@ class Model:
         # Local AABB and voxel grid for contact reduction
         # Note: These are stored in Model (not Contacts) because they are static geometry properties
         # computed once during finalization, not per-frame contact data.
-        self.shape_local_aabb_lower = None
+        self.shape_collision_aabb_lower = None
         """Local-space AABB lower bound [m] for each shape, shape [shape_count, 3], float.
         Computed from base geometry only (excludes thickness - thickness is added during contact
         margin calculations). Used for voxel-based contact reduction."""
-        self.shape_local_aabb_upper = None
+        self.shape_collision_aabb_upper = None
         """Local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Computed from base geometry only (excludes thickness - thickness is added during contact
         margin calculations). Used for voxel-based contact reduction."""
-        self.shape_voxel_resolution = None
+        self._shape_voxel_resolution = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
         self.spring_indices = None
@@ -719,9 +719,9 @@ class Model:
         self.attribute_frequency["shape_material_ka"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_mu"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_restitution"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_torsional_friction"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_rolling_friction"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_material_k_hydro"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_mu_torsional"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_mu_rolling"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_material_kh"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_contact_margin"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = Model.AttributeFrequency.SHAPE
@@ -862,12 +862,13 @@ class Model:
         the model for subsequent use by :meth:`collide`.
 
         """
-        from .collide import BroadPhaseMode, CollisionPipeline  # noqa: PLC0415
+        from .collide import CollisionPipeline  # noqa: PLC0415
 
-        self._collision_pipeline = CollisionPipeline(self, broad_phase_mode=BroadPhaseMode.EXPLICIT)
+        self._collision_pipeline = CollisionPipeline(self, broad_phase_mode="explicit")
 
     def contacts(
         self: Model,
+        collision_pipeline: CollisionPipeline | None = None,
     ) -> Contacts:
         """
         Create and return a :class:`Contacts` object for this model.
@@ -881,37 +882,43 @@ class Model:
             from ``ShapeConfig.contact_margin`` during model building. If a shape doesn't specify a contact margin,
             it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
             :meth:`ModelBuilder.finalize`.
-
         Returns:
             Contacts: The contact object containing collision information.
         """
+        if collision_pipeline is not None:
+            self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
             self._init_collision_pipeline()
 
-        contacts = self._collision_pipeline.contacts()
-        return contacts
+        return self._collision_pipeline.contacts()
 
     def collide(
         self,
         state: State,
-        contacts: Contacts,
-    ):
+        contacts: Contacts | None = None,
+        *,
+        collision_pipeline: CollisionPipeline | None = None,
+    ) -> Contacts:
         """
         Generate contact points for the particles and rigid bodies in the model using the default collision
         pipeline.
 
         Args:
             state (State): The current simulation state.
-            contacts (Contacts): The contacts buffer to populate (will be cleared first).
+            contacts (Contacts | None): The contacts buffer to populate (will be cleared first). If None, a new
+                contacts buffer is allocated via :meth:`contacts`.
+            collision_pipeline (CollisionPipeline | None): Optional collision pipeline override.
         """
-
+        if collision_pipeline is not None:
+            self._collision_pipeline = collision_pipeline
         if self._collision_pipeline is None:
-            raise ValueError(
-                "Model does not have a collision pipeline. Call model.contacts() "
-                "or use your collision pipeline directly: CollisionPipeline.collide(state, contacts)."
-            )
+            self._init_collision_pipeline()
+
+        if contacts is None:
+            contacts = self._collision_pipeline.contacts()
 
         self._collision_pipeline.collide(state, contacts)
+        return contacts
 
     def request_state_attributes(self, *attributes: str) -> None:
         """
