@@ -881,8 +881,8 @@ def create_mesh_capsule(
                 uvs.append([u, v])
 
     nv = len(positions)
-    for i in range(segments + 1):
-        for j in range(segments + 1):
+    for i in range(segments):
+        for j in range(segments):
             first = (i * (segments + 1) + j) % nv
             second = (first + segments + 1) % nv
             indices.extend([first, second, (first + 1) % nv, second, (second + 1) % nv, (first + 1) % nv])
