@@ -692,15 +692,15 @@ class ViewerBase:
 
         elif geo_type == newton.GeoType.CAPSULE:
             radius, half_height = geo_scale[:2]
-            mesh = newton.Mesh.create_capsule(radius, half_height, up_axis=2, compute_inertia=False)
+            mesh = newton.Mesh.create_capsule(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
 
         elif geo_type == newton.GeoType.CYLINDER:
             radius, half_height = geo_scale[:2]
-            mesh = newton.Mesh.create_cylinder(radius, half_height, up_axis=2, compute_inertia=False)
+            mesh = newton.Mesh.create_cylinder(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
 
         elif geo_type == newton.GeoType.CONE:
             radius, half_height = geo_scale[:2]
-            mesh = newton.Mesh.create_cone(radius, half_height, up_axis=2, compute_inertia=False)
+            mesh = newton.Mesh.create_cone(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
 
         elif geo_type == newton.GeoType.BOX:
             if len(geo_scale) == 1:

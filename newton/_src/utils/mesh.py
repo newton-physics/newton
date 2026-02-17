@@ -843,7 +843,10 @@ def create_mesh_capsule(
     uvs = [] if compute_uvs else None
     indices = []
 
-    x_dir, y_dir, z_dir = ((1, 2, 0), (2, 0, 1), (1, 2, 0))[up_axis]
+    if up_axis not in (0, 1, 2):
+        raise ValueError("up_axis must be between 0 and 2")
+
+    x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
     up_vector = np.zeros(3, dtype=np.float32)
     up_vector[up_axis] = half_height
 
@@ -862,10 +865,9 @@ def create_mesh_capsule(
             x = sin_phi * sin_theta
 
             xyz = np.array((x, y, z), dtype=np.float32)
-            x, y, z = xyz[x_dir], xyz[y_dir], xyz[z_dir]
-            normal = np.array((x, y, z), dtype=np.float32)
+            normal = xyz[[x_dir, y_dir, z_dir]]
             pos = normal * radius
-            if j < segments // 2:
+            if normal[up_axis] >= 0.0:
                 pos += up_vector
             else:
                 pos -= up_vector

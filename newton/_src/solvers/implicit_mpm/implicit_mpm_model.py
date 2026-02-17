@@ -164,7 +164,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
         mesh = newton.Mesh.create_capsule(
             radius,
             half_height,
-            up_axis=2,
+            up_axis=newton.Axis.Z,
             compute_normals=False,
             compute_uvs=False,
             compute_inertia=False,
@@ -176,7 +176,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
         mesh = newton.Mesh.create_cylinder(
             radius,
             half_height,
-            up_axis=2,
+            up_axis=newton.Axis.Z,
             compute_normals=False,
             compute_uvs=False,
             compute_inertia=False,
@@ -188,7 +188,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
         mesh = newton.Mesh.create_cone(
             radius,
             half_height,
-            up_axis=2,
+            up_axis=newton.Axis.Z,
             compute_normals=False,
             compute_uvs=False,
             compute_inertia=False,

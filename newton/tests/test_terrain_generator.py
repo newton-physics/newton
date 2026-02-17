@@ -31,11 +31,29 @@ from newton.tests.unittest_utils import assert_np_equal
 
 
 def create_mesh_heightfield(*args, **kwargs):
+    """Create heightfield mesh vertices and indices via Mesh factory.
+
+    Args:
+        *args: Positional arguments forwarded to Mesh.create_heightfield.
+        **kwargs: Keyword arguments forwarded to Mesh.create_heightfield.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Vertices and flattened triangle indices.
+    """
     mesh = Mesh.create_heightfield(*args, compute_inertia=False, **kwargs)
     return mesh.vertices, mesh.indices
 
 
 def create_mesh_terrain(*args, **kwargs):
+    """Create terrain mesh vertices and indices via Mesh factory.
+
+    Args:
+        *args: Positional arguments forwarded to Mesh.create_terrain.
+        **kwargs: Keyword arguments forwarded to Mesh.create_terrain.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Vertices and flattened triangle indices.
+    """
     mesh = Mesh.create_terrain(*args, compute_inertia=False, **kwargs)
     return mesh.vertices, mesh.indices
 
