@@ -1576,7 +1576,9 @@ class TestMenagerieBase(unittest.TestCase):
     debug_visual: bool = False
     debug_view_newton: bool = False  # False=Native, True=Newton
 
-    # Skip visual-only geoms on both sides for physics-only comparison.
+    # Skip visual-only geoms on the native side via compiler discardvisual="true".
+    # Note: discardvisual may also strip some collision geoms on bodies with many visual
+    # meshes (seen with Apollo). Models affected by this need per-test geom skips.
     discard_visual: bool = True
 
     # Backfill computed model fields from native to eliminate compilation diffs.
