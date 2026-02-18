@@ -1923,6 +1923,7 @@ class SolverMuJoCo(SolverBase):
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
         include_sites: bool = True,
+        skip_visual_only_geoms: bool = True,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -2083,6 +2084,7 @@ class SolverMuJoCo(SolverBase):
                     target_filename=save_to_mjcf,
                     ls_parallel=ls_parallel,
                     include_sites=include_sites,
+                    skip_visual_only_geoms=skip_visual_only_geoms,
                 )
         self.update_data_interval = update_data_interval
         self._step = 0

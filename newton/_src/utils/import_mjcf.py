@@ -111,12 +111,21 @@ def _load_and_expand_mjcf(
         # Recursive call - handles both file paths and XML content
         included_root, included_base_dir = _load_and_expand_mjcf(resolved, path_resolver, included_files)
 
-        # Resolve all file attributes in included content to absolute paths
-        # This ensures assets from included files are resolved relative to their source
+        # Resolve all file attributes in included content to absolute paths.
+        # This ensures assets from included files are resolved relative to their source.
+        # Mesh/hfield files use <compiler meshdir>, textures use <compiler texturedir>.
+        included_compiler = included_root.find("compiler")
+        included_meshdir = included_compiler.attrib.get("meshdir", ".") if included_compiler is not None else "."
+        included_texturedir = (
+            included_compiler.attrib.get("texturedir", included_meshdir) if included_compiler is not None else "."
+        )
+        _asset_dir_tags = {"mesh": included_meshdir, "hfield": included_meshdir, "texture": included_texturedir}
         for elem in included_root.iter():
             file_attr = elem.get("file")
             if file_attr and not os.path.isabs(file_attr):
-                elem.set("file", path_resolver(included_base_dir, file_attr))
+                asset_dir = _asset_dir_tags.get(elem.tag, ".")
+                resolved_path = os.path.join(asset_dir, file_attr) if asset_dir != "." else file_attr
+                elem.set("file", path_resolver(included_base_dir, resolved_path))
 
         # Replace include element with children of included root
         idx = list(parent).index(include)

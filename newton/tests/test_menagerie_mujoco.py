@@ -59,6 +59,7 @@ import re
 import time
 import unittest
 from abc import abstractmethod
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -739,6 +740,159 @@ def compare_geom_sizes(
                     rtol=0,
                     err_msg=f"geom_size[{world},{geom}] (type={gtype}) mismatch",
                 )
+
+
+def compare_geom_fields_unordered(
+    newton_mjw: Any,
+    native_mjw: Any,
+    skip_fields: set[str] | None = None,
+    tol: float = 1e-6,
+) -> None:
+    """Compare geom fields by matching geoms across models regardless of ordering.
+
+    Matches geoms by (body_id, geom_type) pairs within each body, then compares
+    physics-relevant fields for each matched pair. This handles models where
+    Newton and native MuJoCo order geoms differently (e.g. colliders first vs
+    MJCF order).
+
+    Args:
+        newton_mjw: Newton's mujoco_warp model.
+        native_mjw: Native mujoco_warp model.
+        skip_fields: Fields to skip (uses substring matching like the main comparison).
+        tol: Tolerance for floating-point comparisons.
+    """
+    skip_fields = skip_fields or set()
+
+    newton_bodyid = newton_mjw.geom_bodyid.numpy()  # (ngeom,)
+    native_bodyid = native_mjw.geom_bodyid.numpy()
+    newton_type = newton_mjw.geom_type.numpy()  # (ngeom,)
+    native_type = native_mjw.geom_type.numpy()
+
+    assert len(newton_bodyid) == len(native_bodyid), (
+        f"ngeom mismatch: newton={len(newton_bodyid)} vs native={len(native_bodyid)}"
+    )
+
+    ngeom = len(newton_bodyid)
+
+    # Build matching: for each body, collect geom indices grouped by type.
+    # Then match in order within each (body, type) group.
+    def _group_by_body_type(bodyid, gtype):
+        groups = defaultdict(list)
+        for i in range(len(bodyid)):
+            groups[(int(bodyid[i]), int(gtype[i]))].append(i)
+        return groups
+
+    newton_groups = _group_by_body_type(newton_bodyid, newton_type)
+    native_groups = _group_by_body_type(native_bodyid, native_type)
+
+    # Verify same set of (body, type) keys
+    assert newton_groups.keys() == native_groups.keys(), (
+        f"geom (body, type) groups differ:\n"
+        f"  newton-only: {newton_groups.keys() - native_groups.keys()}\n"
+        f"  native-only: {native_groups.keys() - native_groups.keys()}"
+    )
+
+    # Build index mapping: newton_idx -> native_idx
+    newton_to_native = np.full(ngeom, -1, dtype=np.int32)
+    for key in newton_groups:
+        n_indices = newton_groups[key]
+        nat_indices = native_groups[key]
+        assert len(n_indices) == len(nat_indices), (
+            f"geom count mismatch for (body={key[0]}, type={key[1]}): "
+            f"newton={len(n_indices)} vs native={len(nat_indices)}"
+        )
+        for ni, nati in zip(n_indices, nat_indices, strict=True):
+            newton_to_native[ni] = nati
+
+    assert np.all(newton_to_native >= 0), "Failed to match all geoms"
+
+    # Compare fields using the mapping
+    GEOM_PLANE = 0
+
+    geom_fields = [
+        "geom_pos",
+        "geom_quat",
+        "geom_friction",
+        "geom_margin",
+        "geom_gap",
+        "geom_solmix",
+        "geom_solref",
+        "geom_solimp",
+    ]
+
+    for field_name in geom_fields:
+        if any(s in field_name for s in skip_fields):
+            continue
+        newton_arr = getattr(newton_mjw, field_name, None)
+        native_arr = getattr(native_mjw, field_name, None)
+        if newton_arr is None or native_arr is None:
+            continue
+        newton_np = newton_arr.numpy()
+        native_np = native_arr.numpy()
+
+        if newton_np.ndim >= 2 and newton_np.shape[0] == newton_mjw.nworld:
+            # Batched: (nworld, ngeom, ...)
+            for w in range(newton_np.shape[0]):
+                reordered_native = native_np[w][newton_to_native]
+                for g in range(ngeom):
+                    if newton_type[g] == GEOM_PLANE and field_name in ("geom_pos", "geom_quat"):
+                        continue  # plane pos/quat may differ cosmetically
+                    np.testing.assert_allclose(
+                        newton_np[w, g],
+                        reordered_native[g],
+                        atol=tol,
+                        rtol=0,
+                        err_msg=f"{field_name}[world={w}, geom={g}]",
+                    )
+        else:
+            # Non-batched: (ngeom, ...)
+            reordered_native = native_np[newton_to_native]
+            for g in range(ngeom):
+                if newton_type[g] == GEOM_PLANE and field_name in ("geom_pos", "geom_quat"):
+                    continue
+                np.testing.assert_allclose(
+                    newton_np[g],
+                    reordered_native[g],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"{field_name}[geom={g}]",
+                )
+
+    # Compare geom_size with type-specific semantics (reusing compare_geom_sizes logic)
+    if not any("geom_size" in s for s in skip_fields):
+        newton_size = newton_mjw.geom_size.numpy()
+        native_size = native_mjw.geom_size.numpy()
+        for w in range(newton_size.shape[0]):
+            for g in range(ngeom):
+                gtype = newton_type[g]
+                n_sz = newton_size[w, g]
+                nat_sz = native_size[w, newton_to_native[g]]
+                if gtype == GEOM_PLANE:
+                    continue
+                elif gtype == 2:  # SPHERE
+                    np.testing.assert_allclose(
+                        n_sz[0],
+                        nat_sz[0],
+                        atol=tol,
+                        rtol=0,
+                        err_msg=f"geom_size[{w},{g}] (SPHERE) radius",
+                    )
+                elif gtype in (3, 5):  # CAPSULE, CYLINDER
+                    np.testing.assert_allclose(
+                        n_sz[:2],
+                        nat_sz[:2],
+                        atol=tol,
+                        rtol=0,
+                        err_msg=f"geom_size[{w},{g}] (CAPSULE/CYLINDER)",
+                    )
+                else:
+                    np.testing.assert_allclose(
+                        n_sz,
+                        nat_sz,
+                        atol=tol,
+                        rtol=0,
+                        err_msg=f"geom_size[{w},{g}] (type={gtype})",
+                    )
 
 
 def compare_jnt_range(
@@ -1601,9 +1755,14 @@ class TestMenagerieBase(unittest.TestCase):
     debug_view_newton: bool = False  # False=Native, True=Newton
 
     # Skip visual-only geoms on the native side via compiler discardvisual="true".
-    # Note: discardvisual may also strip some collision geoms on bodies with many visual
-    # meshes (seen with Apollo). Models affected by this need per-test geom skips.
+    # Note: discardvisual may also strip collision geoms that have contype=conaffinity=0
+    # and are not referenced in <pair>/<exclude>/sensor elements (seen with Apollo).
+    # For such models, set parse_visuals=True and discard_visual=False instead.
     discard_visual: bool = True
+
+    # Parse visual geoms in Newton. When True, Newton includes visual geoms so both
+    # sides can be compared without discardvisual. Set discard_visual=False alongside.
+    parse_visuals: bool = False
 
     # Backfill computed model fields from native to eliminate compilation diffs.
     # See MODEL_BACKFILL_FIELDS for the default set; override backfill_fields per-robot.
@@ -1756,7 +1915,7 @@ class TestMenagerieBase(unittest.TestCase):
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-        newton_solver = SolverMuJoCo(newton_model)
+        newton_solver = SolverMuJoCo(newton_model, skip_visual_only_geoms=not self.parse_visuals)
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
@@ -1801,9 +1960,15 @@ class TestMenagerieBase(unittest.TestCase):
                     ):
                         compare_solref_physics(newton_solver.mjw_model, native_mjw_model, solref_field)
 
-        # Compare geom sizes with type-specific semantics (requires matching geom counts)
+        # Compare geom fields: use unordered matching when geom ordering may differ
+        # (e.g. parse_visuals=True), otherwise use direct index comparison
         if newton_solver.mjw_model.ngeom == native_mjw_model.ngeom:
-            compare_geom_sizes(newton_solver.mjw_model, native_mjw_model)
+            if self.parse_visuals:
+                compare_geom_fields_unordered(
+                    newton_solver.mjw_model, native_mjw_model, skip_fields=self.model_skip_fields
+                )
+            else:
+                compare_geom_sizes(newton_solver.mjw_model, native_mjw_model)
 
         # Compare joint ranges only for limited joints (unlimited joints may differ in representation)
         compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
@@ -2061,6 +2226,7 @@ class TestMenagerieMJCF(TestMenagerieBase):
             self.mjcf_path,
             num_worlds=self.num_worlds,
             add_ground=False,  # scene.xml includes ground plane
+            parse_visuals=self.parse_visuals,
         )
 
 
@@ -2605,21 +2771,28 @@ class TestMenagerie_StanfordTidybot_USD(TestMenagerieUSD):
 
 
 class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
-    """Apptronik Apollo humanoid."""
+    """Apptronik Apollo humanoid.
+
+    Apollo uses contype=conaffinity=0 on all geoms (including collision primitives)
+    and relies on explicit <pair> elements for contacts. This means discardvisual
+    incorrectly strips unreferenced collision geoms. We parse visual geoms on both
+    sides to get matching geom counts.
+    """
 
     robot_folder = "apptronik_apollo"
     backfill_model = True
+    discard_visual = False
+    parse_visuals = True
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "body_geomadr",  # visual geom count differs (Newton includes visual geoms)
+        "body_geomadr",  # geom ordering differs (compare_geom_fields_unordered handles content)
         "body_geomnum",
         "body_invweight0",  # differs due to inertia re-diagonalization
         "dof_invweight0",
-        "ngeom",  # Newton includes visual geoms → different geom count
-        "geom_",  # all geom-indexed fields have shape mismatch due to visual geoms
+        "geom_",  # geom ordering differs; content checked by compare_geom_fields_unordered
         "mesh_",  # Newton doesn't pass meshes to MuJoCo spec
         "nmesh",
-        "pair_geom",  # collision pair geom indices differ due to geom count
-        "nxn_",  # broadphase pairs differ due to geom count
+        "pair_geom",  # geom indices differ due to ordering
+        "nxn_",  # broadphase pairs differ due to geom ordering
         "opt.iterations",  # Newton doesn't parse <option iterations/ls_iterations> from MJCF
         "opt.ls_iterations",
         "opt.timestep",  # Newton doesn't parse <option timestep> from MJCF
