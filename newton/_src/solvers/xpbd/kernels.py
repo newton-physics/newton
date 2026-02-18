@@ -253,37 +253,49 @@ def solve_particle_particle_contacts(
     query = wp.hash_grid_query(grid, x, radius + max_radius + k_cohesion)
     index = int(0)
 
-    delta = wp.vec3(0.0)
+    delta_host = wp.vec3(0.0)
 
     while wp.hash_grid_query_next(query, index):
-        if (particle_flags[index] & ParticleFlags.ACTIVE) != 0 and index != i:
-            # compute distance to point
-            n = x - particle_x[index]
-            d = wp.length(n)
-            err = d - radius - particle_radius[index]
+        if index <= i:
+            continue
+        if (particle_flags[index] & ParticleFlags.ACTIVE) == 0:
+            continue
 
-            # compute inverse masses
-            w2 = particle_invmass[index]
-            denom = w1 + w2
+        # compute distance to point
+        n = x - particle_x[index]
+        d = wp.length(n)
+        err = d - radius - particle_radius[index]
 
-            if err <= k_cohesion and denom > 0.0:
-                n = n / d
-                vrel = v - particle_v[index]
+        # compute inverse masses
+        w2 = particle_invmass[index]
+        denom = w1 + w2
 
-                # normal
-                lambda_n = err
-                delta_n = n * lambda_n
+        if err > k_cohesion:
+            continue
+        if denom <= 0.0:
+            continue
 
-                # friction
-                vn = wp.dot(n, vrel)
-                vt = vrel - n * vn
+        # if err <= k_cohesion and denom > 0.0:
+        n = n / d
+        vrel = v - particle_v[index]
 
-                lambda_f = wp.max(k_mu * lambda_n, -wp.length(vt) * dt)
-                delta_f = wp.normalize(vt) * lambda_f
-                delta += (delta_f - delta_n) / denom
+        # normal
+        lambda_n = err
+        delta_n = n * lambda_n
 
-    wp.atomic_add(deltas, i, delta * w1 * relaxation)
+        # friction
+        vn = wp.dot(n, vrel)
+        vt = vrel - n * vn
 
+        lambda_f = wp.max(k_mu * lambda_n, -wp.length(vt) * dt)
+        delta_f = wp.normalize(vt) * lambda_f
+        delta = (delta_f - delta_n) / denom
+
+        # update friction for host and guest particles
+        delta_host += delta
+        wp.atomic_add(deltas, index, -delta * w2 * relaxation)
+
+    wp.atomic_add(deltas, i, delta_host * w1 * relaxation)
 
 @wp.kernel
 def solve_springs(
