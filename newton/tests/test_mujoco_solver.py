@@ -2724,7 +2724,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         shape_thickness = model.shape_thickness.numpy()
         geom_margin = solver.mjw_model.geom_margin.numpy()
         tested_count = 0
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = to_newton[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2745,7 +2745,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Verify runtime update
         updated_margin = solver.mjw_model.geom_margin.numpy()
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = to_newton[world_idx, geom_idx]
                 if shape_idx < 0:
