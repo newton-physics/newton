@@ -1274,7 +1274,7 @@ class SolverMuJoCo(SolverBase):
                 name="autolimits",
                 frequency=AttributeFrequency.ONCE,
                 assignment=AttributeAssignment.MODEL,
-                dtype=bool,
+                dtype=wp.bool,
                 default=True,  # MuJoCo default: true
                 namespace="mujoco",
                 mjcf_value_transformer=parse_bool,
