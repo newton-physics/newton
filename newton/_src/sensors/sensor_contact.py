@@ -24,19 +24,6 @@ from ..sim import Contacts, Model
 from ..utils.selection import match_labels
 
 
-class MatchKind(Enum):
-    """Indicates the object type for a sensing object or a counterpart.
-
-    - MATCH_ANY indicates a wildcard counterpart
-    - SHAPE indicates a shape sensing object or counterpart
-    - BODY indicates a body sensing object or counterpart
-    """
-
-    MATCH_ANY = 0
-    SHAPE = 1
-    BODY = 2
-
-
 # TODO: merge with broadphase_common.binary_search
 @wp.func
 def bisect_shape_pairs(
@@ -147,6 +134,18 @@ class SensorContact:
         ValueError: If the configuration of sensing/counterpart objects is invalid.
     """
 
+    class MatchKind(Enum):
+        """Indicates the object type for a sensing object or a counterpart.
+
+        - MATCH_ANY indicates a wildcard counterpart
+        - SHAPE indicates a shape sensing object or counterpart
+        - BODY indicates a body sensing object or counterpart
+        """
+
+        MATCH_ANY = 0
+        SHAPE = 1
+        BODY = 2
+
     def __init__(
         self,
         model: Model,
@@ -188,9 +187,9 @@ class SensorContact:
         (n_sensing_objs, max_active_counterparts) if it is True."""
         self.reading_indices: list[list[int]]
         """List of active counterpart indices per sensing object."""
-        self.sensing_objs: list[tuple[int, MatchKind]]
+        self.sensing_objs: list[tuple[int, SensorContact.MatchKind]]
         """Index and kind of each sensing object, length n_sensing_objs. Corresponds to the rows of the force matrix."""
-        self.counterparts: list[tuple[int, MatchKind]]
+        self.counterparts: list[tuple[int, SensorContact.MatchKind]]
         """Index and kind of each counterpart, length n_counterparts. Corresponds to the columns of the force matrix,
         unless ``prune_noncolliding`` is True."""
 
@@ -289,7 +288,9 @@ class SensorContact:
             body = [tuple(body_shapes[b]) for b in body_idx]
             shape = [(s,) for s in shape_idx]
             match_kind = (
-                [MatchKind.MATCH_ANY] * has_matchany + [MatchKind.BODY] * len(body) + [MatchKind.SHAPE] * len(shape)
+                [SensorContact.MatchKind.MATCH_ANY] * has_matchany
+                + [SensorContact.MatchKind.BODY] * len(body)
+                + [SensorContact.MatchKind.SHAPE] * len(shape)
             )
             entities = [MatchAny] * has_matchany + body + shape
             indices = [MatchAny] * has_matchany + body_idx + shape_idx
@@ -315,7 +316,7 @@ class SensorContact:
         for sensing_obj_idx, sensing_obj in enumerate(sensing_objs):
             if sensing_obj is MatchAny:
                 raise ValueError("Sensing object cannot be MatchAny")
-            sens_counterparts: list[tuple[int, MatchKind], ...] = []
+            sens_counterparts: list[tuple[int, SensorContact.MatchKind], ...] = []
             reading_idx = 0
             for counterpart_idx, counterpart in enumerate(counterparts):
                 if counterpart is MatchAny:
