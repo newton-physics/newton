@@ -31,6 +31,7 @@ from ._src.geometry import (
     collide_sphere_sphere,
 )
 from ._src.geometry.inertia import compute_shape_inertia, transform_inertia
+from ._src.geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
 from ._src.geometry.narrow_phase import NarrowPhase
 from ._src.geometry.sdf_hydroelastic import HydroelasticSDF
 from ._src.geometry.sdf_utils import create_empty_sdf_data
@@ -42,6 +43,8 @@ __all__ = [
     "BroadPhaseSAP",
     "HydroelasticSDF",
     "NarrowPhase",
+    "box_sdf",
+    "capsule_sdf",
     "collide_box_box",
     "collide_capsule_box",
     "collide_capsule_capsule",
@@ -55,7 +58,12 @@ __all__ = [
     "collide_sphere_cylinder",
     "collide_sphere_sphere",
     "compute_shape_inertia",
+    "cone_sdf",
     "create_empty_sdf_data",
+    "cylinder_sdf",
+    "mesh_sdf",
+    "plane_sdf",
     "remesh_mesh",
+    "sphere_sdf",
     "transform_inertia",
 ]

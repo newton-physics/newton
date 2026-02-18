@@ -96,6 +96,25 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_geometry_sdf_helpers_exposed(self):
+        from newton.geometry import (  # noqa: PLC0415
+            box_sdf,
+            capsule_sdf,
+            cone_sdf,
+            cylinder_sdf,
+            mesh_sdf,
+            plane_sdf,
+            sphere_sdf,
+        )
+
+        assert callable(box_sdf)
+        assert callable(capsule_sdf)
+        assert callable(cone_sdf)
+        assert callable(cylinder_sdf)
+        assert callable(mesh_sdf)
+        assert callable(plane_sdf)
+        assert callable(sphere_sdf)
+
     def test_builder_urdf_signature_parity(self):
         from newton import ModelBuilder  # noqa: PLC0415
         from newton._src.utils.import_urdf import parse_urdf  # noqa: PLC0415

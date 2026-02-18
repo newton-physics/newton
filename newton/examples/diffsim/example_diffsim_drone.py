@@ -32,10 +32,7 @@ import warp.optim
 
 import newton
 import newton.examples
-
-# TODO: These should be imported from a public API once available
-# For now, implementing locally.
-from newton._src.geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
+from newton.geometry import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
 from newton.tests.unittest_utils import most
 from newton.utils import bourke_color_map
 
