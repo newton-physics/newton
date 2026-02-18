@@ -18,6 +18,7 @@ import warp as wp
 from .broad_phase_common import binary_search
 from .flags import ParticleFlags, ShapeFlags
 from .types import (
+    Axis,
     GeoType,
 )
 
@@ -144,6 +145,53 @@ def sphere_sdf(center: wp.vec3, radius: float, p: wp.vec3):
 
 
 @wp.func
+def _sdf_point_to_z_up(point: wp.vec3, up_axis: int):
+    if up_axis == int(Axis.X):
+        return wp.vec3(point[1], point[2], point[0])
+    if up_axis == int(Axis.Y):
+        return wp.vec3(point[0], point[2], point[1])
+    return point
+
+
+@wp.func
+def _sdf_capped_cone_z(bottom_radius: float, top_radius: float, half_height: float, point_z_up: wp.vec3):
+    q = wp.vec2(wp.length(wp.vec2(point_z_up[0], point_z_up[1])), point_z_up[2])
+    k1 = wp.vec2(top_radius, half_height)
+    k2 = wp.vec2(top_radius - bottom_radius, 2.0 * half_height)
+
+    if q[1] < 0.0:
+        ca = wp.vec2(q[0] - wp.min(q[0], bottom_radius), wp.abs(q[1]) - half_height)
+    else:
+        ca = wp.vec2(q[0] - wp.min(q[0], top_radius), wp.abs(q[1]) - half_height)
+
+    denom = wp.dot(k2, k2)
+    t = 0.0
+    if denom > 0.0:
+        t = wp.clamp(wp.dot(k1 - q, k2) / denom, 0.0, 1.0)
+    cb = q - k1 + k2 * t
+
+    sign = 1.0
+    if cb[0] < 0.0 and ca[1] < 0.0:
+        sign = -1.0
+
+    return sign * wp.sqrt(wp.min(wp.dot(ca, ca), wp.dot(cb, cb)))
+
+
+@wp.func
+def sdf_sphere(radius: float, point: wp.vec3):
+    """Compute signed distance to a sphere for ``Mesh.create_sphere`` geometry.
+
+    Args:
+        radius [m]: Sphere radius.
+        point [m]: Query point in the mesh local frame, shape [3], float.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    return sphere_sdf(wp.vec3(0.0, 0.0, 0.0), radius, point)
+
+
+@wp.func
 def sphere_sdf_grad(center: wp.vec3, radius: float, p: wp.vec3):
     return wp.normalize(p - center)
 
@@ -158,6 +206,22 @@ def box_sdf(upper: wp.vec3, p: wp.vec3):
     e = wp.vec3(wp.max(qx, 0.0), wp.max(qy, 0.0), wp.max(qz, 0.0))
 
     return wp.length(e) + wp.min(wp.max(qx, wp.max(qy, qz)), 0.0)
+
+
+@wp.func
+def sdf_box(hx: float, hy: float, hz: float, point: wp.vec3):
+    """Compute signed distance to a box for ``Mesh.create_box`` geometry.
+
+    Args:
+        hx [m]: Half-extent along X.
+        hy [m]: Half-extent along Y.
+        hz [m]: Half-extent along Z.
+        point [m]: Query point in the mesh local frame, shape [3], float.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    return box_sdf(wp.vec3(hx, hy, hz), point)
 
 
 @wp.func
@@ -202,6 +266,23 @@ def capsule_sdf(radius: float, half_height: float, p: wp.vec3):
 
 
 @wp.func
+def sdf_capsule(radius: float, half_height: float, point: wp.vec3, up_axis: int = int(Axis.Y)):
+    """Compute signed distance to a capsule for ``Mesh.create_capsule`` geometry.
+
+    Args:
+        radius [m]: Capsule radius.
+        half_height [m]: Half-height of the cylindrical section.
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        up_axis: Capsule long axis as ``int(newton.Axis.*)``.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    return capsule_sdf(radius, half_height, point_z_up)
+
+
+@wp.func
 def capsule_sdf_grad(radius: float, half_height: float, p: wp.vec3):
     if p[2] > half_height:
         return wp.normalize(wp.vec3(p[0], p[1], p[2] - half_height))
@@ -217,6 +298,32 @@ def cylinder_sdf(radius: float, half_height: float, p: wp.vec3):
     dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius
     dy = wp.abs(p[2]) - half_height
     return wp.min(wp.max(dx, dy), 0.0) + wp.length(wp.vec2(wp.max(dx, 0.0), wp.max(dy, 0.0)))
+
+
+@wp.func
+def sdf_cylinder(
+    radius: float,
+    half_height: float,
+    point: wp.vec3,
+    up_axis: int = int(Axis.Y),
+    top_radius: float = -1.0,
+):
+    """Compute signed distance to ``Mesh.create_cylinder`` geometry.
+
+    Args:
+        radius [m]: Bottom radius.
+        half_height [m]: Half-height along the cylinder axis.
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        up_axis: Cylinder long axis as ``int(newton.Axis.*)``.
+        top_radius [m]: Top radius. Negative values use ``radius``.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if top_radius < 0.0 or wp.abs(top_radius - radius) <= 1.0e-6:
+        return cylinder_sdf(radius, half_height, point_z_up)
+    return _sdf_capped_cone_z(radius, top_radius, half_height, point_z_up)
 
 
 @wp.func
@@ -285,6 +392,23 @@ def cone_sdf(radius: float, half_height: float, p: wp.vec3):
 
 
 @wp.func
+def sdf_cone(radius: float, half_height: float, point: wp.vec3, up_axis: int = int(Axis.Y)):
+    """Compute signed distance to a cone for ``Mesh.create_cone`` geometry.
+
+    Args:
+        radius [m]: Cone base radius.
+        half_height [m]: Half-height from center to apex/base.
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        up_axis: Cone long axis as ``int(newton.Axis.*)``.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    return _sdf_capped_cone_z(radius, 0.0, half_height, point_z_up)
+
+
+@wp.func
 def cone_sdf_grad(radius: float, half_height: float, p: wp.vec3):
     # Gradient for cone with apex at +half_height and base at -half_height
     r = wp.length(wp.vec3(p[0], p[1], 0.0))
@@ -310,6 +434,21 @@ def plane_sdf(width: float, length: float, p: wp.vec3):
         d = wp.max(wp.abs(p[0]) - width, wp.abs(p[1]) - length)
         return wp.max(d, wp.abs(p[2]))
     return p[2]
+
+
+@wp.func
+def sdf_plane(width: float, length: float, point: wp.vec3):
+    """Compute signed distance to a plane for ``Mesh.create_plane`` geometry.
+
+    Args:
+        width [m]: Plane width along X.
+        length [m]: Plane length along Y.
+        point [m]: Query point in the mesh local frame, shape [3], float.
+
+    Returns:
+        Signed distance [m], negative below the plane, zero on surface, positive above.
+    """
+    return plane_sdf(width * 0.5, length * 0.5, point)
 
 
 @wp.func
@@ -585,6 +724,21 @@ def mesh_sdf(mesh: wp.uint64, point: wp.vec3, max_dist: float):
         closest = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
         return wp.length(point - closest) * sign
     return max_dist
+
+
+@wp.func
+def sdf_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
+    """Compute signed distance to a triangle mesh.
+
+    Args:
+        mesh: Warp mesh ID (``mesh.id``).
+        point [m]: Query point in mesh local frame, shape [3], float.
+        max_dist [m]: Maximum query distance.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    return mesh_sdf(mesh, point, max_dist)
 
 
 @wp.func

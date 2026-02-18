@@ -32,7 +32,7 @@ import warp.optim
 
 import newton
 import newton.examples
-from newton.geometry import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, mesh_sdf, plane_sdf, sphere_sdf
+from newton.geometry import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_mesh, sdf_plane, sdf_sphere
 from newton.tests.unittest_utils import most
 from newton.utils import bourke_color_map
 
@@ -191,20 +191,20 @@ def collision_cost(
     d = 1e6
 
     if geo_type == newton.GeoType.SPHERE:
-        d = sphere_sdf(wp.vec3(), geo_scale[0], x_local)
+        d = sdf_sphere(geo_scale[0], x_local)
     elif geo_type == newton.GeoType.BOX:
-        d = box_sdf(geo_scale, x_local)
+        d = sdf_box(geo_scale[0], geo_scale[1], geo_scale[2], x_local)
     elif geo_type == newton.GeoType.CAPSULE:
-        d = capsule_sdf(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_capsule(geo_scale[0], geo_scale[1], x_local, int(newton.Axis.Z))
     elif geo_type == newton.GeoType.CYLINDER:
-        d = cylinder_sdf(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_cylinder(geo_scale[0], geo_scale[1], x_local, int(newton.Axis.Z))
     elif geo_type == newton.GeoType.CONE:
-        d = cone_sdf(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_cone(geo_scale[0], geo_scale[1], x_local, int(newton.Axis.Z))
     elif geo_type == newton.GeoType.MESH:
         mesh = shape_source_ptr[shape_index]
         min_scale = wp.min(geo_scale)
         max_dist = margin / min_scale
-        d = mesh_sdf(mesh, wp.cw_div(x_local, geo_scale), max_dist)
+        d = sdf_mesh(mesh, wp.cw_div(x_local, geo_scale), max_dist)
         d *= min_scale  # TODO fix this, mesh scaling needs to be handled properly
     elif geo_type == newton.GeoType.SDF:
         volume = shape_source_ptr[shape_index]
@@ -212,7 +212,7 @@ def collision_cost(
         nn = wp.vec3(0.0, 0.0, 0.0)
         d = wp.volume_sample_grad_f(volume, xpred_local, wp.Volume.LINEAR, nn)
     elif geo_type == newton.GeoType.PLANE:
-        d = plane_sdf(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_plane(geo_scale[0], geo_scale[1], x_local)
 
     d = wp.max(d, 0.0)
     if d < margin:

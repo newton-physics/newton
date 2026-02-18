@@ -21,8 +21,6 @@ newton.geometry
    :toctree: _generated
    :signatures: long
 
-   box_sdf
-   capsule_sdf
    collide_box_box
    collide_capsule_box
    collide_capsule_capsule
@@ -36,11 +34,13 @@ newton.geometry
    collide_sphere_cylinder
    collide_sphere_sphere
    compute_shape_inertia
-   cone_sdf
    create_empty_sdf_data
-   cylinder_sdf
-   mesh_sdf
-   plane_sdf
    remesh_mesh
-   sphere_sdf
+   sdf_box
+   sdf_capsule
+   sdf_cone
+   sdf_cylinder
+   sdf_mesh
+   sdf_plane
+   sdf_sphere
    transform_inertia
