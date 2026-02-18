@@ -511,9 +511,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Range: Compared via compare_jnt_range() which only checks limited joints
     # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
     "jnt_range",
-    # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
-    # re-diagonalization. Backfilled instead.
-    "actuator_acc0",
 }
 
 
@@ -1750,7 +1747,8 @@ class TestMenagerieBase(unittest.TestCase):
 
         # Compare reconstructed inertia tensors (principal + iquat -> full 3x3)
         # The eig3 determinant fix ensures these match even if iquat orientation differs
-        compare_inertia_tensors(newton_solver.mjw_model, native_mjw_model)
+        if not any("compare_inertia" in s for s in self.model_skip_fields):
+            compare_inertia_tensors(newton_solver.mjw_model, native_mjw_model)
 
         # Compare solref fields by physics equivalence (direct mode vs standard mode)
         for solref_field in [
@@ -1766,13 +1764,18 @@ class TestMenagerieBase(unittest.TestCase):
             if hasattr(newton_solver.mjw_model, solref_field) and hasattr(native_mjw_model, solref_field):
                 newton_arr = getattr(newton_solver.mjw_model, solref_field)
                 native_arr = getattr(native_mjw_model, solref_field)
-                # Only compare if both have data
+                # Only compare if both have data and shapes match (geom counts may differ)
                 if newton_arr is not None and native_arr is not None:
-                    if hasattr(newton_arr, "shape") and newton_arr.shape[0] > 0:
+                    if (
+                        hasattr(newton_arr, "shape")
+                        and newton_arr.shape == native_arr.shape
+                        and newton_arr.shape[0] > 0
+                    ):
                         compare_solref_physics(newton_solver.mjw_model, native_mjw_model, solref_field)
 
-        # Compare geom sizes with type-specific semantics
-        compare_geom_sizes(newton_solver.mjw_model, native_mjw_model)
+        # Compare geom sizes with type-specific semantics (requires matching geom counts)
+        if newton_solver.mjw_model.ngeom == native_mjw_model.ngeom:
+            compare_geom_sizes(newton_solver.mjw_model, native_mjw_model)
 
         # Compare joint ranges only for limited joints (unlimited joints may differ in representation)
         compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
@@ -2304,6 +2307,9 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     # Together these give bit-identical results, so no tolerance overrides needed.
     backfill_model = True
     use_split_pipeline = True
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
+        "actuator_acc0",  # derived from mass matrix + actuator moment; differs due to inertia re-diag
+    }
 
 
 class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
@@ -2574,11 +2580,14 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
+    backfill_model = True
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
         "body_geomadr",  # visual geom count differs (Newton includes visual geoms)
         "body_geomnum",
         "body_invweight0",  # differs due to inertia re-diagonalization
         "dof_invweight0",
+        "ngeom",  # Newton includes visual geoms → different geom count
+        "geom_",  # all geom-indexed fields have shape mismatch due to visual geoms
         "cam_",  # Newton doesn't parse cameras from MJCF
         "ncam",
         "sensor",  # Newton doesn't parse sensors from MJCF
@@ -2586,6 +2595,22 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "collision_sensor",
         "nsite",  # Newton doesn't parse sites from MJCF
         "site_",
+        "mesh_",  # Newton doesn't pass meshes to MuJoCo spec
+        "nmesh",
+        "mat_",  # material count differs
+        "nmat",
+        "pair_geom",  # collision pair geom indices differ due to geom count
+        "nxn_",  # broadphase pairs differ due to geom count
+        "opt.iterations",  # Newton doesn't parse <option iterations/ls_iterations> from MJCF
+        "opt.ls_iterations",
+        "opt.timestep",  # Newton doesn't parse <option timestep> from MJCF
+        "stat",  # meaninertia differs due to inertia re-diagonalization
+        "nmaxpolygon",  # mesh-related (Newton doesn't pass meshes)
+        "nmaxmeshdeg",
+        "body_tree",  # tuple comparison; content equivalent but objects differ
+        "qLD_updates",
+        "compare_inertia",  # zero-mass bodies cause large inertia reconstruction diffs
+        "actuator_acc0",  # derived from mass matrix + actuator moment; differs due to inertia
     }
 
 
