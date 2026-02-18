@@ -995,10 +995,6 @@ class SolverMuJoCo(SolverBase):
                 raise NotImplementedError("Auto boolean values are not supported at the moment.")
             return s in ("true", "1")
 
-        def parse_bool_int(value: Any, context: dict[str, Any] | None = None) -> int:
-            """Parse MJCF/USD boolean values to int (false=0, true=1)."""
-            return int(parse_bool(value, context))
-
         def get_usd_range_if_authored(prim, range_attr_name: str) -> tuple[float, float] | None:
             """Return (min, max) for an authored USD range or None if no bounds are authored."""
             min_attr = prim.GetAttribute(f"{range_attr_name}:min")
@@ -1278,10 +1274,10 @@ class SolverMuJoCo(SolverBase):
                 name="autolimits",
                 frequency=AttributeFrequency.ONCE,
                 assignment=AttributeAssignment.MODEL,
-                dtype=wp.int32,
-                default=1,  # MuJoCo default: true
+                dtype=bool,
+                default=True,  # MuJoCo default: true
                 namespace="mujoco",
-                mjcf_value_transformer=parse_bool_int,
+                mjcf_value_transformer=parse_bool,
             )
         )
 
