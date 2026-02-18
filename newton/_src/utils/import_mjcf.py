@@ -2103,6 +2103,16 @@ def parse_mjcf(
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
 
+            # Set implicit type defaults per actuator shortcut (MuJoCo sets these in user_api.cc).
+            # Only override if the XML didn't explicitly specify the attribute.
+            shortcut_defaults = {
+                "position": {"mujoco:actuator_biastype": 1},  # affine
+                "velocity": {"mujoco:actuator_biastype": 1},  # affine
+            }
+            for key, value in shortcut_defaults.get(actuator_type, {}).items():
+                if key not in parsed_attrs:
+                    parsed_attrs[key] = value
+
             # Build full values dict
             actuator_values: dict[str, Any] = {}
             for attr in builder_custom_attr_actuator:

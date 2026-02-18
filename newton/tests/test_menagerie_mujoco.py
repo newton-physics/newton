@@ -152,6 +152,7 @@ def create_newton_model_from_mjcf(
         str(mjcf_path),
         parse_visuals=parse_visuals,
         ensure_nonstatic_links=False,
+        ctrl_direct=True,
     )
 
     # Create main builder and replicate
@@ -2533,7 +2534,19 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """Apptronik Apollo humanoid."""
 
     robot_folder = "apptronik_apollo"
-    skip_reason = "Not yet verified"
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
+        "body_geomadr",  # visual geom count differs (Newton includes visual geoms)
+        "body_geomnum",
+        "body_invweight0",  # differs due to inertia re-diagonalization
+        "dof_invweight0",
+        "cam_",  # Newton doesn't parse cameras from MJCF
+        "ncam",
+        "sensor",  # Newton doesn't parse sensors from MJCF
+        "nsensor",
+        "collision_sensor",
+        "nsite",  # Newton doesn't parse sites from MJCF
+        "site_",
+    }
 
 
 class TestMenagerie_ApptronikApollo_USD(TestMenagerieUSD):
