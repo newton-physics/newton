@@ -200,9 +200,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.collision_pipeline.contacts()
+        self.contacts = self.model.contacts()
 
         rot_axes = [[0, 1, 0]] * len(right_side) + [[0, -1, 0]] * len(left_side)
 
@@ -244,7 +242,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.collision_pipeline.collide(self.state_0, self.contacts)
+        self.model.collide(self.state_0, self.contacts)
         self.solver.rebuild_bvh(self.state_0)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
