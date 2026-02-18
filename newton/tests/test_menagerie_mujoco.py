@@ -2611,7 +2611,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "ncam",
         "sensor",  # Newton doesn't parse sensors from MJCF
         "nsensor",
-        "collision_sensor",
         "nsite",  # Newton doesn't parse sites from MJCF
         "site_",
         "mesh_",  # Newton doesn't pass meshes to MuJoCo spec
@@ -2619,7 +2618,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "mat_",  # material count differs
         "nmat",
         "pair_geom",  # collision pair geom indices differ due to geom count
-        "pair_solreffriction",  # Newton sets default pair_solreffriction; native has [0,0]
         "nxn_",  # broadphase pairs differ due to geom count
         "opt.iterations",  # Newton doesn't parse <option iterations/ls_iterations> from MJCF
         "opt.ls_iterations",
