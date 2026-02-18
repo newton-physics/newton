@@ -892,7 +892,7 @@ def mesh_vs_convex_midphase(
 def find_pair_from_cumulative_index(
     global_idx: int,
     cumulative_sums: wp.array(dtype=int),
-    num_pairs: int,
+    pair_count: int,
 ) -> tuple[int, int]:
     """
     Binary search to find which pair a global index belongs to.
@@ -903,14 +903,14 @@ def find_pair_from_cumulative_index(
     Args:
         global_idx: Global index to search for
         cumulative_sums: Array of inclusive cumulative sums (end indices for each pair)
-        num_pairs: Number of pairs
+        pair_count: Number of pairs
 
     Returns:
         Tuple of (pair_index, local_index_within_pair)
     """
     # Use binary_search to find first index where cumulative_sums[i] > global_idx
     # This gives us the bucket that contains global_idx
-    pair_idx = binary_search(cumulative_sums, global_idx, 0, num_pairs)
+    pair_idx = binary_search(cumulative_sums, global_idx, 0, pair_count)
 
     # Get cumulative start for this pair to calculate local index
     cumulative_start = int(0)

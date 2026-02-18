@@ -1390,7 +1390,7 @@ class TestSchemaResolver(unittest.TestCase):
 
     def test_material_friction_attributes(self):
         """
-        Test rolling_friction and torsional_friction priority on materials.
+        Test mu_rolling and mu_torsional priority on materials.
         """
 
         stage = Usd.Stage.CreateInMemory()
@@ -1403,16 +1403,16 @@ class TestSchemaResolver(unittest.TestCase):
         resolver = SchemaResolverManager([SchemaResolverNewton()])
 
         # there is no authored value, so it should return the default (0)
-        rolling = resolver.get_value(material, PrimType.MATERIAL, "rolling_friction")
-        torsional = resolver.get_value(material, PrimType.MATERIAL, "torsional_friction")
+        rolling = resolver.get_value(material, PrimType.MATERIAL, "mu_rolling")
+        torsional = resolver.get_value(material, PrimType.MATERIAL, "mu_torsional")
         self.assertEqual(rolling, 0.0005)
         self.assertEqual(torsional, 0.25)
 
         # an explicit newton value should be used
         material.GetAttribute("newton:rollingFriction").Set(0.1)
         material.GetAttribute("newton:torsionalFriction").Set(0.2)
-        rolling = resolver.get_value(material, PrimType.MATERIAL, "rolling_friction")
-        torsional = resolver.get_value(material, PrimType.MATERIAL, "torsional_friction")
+        rolling = resolver.get_value(material, PrimType.MATERIAL, "mu_rolling")
+        torsional = resolver.get_value(material, PrimType.MATERIAL, "mu_torsional")
         self.assertAlmostEqual(rolling, 0.1)
         self.assertAlmostEqual(torsional, 0.2)
 
@@ -1420,22 +1420,22 @@ class TestSchemaResolver(unittest.TestCase):
         resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
         material.CreateAttribute("mjc:rollingfriction", Sdf.ValueTypeNames.Float).Set(0.3)
         material.CreateAttribute("mjc:torsionalfriction", Sdf.ValueTypeNames.Float).Set(0.4)
-        rolling = resolver.get_value(material, PrimType.MATERIAL, "rolling_friction")
-        torsional = resolver.get_value(material, PrimType.MATERIAL, "torsional_friction")
+        rolling = resolver.get_value(material, PrimType.MATERIAL, "mu_rolling")
+        torsional = resolver.get_value(material, PrimType.MATERIAL, "mu_torsional")
         self.assertAlmostEqual(rolling, 0.3)
         self.assertAlmostEqual(torsional, 0.4)
 
         # with mujoco lower priority, newton values should be used
         resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverMjc()])
-        rolling = resolver.get_value(material, PrimType.MATERIAL, "rolling_friction")
-        torsional = resolver.get_value(material, PrimType.MATERIAL, "torsional_friction")
+        rolling = resolver.get_value(material, PrimType.MATERIAL, "mu_rolling")
+        torsional = resolver.get_value(material, PrimType.MATERIAL, "mu_torsional")
         self.assertAlmostEqual(rolling, 0.1)
         self.assertAlmostEqual(torsional, 0.2)
 
         # physx does not have these attributes, so newton values should still be used
         resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
-        rolling = resolver.get_value(material, PrimType.MATERIAL, "rolling_friction")
-        torsional = resolver.get_value(material, PrimType.MATERIAL, "torsional_friction")
+        rolling = resolver.get_value(material, PrimType.MATERIAL, "mu_rolling")
+        torsional = resolver.get_value(material, PrimType.MATERIAL, "mu_torsional")
         self.assertAlmostEqual(rolling, 0.1)
         self.assertAlmostEqual(torsional, 0.2)
 

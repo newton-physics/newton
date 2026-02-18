@@ -19,7 +19,7 @@
 # Shows how to set up a simulation of a H1 articulation
 # from a USD file using newton.ModelBuilder.add_usd().
 #
-# Command: python -m newton.examples robot_h1 --num-worlds 16
+# Command: python -m newton.examples robot_h1 --world-count 16
 #
 ###########################################################################
 
@@ -32,7 +32,7 @@ from newton import ActuatorMode
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=4, args=None):
+    def __init__(self, viewer, world_count=4, args=None):
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 
@@ -40,7 +40,7 @@ class Example:
         self.sim_substeps = 4
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         self.viewer = viewer
 
@@ -72,7 +72,7 @@ class Example:
             h1.joint_act_mode[i] = int(ActuatorMode.POSITION)
 
         builder = newton.ModelBuilder()
-        builder.replicate(h1, self.num_worlds)
+        builder.replicate(h1, self.world_count)
 
         builder.default_shape_cfg.ke = 1.0e3
         builder.default_shape_cfg.kd = 1.0e2
@@ -155,10 +155,10 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=4, help="Total number of simulated worlds.")
+    parser.add_argument("--world-count", type=int, default=4, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_worlds, args)
+    example = Example(viewer, args.world_count, args)
 
     newton.examples.run(example, args)

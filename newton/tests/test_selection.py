@@ -83,7 +83,7 @@ class TestSelection(unittest.TestCase):
 
         # scene with one ant per world
         single_ant_per_world_scene = newton.ModelBuilder()
-        single_ant_per_world_scene.replicate(ant, num_worlds=W)
+        single_ant_per_world_scene.replicate(ant, world_count=W)
         single_ant_per_world_model = single_ant_per_world_scene.finalize()
 
         single_ant_per_world_view = ArticulationView(single_ant_per_world_model, "ant")
@@ -119,7 +119,7 @@ class TestSelection(unittest.TestCase):
         for i in range(A):
             multi_ant_world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
         multi_ant_per_world_scene = newton.ModelBuilder()
-        multi_ant_per_world_scene.replicate(multi_ant_world, num_worlds=W)
+        multi_ant_per_world_scene.replicate(multi_ant_world, world_count=W)
         multi_ant_per_world_model = multi_ant_per_world_scene.finalize()
 
         multi_ant_per_world_view = ArticulationView(multi_ant_per_world_model, "ant")
@@ -192,7 +192,7 @@ class TestSelection(unittest.TestCase):
         scene = newton.ModelBuilder()
         # add a ground plane first so shape indices are offset
         scene.add_shape_plane()
-        scene.replicate(robot, num_worlds=W)
+        scene.replicate(robot, world_count=W)
         model = scene.finalize()
 
         # exclude the middle link to make shape indices non-contiguous: [0, 2]
@@ -223,16 +223,16 @@ class TestSelection(unittest.TestCase):
             ignore_names=["floor", "ground"],
         )
 
-        num_worlds = 4
+        world_count = 4
         num_per_world = 3
-        num_artis = num_worlds * num_per_world
+        num_artis = world_count * num_per_world
 
         # scene with multiple ants per world
         world = newton.ModelBuilder()
         for i in range(num_per_world):
             world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
         scene = newton.ModelBuilder()
-        scene.replicate(world, num_worlds=num_worlds)
+        scene.replicate(world, world_count=world_count)
         model = scene.finalize()
 
         view = ArticulationView(model, "ant")
@@ -360,7 +360,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         W = 4  # num worlds
         scene = newton.ModelBuilder(gravity=0.0)
-        scene.replicate(individual_builder, num_worlds=W)
+        scene.replicate(individual_builder, world_count=W)
         model = scene.finalize()
 
         view = ArticulationView(model, "two_prismatic_links")
@@ -385,7 +385,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         W = 2  # num worlds
         scene = newton.ModelBuilder(gravity=0.0)
-        scene.replicate(individual_builder, num_worlds=W)
+        scene.replicate(individual_builder, world_count=W)
         model = scene.finalize()
 
         view = ArticulationView(model, "two_prismatic_links")
@@ -482,7 +482,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
         # Replicate to multiple worlds
         W = 2  # num worlds
         scene = newton.ModelBuilder(gravity=0.0)
-        scene.replicate(multi_robot_world, num_worlds=W)
+        scene.replicate(multi_robot_world, world_count=W)
         model = scene.finalize()
 
         # Select all articulations

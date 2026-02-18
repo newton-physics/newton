@@ -863,7 +863,7 @@ class ClothSim:
         # Create collision pipeline
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            broad_phase_mode=newton.BroadPhaseMode.NXN,
+            broad_phase="nxn",
             soft_contact_margin=self.soft_contact_margin,
         )
 

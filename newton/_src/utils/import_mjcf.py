@@ -335,18 +335,19 @@ def parse_mjcf(
         mesh_dir = "."
         texture_dir = "."
 
-    # Parse MJCF option tag for ONCE and WORLD frequency custom attributes (solver options)
+    # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
             [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
-        option_elem = root.find("option")
-        if option_elem is not None and builder_custom_attr_option:
-            option_attrs = parse_custom_attributes(option_elem.attrib, builder_custom_attr_option, "mjcf")
-            for key, value in option_attrs.items():
-                if key in builder.custom_attributes:
-                    builder.custom_attributes[key].values[0] = value
+        if builder_custom_attr_option:
+            for elem in (compiler, root.find("option")):
+                if elem is not None:
+                    parsed = parse_custom_attributes(elem.attrib, builder_custom_attr_option, "mjcf")
+                    for key, value in parsed.items():
+                        if key in builder.custom_attributes:
+                            builder.custom_attributes[key].values[0] = value
 
     mesh_assets = {}
     texture_assets = {}
@@ -585,10 +586,10 @@ def parse_mjcf(
                     shape_cfg.mu = float(friction_values[0])
 
                 if len(friction_values) >= 2:
-                    shape_cfg.torsional_friction = float(friction_values[1])
+                    shape_cfg.mu_torsional = float(friction_values[1])
 
                 if len(friction_values) >= 3:
-                    shape_cfg.rolling_friction = float(friction_values[2])
+                    shape_cfg.mu_rolling = float(friction_values[2])
 
             # Parse MJCF solref for contact stiffness/damping (only if explicitly specified)
             # Like friction, only override Newton defaults if solref is authored in MJCF
@@ -1241,7 +1242,11 @@ def parse_mjcf(
                     actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
                     if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
                         actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
-                        if actuatorfrclimited in ("true", "auto"):
+                        autolimits_attr = builder.custom_attributes.get("mujoco:autolimits")
+                        autolimits_val = (
+                            autolimits_attr.values.get(0, autolimits_attr.default) if autolimits_attr else 1
+                        )
+                        if actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and autolimits_val):
                             effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
                         elif verbose:
                             print(
@@ -2167,22 +2172,6 @@ def parse_mjcf(
 
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
-
-            # Resolve MuJoCo limited flags based on range values
-            # MuJoCo behavior: if *limited is not explicitly set and range[0]<range[1], then limited=True
-            # Use merged_attrib to respect defaults for both presence check and range values
-            for limited_attr, range_attr, limited_key in [
-                ("ctrllimited", "ctrlrange", "mujoco:actuator_ctrllimited"),
-                ("forcelimited", "forcerange", "mujoco:actuator_forcelimited"),
-                ("actlimited", "actrange", "mujoco:actuator_actlimited"),
-            ]:
-                # Only auto-resolve if *limited was not explicitly specified (including defaults)
-                if limited_attr not in merged_attrib:
-                    range_str = merged_attrib.get(range_attr, "")
-                    if range_str:
-                        range_vals = [float(x) for x in range_str.split()[:2]]
-                        if len(range_vals) == 2 and range_vals[0] < range_vals[1]:
-                            parsed_attrs[limited_key] = 1
 
             # Build full values dict
             actuator_values: dict[str, Any] = {}

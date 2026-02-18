@@ -237,8 +237,8 @@ def parse_usd(
     class PhysicsMaterial:
         staticFriction: float = builder.default_shape_cfg.mu
         dynamicFriction: float = builder.default_shape_cfg.mu
-        torsionalFriction: float = builder.default_shape_cfg.torsional_friction
-        rollingFriction: float = builder.default_shape_cfg.rolling_friction
+        torsionalFriction: float = builder.default_shape_cfg.mu_torsional
+        rollingFriction: float = builder.default_shape_cfg.mu_rolling
         restitution: float = builder.default_shape_cfg.restitution
         density: float = builder.default_shape_cfg.density
 
@@ -1175,15 +1175,15 @@ def parse_usd(
             torsionalFriction=R.get_value(
                 prim,
                 prim_type=PrimType.MATERIAL,
-                key="torsional_friction",
-                default=builder.default_shape_cfg.torsional_friction,
+                key="mu_torsional",
+                default=builder.default_shape_cfg.mu_torsional,
                 verbose=verbose,
             ),
             rollingFriction=R.get_value(
                 prim,
                 prim_type=PrimType.MATERIAL,
-                key="rolling_friction",
-                default=builder.default_shape_cfg.rolling_friction,
+                key="mu_rolling",
+                default=builder.default_shape_cfg.mu_rolling,
                 verbose=verbose,
             ),
             # Treat non-positive/unauthored material density as "use importer default".
@@ -1876,8 +1876,8 @@ def parse_usd(
                         contact_margin=contact_margin,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
-                        torsional_friction=material.torsionalFriction,
-                        rolling_friction=material.rollingFriction,
+                        mu_torsional=material.torsionalFriction,
+                        mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=not hide_collision_shapes,
