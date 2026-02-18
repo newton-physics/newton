@@ -244,7 +244,6 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            # Compute contacts using collision pipeline for terrain mesh
             if self.contacts is not None:
                 self.model.collide(self.state_0, self.contacts)
 

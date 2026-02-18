@@ -250,7 +250,12 @@ class Example:
 
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        # Explicit collision pipeline for cloth-body contacts with custom margin
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            soft_contact_margin=self.cloth_body_contact_margin,
+        )
+        self.contacts = self.collision_pipeline.contacts()
 
         self.sim_time = 0.0
 
@@ -545,7 +550,7 @@ class Example:
                 self.model.gravity.assign(self.gravity_earth)
 
             # cloth sim
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
             if self.add_cloth:
                 self.cloth_solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
