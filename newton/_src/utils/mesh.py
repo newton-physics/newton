@@ -950,7 +950,8 @@ def create_mesh_cylinder(
             uvs.append([0.0, 0.0] if uv is None else [uv[0], uv[1]])
         return idx
 
-    side_slope = -np.arctan2(top_radius - radius, 2 * half_height)
+    side_radial_component = 2.0 * half_height
+    side_axial_component = radius - top_radius
 
     # Side vertices first (contiguous layout for robust indexing).
     side_bottom_indices = []
@@ -964,8 +965,17 @@ def create_mesh_cylinder(
 
         side_normal = None
         if compute_normals:
-            side_normal = np.array([cos_theta, side_slope, sin_theta], dtype=np.float32)
-            side_normal = side_normal / np.linalg.norm(side_normal)
+            side_normal = np.array(
+                [
+                    side_radial_component * cos_theta,
+                    side_axial_component,
+                    side_radial_component * sin_theta,
+                ],
+                dtype=np.float32,
+            )
+            normal_length = np.linalg.norm(side_normal)
+            if normal_length > 0.0:
+                side_normal = side_normal / normal_length
             side_normal = side_normal[[x_dir, y_dir, z_dir]]
 
         side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
@@ -984,8 +994,17 @@ def create_mesh_cylinder(
 
             side_normal = None
             if compute_normals:
-                side_normal = np.array([cos_theta, side_slope, sin_theta], dtype=np.float32)
-                side_normal = side_normal / np.linalg.norm(side_normal)
+                side_normal = np.array(
+                    [
+                        side_radial_component * cos_theta,
+                        side_axial_component,
+                        side_radial_component * sin_theta,
+                    ],
+                    dtype=np.float32,
+                )
+                normal_length = np.linalg.norm(side_normal)
+                if normal_length > 0.0:
+                    side_normal = side_normal / normal_length
                 side_normal = side_normal[[x_dir, y_dir, z_dir]]
 
             side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
@@ -1048,14 +1067,14 @@ def create_mesh_cylinder(
         for i in range(segments):
             i0 = cap_ring_bottom_indices[i]
             i1 = cap_ring_bottom_indices[(i + 1) % segments]
-            indices.extend([i1, i0, cap_center_bottom_idx])
+            indices.extend([cap_center_bottom_idx, i0, i1])
 
     # Top cap
     if cap_center_top_idx is not None and cap_ring_top_indices:
         for i in range(segments):
             i0 = cap_ring_top_indices[i]
             i1 = cap_ring_top_indices[(i + 1) % segments]
-            indices.extend([cap_center_top_idx, i0, i1])
+            indices.extend([cap_center_top_idx, i1, i0])
 
     # Side faces
     for i in range(segments):
