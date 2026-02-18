@@ -84,7 +84,9 @@ def add_mesh_object(
 
     if label == "gear_base":
         body = -1
-        builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), xform=transform, cfg=shape_cfg, label=label)
+        builder.add_shape_mesh(
+            body, mesh=mesh, scale=(scale, scale, scale), xform=transform, cfg=shape_cfg, label=label
+        )
     else:
         body = builder.add_body(label=label, xform=transform)
         builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), cfg=shape_cfg)

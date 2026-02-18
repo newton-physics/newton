@@ -95,6 +95,7 @@ def test_mujoco_warp():
 def test_newton_gpu():
     """Run through Newton's SolverMuJoCo GPU path."""
     import warp as wp
+
     import newton
 
     wp.init()
@@ -152,8 +153,7 @@ def test_newton_gpu():
             mjw_qpos_max = np.max(np.abs(mjw_qpos))
             mjw_qvel_max = np.max(np.abs(mjw_qvel))
             mjw_qacc_max = np.max(np.abs(mjw_qacc))
-            mjw_nan = (np.any(np.isnan(mjw_qpos)) or np.any(np.isnan(mjw_qvel))
-                       or np.any(np.isnan(mjw_qacc)))
+            mjw_nan = np.any(np.isnan(mjw_qpos)) or np.any(np.isnan(mjw_qvel)) or np.any(np.isnan(mjw_qacc))
 
             print(
                 f"  step {i:4d}: |body_q|_max={body_q_max:.6e}, "
@@ -197,5 +197,6 @@ if __name__ == "__main__":
         test_newton_gpu()
     except Exception as e:
         import traceback
+
         print(f"  ERROR: {e}")
         traceback.print_exc()
