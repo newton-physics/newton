@@ -233,15 +233,15 @@ def get_name_from_key(key: str):
     return key.split("/")[-1]
 
 
-def find_matching_ids(pattern: str, keys: list[str], world_ids, num_worlds: int):
-    grouped_ids = [[] for _ in range(num_worlds)]  # ids grouped by world (exclude world -1)
+def find_matching_ids(pattern: str, keys: list[str], world_ids, world_count: int):
+    grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
     for id, key in enumerate(keys):
         if fnmatch(key, pattern):
             world = world_ids[id]
             if world == -1:
                 global_ids.append(id)
-            elif world >= 0 and world < num_worlds:
+            elif world >= 0 and world < world_count:
                 grouped_ids[world].append(id)
             else:
                 raise ValueError(f"World index out of range: {world}")
@@ -278,6 +278,21 @@ class ArticulationView:
     subsets of articulations and their joints, links, and shapes within a Model.
     It supports pattern-based selection, inclusion/exclusion filters, and convenient
     attribute access and modification for simulation and control.
+
+    This is useful in RL and batched simulation workflows where a single policy or
+    control routine operates on many parallel environments with consistent tensor shapes.
+
+    Example:
+
+    .. code-block:: python
+
+        import newton
+
+        view = newton.selection.ArticulationView(model, pattern="robot*")
+        q = view.get_dof_positions(state)
+        q_np = q.numpy()
+        q_np[..., 0] = 0.0
+        view.set_dof_positions(state, q_np)
 
     Args:
         model (Model): The model containing the articulations.
@@ -319,11 +334,11 @@ class ArticulationView:
 
         # get articulation ids grouped by world
         articulation_ids, global_articulation_ids = find_matching_ids(
-            pattern, model.articulation_key, model_articulation_world, model.num_worlds
+            pattern, model.articulation_key, model_articulation_world, model.world_count
         )
 
         # determine articulation counts per world
-        world_count = model.num_worlds
+        world_count = model.world_count
         articulation_count = 0
         counts_per_world = [0] * world_count
         for world_id in range(world_count):
