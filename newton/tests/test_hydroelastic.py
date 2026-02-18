@@ -353,19 +353,19 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     substeps = 10
     sim_time = 3.0
     num_frames = int(sim_time / sim_dt)
+    total_steps = num_frames * substeps
 
-    for _ in range(num_frames):
-        for _ in range(substeps):
-            state_0.clear_forces()
-            # Apply external force to upper boxes
-            forces = np.zeros(model.body_count * 6, dtype=np.float32)
-            for body_idx in upper_body_indices:
-                forces[body_idx * 6 + 2] = -external_force
-            state_0.body_f.assign(forces)
+    # Pre-compute forces as a Warp array
+    forces_np = np.zeros(model.body_count * 6, dtype=np.float32)
+    for body_idx in upper_body_indices:
+        forces_np[body_idx * 6 + 2] = -external_force
+    precomputed_forces = wp.array(forces_np.reshape(model.body_count, 6), dtype=wp.spatial_vector, device=device)
 
-            collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
-            state_0, state_1 = state_1, state_0
+    for _ in range(total_steps):
+        wp.copy(state_0.body_f, precomputed_forces)
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
+        state_0, state_1 = state_1, state_0
 
     # Check that upper cubes are near their original positions
     body_q = state_0.body_q.numpy()

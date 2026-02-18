@@ -205,8 +205,29 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
-        for _ in range(240 * 2):
-            solver.step(state_in, state_out, control, None, 1.0 / 240.0)
+        sim_dt = 1.0 / 240.0
+        num_steps = 240 * 2
+
+        device = model.device
+        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+        if use_cuda_graph:
+            # warmup (2 steps to allocate both buffers)
+            solver.step(state_in, state_out, control, None, sim_dt)
+            solver.step(state_out, state_in, control, None, sim_dt)
+            with wp.ScopedCapture(device) as capture:
+                solver.step(state_in, state_out, control, None, sim_dt)
+                solver.step(state_out, state_in, control, None, sim_dt)
+            graph = capture.graph
+
+        remaining = num_steps - (2 if use_cuda_graph else 0)
+        for _ in range(remaining // 2 if use_cuda_graph else remaining):
+            if use_cuda_graph:
+                wp.capture_launch(graph)
+            else:
+                solver.step(state_in, state_out, control, None, sim_dt)
+                state_in, state_out = state_out, state_in
+        if use_cuda_graph and remaining % 2 == 1:
+            solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
         sensor.eval(contacts)
@@ -250,8 +271,29 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
-        for _ in range(240 * 2):
-            solver.step(state_in, state_out, control, None, 1.0 / 240.0)
+        sim_dt = 1.0 / 240.0
+        num_steps = 240 * 2
+
+        device = model.device
+        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+        if use_cuda_graph:
+            # warmup (2 steps to allocate both buffers)
+            solver.step(state_in, state_out, control, None, sim_dt)
+            solver.step(state_out, state_in, control, None, sim_dt)
+            with wp.ScopedCapture(device) as capture:
+                solver.step(state_in, state_out, control, None, sim_dt)
+                solver.step(state_out, state_in, control, None, sim_dt)
+            graph = capture.graph
+
+        remaining = num_steps - (2 if use_cuda_graph else 0)
+        for _ in range(remaining // 2 if use_cuda_graph else remaining):
+            if use_cuda_graph:
+                wp.capture_launch(graph)
+            else:
+                solver.step(state_in, state_out, control, None, sim_dt)
+                state_in, state_out = state_out, state_in
+        if use_cuda_graph and remaining % 2 == 1:
+            solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
         sensor_abc.eval(contacts)
