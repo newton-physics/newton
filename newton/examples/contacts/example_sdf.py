@@ -52,8 +52,8 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     sdf_narrow_band_range=(-0.005, 0.005),
     contact_margin=0.005,
     density=8000.0,
-    torsional_friction=0.0,
-    rolling_friction=0.0,
+    mu_torsional=0.0,
+    mu_rolling=0.0,
     is_hydroelastic=False,
 )
 
@@ -89,7 +89,7 @@ def add_mesh_object(
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=1, num_per_world=1, scene="nut_bolt", solver="xpbd", test_mode=False):
+    def __init__(self, viewer, world_count=1, num_per_world=1, scene="nut_bolt", solver="xpbd", test_mode=False):
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -97,7 +97,7 @@ class Example:
         self.sim_substeps = 50 if scene == "gears" else 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
         self.viewer = viewer
         self.scene = scene
         self.solver_type = solver
@@ -122,7 +122,7 @@ class Example:
         self.rigid_contact_max = 100000
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
-        self.broad_phase_mode = newton.BroadPhaseMode.SAP
+        self.broad_phase = "sap"
 
         if scene == "nut_bolt":
             world_builder = self._build_nut_bolt_scene()
@@ -142,17 +142,17 @@ class Example:
             length=0.0,
             key="ground_plane",
         )
-        main_scene.replicate(world_builder, num_worlds=self.num_worlds)
+        main_scene.replicate(world_builder, world_count=self.world_count)
 
         self.model = main_scene.finalize()
 
         # Override rigid_contact_max BEFORE creating collision pipeline to limit memory allocation
         self.model.rigid_contact_max = self.rigid_contact_max
 
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
-            broad_phase_mode=self.broad_phase_mode,
+            broad_phase=self.broad_phase,
         )
 
         # Create solver based on user choice
@@ -163,7 +163,7 @@ class Example:
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
             )
         elif self.solver_type == "mujoco":
-            num_per_world = self.rigid_contact_max // self.num_worlds
+            num_per_world = self.rigid_contact_max // self.world_count
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_contacts=False,
@@ -185,7 +185,7 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -293,12 +293,12 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             self.viewer.apply_forces(self.state_0)
-            # self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            # self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -420,7 +420,7 @@ class Example:
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--num-worlds",
+        "--world-count",
         type=int,
         default=100,
         help="Total number of simulated worlds.",
@@ -450,7 +450,7 @@ if __name__ == "__main__":
 
     example = Example(
         viewer,
-        num_worlds=args.num_worlds,
+        world_count=args.world_count,
         num_per_world=args.num_per_world,
         scene=args.scene,
         solver=args.solver,

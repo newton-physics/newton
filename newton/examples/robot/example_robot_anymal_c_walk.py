@@ -31,7 +31,7 @@ wp.config.enable_backward = False
 import newton
 import newton.examples
 import newton.utils
-from newton import State
+from newton import GeoType, State
 from newton.geometry import create_mesh_terrain
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
@@ -104,6 +104,14 @@ class Example:
             ignore_inertial_definitions=False,
         )
 
+        # Enlarge foot collision spheres to improve walking stability on uneven terrain.
+        # The URDF defines small spheres on the shank links; doubling their radius
+        # prevents the robot from stumbling on terrain features like waves and stairs.
+        for i in range(len(builder.shape_type)):
+            if builder.shape_type[i] == GeoType.SPHERE:
+                r = builder.shape_scale[i][0]
+                builder.shape_scale[i] = (r * 2.0, 0.0, 0.0)
+
         # Generate procedural terrain for visual demonstration (but not during unit tests)
         if not self.is_test:
             vertices, indices = create_mesh_terrain(
@@ -113,13 +121,18 @@ class Example:
                 terrain_params={
                     "pyramid_stairs": {"step_width": 0.3, "step_height": 0.02, "platform_width": 0.6},
                     "random_grid": {"grid_width": 0.3, "grid_height_range": (0, 0.02)},
-                    "wave": {"wave_amplitude": 0.15, "wave_frequency": 2.0},
+                    "wave": {"wave_amplitude": 0.1, "wave_frequency": 2.0},  # amplitude reduced from 0.15
                 },
                 seed=42,
             )
             terrain_mesh = newton.Mesh(vertices, indices)
             terrain_offset = wp.transform(p=wp.vec3(-5, -2.0, 0.01), q=wp.quat_identity())
-            builder.add_shape_mesh(body=-1, mesh=terrain_mesh, xform=terrain_offset)
+            builder.add_shape_mesh(
+                body=-1,
+                mesh=terrain_mesh,
+                xform=terrain_offset,
+                cfg=newton.ModelBuilder.ShapeConfig(has_shape_collision=False),
+            )
         builder.add_ground_plane()
 
         self.sim_time = 0.0
@@ -155,15 +168,9 @@ class Example:
 
         self.model = builder.finalize()
 
-        # TODO: Change to Newton Collision Pipeline when more stable
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
-        if not use_mujoco_contacts:
-            # Temporarily fix: override to use mujoco contact
-            print("WARNING: use_mujoco_contacts is ignored, switch to use MjWarp collision pipeline")
-            use_mujoco_contacts = True
 
         # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
-        # Can override with: --collision-pipeline unified --broad-phase-mode nxn|sap|explicit
         if not use_mujoco_contacts:
             self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
 
@@ -201,7 +208,7 @@ class Example:
         if use_mujoco_contacts:
             self.contacts = None
         else:
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            self.contacts = self.collision_pipeline.contacts()
 
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
@@ -243,7 +250,7 @@ class Example:
 
             # Compute contacts using collision pipeline for terrain mesh
             if self.contacts is not None:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

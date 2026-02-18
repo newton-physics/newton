@@ -111,7 +111,7 @@ def color_lattice_grid(num_x, num_y):
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_coloring_trimesh(test, device):
-    from pxr import Usd, UsdGeom  # noqa: PLC0415
+    from pxr import Usd, UsdGeom
 
     with wp.ScopedDevice(device):
         usd_stage = Usd.Stage.Open(os.path.join(warp.examples.get_asset_directory(), "bunny.usd"))
@@ -231,7 +231,7 @@ def test_coloring_trimesh(test, device):
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 def test_combine_coloring(test, device):
-    from pxr import Usd, UsdGeom  # noqa: PLC0415
+    from pxr import Usd, UsdGeom
 
     with wp.ScopedDevice(device):
         builder1 = ModelBuilder()

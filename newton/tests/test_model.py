@@ -252,19 +252,19 @@ class TestModel(unittest.TestCase):
             mass=1.0,
         )
 
-        num_worlds = 2
+        world_count = 2
         world_offsets = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
 
         builder_open_edge_count = np.sum(np.array(builder.edge_indices) == -1)
         world_builder_open_edge_count = np.sum(np.array(world_builder.edge_indices) == -1)
 
-        for i in range(num_worlds):
+        for i in range(world_count):
             xform = wp.transform(world_offsets[i], wp.quat_identity())
             builder.add_world(world_builder, xform)
 
         self.assertEqual(
             np.sum(np.array(builder.edge_indices) == -1),
-            builder_open_edge_count + num_worlds * world_builder_open_edge_count,
+            builder_open_edge_count + world_count * world_builder_open_edge_count,
             "builder does not have the expected number of open edges",
         )
 
@@ -320,6 +320,82 @@ class TestModel(unittest.TestCase):
         # make sure the original mesh is not modified
         self.assertEqual(len(mesh.vertices), 8)
         self.assertEqual(len(mesh.indices), 36)
+
+    def test_approximate_meshes_collision_filter_child_bodies(self):
+        def normalize_pair(a, b):
+            return (min(a, b), max(a, b))
+
+        def get_filter_set(builder):
+            return {normalize_pair(a, b) for a, b in builder.shape_collision_filter_pairs}
+
+        builder = ModelBuilder()
+
+        # Create a chain of 3 bodies (like an articulation)
+        body0 = builder.add_link()
+        body1 = builder.add_link()
+        body2 = builder.add_link()
+
+        # Add initial shapes to each body (like mesh shapes before decomposition)
+        shape0_initial = builder.add_shape_sphere(body=body0, radius=0.1)
+        shape1_initial = builder.add_shape_sphere(body=body1, radius=0.1)
+        shape2_initial = builder.add_shape_sphere(body=body2, radius=0.1)
+
+        # Create joints (establishes parent->child relationships)
+        # body0 is parent of body1, body1 is parent of body2
+        joint_free = builder.add_joint_free(parent=-1, child=body0)
+        joint0 = builder.add_joint_revolute(parent=body0, child=body1, axis=(0, 0, 1))
+        joint1 = builder.add_joint_revolute(parent=body1, child=body2, axis=(0, 0, 1))
+        builder.add_articulation(joints=[joint_free, joint0, joint1])
+
+        # At this point, initial shapes should be filtered between adjacent bodies
+        filter_set = get_filter_set(builder)
+        self.assertIn(
+            normalize_pair(shape0_initial, shape1_initial),
+            filter_set,
+            "Initial body0-body1 shapes should be filtered",
+        )
+        self.assertIn(
+            normalize_pair(shape1_initial, shape2_initial),
+            filter_set,
+            "Initial body1-body2 shapes should be filtered",
+        )
+
+        # Now simulate what approximate_meshes() does: add additional shapes to bodies
+        # after joints are already created (like convex decomposition adding multiple parts)
+        shape0_extra1 = builder.add_shape_box(body=body0, hx=0.1, hy=0.1, hz=0.1)
+        shape0_extra2 = builder.add_shape_capsule(body=body0, radius=0.05, half_height=0.1)
+        shape1_extra1 = builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1)
+
+        filter_set = get_filter_set(builder)
+
+        # Verify: new body0 shapes should filter with ALL body1 shapes (including initial)
+        for parent_shape in [shape0_extra1, shape0_extra2]:
+            for child_shape in [shape1_initial, shape1_extra1]:
+                expected_pair = normalize_pair(parent_shape, child_shape)
+                self.assertIn(
+                    expected_pair,
+                    filter_set,
+                    f"New parent body0 shape {parent_shape} should filter with body1 shape {child_shape}",
+                )
+
+        # Verify: new body1 shapes should filter with ALL body0 shapes (parent)
+        for child_shape in [shape1_extra1]:
+            for parent_shape in [shape0_initial, shape0_extra1, shape0_extra2]:
+                expected_pair = normalize_pair(parent_shape, child_shape)
+                self.assertIn(
+                    expected_pair,
+                    filter_set,
+                    f"New body1 shape {child_shape} should filter with parent body0 shape {parent_shape}",
+                )
+
+        # Verify: new body1 shapes should filter with ALL body2 shapes (child)
+        for parent_shape in [shape1_extra1]:
+            expected_pair = normalize_pair(parent_shape, shape2_initial)
+            self.assertIn(
+                expected_pair,
+                filter_set,
+                f"New body1 shape {parent_shape} should filter with child body2 shape {shape2_initial}",
+            )
 
     def test_add_particles_grouping(self):
         """Test that add_particles correctly assigns world groups."""
@@ -414,7 +490,7 @@ class TestModel(unittest.TestCase):
         model = main_builder.finalize()
 
         # Verify counts
-        self.assertEqual(model.num_worlds, 3)
+        self.assertEqual(model.world_count, 3)
         self.assertEqual(model.particle_count, 9)  # 3 global + 2*3 = 9
         self.assertEqual(model.body_count, 12)  # 3 global + 3*3 = 12
         self.assertEqual(model.shape_count, 12)  # 3 global + 3*3 = 12
@@ -509,16 +585,16 @@ class TestModel(unittest.TestCase):
             print(f"joint_coord_world_start: {joint_coord_world_start}")
             print(f"joint_constraint_world_start: {joint_constraint_world_start}")
 
-        # Check that sizes match num_worlds + 2, i.e. conforms to spec
-        self.assertEqual(particle_world_start.size, model.num_worlds + 2)
-        self.assertEqual(body_world_start.size, model.num_worlds + 2)
-        self.assertEqual(shape_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_world_start.size, model.num_worlds + 2)
-        self.assertEqual(articulation_world_start.size, model.num_worlds + 2)
-        self.assertEqual(equality_constraint_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_dof_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_coord_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_constraint_world_start.size, model.num_worlds + 2)
+        # Check that sizes match world_count + 2, i.e. conforms to spec
+        self.assertEqual(particle_world_start.size, model.world_count + 2)
+        self.assertEqual(body_world_start.size, model.world_count + 2)
+        self.assertEqual(shape_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_world_start.size, model.world_count + 2)
+        self.assertEqual(articulation_world_start.size, model.world_count + 2)
+        self.assertEqual(equality_constraint_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_dof_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_coord_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_constraint_world_start.size, model.world_count + 2)
 
         # Check that the last elements match total counts
         self.assertEqual(particle_world_start[-1], model.particle_count)
@@ -532,7 +608,7 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
 
         # Check that world starts are non-decreasing
-        for i in range(model.num_worlds + 1):
+        for i in range(model.world_count + 1):
             self.assertLessEqual(particle_world_start[i], particle_world_start[i + 1])
             self.assertLessEqual(body_world_start[i], body_world_start[i + 1])
             self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
@@ -554,25 +630,25 @@ class TestModel(unittest.TestCase):
         self.assertTrue(np.array_equal(joint_coord_world_start, np.array([7, 9, 11, 13, 27])))
         self.assertTrue(np.array_equal(joint_constraint_world_start, np.array([0, 10, 20, 30, 30])))
 
-    def test_num_worlds_tracking(self):
-        """Test that num_worlds is properly tracked when using add_world."""
+    def test_world_count_tracking(self):
+        """Test that world_count is properly tracked when using add_world."""
         main_builder = ModelBuilder()
 
         # Create a simple sub-builder
         sub_builder = ModelBuilder()
         sub_builder.add_body(mass=1.0)
 
-        # Test 1: Global entities should not increment num_worlds
-        self.assertEqual(main_builder.num_worlds, 0)
+        # Test 1: Global entities should not increment world_count
+        self.assertEqual(main_builder.world_count, 0)
         main_builder.add_builder(sub_builder)  # Adds to global world (-1)
-        self.assertEqual(main_builder.num_worlds, 0)  # Should still be 0
+        self.assertEqual(main_builder.world_count, 0)  # Should still be 0
 
         # Test 2: Using add_world() for automatic world management
         main_builder.add_world(sub_builder)
-        self.assertEqual(main_builder.num_worlds, 1)
+        self.assertEqual(main_builder.world_count, 1)
 
         main_builder.add_world(sub_builder)
-        self.assertEqual(main_builder.num_worlds, 2)
+        self.assertEqual(main_builder.world_count, 2)
 
         # Test 3: Using begin_world/end_world
         main_builder2 = ModelBuilder()
@@ -581,19 +657,19 @@ class TestModel(unittest.TestCase):
         main_builder2.begin_world()
         main_builder2.add_builder(sub_builder)
         main_builder2.end_world()
-        self.assertEqual(main_builder2.num_worlds, 1)
+        self.assertEqual(main_builder2.world_count, 1)
 
         main_builder2.begin_world()
         main_builder2.add_builder(sub_builder)
         main_builder2.end_world()
-        self.assertEqual(main_builder2.num_worlds, 2)
+        self.assertEqual(main_builder2.world_count, 2)
 
         # Test 4: Adding to same world using begin_world with existing index
         main_builder2.begin_world()
         main_builder2.add_builder(sub_builder)  # Adds to world 2
         main_builder2.add_builder(sub_builder)  # Also adds to world 2
         main_builder2.end_world()
-        self.assertEqual(main_builder2.num_worlds, 3)  # Should now be 3
+        self.assertEqual(main_builder2.world_count, 3)  # Should now be 3
 
     def test_world_validation_errors(self):
         """Test that world validation catches non-contiguous and non-monotonic world indices."""
@@ -605,8 +681,8 @@ class TestModel(unittest.TestCase):
         # Create world 0 and world 2, skipping world 1
         # We need to manually manipulate world indices to create invalid cases
         builder1.add_world(sub_builder)  # Creates world 0
-        # Manually skip world 1 by incrementing num_worlds
-        builder1.num_worlds = 2
+        # Manually skip world 1 by incrementing world_count
+        builder1.world_count = 2
         builder1.begin_world()  # This will be world 2
         builder1.add_builder(sub_builder)
         builder1.end_world()
@@ -653,15 +729,15 @@ class TestModel(unittest.TestCase):
         builder3.add_body()
         builder3.end_world()
         model = builder3.finalize()
-        self.assertEqual(model.num_worlds, 1)
+        self.assertEqual(model.world_count, 1)
 
-        # Test world index out of range (above num_worlds-1)
+        # Test world index out of range (above world_count-1)
         builder4 = ModelBuilder()
         builder4.begin_world()  # Creates world 0
         builder4.add_body()
         builder4.end_world()
         # Manually set world index above valid range
-        builder4.body_world[0] = 5  # num_worlds=1, so valid range is -1 to 0
+        builder4.body_world[0] = 5  # world_count=1, so valid range is -1 to 0
         with self.assertRaises(ValueError) as cm:
             builder4.finalize()
         self.assertIn("Invalid world index", str(cm.exception))
@@ -839,16 +915,16 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_coord_world_start[-1], builder.joint_coord_count)
         self.assertEqual(joint_constraint_world_start[-1], builder.joint_constraint_count)
 
-        # Check that sizes match num_worlds + 2, i.e. conforms to spec
-        self.assertEqual(particle_world_start.size, model.num_worlds + 2)
-        self.assertEqual(body_world_start.size, model.num_worlds + 2)
-        self.assertEqual(shape_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_world_start.size, model.num_worlds + 2)
-        self.assertEqual(articulation_world_start.size, model.num_worlds + 2)
-        self.assertEqual(equality_constraint_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_dof_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_coord_world_start.size, model.num_worlds + 2)
-        self.assertEqual(joint_constraint_world_start.size, model.num_worlds + 2)
+        # Check that sizes match world_count + 2, i.e. conforms to spec
+        self.assertEqual(particle_world_start.size, model.world_count + 2)
+        self.assertEqual(body_world_start.size, model.world_count + 2)
+        self.assertEqual(shape_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_world_start.size, model.world_count + 2)
+        self.assertEqual(articulation_world_start.size, model.world_count + 2)
+        self.assertEqual(equality_constraint_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_dof_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_coord_world_start.size, model.world_count + 2)
+        self.assertEqual(joint_constraint_world_start.size, model.world_count + 2)
 
         # Check that the last elements match total counts
         self.assertEqual(particle_world_start[-1], model.particle_count)
@@ -862,7 +938,7 @@ class TestModel(unittest.TestCase):
         self.assertEqual(joint_constraint_world_start[-1], model.joint_constraint_count)
 
         # Check that world starts are non-decreasing
-        for i in range(model.num_worlds + 1):
+        for i in range(model.world_count + 1):
             self.assertLessEqual(particle_world_start[i], particle_world_start[i + 1])
             self.assertLessEqual(body_world_start[i], body_world_start[i + 1])
             self.assertLessEqual(shape_world_start[i], shape_world_start[i + 1])
@@ -1484,6 +1560,98 @@ class TestModel(unittest.TestCase):
             builder.finalize(skip_validation_joint_ordering=False)
 
         self.assertIn("DFS topological order", str(cm.warning))
+
+    def test_mimic_constraint_programmatic(self):
+        """Test programmatic creation of mimic constraints."""
+        builder = newton.ModelBuilder()
+
+        # Create two joints
+        b0 = builder.add_body()
+        b1 = builder.add_body()
+        b2 = builder.add_body()
+
+        j1 = builder.add_joint_revolute(
+            parent=-1,
+            child=b0,
+            axis=(0, 0, 1),
+            key="j1",
+        )
+        j2 = builder.add_joint_revolute(
+            parent=-1,
+            child=b1,
+            axis=(0, 0, 1),
+            key="j2",
+        )
+        j3 = builder.add_joint_revolute(
+            parent=-1,
+            child=b2,
+            axis=(0, 0, 1),
+            key="j3",
+        )
+
+        # Add mimic constraints
+        _c1 = builder.add_constraint_mimic(
+            joint0=j2,
+            joint1=j1,
+            coef0=-0.25,
+            coef1=1.5,
+            key="mimic1",
+        )
+        _c2 = builder.add_constraint_mimic(
+            joint0=j3,
+            joint1=j1,
+            coef0=0.0,
+            coef1=-1.0,
+            enabled=False,
+            key="mimic2",
+        )
+
+        model = builder.finalize()
+
+        self.assertEqual(model.constraint_mimic_count, 2)
+
+        # Check first constraint
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], j2)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], j1)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], -0.25)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 1.5)
+        self.assertTrue(model.constraint_mimic_enabled.numpy()[0])
+        self.assertEqual(model.constraint_mimic_key[0], "mimic1")
+
+        # Check second constraint
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[1], j3)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[1], j1)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[1], 0.0)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[1], -1.0)
+        self.assertFalse(model.constraint_mimic_enabled.numpy()[1])
+        self.assertEqual(model.constraint_mimic_key[1], "mimic2")
+
+    def test_control_clear(self):
+        """Test that Control.clear() works without errors."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+
+        model = builder.finalize()
+        control = model.control()
+        try:
+            control.clear()
+        except Exception as e:
+            self.fail(f"control.clear() raised {type(e).__name__}: {e}")
+
+    def test_add_base_joint_fixed_to_parent(self):
+        """Test that add_base_joint with parent creates fixed joint."""
+        builder = ModelBuilder()
+        parent_body = builder.add_body(wp.transform((0, 0, 0), wp.quat_identity()), mass=1.0)
+        parent_joint = builder.add_joint_fixed(parent=-1, child=parent_body)
+        builder.add_articulation([parent_joint])  # Register parent body into an articulation
+
+        child_body = builder.add_body(wp.transform((1, 0, 0), wp.quat_identity()), mass=0.5)
+        joint_id = builder._add_base_joint(child_body, parent=parent_body, floating=False)
+
+        self.assertEqual(builder.joint_type[joint_id], newton.JointType.FIXED)
+        self.assertEqual(builder.joint_parent[joint_id], parent_body)
 
 
 if __name__ == "__main__":

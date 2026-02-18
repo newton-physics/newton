@@ -34,12 +34,12 @@ newton
 
    ActuatorMode
    Axis
-   BroadPhaseMode
    CollisionPipeline
    Contacts
    Control
    EqType
    GeoType
+   Heightfield
    JointType
    Mesh
    Model
@@ -59,6 +59,8 @@ newton
    AxisType
    eval_fk
    eval_ik
+   eval_jacobian
+   eval_mass_matrix
 
 .. rubric:: Constants
 

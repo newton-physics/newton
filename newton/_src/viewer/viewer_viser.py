@@ -51,7 +51,7 @@ class ViewerViser(ViewerBase):
         """Lazily import and return the viser module."""
         if cls._viser_module is None:
             try:
-                import viser  # noqa: PLC0415
+                import viser
 
                 cls._viser_module = viser
             except ImportError as e:
@@ -81,7 +81,7 @@ class ViewerViser(ViewerBase):
     def _build_trimesh_mesh(points: np.ndarray, indices: np.ndarray, uvs: np.ndarray, texture: np.ndarray):
         """Create a trimesh object with texture visuals (if trimesh is available)."""
         try:
-            import trimesh  # noqa: PLC0415
+            import trimesh
         except Exception:
             return None
 
@@ -92,8 +92,8 @@ class ViewerViser(ViewerBase):
         mesh = trimesh.Trimesh(vertices=points, faces=faces, process=False)
 
         try:
-            from PIL import Image  # noqa: PLC0415
-            from trimesh.visual.texture import TextureVisuals  # noqa: PLC0415
+            from PIL import Image
+            from trimesh.visual.texture import TextureVisuals
 
             image = Image.fromarray(texture)
             mesh.visual = TextureVisuals(uv=uvs, image=image)
@@ -709,7 +709,7 @@ class ViewerViser(ViewerBase):
                 viewer.show_notebook()  # Saves recording and displays with timeline
         """
 
-        from IPython.display import HTML, IFrame, display  # noqa: PLC0415
+        from IPython.display import HTML, IFrame, display
 
         from .viewer import is_sphinx_build  # noqa: PLC0415
 
