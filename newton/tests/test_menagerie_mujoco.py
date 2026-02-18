@@ -521,6 +521,11 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Range: Compared via compare_jnt_range() which only checks limited joints
     # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
     "jnt_range",
+    # Option fields: Newton doesn't parse <option> attributes from MJCF.
+    # Timestep is extracted from native model at runtime; iterations are set via solver args.
+    "opt.timestep",
+    "opt.iterations",
+    "opt.ls_iterations",
 }
 
 
@@ -2793,9 +2798,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "nmesh",
         "pair_geom",  # geom indices differ due to ordering
         "nxn_",  # broadphase pairs differ due to geom ordering
-        "opt.iterations",  # Newton doesn't parse <option iterations/ls_iterations> from MJCF
-        "opt.ls_iterations",
-        "opt.timestep",  # Newton doesn't parse <option timestep> from MJCF
         "stat",  # meaninertia differs due to inertia re-diagonalization
         "nmaxpolygon",  # mesh-related (Newton doesn't pass meshes)
         "nmaxmeshdeg",
