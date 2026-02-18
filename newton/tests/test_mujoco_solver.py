@@ -4700,6 +4700,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.mu = 0.5
 
         # Create fixed-base (mocap) body at root (at origin)
         # This body will have a FIXED joint to the world, making it a mocap body in MuJoCo
@@ -6144,6 +6145,33 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             np.testing.assert_allclose(
                 eq_data[w, 0, 1], new_coef1[w], rtol=1e-5, err_msg=f"coef1 mismatch in world {w}"
             )
+
+
+class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
+    def test_zero_mass_body(self):
+        """SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames).
+
+        With ensure_nonstatic_links=False (the default), zero-mass bodies keep
+        their zero mass. MuJoCo handles these natively when they have fixed joints.
+        """
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="sensor_frame" pos="0 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        self.assertIsNotNone(solver.mj_model)
 
 
 if __name__ == "__main__":

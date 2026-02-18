@@ -32,7 +32,6 @@ import newton
 import newton.examples
 import newton.utils
 from newton import GeoType, State
-from newton.geometry import create_mesh_terrain
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -114,7 +113,7 @@ class Example:
 
         # Generate procedural terrain for visual demonstration (but not during unit tests)
         if not self.is_test:
-            vertices, indices = create_mesh_terrain(
+            terrain_mesh = newton.Mesh.create_terrain(
                 grid_size=(8, 3),  # 3x8 grid for forward walking
                 block_size=(3.0, 3.0),
                 terrain_types=["random_grid", "flat", "wave", "gap", "pyramid_stairs"],
@@ -124,8 +123,8 @@ class Example:
                     "wave": {"wave_amplitude": 0.1, "wave_frequency": 2.0},  # amplitude reduced from 0.15
                 },
                 seed=42,
+                compute_inertia=False,
             )
-            terrain_mesh = newton.Mesh(vertices, indices)
             terrain_offset = wp.transform(p=wp.vec3(-5, -2.0, 0.01), q=wp.quat_identity())
             builder.add_shape_mesh(
                 body=-1,

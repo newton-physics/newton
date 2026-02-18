@@ -2209,15 +2209,15 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_mu_torsional[2], 0.0, places=5)
         self.assertAlmostEqual(builder.shape_material_mu_rolling[2], 0.0, places=5)
 
-        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.25, 0.0005)
+        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.005, 0.0001)
         self.assertAlmostEqual(builder.shape_material_mu[3], 1.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_torsional[3], 0.25, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_rolling[3], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[3], 0.005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[3], 0.0001, places=5)
 
-        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0005)
+        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0001)
         self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
         self.assertAlmostEqual(builder.shape_material_mu_torsional[4], 0.15, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0001, places=5)
 
     def test_mjcf_geom_margin_parsing(self):
         """Test MJCF geom margin is parsed to shape thickness."""
@@ -6051,3 +6051,50 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
             )
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent_xform", str(ctx.exception))
+
+
+class TestZeroMassBodies(unittest.TestCase):
+    """Verify that ``ensure_nonstatic_links`` correctly handles zero-mass bodies.
+
+    Models may contain zero-mass bodies (sensor frames, reference links).
+    These tests ensure the default (False) preserves zero mass and that
+    opting in (True) assigns a small surrogate mass.
+    """
+
+    def test_ensure_nonstatic_links_default_false(self):
+        """Verify zero-mass bodies keep zero mass with the default setting."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="empty_body" pos="0.5 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        empty_idx = next(i for i in range(builder.body_count) if builder.body_key[i] == "empty_body")
+        self.assertEqual(builder.body_mass[empty_idx], 0.0)
+
+    def test_ensure_nonstatic_links_opt_in(self):
+        """Verify zero-mass bodies receive surrogate mass when opted in."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="empty_body" pos="0.5 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ensure_nonstatic_links=True)
+
+        empty_idx = next(i for i in range(builder.body_count) if builder.body_key[i] == "empty_body")
+        self.assertGreater(builder.body_mass[empty_idx], 0.0)
