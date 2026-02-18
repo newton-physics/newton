@@ -122,6 +122,65 @@ def test_3d_articulation(test: TestControlForce, device, solver_fn):
             test.assertAlmostEqual(qd[i], 0.0, delta=1e-6)
 
 
+def test_child_xform_moment_arm(test: TestControlForce, device, solver_fn):
+    """Regression test for issue #1261: apply_joint_forces must include child joint transform.
+
+    When a joint has a non-identity child_xform, a linear control force applied at the
+    joint anchor should produce torque on the child body due to the moment arm between
+    the joint anchor and the body COM.
+    """
+    offset_y = 2.0
+    builder = newton.ModelBuilder(gravity=0.0)
+    builder.default_shape_cfg.density = 100.0
+
+    b = builder.add_link()
+    builder.add_shape_sphere(b)
+    j = builder.add_joint_d6(
+        -1,
+        b,
+        child_xform=((0.0, offset_y, 0.0), (0.0, 0.0, 0.0, 1.0)),
+        linear_axes=[
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, armature=0.0),
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, armature=0.0),
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, armature=0.0),
+        ],
+        angular_axes=[
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, armature=0.0),
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, armature=0.0),
+            newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, armature=0.0),
+        ],
+    )
+    builder.add_articulation([j])
+
+    model = builder.finalize(device=device)
+
+    solver = solver_fn(model)
+
+    state_0, state_1 = model.state(), model.state()
+
+    control = model.control()
+    # Apply force along X: with child_xform offset in Y, this should produce torque around Z
+    control_input = np.zeros(model.joint_dof_count, dtype=np.float32)
+    control_input[0] = 100.0  # force along X
+    control.joint_f.assign(control_input)
+
+    sim_dt = 1.0 / 10.0
+
+    for _ in range(4):
+        solver.step(state_0, state_1, control, None, sim_dt)
+        state_0, state_1 = state_1, state_0
+
+    # body_qd layout: [vel_x, vel_y, vel_z, omega_x, omega_y, omega_z]
+    body_qd = state_0.body_qd.numpy()[0]
+
+    # The force along X should produce linear velocity along X
+    test.assertGreater(body_qd[0], 0.001)
+
+    # cross((0, offset_y, 0), (F, 0, 0)) = (0, 0, -F*offset_y)
+    # So we expect negative angular velocity around Z
+    test.assertLess(body_qd[5], -0.001, "Expected angular velocity around Z due to child_xform offset")
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
@@ -151,6 +210,21 @@ for device in devices:
             TestControlForce,
             f"test_3d_articulation_{solver_name}",
             test_3d_articulation,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+
+# Only test solvers that use apply_joint_forces with child transform
+child_xform_solvers = {
+    "xpbd": solvers["xpbd"],
+    "semi_implicit": solvers["semi_implicit"],
+}
+for device in devices:
+    for solver_name, solver_fn in child_xform_solvers.items():
+        add_function_test(
+            TestControlForce,
+            f"test_child_xform_moment_arm_{solver_name}",
+            test_child_xform_moment_arm,
             devices=[device],
             solver_fn=solver_fn,
         )

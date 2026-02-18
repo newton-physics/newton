@@ -15,7 +15,7 @@
 
 from .broad_phase_common import test_group_pair, test_world_and_group_pair
 from .broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
-from .broad_phase_sap import BroadPhaseSAP, SAPSortType
+from .broad_phase_sap import BroadPhaseSAP
 from .collision_primitive import (
     collide_box_box,
     collide_capsule_box,
@@ -32,9 +32,9 @@ from .collision_primitive import (
 )
 from .flags import ParticleFlags, ShapeFlags
 from .inertia import compute_shape_inertia, compute_sphere_inertia, transform_inertia
+from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
 from .types import (
-    SDF,
     GeoType,
     Heightfield,
     Mesh,
@@ -50,7 +50,6 @@ __all__ = [
     "Heightfield",
     "Mesh",
     "ParticleFlags",
-    "SAPSortType",
     "ShapeFlags",
     "collide_box_box",
     "collide_capsule_box",

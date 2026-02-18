@@ -680,10 +680,17 @@ def parse_mjcf(
                         if verbose:
                             print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
                         m_mesh.texture = None
+                    # Mesh shapes must not use cfg.sdf_*; SDFs are built on the mesh itself.
+                    mesh_shape_kwargs = dict(shape_kwargs)
+                    mesh_cfg = shape_cfg.copy()
+                    mesh_cfg.sdf_max_resolution = None
+                    mesh_cfg.sdf_target_voxel_size = None
+                    mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
+                    mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
-                        **shape_kwargs,
+                        **mesh_shape_kwargs,
                     )
                     shapes.append(s)
 
@@ -1238,6 +1245,7 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
+                    friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
                     actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
                 )
