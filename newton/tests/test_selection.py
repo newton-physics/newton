@@ -47,19 +47,25 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(selection.get_dof_velocities(model).shape, (1, 1, 0))
         self.assertEqual(selection.get_dof_forces(control).shape, (1, 1, 0))
 
-    def test_selection_shapes(self):
+    def _test_selection_shapes(self, floating: bool):
         # load articulation
         ant = newton.ModelBuilder()
         ant.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
             ignore_names=["floor", "ground"],
+            floating=floating,
         )
 
         L = 9  # num links
         J = 9  # num joints
-        D = 14  # num joint dofs
-        C = 15  # num joint coords
         S = 13  # num shapes
+
+        if floating:
+            D = 14  # num joint dofs
+            C = 15  # num joint coords
+        else:
+            D = 8  # num joint dofs
+            C = 8  # num joint coords
 
         # scene with just one ant
         single_ant_model = ant.finalize()
@@ -69,7 +75,10 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(single_ant_view.world_count, 1)
         self.assertEqual(single_ant_view.count_per_world, 1)
         self.assertEqual(single_ant_view.get_root_transforms(single_ant_model).shape, (1, 1))
-        self.assertEqual(single_ant_view.get_root_velocities(single_ant_model).shape, (1, 1))
+        if floating:
+            self.assertEqual(single_ant_view.get_root_velocities(single_ant_model).shape, (1, 1))
+        else:
+            self.assertIsNone(single_ant_view.get_root_velocities(single_ant_model))
         self.assertEqual(single_ant_view.get_link_transforms(single_ant_model).shape, (1, 1, L))
         self.assertEqual(single_ant_view.get_link_velocities(single_ant_model).shape, (1, 1, L))
         self.assertEqual(single_ant_view.get_dof_positions(single_ant_model).shape, (1, 1, C))
@@ -92,7 +101,10 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(single_ant_per_world_view.world_count, W)
         self.assertEqual(single_ant_per_world_view.count_per_world, 1)
         self.assertEqual(single_ant_per_world_view.get_root_transforms(single_ant_per_world_model).shape, (W, 1))
-        self.assertEqual(single_ant_per_world_view.get_root_velocities(single_ant_per_world_model).shape, (W, 1))
+        if floating:
+            self.assertEqual(single_ant_per_world_view.get_root_velocities(single_ant_per_world_model).shape, (W, 1))
+        else:
+            self.assertIsNone(single_ant_per_world_view.get_root_velocities(single_ant_per_world_model))
         self.assertEqual(single_ant_per_world_view.get_link_transforms(single_ant_per_world_model).shape, (W, 1, L))
         self.assertEqual(single_ant_per_world_view.get_link_velocities(single_ant_per_world_model).shape, (W, 1, L))
         self.assertEqual(single_ant_per_world_view.get_dof_positions(single_ant_per_world_model).shape, (W, 1, C))
@@ -128,7 +140,10 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(multi_ant_per_world_view.world_count, W)
         self.assertEqual(multi_ant_per_world_view.count_per_world, A)
         self.assertEqual(multi_ant_per_world_view.get_root_transforms(multi_ant_per_world_model).shape, (W, A))
-        self.assertEqual(multi_ant_per_world_view.get_root_velocities(multi_ant_per_world_model).shape, (W, A))
+        if floating:
+            self.assertEqual(multi_ant_per_world_view.get_root_velocities(multi_ant_per_world_model).shape, (W, A))
+        else:
+            self.assertIsNone(multi_ant_per_world_view.get_root_velocities(multi_ant_per_world_model))
         self.assertEqual(multi_ant_per_world_view.get_link_transforms(multi_ant_per_world_model).shape, (W, A, L))
         self.assertEqual(multi_ant_per_world_view.get_link_velocities(multi_ant_per_world_model).shape, (W, A, L))
         self.assertEqual(multi_ant_per_world_view.get_dof_positions(multi_ant_per_world_model).shape, (W, A, C))
@@ -148,6 +163,12 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(
             multi_ant_per_world_view.get_attribute("shape_thickness", multi_ant_per_world_model).shape, (W, A, S)
         )
+
+    def test_selection_shapes_floating_base(self):
+        self._test_selection_shapes(floating=True)
+
+    def test_selection_shapes_fixed_base(self):
+        self._test_selection_shapes(floating=False)
 
     def test_selection_shape_values_noncontiguous(self):
         """Test that shape attribute values are correct when shape selection is non-contiguous."""
