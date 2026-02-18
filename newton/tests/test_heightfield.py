@@ -281,7 +281,7 @@ class TestHeightfield(unittest.TestCase):
                 solver.step(state_out, state_in, control, None, sim_dt)
             graph = capture.graph
 
-        remaining = 500 - (2 if use_cuda_graph else 0)
+        remaining = 500 - (4 if use_cuda_graph else 0)
         for _ in range(remaining // 2 if use_cuda_graph else remaining):
             if use_cuda_graph:
                 wp.capture_launch(graph)

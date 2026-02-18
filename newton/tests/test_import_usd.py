@@ -2461,7 +2461,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
     body_key_to_idx = dict(zip(model.body_key, range(model.body_count), strict=False))
     shape_key_to_idx = dict(zip(model.shape_key, range(model.shape_count), strict=False))
 
-    parsed_bodies = list(zip(*parsed[UsdPhysics.ObjectType.RigidBody], strict=False))
+    parsed_bodies = list(zip(*parsed.get(UsdPhysics.ObjectType.RigidBody, ()), strict=False))
 
     # body presence
     for body_path, _ in parsed_bodies:
@@ -2534,7 +2534,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
         lin = int(joint_dof_dim_array[j][0])
         ang = int(joint_dof_dim_array[j][1])
         total_dofs += lin + ang
-        jt = int(model.joint_type.numpy()[j])
+        jt = int(model_joint_type[j])
 
         if jt == JointType.REVOLUTE:
             test.assertEqual((lin, ang), (0, 1), f"{model.joint_key[j]} DOF dim mismatch")

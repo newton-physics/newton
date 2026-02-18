@@ -252,7 +252,7 @@ class TestImportUrdfBasic(unittest.TestCase):
                     parse_urdf(MESH_URDF.format(filename="cube.obj"), builder, {"cube.obj": MESH_OBJ})
                 else:
 
-                    def mock_mesh_download(dst, url: str):
+                    def mock_mesh_download(dst, _url: str):
                         dst.write(MESH_OBJ.encode("utf-8"))
 
                     with patch("newton._src.utils.import_urdf._download_file", side_effect=mock_mesh_download):

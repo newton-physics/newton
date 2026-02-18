@@ -219,7 +219,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
                 solver.step(state_out, state_in, control, None, sim_dt)
             graph = capture.graph
 
-        remaining = num_steps - (2 if use_cuda_graph else 0)
+        remaining = num_steps - (4 if use_cuda_graph else 0)
         for _ in range(remaining // 2 if use_cuda_graph else remaining):
             if use_cuda_graph:
                 wp.capture_launch(graph)
@@ -285,7 +285,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
                 solver.step(state_out, state_in, control, None, sim_dt)
             graph = capture.graph
 
-        remaining = num_steps - (2 if use_cuda_graph else 0)
+        remaining = num_steps - (4 if use_cuda_graph else 0)
         for _ in range(remaining // 2 if use_cuda_graph else remaining):
             if use_cuda_graph:
                 wp.capture_launch(graph)

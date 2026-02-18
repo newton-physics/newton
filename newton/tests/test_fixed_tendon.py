@@ -112,7 +112,7 @@ class TestMujocoFixedTendon(unittest.TestCase):
                 solver.step(state_in=state_out, state_out=state_in, contacts=contacts, control=control, dt=dt)
             graph = capture.graph
 
-        remaining = 200 - (2 if use_cuda_graph else 0)
+        remaining = 200 - (4 if use_cuda_graph else 0)
         for _i in range(remaining // 2 if use_cuda_graph else remaining):
             if use_cuda_graph:
                 wp.capture_launch(graph)
