@@ -385,6 +385,7 @@ def convert_mj_coords_to_warp_kernel(
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_child: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
+    dof_ref: wp.array(dtype=wp.float32),
     # outputs
     joint_q: wp.array(dtype=wp.float32),
     joint_qd: wp.array(dtype=wp.float32),
@@ -460,8 +461,10 @@ def convert_mj_coords_to_warp_kernel(
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
-            # convert position components
-            joint_q[wq_i + i] = qpos[worldid, q_i + i]
+            ref = float(0.0)
+            if dof_ref:
+                ref = dof_ref[wqd_i + i]
+            joint_q[wq_i + i] = qpos[worldid, q_i + i] - ref
         for i in range(axis_count):
             # convert velocity components
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
@@ -478,6 +481,7 @@ def convert_warp_coords_to_mj_kernel(
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_child: wp.array(dtype=wp.int32),
     body_com: wp.array(dtype=wp.vec3),
+    dof_ref: wp.array(dtype=wp.float32),
     # outputs
     qpos: wp.array2d(dtype=wp.float32),
     qvel: wp.array2d(dtype=wp.float32),
@@ -548,11 +552,85 @@ def convert_warp_coords_to_mj_kernel(
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
-            # convert position components
-            qpos[worldid, q_i + i] = joint_q[wq_i + i]
+            ref = float(0.0)
+            if dof_ref:
+                ref = dof_ref[wqd_i + i]
+            qpos[worldid, q_i + i] = joint_q[wq_i + i] + ref
         for i in range(axis_count):
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
+
+
+@wp.kernel
+def sync_qpos0_kernel(
+    joints_per_world: int,
+    bodies_per_world: int,
+    joint_type: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    joint_child: wp.array(dtype=wp.int32),
+    body_q: wp.array(dtype=wp.transform),
+    dof_ref: wp.array(dtype=wp.float32),
+    dof_springref: wp.array(dtype=wp.float32),
+    # outputs
+    qpos0: wp.array2d(dtype=wp.float32),
+    qpos_spring: wp.array2d(dtype=wp.float32),
+):
+    """Sync MuJoCo qpos0 and qpos_spring from Newton model data.
+
+    For hinge/slide: qpos0 = ref, qpos_spring = springref.
+    For free: qpos0 from body_q (pos + quat in wxyz order).
+    For ball: qpos0 = [1, 0, 0, 0] (identity quaternion in wxyz).
+    """
+    worldid, jntid = wp.tid()
+
+    type = joint_type[jntid]
+    q_i = joint_q_start[jntid]
+    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+
+    if type == JointType.FREE:
+        child = joint_child[jntid]
+        world_body = worldid * bodies_per_world + child
+        bq = body_q[world_body]
+        pos = wp.transform_get_translation(bq)
+        rot = wp.transform_get_rotation(bq)
+
+        # Position
+        for i in range(3):
+            qpos0[worldid, q_i + i] = pos[i]
+            qpos_spring[worldid, q_i + i] = pos[i]
+
+        # Quaternion: Newton stores xyzw, MuJoCo uses wxyz
+        qpos0[worldid, q_i + 3] = rot[3]
+        qpos0[worldid, q_i + 4] = rot[0]
+        qpos0[worldid, q_i + 5] = rot[1]
+        qpos0[worldid, q_i + 6] = rot[2]
+        qpos_spring[worldid, q_i + 3] = rot[3]
+        qpos_spring[worldid, q_i + 4] = rot[0]
+        qpos_spring[worldid, q_i + 5] = rot[1]
+        qpos_spring[worldid, q_i + 6] = rot[2]
+    elif type == JointType.BALL:
+        # Identity quaternion in wxyz order
+        qpos0[worldid, q_i + 0] = 1.0
+        qpos0[worldid, q_i + 1] = 0.0
+        qpos0[worldid, q_i + 2] = 0.0
+        qpos0[worldid, q_i + 3] = 0.0
+        qpos_spring[worldid, q_i + 0] = 1.0
+        qpos_spring[worldid, q_i + 1] = 0.0
+        qpos_spring[worldid, q_i + 2] = 0.0
+        qpos_spring[worldid, q_i + 3] = 0.0
+    else:
+        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        for i in range(axis_count):
+            ref = float(0.0)
+            springref = float(0.0)
+            if dof_ref:
+                ref = dof_ref[wqd_i + i]
+            if dof_springref:
+                springref = dof_springref[wqd_i + i]
+            qpos0[worldid, q_i + i] = ref
+            qpos_spring[worldid, q_i + i] = springref
 
 
 @wp.kernel
