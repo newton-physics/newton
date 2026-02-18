@@ -1429,13 +1429,8 @@ def update_jnt_properties_kernel(
     if limit_margin:
         jnt_margin[world, mjc_jnt] = limit_margin[newton_dof]
 
-    # Update joint range (MuJoCo uses [0, 0] for unlimited joints)
-    lo = joint_limit_lower[newton_dof]
-    hi = joint_limit_upper[newton_dof]
-    if lo <= -1.0e10 or hi >= 1.0e10:
-        jnt_range[world, mjc_jnt] = wp.vec2(0.0, 0.0)
-    else:
-        jnt_range[world, mjc_jnt] = wp.vec2(lo, hi)
+    # Update joint range
+    jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof], joint_limit_upper[newton_dof])
     # update joint actuator force range (effort limit)
     effort_limit = joint_effort_limit[newton_dof]
     jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)

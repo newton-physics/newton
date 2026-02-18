@@ -508,6 +508,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_sizes() which understands type-specific semantics
     "geom_size",
+    # Range: Compared via compare_jnt_range() which only checks limited joints
+    # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
+    "jnt_range",
     # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
     # re-diagonalization. Backfilled instead.
     "actuator_acc0",
@@ -720,6 +723,40 @@ def compare_geom_sizes(
                     atol=tol,
                     rtol=0,
                     err_msg=f"geom_size[{world},{geom}] (type={gtype}) mismatch",
+                )
+
+
+def compare_jnt_range(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 1e-6,
+) -> None:
+    """Compare jnt_range only for limited joints.
+
+    MuJoCo ignores jnt_range when jnt_limited=False, so unlimited joints
+    may have different range values (Newton uses [-1e10, 1e10], MuJoCo
+    uses [0, 0]) without affecting physics. Only compare range values
+    for joints where both sides agree the joint is limited.
+    """
+    newton_range = newton_mjw.jnt_range.numpy()
+    native_range = native_mjw.jnt_range.numpy()
+    newton_limited = newton_mjw.jnt_limited.numpy()
+    native_limited = native_mjw.jnt_limited.numpy()
+
+    assert newton_range.shape == native_range.shape, (
+        f"jnt_range shape mismatch: {newton_range.shape} vs {native_range.shape}"
+    )
+    np.testing.assert_array_equal(newton_limited, native_limited, err_msg="jnt_limited mismatch")
+
+    for world in range(newton_range.shape[0]):
+        for jnt in range(newton_range.shape[1]):
+            if native_limited[jnt]:
+                np.testing.assert_allclose(
+                    newton_range[world, jnt],
+                    native_range[world, jnt],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"jnt_range[{world},{jnt}] mismatch (limited joint)",
                 )
 
 
@@ -1736,6 +1773,9 @@ class TestMenagerieBase(unittest.TestCase):
 
         # Compare geom sizes with type-specific semantics
         compare_geom_sizes(newton_solver.mjw_model, native_mjw_model)
+
+        # Compare joint ranges only for limited joints (unlimited joints may differ in representation)
+        compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
 
         # Optional: backfill computed fields from native to Newton to eliminate
         # numerical differences from model compilation (enables tighter tolerances for dynamics)
