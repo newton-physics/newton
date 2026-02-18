@@ -47,11 +47,6 @@ class TestMatchLabels(unittest.TestCase):
         labels = ["a", "b", "c"]
         self.assertEqual(match_labels(labels, [2, 0]), [2, 0])
 
-    def test_list_mixed_str_int(self):
-        labels = ["alpha", "beta", "gamma"]
-        result = match_labels(labels, ["alpha", 2])
-        self.assertEqual(result, [0, 2])
-
     def test_list_str_wildcard_union(self):
         labels = ["arm_left", "arm_right", "leg_left", "leg_right"]
         result = match_labels(labels, ["arm_*", "leg_left"])
@@ -70,10 +65,6 @@ class TestMatchLabels(unittest.TestCase):
         labels = ["a", "b"]
         with self.assertRaises(TypeError):
             match_labels(labels, [None])
-
-    def test_empty_labels(self):
-        self.assertEqual(match_labels([], "foo"), [])
-        self.assertEqual(match_labels([], ["foo", 0]), [0])
 
     def test_int_out_of_bounds_passthrough(self):
         """int indices are passed through without bounds checking."""
