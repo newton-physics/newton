@@ -2013,6 +2013,9 @@ def apply_kinematic_target_kernel(
             else:
                 omega = wp.vec3(0.0, 0.0, 0.0)
 
+            # Convert from parent frame to body frame for ball joints
+            omega = wp.quat_rotate_inv(cur_q, omega)
+
             joint_qd[wqd_i + 0] = omega[0]
             joint_qd[wqd_i + 1] = omega[1]
             joint_qd[wqd_i + 2] = omega[2]

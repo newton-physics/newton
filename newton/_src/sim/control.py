@@ -66,7 +66,8 @@ class Control:
         """
 
         self.kinematic_target: wp.array | None = None
-        """Target values for kinematic joints, shape ``(joint_coord_count,)``, type ``float``.
+        """Target values for kinematic joints [m or rad for POSITION; m/s or rad/s for VELOCITY],
+        shape ``(joint_coord_count,)``, type ``float``.
 
         Indexed by ``joint_q_start`` offsets for both :attr:`~newton.KinematicMode.VELOCITY` and
         :attr:`~newton.KinematicMode.POSITION` modes. For VELOCITY mode, the DOF velocity values

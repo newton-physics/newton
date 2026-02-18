@@ -187,8 +187,6 @@ class Example:
 
         self.viewer.set_model(self.model)
 
-        self.viewer._paused = True
-
         self.capture()
 
     def capture(self):

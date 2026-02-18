@@ -2742,6 +2742,9 @@ class ModelBuilder:
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
+            kinematic: Kinematic mode for the auto-created free joint (see :class:`KinematicMode`).
+                Use ``NONE`` for dynamic bodies; ``VELOCITY`` or ``POSITION`` drives the joint
+                via ``control.kinematic_target``.
 
         Returns:
             The index of the body in the model.
@@ -2868,13 +2871,9 @@ class ModelBuilder:
 
         self.joint_kinematic_mode.append(int(kinematic))
 
-        # Override armature for kinematic joints
+        # Armature override for kinematic joints
         KINEMATIC_ARMATURE = 1.0e10
-        if kinematic != KinematicMode.NONE:
-            for ax in linear_axes:
-                ax.armature = KINEMATIC_ARMATURE
-            for ax in angular_axes:
-                ax.armature = KINEMATIC_ARMATURE
+        armature_override = KINEMATIC_ARMATURE if kinematic != KinematicMode.NONE else None
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -2896,7 +2895,7 @@ class ModelBuilder:
             self.joint_target_kd.append(dim.target_kd)
             self.joint_limit_ke.append(dim.limit_ke)
             self.joint_limit_kd.append(dim.limit_kd)
-            self.joint_armature.append(dim.armature)
+            self.joint_armature.append(armature_override if armature_override is not None else dim.armature)
             self.joint_effort_limit.append(dim.effort_limit)
             self.joint_velocity_limit.append(dim.velocity_limit)
             self.joint_friction.append(dim.friction)
@@ -3947,6 +3946,7 @@ class ModelBuilder:
                 "axis_dim": self.joint_dof_dim[i],
                 "parent": parent,
                 "child": child,
+                "kinematic_mode": self.joint_kinematic_mode[i],
                 "original_id": i,
             }
             num_lin_axes, num_ang_axes = self.joint_dof_dim[i]
@@ -4179,6 +4179,7 @@ class ModelBuilder:
         self.joint_target_vel.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
+        self.joint_kinematic_mode.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -4206,6 +4207,7 @@ class ModelBuilder:
                 self.joint_articulation.append(original_articulation[joint["original_id"]])
             else:
                 self.joint_articulation.append(-1)
+            self.joint_kinematic_mode.append(joint["kinematic_mode"])
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_act_mode.append(axis["actuator_mode"])

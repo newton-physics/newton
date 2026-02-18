@@ -2109,11 +2109,11 @@ class SolverMuJoCo(SolverBase):
 
         # Apply kinematic targets to joint velocities before syncing to MuJoCo
         if control is not None and control.kinematic_target is not None:
-            joints_per_world = self.model.joint_count // self.model.num_worlds
+            joints_per_world = self.model.joint_count // self.model.world_count
             inv_dt = 1.0 / max(dt, 1.0e-10)
             wp.launch(
                 apply_kinematic_target_kernel,
-                dim=(self.model.num_worlds, joints_per_world),
+                dim=(self.model.world_count, joints_per_world),
                 inputs=[
                     self.model.joint_kinematic_mode,
                     self.model.joint_type,
