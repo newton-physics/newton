@@ -279,6 +279,21 @@ class ArticulationView:
     It supports pattern-based selection, inclusion/exclusion filters, and convenient
     attribute access and modification for simulation and control.
 
+    This is useful in RL and batched simulation workflows where a single policy or
+    control routine operates on many parallel environments with consistent tensor shapes.
+
+    Example:
+
+    .. code-block:: python
+
+        import newton
+
+        view = newton.selection.ArticulationView(model, pattern="robot*")
+        q = view.get_dof_positions(state)
+        q_np = q.numpy()
+        q_np[..., 0] = 0.0
+        view.set_dof_positions(state, q_np)
+
     Args:
         model (Model): The model containing the articulations.
         pattern (str): Pattern to match articulation keys.

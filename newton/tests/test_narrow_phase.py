@@ -33,11 +33,12 @@ import unittest
 
 import numpy as np
 import warp as wp
+from warp.tests.unittest_utils import StdOutCapture
 
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.narrow_phase import NarrowPhase
+from newton._src.geometry.sdf_utils import SDFData
 from newton._src.geometry.types import GeoType
-from newton.geometry import SDFData
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -267,8 +268,8 @@ class TestNarrowPhase(unittest.TestCase):
             wp.full(
                 len(geom_list), ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32
             ),  # shape_flags - collision enabled, no hydroelastic
-            wp.zeros(len(geom_list), dtype=wp.vec3),  # shape_local_aabb_lower - dummy for non-mesh tests
-            wp.ones(len(geom_list), dtype=wp.vec3),  # shape_local_aabb_upper - dummy for non-mesh tests
+            wp.zeros(len(geom_list), dtype=wp.vec3),  # shape_collision_aabb_lower - dummy for non-mesh tests
+            wp.ones(len(geom_list), dtype=wp.vec3),  # shape_collision_aabb_upper - dummy for non-mesh tests
             wp.full(len(geom_list), wp.vec3i(4, 4, 4), dtype=wp.vec3i),  # shape_voxel_resolution - dummy
         )
 
@@ -291,8 +292,8 @@ class TestNarrowPhase(unittest.TestCase):
             geom_collision_radius,
             shape_sdf_data,
             shape_flags,
-            shape_local_aabb_lower,
-            shape_local_aabb_upper,
+            shape_collision_aabb_lower,
+            shape_collision_aabb_upper,
             shape_voxel_resolution,
         ) = self._create_geometry_arrays(geom_list)
 
@@ -321,8 +322,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,
@@ -1296,8 +1297,8 @@ class TestNarrowPhase(unittest.TestCase):
         shape_contact_margin = wp.array([0.01, 0.02, 0.06], dtype=wp.float32)
 
         # Dummy AABB arrays (not used for primitive tests)
-        shape_local_aabb_lower = wp.zeros(3, dtype=wp.vec3)
-        shape_local_aabb_upper = wp.ones(3, dtype=wp.vec3)
+        shape_collision_aabb_lower = wp.zeros(3, dtype=wp.vec3)
+        shape_collision_aabb_upper = wp.ones(3, dtype=wp.vec3)
         shape_voxel_resolution = wp.full(3, wp.vec3i(4, 4, 4), dtype=wp.vec3i)
 
         # Allocate output arrays
@@ -1333,8 +1334,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,
@@ -1368,8 +1369,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,
@@ -1404,8 +1405,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
-            shape_local_aabb_lower=shape_local_aabb_lower,
-            shape_local_aabb_upper=shape_local_aabb_upper,
+            shape_collision_aabb_lower=shape_collision_aabb_lower,
+            shape_collision_aabb_upper=shape_collision_aabb_upper,
             shape_voxel_resolution=shape_voxel_resolution,
             contact_pair=contact_pair,
             contact_position=contact_position,
@@ -1695,6 +1696,197 @@ class TestNarrowPhase(unittest.TestCase):
 
         # Normal should point along +X
         self.assertAlmostEqual(normals[0][0], 1.0, places=1, msg="Normal should point along +X")
+
+
+class TestBufferOverflowWarnings(unittest.TestCase):
+    """Test that buffer overflow produces warnings and does not crash."""
+
+    @staticmethod
+    def _make_ellipsoids(n, spacing=1.5):
+        """Create n overlapping ellipsoids along the X axis (routes to GJK)."""
+        geom_list = []
+        for i in range(n):
+            geom_list.append(
+                {
+                    "type": GeoType.ELLIPSOID,
+                    "transform": ([i * spacing, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                    "data": ([1.0, 0.8, 0.6], 0.0),
+                }
+            )
+        return geom_list
+
+    @staticmethod
+    def _make_spheres(n, spacing=1.5):
+        """Create n overlapping unit spheres along the X axis."""
+        geom_list = []
+        for i in range(n):
+            geom_list.append(
+                {
+                    "type": GeoType.SPHERE,
+                    "transform": ([i * spacing, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                    "data": ([1.0, 1.0, 1.0], 0.0),
+                }
+            )
+        return geom_list
+
+    def _create_geometry_arrays(self, geom_list):
+        """Create geometry arrays from geometry descriptions."""
+        n = len(geom_list)
+        geom_types = np.zeros(n, dtype=np.int32)
+        geom_data = np.zeros(n, dtype=wp.vec4)
+        geom_transforms = []
+        geom_source = np.zeros(n, dtype=np.uint64)
+        shape_contact_margin = np.zeros(n, dtype=np.float32)
+        geom_collision_radius = np.zeros(n, dtype=np.float32)
+
+        for i, geom in enumerate(geom_list):
+            geom_types[i] = int(geom["type"])
+            data = geom.get("data", ([1.0, 1.0, 1.0], 0.0))
+            if isinstance(data, tuple):
+                scale, thickness = data
+            else:
+                scale = data
+                thickness = 0.0
+            geom_data[i] = wp.vec4(scale[0], scale[1], scale[2], thickness)
+            pos, quat = geom.get("transform", ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]))
+            geom_transforms.append(
+                wp.transform(wp.vec3(pos[0], pos[1], pos[2]), wp.quat(quat[0], quat[1], quat[2], quat[3]))
+            )
+            geom_source[i] = geom.get("source", 0)
+            shape_contact_margin[i] = geom.get("cutoff", 0.0)
+            geom_collision_radius[i] = max(scale[0], scale[1], scale[2])
+
+        return (
+            wp.array(geom_types, dtype=wp.int32),
+            wp.array(geom_data, dtype=wp.vec4),
+            wp.array(geom_transforms, dtype=wp.transform),
+            wp.array(geom_source, dtype=wp.uint64),
+            wp.array(shape_contact_margin, dtype=wp.float32),
+            wp.array(geom_collision_radius, dtype=wp.float32),
+            wp.zeros(n, dtype=SDFData),
+            wp.full(n, ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32),
+            wp.zeros(n, dtype=wp.vec3),
+            wp.ones(n, dtype=wp.vec3),
+            wp.full(n, wp.vec3i(4, 4, 4), dtype=wp.vec3i),
+        )
+
+    def test_gjk_buffer_overflow(self):
+        """Test that GJK buffer overflow produces a warning and no crash."""
+        # 4 overlapping ellipsoids -> 3 adjacent pairs routed to GJK, but buffer has capacity 1
+        geom_list = self._make_ellipsoids(4)
+        all_pairs = [(i, j) for i in range(4) for j in range(i + 1, 4) if abs(i - j) == 1]
+
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=1,
+            has_meshes=False,
+            device=None,
+        )
+
+        arrays = self._create_geometry_arrays(geom_list)
+        candidate_pair = wp.array(np.array(all_pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
+        num_candidate_pair = wp.array([len(all_pairs)], dtype=wp.int32)
+
+        contact_count = wp.zeros(1, dtype=int)
+        max_contacts = 20
+        contact_pair = wp.zeros(max_contacts, dtype=wp.vec2i)
+        contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_penetration = wp.zeros(max_contacts, dtype=float)
+
+        capture = StdOutCapture()
+        capture.begin()
+        narrow_phase.launch(
+            candidate_pair=candidate_pair,
+            candidate_pair_count=num_candidate_pair,
+            shape_types=arrays[0],
+            shape_data=arrays[1],
+            shape_transform=arrays[2],
+            shape_source=arrays[3],
+            shape_sdf_data=arrays[6],
+            shape_contact_margin=arrays[4],
+            shape_collision_radius=arrays[5],
+            shape_flags=arrays[7],
+            shape_local_aabb_lower=arrays[8],
+            shape_local_aabb_upper=arrays[9],
+            shape_voxel_resolution=arrays[10],
+            contact_pair=contact_pair,
+            contact_position=contact_position,
+            contact_normal=contact_normal,
+            contact_penetration=contact_penetration,
+            contact_count=contact_count,
+        )
+        wp.synchronize()
+        output = capture.end()
+
+        # Verify overflow was detected (counter exceeds buffer capacity)
+        gjk_count = narrow_phase.gjk_candidate_pairs_count.numpy()[0]
+        gjk_capacity = narrow_phase.gjk_candidate_pairs.shape[0]
+        self.assertGreater(gjk_count, gjk_capacity, "GJK buffer should have overflowed")
+
+        # Verify warning was printed (wp.printf capture is unreliable on CPU/Windows)
+        if wp.get_preferred_device().is_cuda:
+            self.assertIn("GJK candidate pair buffer overflowed", output)
+
+        # Verify some contacts were still produced (from the pairs that fit)
+        count = contact_count.numpy()[0]
+        self.assertGreater(count, 0, "Should still produce contacts for pairs that fit in the buffer")
+
+    def test_broad_phase_buffer_overflow(self):
+        """Test that broad phase buffer overflow produces a warning and no crash."""
+        # 4 overlapping spheres -> 3 adjacent pairs, but broad phase buffer has capacity 1
+        geom_list = self._make_spheres(4)
+        all_pairs = [(i, j) for i in range(4) for j in range(i + 1, 4) if abs(i - j) == 1]
+
+        narrow_phase = NarrowPhase(
+            max_candidate_pairs=1000,
+            has_meshes=False,
+            device=None,
+        )
+
+        arrays = self._create_geometry_arrays(geom_list)
+        # Broad phase buffer has capacity 1, but we feed 3 pairs
+        candidate_pair = wp.zeros(1, dtype=wp.vec2i)
+        candidate_pair_full = wp.array(np.array(all_pairs, dtype=np.int32).reshape(-1, 2), dtype=wp.vec2i)
+        # Copy first pair only into the tiny buffer
+        wp.copy(candidate_pair, candidate_pair_full, count=1)
+        # But set the count to the full number of pairs (simulating broad phase overflow)
+        num_candidate_pair = wp.array([len(all_pairs)], dtype=wp.int32)
+
+        contact_count = wp.zeros(1, dtype=int)
+        max_contacts = 20
+        contact_pair_out = wp.zeros(max_contacts, dtype=wp.vec2i)
+        contact_position = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_normal = wp.zeros(max_contacts, dtype=wp.vec3)
+        contact_penetration = wp.zeros(max_contacts, dtype=float)
+
+        capture = StdOutCapture()
+        capture.begin()
+        narrow_phase.launch(
+            candidate_pair=candidate_pair,
+            candidate_pair_count=num_candidate_pair,
+            shape_types=arrays[0],
+            shape_data=arrays[1],
+            shape_transform=arrays[2],
+            shape_source=arrays[3],
+            shape_sdf_data=arrays[6],
+            shape_contact_margin=arrays[4],
+            shape_collision_radius=arrays[5],
+            shape_flags=arrays[7],
+            shape_local_aabb_lower=arrays[8],
+            shape_local_aabb_upper=arrays[9],
+            shape_voxel_resolution=arrays[10],
+            contact_pair=contact_pair_out,
+            contact_position=contact_position,
+            contact_normal=contact_normal,
+            contact_penetration=contact_penetration,
+            contact_count=contact_count,
+        )
+        wp.synchronize()
+        output = capture.end()
+
+        # Verify broad phase overflow warning was printed (wp.printf capture is unreliable on CPU/Windows)
+        if wp.get_preferred_device().is_cuda:
+            self.assertIn("Broad phase pair buffer overflowed", output)
 
 
 if __name__ == "__main__":
