@@ -478,6 +478,15 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Lights: Newton doesn't parse lights from MJCF
     "light_",
     "nlight",
+    # Cameras: Newton doesn't parse cameras from MJCF
+    "cam_",
+    "ncam",
+    # Sensors: Newton doesn't parse sensors from MJCF
+    "sensor",
+    "nsensor",
+    # Materials: Newton doesn't pass materials to MuJoCo spec
+    "mat_",
+    "nmat",
     # Mocap bodies: Newton handles fixed base differently
     "mocap_",
     "nmocap",
@@ -2607,16 +2616,10 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "dof_invweight0",
         "ngeom",  # Newton includes visual geoms → different geom count
         "geom_",  # all geom-indexed fields have shape mismatch due to visual geoms
-        "cam_",  # Newton doesn't parse cameras from MJCF
-        "ncam",
-        "sensor",  # Newton doesn't parse sensors from MJCF
-        "nsensor",
         "nsite",  # Newton doesn't parse sites from MJCF
         "site_",
         "mesh_",  # Newton doesn't pass meshes to MuJoCo spec
         "nmesh",
-        "mat_",  # material count differs
-        "nmat",
         "pair_geom",  # collision pair geom indices differ due to geom count
         "nxn_",  # broadphase pairs differ due to geom count
         "opt.iterations",  # Newton doesn't parse <option iterations/ls_iterations> from MJCF
