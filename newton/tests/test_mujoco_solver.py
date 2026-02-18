@@ -5019,7 +5019,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
     def test_ref_fk_matches_mujoco(self):
         """Test that Newton's state matches MuJoCo's FK for joints with ref attribute.
 
-        When ref is used, Newton relies on MuJoCo's FK (via update_newton_state with eval_fk=False)
+        When ref is used, Newton relies on MuJoCo's FK (via _update_newton_state with eval_fk=False)
         because ref is a MuJoCo-specific feature handled via qpos0.
         """
         import mujoco_warp
@@ -5052,11 +5052,11 @@ class TestMuJoCoAttributes(unittest.TestCase):
         # Set qpos=0 in MuJoCo and run FK
         state = model.state()
         state.joint_q.zero_()
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
 
-        # Use update_newton_state with eval_fk=False to get body transforms from MuJoCo
-        solver.update_newton_state(model, state, solver.mjw_data, eval_fk=False)
+        # Use _update_newton_state with eval_fk=False to get body transforms from MuJoCo
+        solver._update_newton_state(model, state, solver.mjw_data, eval_fk=False)
 
         # Compare Newton's body_q (now from MuJoCo) with MuJoCo's xpos/xquat
         newton_body_q = state.body_q.numpy()
@@ -5066,7 +5066,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
             newton_body_idx = model.body_key.index(body_name)
             mjc_body_idx = np.where(mjc_body_to_newton[0] == newton_body_idx)[0][0]
 
-            # Get Newton body position and quaternion (populated from MuJoCo via update_newton_state)
+            # Get Newton body position and quaternion (populated from MuJoCo via _update_newton_state)
             newton_pos = newton_body_q[newton_body_idx, 0:3]
             newton_quat = newton_body_q[newton_body_idx, 3:7]  # [x, y, z, w]
 
