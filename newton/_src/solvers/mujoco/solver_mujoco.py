@@ -4440,7 +4440,7 @@ class SolverMuJoCo(SolverBase):
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         dof_springref = getattr(mujoco_attrs, "dof_springref", None) if mujoco_attrs is not None else None
         joints_per_world = self.model.joint_count // nworld
-        bodies_per_world = self.model.body_count // self.model.num_worlds
+        bodies_per_world = self.model.body_count // nworld
         wp.launch(
             sync_qpos0_kernel,
             dim=(nworld, joints_per_world),
