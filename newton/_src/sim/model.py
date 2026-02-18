@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -26,6 +27,9 @@ from ..core.types import Devicelike
 from .contacts import Contacts
 from .control import Control
 from .state import State
+
+if TYPE_CHECKING:
+    from newton_actuators import Actuator
 
 
 class Model:
@@ -712,7 +716,7 @@ class Model:
         self.attribute_frequency["shape_scale"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
 
-        self.actuators = []
+        self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
 
     def state(self, requires_grad: bool | None = None) -> State:

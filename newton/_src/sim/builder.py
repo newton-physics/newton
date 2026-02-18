@@ -1721,7 +1721,6 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
         force_position_velocity_actuation: bool = False,
-        parse_external_actuator_fn: Callable[[Any], Any | None] | None = None,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage containing UsdPhysics schema definitions for rigid-body articulations and adds the bodies, shapes and joints to the given ModelBuilder.
 
@@ -1832,17 +1831,6 @@ class ModelBuilder:
                 damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
 
-            parse_external_actuator_fn (Callable[[pxr.Usd.Prim], Any | None] | None): Optional callback for parsing actuator prims.
-                The callback accepts a single ``pxr.Usd.Prim`` and returns either ``None`` (to skip the prim) or an
-                object with the following attributes:
-
-                - ``target_paths`` (list[str]): List of prim paths that this actuator controls.
-                - ``actuator_class`` (type): The actuator class to instantiate (e.g., ``ActuatorPD``).
-                - ``kwargs`` (dict): Dictionary of extra keyword arguments passed to ``ModelBuilder.add_external_actuator()``.
-
-                This enables parsing custom actuator definitions from USD files. See ``newton_actuators.parse_actuator_prim``
-                for an example implementation.
-
         Returns:
             dict: Dictionary with the following entries:
 
@@ -1882,7 +1870,7 @@ class ModelBuilder:
                 * - ``"path_original_body_map"``
                   - Mapping from prim path to original body index before ``collapse_fixed_joints``
                 * - ``"actuator_count"``
-                  - Number of actuators added via ``parse_external_actuator_fn`` (0 if ``parse_external_actuator_fn`` is None)
+                  - Number of external actuators parsed from the USD stage
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
@@ -1912,7 +1900,6 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
             force_position_velocity_actuation=force_position_velocity_actuation,
-            parse_external_actuator_fn=parse_external_actuator_fn,
         )
 
     def add_mjcf(

@@ -2415,7 +2415,7 @@ wheels = [
 
 [[package]]
 name = "mujoco"
-version = "3.4.1.dev856273160"
+version = "3.5.1.dev871622663"
 source = { registry = "https://py.mujoco.org/" }
 dependencies = [
     { name = "absl-py" },
@@ -2426,22 +2426,21 @@ dependencies = [
     { name = "pyopengl" },
 ]
 wheels = [
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp310-cp310-macosx_11_0_universal2.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp310-cp310-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp310-cp310-win_amd64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp311-cp311-macosx_11_0_universal2.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp311-cp311-win_amd64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp312-cp312-macosx_11_0_universal2.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp312-cp312-win_amd64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp313-cp313-macosx_11_0_universal2.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
-    { url = "https://py.mujoco.org/mujoco/mujoco-3.4.1.dev856273160-cp313-cp313-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp310-cp310-macosx_11_0_universal2.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp310-cp310-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp310-cp310-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp311-cp311-macosx_11_0_universal2.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp311-cp311-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp312-cp312-macosx_11_0_universal2.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp312-cp312-win_amd64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp313-cp313-macosx_11_0_universal2.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
+    { url = "https://py.mujoco.org/mujoco/mujoco-3.5.1.dev871622663-cp313-cp313-win_amd64.whl" },
 ]
 
 [[package]]
@@ -2611,13 +2610,11 @@ wheels = [
 name = "newton"
 source = { editable = "." }
 dependencies = [
+    { name = "newton-actuators" },
     { name = "warp-lang" },
 ]
 
 [package.optional-dependencies]
-actuators = [
-    { name = "newton-actuators" },
-]
 dev = [
     { name = "alphashape" },
     { name = "cbor2" },
@@ -2765,7 +2762,6 @@ torch-cu12 = [
 [package.dev-dependencies]
 dev = [
     { name = "asv" },
-    { name = "newton-actuators" },
 ]
 
 [package.metadata]
@@ -2821,7 +2817,7 @@ requires-dist = [
     { name = "mujoco-warp", marker = "extra == 'torch-cu12'", git = "https://github.com/google-deepmind/mujoco_warp" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
-    { name = "newton-actuators", marker = "extra == 'actuators'" },
+    { name = "newton-actuators" },
     { name = "newton-usd-schemas", marker = "extra == 'dev'", specifier = ">=0.1.0a2" },
     { name = "newton-usd-schemas", marker = "extra == 'docs'", specifier = ">=0.1.0a2" },
     { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0a2" },
@@ -2893,13 +2889,10 @@ requires-dist = [
     { name = "viser", marker = "extra == 'docs'", specifier = ">=1.0.16" },
     { name = "warp-lang", specifier = ">=1.11.0", index = "https://pypi.nvidia.com/" },
 ]
-provides-extras = ["actuators", "dev", "docs", "examples", "importers", "notebook", "remesh", "sim", "torch-cu12"]
+provides-extras = ["dev", "docs", "examples", "importers", "notebook", "remesh", "sim", "torch-cu12"]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "asv", specifier = ">=0.6.4" },
-    { name = "newton-actuators" },
-]
+dev = [{ name = "asv", specifier = ">=0.6.4" }]
 
 [[package]]
 name = "newton-actuators"

@@ -21,17 +21,11 @@ import unittest
 
 import numpy as np
 import warp as wp
+from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID, parse_actuator_prim
 
 import newton
 from newton._src.utils.import_usd import parse_usd
 from newton.selection import ArticulationView
-
-try:
-    from newton_actuators import ActuatorDelayedPD, ActuatorPD, ActuatorPID, parse_actuator_prim
-
-    HAS_ACTUATORS = True
-except ImportError:
-    HAS_ACTUATORS = False
 
 try:
     from pxr import Usd
@@ -41,7 +35,6 @@ except ImportError:
     HAS_USD = False
 
 
-@unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
 class TestActuatorBuilder(unittest.TestCase):
     """Tests for ModelBuilder.add_external_actuator - functionality, multi-world, and scalar params."""
 
@@ -231,31 +224,24 @@ class TestActuatorBuilder(unittest.TestCase):
         self.assertIn("dimension mismatch", str(ctx.exception))
 
 
-@unittest.skipUnless(HAS_ACTUATORS and HAS_USD, "newton-actuators or pxr not installed")
+@unittest.skipUnless(HAS_USD, "pxr not installed")
 class TestActuatorUSDParsing(unittest.TestCase):
     """Tests for parsing actuators from USD files."""
 
     def test_usd_parsing(self):
-        """Test USD parsing with and without actuator parse function, verify parameters."""
+        """Test that USD parsing automatically parses Newton actuators."""
         test_dir = os.path.dirname(__file__)
         usd_path = os.path.join(test_dir, "assets", "actuator_test.usda")
 
         if not os.path.exists(usd_path):
             self.skipTest(f"Test USD file not found: {usd_path}")
 
-        # Without parse function - no actuators
-        builder1 = newton.ModelBuilder()
-        result1 = parse_usd(builder1, usd_path)
-        self.assertEqual(result1["actuator_count"], 0)
-        model1 = builder1.finalize()
-        self.assertEqual(len(model1.actuators), 0)
-
-        # With parse function - actuators parsed
-        builder2 = newton.ModelBuilder()
-        result2 = parse_usd(builder2, usd_path, parse_external_actuator_fn=parse_actuator_prim)
-        self.assertGreaterEqual(result2["actuator_count"], 0)
-        model2 = builder2.finalize()
-        self.assertGreater(len(model2.actuators), 0)
+        # Actuators are parsed automatically
+        builder = newton.ModelBuilder()
+        result = parse_usd(builder, usd_path)
+        self.assertGreater(result["actuator_count"], 0)
+        model = builder.finalize()
+        self.assertGreater(len(model.actuators), 0)
 
         # Verify parsed parameters
         stage = Usd.Stage.Open(usd_path)
@@ -267,7 +253,6 @@ class TestActuatorUSDParsing(unittest.TestCase):
         self.assertEqual(parsed.kwargs.get("kd"), 10.0)
 
 
-@unittest.skipUnless(HAS_ACTUATORS, "newton-actuators not installed")
 class TestActuatorSelectionAPI(unittest.TestCase):
     """Tests for actuator parameter access via ArticulationView.
 
