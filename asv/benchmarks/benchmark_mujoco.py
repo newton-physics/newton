@@ -484,7 +484,9 @@ def print_trace(trace, indent, steps):
         print_trace(sub_trace, indent + 1, steps)
     if indent == 0:
         step_time = trace["step"][0]
-        mujoco_warp_step_time = trace["step"][1]["mujoco_warp_step"][0]
+        step_trace = trace["step"][1]
+        mujoco_warp_step_key = "_mujoco_warp_step" if "_mujoco_warp_step" in step_trace else "mujoco_warp_step"
+        mujoco_warp_step_time = step_trace[mujoco_warp_step_key][0]
         overhead = 100.0 * (step_time - mujoco_warp_step_time) / step_time
         print("---------------------------------------------")
         print(f"Newton overhead:\t{overhead:.2f} %")
