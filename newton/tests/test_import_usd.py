@@ -4691,9 +4691,10 @@ def Xform "Articulation" (
         custom frequency USD parsing via TraverseInstanceProxies predicate.
         """
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
-        from pxr import Usd, UsdGeom, UsdPhysics
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4764,11 +4765,15 @@ def Xform "Articulation" (
         usd_attribute_name='*' with a usd_value_transformer to derive CustomAttribute
         values from arbitrary prim data (not from a specific USD attribute).
         """
-        from pxr import UsdGeom, UsdPhysics
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         # Create a USD stage with a physics scene and three "sensor" prims.
         # Each sensor has a different "position" attribute that we will read
         # through the wildcard transformer (not through the normal attribute path).
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
         body = UsdGeom.Cube.Define(stage, "/Body")
         body_prim = body.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
@@ -4784,7 +4789,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_false_creates_fixed_joint(self):
         """Test that floating=False creates a fixed joint for the root body."""
-        from pxr import Usd, UsdGeom, UsdPhysics
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4902,7 +4907,11 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_frequency_usd_entry_expander_multiple_rows(self):
         """Test that usd_entry_expander can emit multiple rows per matched prim."""
-        from pxr import UsdGeom, UsdPhysics
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
 
         body = UsdGeom.Cube.Define(stage, "/Body")
         body_prim = body.GetPrim()
@@ -5029,7 +5038,7 @@ def Xform "Articulation" (
             - Position should reflect import position + rotated offset
             - Orientation should reflect import rotation
         """
-        from pxr import Usd, UsdGeom, UsdPhysics
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -5077,7 +5086,11 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_frequency_usd_filter_and_expander_context_unified(self):
         """Test that usd_prim_filter and usd_entry_expander receive the same context contract."""
-        from pxr import UsdGeom, UsdPhysics
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
 
         # Create body at position (1, 0, 0)
         body_xform = UsdGeom.Xform.Define(stage, "/FloatingBody")
@@ -5624,7 +5637,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_conflicting_keys_fails(self):
         """Test that base_joint dict with conflicting keys raises ValueError."""
-        from pxr import Usd, UsdGeom, UsdPhysics
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
