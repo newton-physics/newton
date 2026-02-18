@@ -2428,7 +2428,7 @@ def Xform "Root" (
         self.assertEqual(builder.joint_parent[joint_id], -1)
 
     def test_add_base_joint_custom_key(self):
-        """Test add_base_joint with custom key."""
+        """Test add_base_joint with custom label."""
         builder = newton.ModelBuilder()
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0

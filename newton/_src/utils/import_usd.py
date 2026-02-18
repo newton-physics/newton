@@ -1357,9 +1357,9 @@ def parse_usd(
             for p in desc.articulatedJoints:
                 joint_path = str(p)
                 joint_desc = joint_descriptions[joint_path]
-                #! it may be possible that a joint is filtered out in the middle of
-                #! a chain of joints, which results in a disconnected graph
-                #! we should raise an error in this case
+                # it may be possible that a joint is filtered out in the middle of
+                # a chain of joints, which results in a disconnected graph
+                # we should raise an error in this case
                 if any(re.match(p, joint_path) for p in ignore_paths):
                     continue
                 if str(joint_desc.body0) in ignored_body_paths:

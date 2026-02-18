@@ -160,7 +160,12 @@ class Example:
         }
         # Set initial joint positions (skip first 7 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
         for name, value in initial_q.items():
-            idx = next(i for i, lbl in enumerate(builder.joint_label) if lbl.endswith(f"/{name}"))
+            idx = next(
+                (i for i, lbl in enumerate(builder.joint_label) if lbl.endswith(f"/{name}")),
+                None,
+            )
+            if idx is None:
+                raise ValueError(f"Joint '{name}' not found in builder.joint_label")
             builder.joint_q[idx + 6] = value
 
         for i in range(len(builder.joint_target_ke)):

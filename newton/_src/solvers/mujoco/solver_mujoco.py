@@ -3710,16 +3710,16 @@ class SolverMuJoCo(SolverBase):
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_CONNECT
             eq.active = True
-            eq.name1 = model.body_label[joint_parent[j]]
-            eq.name2 = model.body_label[joint_child[j]]
+            eq.name1 = get_body_name(joint_parent[j])
+            eq.name2 = get_body_name(joint_child[j])
             eq.data[0:3] = joint_parent_xform[j][:3]
             mjc_eq_to_newton_jnt[eq.id] = j
 
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_CONNECT
             eq.active = True
-            eq.name1 = model.body_label[joint_child[j]]
-            eq.name2 = model.body_label[joint_parent[j]]
+            eq.name1 = get_body_name(joint_child[j])
+            eq.name2 = get_body_name(joint_parent[j])
             eq.data[0:3] = joint_child_xform[j][:3]
             mjc_eq_to_newton_jnt[eq.id] = j
 

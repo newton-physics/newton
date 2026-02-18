@@ -230,6 +230,14 @@ class FrequencyLayout:
 
 
 def get_name_from_label(label: str):
+    """Return the leaf component of a hierarchical label.
+
+    Args:
+        label: Slash-delimited label string (e.g. ``"robot/link1"``).
+
+    Returns:
+        The final path component of the label.
+    """
     return label.split("/")[-1]
 
 

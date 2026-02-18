@@ -559,7 +559,15 @@ def parse_urdf(
     articulation_label = urdf_root.attrib.get("name")
 
     def make_label(name: str) -> str:
-        """Build a hierarchical label: ``{articulation_label}/{name}``."""
+        """Build a hierarchical label for an entity name.
+
+        Args:
+            name: The entity name to label.
+
+        Returns:
+            Hierarchical label ``{articulation_label}/{name}`` when an
+            articulation label is present, otherwise ``name``.
+        """
         return f"{articulation_label}/{name}" if articulation_label else name
 
     # topological sorting of joints because the FK function will resolve body transforms

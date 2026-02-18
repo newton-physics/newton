@@ -1186,7 +1186,7 @@ def parse_mjcf(
         freejoint_tags = body.findall("freejoint")
         if len(freejoint_tags) > 0:
             joint_type = JointType.FREE
-            freejoint_name = freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint")
+            freejoint_name = sanitize_name(freejoint_tags[0].attrib.get("name", f"{body_name}_freejoint"))
             joint_name.append(freejoint_name)
             joint_armature.append(0.0)
             joint_custom_attributes = parse_custom_attributes(
@@ -1835,6 +1835,14 @@ def parse_mjcf(
     # Only parse contact pairs if custom attributes are registered
     has_pair_attrs = "mujoco:pair_geom1" in builder.custom_attributes
     contact = root.find("contact")
+
+    def _find_shape_idx(name: str) -> int | None:
+        """Look up shape index by name, supporting hierarchical labels (e.g. "prefix/geom_name")."""
+        for idx, label in enumerate(builder.shape_label):
+            if label == name or label.endswith(f"/{name}"):
+                return idx
+        return None
+
     if contact is not None and has_pair_attrs:
         # Parse <pair> elements - explicit contact pairs with custom properties
         for pair in contact.findall("pair"):
@@ -1846,17 +1854,14 @@ def parse_mjcf(
                     print("Warning: <pair> element missing geom1 or geom2 attribute, skipping")
                 continue
 
-            # Look up shape indices by geom name
-            try:
-                geom1_idx = builder.shape_label.index(geom1_name)
-            except ValueError:
+            geom1_idx = _find_shape_idx(geom1_name)
+            if geom1_idx is None:
                 if verbose:
                     print(f"Warning: <pair> references unknown geom '{geom1_name}', skipping")
                 continue
 
-            try:
-                geom2_idx = builder.shape_label.index(geom2_name)
-            except ValueError:
+            geom2_idx = _find_shape_idx(geom2_name)
+            if geom2_idx is None:
                 if verbose:
                     print(f"Warning: <pair> references unknown geom '{geom2_name}', skipping")
                 continue
