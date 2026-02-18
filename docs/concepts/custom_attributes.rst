@@ -549,6 +549,9 @@ For one-to-many mappings (one prim -> many rows):
 
 .. code-block:: python
 
+   def is_tendon_prim(prim, context):
+       return prim.GetTypeName() == "MjcTendon"
+
    def expand_joint_rows(prim, context):
        return [
            {"mujoco:tendon_joint": 4, "mujoco:tendon_coef": 0.5},
@@ -616,6 +619,7 @@ A :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` **must** be
 
 .. code-block:: python
 
+   import warp as wp
    import numpy as np
 
    # 1. Register the custom frequency with a filter that selects sensor prims
@@ -648,7 +652,7 @@ A :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` **must** be
        )
    )
 
-   # 4. Parse the USD stage — the transformer runs for every matching prim
+   # 4. Parse the USD stage (assuming `stage` is an existing Usd.Stage)
    builder.add_usd(stage)
    model = builder.finalize()
 

@@ -1491,8 +1491,12 @@ class TestCustomAttributes(unittest.TestCase):
         builder.add_custom_attribute(mjcf_attr)
         builder.add_custom_attribute(urdf_attr)
 
-        mjcf_values = parse_custom_attributes({mjcf_attr.mjcf_attribute_name: "1.23"}, [mjcf_attr], "mjcf")
-        urdf_values = parse_custom_attributes({urdf_attr.urdf_attribute_name: "4.56"}, [urdf_attr], "urdf")
+        mjcf_values = parse_custom_attributes(
+            {mjcf_attr.mjcf_attribute_name or mjcf_attr.name: "1.23"}, [mjcf_attr], "mjcf"
+        )
+        urdf_values = parse_custom_attributes(
+            {urdf_attr.urdf_attribute_name or urdf_attr.name: "4.56"}, [urdf_attr], "urdf"
+        )
         self.assertEqual(mjcf_values, {})
         self.assertEqual(urdf_values, {})
 

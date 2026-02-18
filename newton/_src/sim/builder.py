@@ -676,6 +676,15 @@ class ModelBuilder:
                         yield {"joint": joint_path, "stiffness": prim.GetCustomDataByKey("stiffness")}
         """
 
+        def __post_init__(self):
+            """Validate frequency naming and callback relationships."""
+            if not self.name or ":" in self.name:
+                raise ValueError(f"name must be non-empty and colon-free, got '{self.name}'")
+            if self.namespace is not None and (not self.namespace or ":" in self.namespace):
+                raise ValueError(f"namespace must be non-empty and colon-free, got '{self.namespace}'")
+            if self.usd_entry_expander is not None and self.usd_prim_filter is None:
+                raise ValueError("usd_entry_expander requires usd_prim_filter")
+
         @property
         def key(self) -> str:
             """The key of the custom frequency (e.g., ``"mujoco:actuator"`` or ``"pair"``)."""
@@ -1080,7 +1089,13 @@ class ModelBuilder:
 
         freq_key = freq_obj.key
         if freq_key in self.custom_frequencies:
-            # Already registered - silently skip (allows idempotent registration)
+            existing = self.custom_frequencies[freq_key]
+            if (
+                existing.usd_prim_filter is not freq_obj.usd_prim_filter
+                or existing.usd_entry_expander is not freq_obj.usd_entry_expander
+            ):
+                raise ValueError(f"Custom frequency '{freq_key}' is already registered with different callbacks.")
+            # Already registered with equivalent callbacks - silently skip
             return
 
         self.custom_frequencies[freq_key] = freq_obj

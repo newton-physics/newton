@@ -2288,11 +2288,22 @@ def parse_usd(
                 # usd_prim_filter and usd_entry_expander.
                 callback_context = {"prim": prim, "result": result, "builder": builder}
 
-                if not freq_obj.usd_prim_filter(prim, callback_context):
+                try:
+                    matches_frequency = freq_obj.usd_prim_filter(prim, callback_context)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"usd_prim_filter for frequency '{freq_key}' raised an error on prim '{prim.GetPath()}': {e}"
+                    ) from e
+                if not matches_frequency:
                     continue
 
                 if freq_obj.usd_entry_expander is not None:
-                    expanded_rows = list(freq_obj.usd_entry_expander(prim, callback_context))
+                    try:
+                        expanded_rows = list(freq_obj.usd_entry_expander(prim, callback_context))
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"usd_entry_expander for frequency '{freq_key}' raised an error on prim '{prim.GetPath()}': {e}"
+                        ) from e
                     values_rows = [{attr.key: row.get(attr.key, None) for attr in freq_attrs} for row in expanded_rows]
                     builder.add_custom_values_batch(values_rows)
                     if verbose and len(expanded_rows) > 0:

@@ -535,9 +535,12 @@ def get_custom_attribute_values(
     """
     out: dict[str, Any] = {}
     for attr in custom_attributes:
-        transformer_context = {"prim": prim, "attr": attr}
+        transformer_context: dict[str, Any] = {}
         if context:
             transformer_context.update(context)
+        # Keep builtin keys authoritative even if caller passes same names.
+        transformer_context["prim"] = prim
+        transformer_context["attr"] = attr
         usd_attr_name = attr.usd_attribute_name
         if usd_attr_name == "*":
             # Just apply the transformer to all prims of this frequency

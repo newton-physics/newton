@@ -233,14 +233,14 @@ class SolverMuJoCo(SolverBase):
     @staticmethod
     def _parse_named_int(value: str | int, mapping: dict[str, int], fallback_on_unknown: int | None = None) -> int:
         """Parse string-valued enums to int, otherwise return int(value)."""
-        if not isinstance(value, str):
+        if isinstance(value, (int, np.integer)):
             return int(value)
-        lower_value = value.lower().strip()
+        lower_value = str(value).lower().strip()
         if lower_value in mapping:
             return mapping[lower_value]
         if fallback_on_unknown is not None:
             return fallback_on_unknown
-        return int(value)
+        return int(lower_value)
 
     @staticmethod
     def _angle_value_transformer(value: str, context: dict[str, Any] | None) -> float:
@@ -986,13 +986,18 @@ class SolverMuJoCo(SolverBase):
             s = str(value).strip().lower()
             if s == "auto":
                 if context is not None:
-                    prim = context["prim"]
-                    attr = context["attr"]
-                    raise NotImplementedError(
-                        f"Error while parsing value '{attr.usd_attribute_name}' at prim '{prim.GetPath()}'. Auto boolean values are not supported at the moment."
-                    )
+                    prim = context.get("prim")
+                    attr = context.get("attr")
+                    if prim is not None and attr is not None:
+                        raise NotImplementedError(
+                            f"Error while parsing value '{attr.usd_attribute_name}' at prim '{prim.GetPath()}'. Auto boolean values are not supported at the moment."
+                        )
                 raise NotImplementedError("Auto boolean values are not supported at the moment.")
             return s in ("true", "1")
+
+        def parse_bool_int(value: Any, context: dict[str, Any] | None = None) -> int:
+            """Parse MJCF/USD boolean values to int (false=0, true=1)."""
+            return int(parse_bool(value, context))
 
         def get_usd_range_if_authored(prim, range_attr_name: str) -> tuple[float, float] | None:
             """Return (min, max) for an authored USD range or None if no bounds are authored."""
@@ -1028,6 +1033,15 @@ class SolverMuJoCo(SolverBase):
                 if range_vals is None:
                     return None
                 return wp.vec2(range_vals[0], range_vals[1])
+
+            return transform
+
+        def make_usd_has_range_transformer(range_attr_name: str):
+            """Create a transformer that returns 1 when a USD range is authored."""
+
+            def transform(_: Any, context: dict[str, Any]) -> int:
+                range_vals = get_usd_range_if_authored(context["prim"], range_attr_name)
+                return int(range_vals is not None)
 
             return transform
 
@@ -1377,13 +1391,15 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_has_ctrlrange",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
                 mjcf_attribute_name="ctrlrange",
                 mjcf_value_transformer=parse_presence,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_has_range_transformer("mjc:ctrlRange"),
             )
         )
         builder.add_custom_attribute(
@@ -1402,13 +1418,15 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_has_forcerange",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
                 mjcf_attribute_name="forcerange",
                 mjcf_value_transformer=parse_presence,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_has_range_transformer("mjc:forceRange"),
             )
         )
         builder.add_custom_attribute(
@@ -1494,13 +1512,15 @@ class SolverMuJoCo(SolverBase):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_has_actrange",
-                frequency="actuator",
+                frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=0,
                 namespace="mujoco",
                 mjcf_attribute_name="actrange",
                 mjcf_value_transformer=parse_presence,
+                usd_attribute_name="*",
+                usd_value_transformer=make_usd_has_range_transformer("mjc:actRange"),
             )
         )
 
@@ -1606,7 +1626,7 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        def parse_limited(value: Any, _context: dict[str, Any] | None = None) -> int:
+        def parse_limited_tendon(value: Any, _context: dict[str, Any] | None = None) -> int:
             """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
             return SolverMuJoCo._parse_named_int(value, {"false": 0, "true": 1, "auto": 2})
 
@@ -1637,9 +1657,9 @@ class SolverMuJoCo(SolverBase):
                 default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
                 mjcf_attribute_name="limited",
-                mjcf_value_transformer=parse_limited,
+                mjcf_value_transformer=parse_limited_tendon,
                 usd_attribute_name="mjc:limited",
-                usd_value_transformer=parse_limited,
+                usd_value_transformer=parse_limited_tendon,
             )
         )
         builder.add_custom_attribute(
@@ -1775,9 +1795,9 @@ class SolverMuJoCo(SolverBase):
                 default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
                 mjcf_attribute_name="actuatorfrclimited",
-                mjcf_value_transformer=parse_limited,
+                mjcf_value_transformer=parse_limited_tendon,
                 usd_attribute_name="mjc:actuatorfrclimited",
-                usd_value_transformer=parse_limited,
+                usd_value_transformer=parse_limited_tendon,
             )
         )
         # Tendon names (string attribute - stored as list[str], not warp array)
@@ -2327,8 +2347,10 @@ class SolverMuJoCo(SolverBase):
                     trntype = resolved_type
                     target_idx = resolved_idx
             if target_idx < 0:
-                if wp.config.verbose:
-                    print(f"Warning: MuJoCo actuator {mujoco_act_idx} has unresolved target '{target_key}'")
+                warnings.warn(
+                    f"MuJoCo actuator {mujoco_act_idx} has unresolved target '{target_key}'. Skipping actuator.",
+                    stacklevel=2,
+                )
                 continue
 
             if trntype == int(SolverMuJoCo.TrnType.JOINT):

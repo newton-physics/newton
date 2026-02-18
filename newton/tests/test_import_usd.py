@@ -4865,7 +4865,6 @@ def Xform "Articulation" (
         for i, pos in enumerate(sensor_positions):
             assert_np_equal(positions[i], np.array(pos, dtype=np.float32), tol=1e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_frequency_wildcard_without_transformer_raises(self):
         """Test that usd_attribute_name='*' without a usd_value_transformer raises ValueError."""
         builder = newton.ModelBuilder()
