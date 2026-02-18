@@ -22,7 +22,7 @@ from .types import RenderOrder
 @wp.func
 def tid_to_coord_tiled(
     tid: wp.int32,
-    num_cameras: wp.int32,
+    camera_count: wp.int32,
     width: wp.int32,
     height: wp.int32,
     tile_width: wp.int32,
@@ -35,8 +35,8 @@ def tid_to_coord_tiled(
     pixel_idx = tid % num_pixels_per_view
     view_idx = tid // num_pixels_per_view
 
-    world_index = view_idx // num_cameras
-    camera_index = view_idx % num_cameras
+    world_index = view_idx // camera_count
+    camera_index = view_idx % camera_count
 
     tile_idx = pixel_idx // num_pixels_per_tile
     tile_pixel_idx = pixel_idx % num_pixels_per_tile
@@ -51,14 +51,14 @@ def tid_to_coord_tiled(
 
 
 @wp.func
-def tid_to_coord_pixel_priority(tid: wp.int32, num_worlds: wp.int32, num_cameras: wp.int32, width: wp.int32):
-    num_views_per_pixel = num_worlds * num_cameras
+def tid_to_coord_pixel_priority(tid: wp.int32, world_count: wp.int32, camera_count: wp.int32, width: wp.int32):
+    num_views_per_pixel = world_count * camera_count
 
     pixel_idx = tid // num_views_per_pixel
     view_idx = tid % num_views_per_pixel
 
-    world_index = view_idx % num_worlds
-    camera_index = view_idx // num_worlds
+    world_index = view_idx % world_count
+    camera_index = view_idx // world_count
 
     py = pixel_idx // width
     px = pixel_idx % width
@@ -67,14 +67,14 @@ def tid_to_coord_pixel_priority(tid: wp.int32, num_worlds: wp.int32, num_cameras
 
 
 @wp.func
-def tid_to_coord_view_priority(tid: wp.int32, num_cameras: wp.int32, width: wp.int32, height: wp.int32):
+def tid_to_coord_view_priority(tid: wp.int32, camera_count: wp.int32, width: wp.int32, height: wp.int32):
     num_pixels_per_view = width * height
 
     pixel_idx = tid % num_pixels_per_view
     view_idx = tid // num_pixels_per_view
 
-    world_index = view_idx // num_cameras
-    camera_index = view_idx % num_cameras
+    world_index = view_idx // camera_count
+    camera_index = view_idx % camera_count
 
     py = pixel_idx // width
     px = pixel_idx % width
@@ -96,9 +96,9 @@ def pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
 @wp.kernel(enable_backward=False)
 def render_megakernel(
     # Model and Options
-    num_worlds: wp.int32,
-    num_cameras: wp.int32,
-    num_lights: wp.int32,
+    world_count: wp.int32,
+    camera_count: wp.int32,
+    light_count: wp.int32,
     img_width: wp.int32,
     img_height: wp.int32,
     render_order: wp.int32,
@@ -172,12 +172,12 @@ def render_megakernel(
     tid = wp.tid()
 
     if render_order == RenderOrder.PIXEL_PRIORITY:
-        world_index, camera_index, py, px = tid_to_coord_pixel_priority(tid, num_worlds, num_cameras, img_width)
+        world_index, camera_index, py, px = tid_to_coord_pixel_priority(tid, world_count, camera_count, img_width)
     elif render_order == RenderOrder.VIEW_PRIORITY:
-        world_index, camera_index, py, px = tid_to_coord_view_priority(tid, num_cameras, img_width, img_height)
+        world_index, camera_index, py, px = tid_to_coord_view_priority(tid, camera_count, img_width, img_height)
     elif render_order == RenderOrder.TILED:
         world_index, camera_index, py, px = tid_to_coord_tiled(
-            tid, num_cameras, img_width, img_height, tile_width, tile_height
+            tid, camera_count, img_width, img_height, tile_width, tile_height
         )
     else:
         return
@@ -186,7 +186,7 @@ def render_megakernel(
         return
 
     pixels_per_camera = img_width * img_height
-    pixels_per_world = num_cameras * pixels_per_camera
+    pixels_per_world = camera_count * pixels_per_camera
     out_index = world_index * pixels_per_world + camera_index * pixels_per_camera + py * img_width + px
 
     ray_origin_world = wp.transform_point(
@@ -303,7 +303,7 @@ def render_megakernel(
         )
 
     # Apply lighting and shadows
-    for light_index in range(num_lights):
+    for light_index in range(light_count):
         light_contribution = lighting.compute_lighting(
             enable_shadows,
             enable_particles,

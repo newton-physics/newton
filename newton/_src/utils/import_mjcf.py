@@ -584,10 +584,10 @@ def parse_mjcf(
                     shape_cfg.mu = float(friction_values[0])
 
                 if len(friction_values) >= 2:
-                    shape_cfg.torsional_friction = float(friction_values[1])
+                    shape_cfg.mu_torsional = float(friction_values[1])
 
                 if len(friction_values) >= 3:
-                    shape_cfg.rolling_friction = float(friction_values[2])
+                    shape_cfg.mu_rolling = float(friction_values[2])
 
             # Parse MJCF solref for contact stiffness/damping (only if explicitly specified)
             # Like friction, only override Newton defaults if solref is authored in MJCF
