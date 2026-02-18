@@ -2616,8 +2616,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "dof_invweight0",
         "ngeom",  # Newton includes visual geoms → different geom count
         "geom_",  # all geom-indexed fields have shape mismatch due to visual geoms
-        "nsite",  # Newton doesn't parse sites from MJCF
-        "site_",
         "mesh_",  # Newton doesn't pass meshes to MuJoCo spec
         "nmesh",
         "pair_geom",  # collision pair geom indices differ due to geom count
