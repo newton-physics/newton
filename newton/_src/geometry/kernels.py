@@ -368,7 +368,13 @@ def sdf_cylinder(
 
 
 @wp.func
-def sdf_cylinder_grad(point: wp.vec3, radius: float, half_height: float, up_axis: int = int(Axis.Y)):
+def sdf_cylinder_grad(
+    point: wp.vec3,
+    radius: float,
+    half_height: float,
+    up_axis: int = int(Axis.Y),
+    top_radius: float = -1.0,
+):
     """Compute outward SDF gradient for ``sdf_cylinder``.
 
     Args:
@@ -376,12 +382,57 @@ def sdf_cylinder_grad(point: wp.vec3, radius: float, half_height: float, up_axis
         radius [m]: Bottom radius.
         half_height [m]: Half-height along the cylinder axis.
         up_axis: Cylinder long axis as ``int(newton.Axis.*)``.
+        top_radius [m]: Top radius. Negative values use ``radius``.
 
     Returns:
         Unit-length outward gradient direction in local frame.
     """
     eps = 1.0e-8
     point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if top_radius >= 0.0 and wp.abs(top_radius - radius) > 1.0e-6:
+        # Use finite-difference gradient of the tapered capped-cone SDF.
+        fd_eps = 1.0e-4
+        dx = _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up + wp.vec3(fd_eps, 0.0, 0.0),
+        ) - _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up - wp.vec3(fd_eps, 0.0, 0.0),
+        )
+        dy = _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up + wp.vec3(0.0, fd_eps, 0.0),
+        ) - _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up - wp.vec3(0.0, fd_eps, 0.0),
+        )
+        dz = _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up + wp.vec3(0.0, 0.0, fd_eps),
+        ) - _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up - wp.vec3(0.0, 0.0, fd_eps),
+        )
+        grad_z_up = wp.vec3(dx, dy, dz)
+        grad_len = wp.length(grad_z_up)
+        if grad_len > eps:
+            grad_z_up = grad_z_up / grad_len
+        else:
+            grad_z_up = wp.vec3(0.0, 0.0, 1.0)
+        return _sdf_vector_from_z_up(grad_z_up, up_axis)
+
     dx = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0)) - radius
     dy = wp.abs(point_z_up[2]) - half_height
     grad_z_up = wp.vec3()
@@ -1067,7 +1118,7 @@ def create_soft_contacts(
         n = wp.normalize(nn)
 
     if geo_type == GeoType.PLANE:
-        d = sdf_plane(x_local, geo_scale[0], geo_scale[1])
+        d = sdf_plane(x_local, geo_scale[0] * 0.5, geo_scale[1] * 0.5)
         n = wp.vec3(0.0, 0.0, 1.0)
 
     if d < margin + radius:

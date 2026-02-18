@@ -90,6 +90,7 @@ def evaluate_gradient_error_kernel(
     point = points[tid]
 
     grad_analytic = _eval_grad(primitive, point, p0, p1, p2, up_axis)
+    analytic_norm[tid] = wp.length(grad_analytic)
     grad_analytic = _safe_normalize(grad_analytic, wp.vec3(0.0, 0.0, 1.0))
 
     dx = wp.vec3(eps, 0.0, 0.0)
@@ -111,7 +112,6 @@ def evaluate_gradient_error_kernel(
     grad_fd = _safe_normalize(grad_fd, wp.vec3(0.0, 0.0, 1.0))
 
     dot_alignment[tid] = wp.dot(grad_analytic, grad_fd)
-    analytic_norm[tid] = wp.length(grad_analytic)
 
 
 def _assert_gradient_matches_fd(
