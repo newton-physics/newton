@@ -119,6 +119,12 @@ def _load_and_expand_mjcf(
         included_texturedir = (
             included_compiler.attrib.get("texturedir", included_meshdir) if included_compiler is not None else "."
         )
+        # Strip consumed meshdir/texturedir so they don't leak into the parent tree
+        # and affect main-file asset resolution. Other compiler attributes (angle, etc.)
+        # are left intact to match MuJoCo's include-as-paste semantics.
+        if included_compiler is not None:
+            included_compiler.attrib.pop("meshdir", None)
+            included_compiler.attrib.pop("texturedir", None)
         _asset_dir_tags = {"mesh": included_meshdir, "hfield": included_meshdir, "texture": included_texturedir}
         for elem in included_root.iter():
             file_attr = elem.get("file")

@@ -6376,3 +6376,55 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             # Also verify full import succeeds
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path, parse_visuals=True)
+
+    def test_included_meshdir_does_not_leak_to_main_assets(self):
+        """Included file's meshdir must not affect main file's asset resolution."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Main file has a mesh in its own directory (no meshdir needed)
+            self._create_cube_stl(os.path.join(tmpdir, "main_cube.stl"))
+
+            # Included file uses meshdir="robot_meshes" for its own mesh
+            robot_meshes = os.path.join(tmpdir, "robot_meshes")
+            os.makedirs(robot_meshes)
+            self._create_cube_stl(os.path.join(robot_meshes, "robot.stl"))
+
+            included_content = """\
+<mujoco>
+    <compiler meshdir="robot_meshes"/>
+    <asset>
+        <mesh name="robot_mesh" file="robot.stl"/>
+    </asset>
+    <worldbody>
+        <body name="robot">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="mesh" mesh="robot_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            with open(os.path.join(tmpdir, "robot.xml"), "w") as f:
+                f.write(included_content)
+
+            # Main file includes robot.xml AND has its own mesh with a relative path.
+            # The included meshdir="robot_meshes" must NOT affect main_cube.stl resolution.
+            main_content = """\
+<mujoco model="test">
+    <include file="robot.xml"/>
+    <asset>
+        <mesh name="main_cube" file="main_cube.stl"/>
+    </asset>
+    <worldbody>
+        <body name="main_body">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="mesh" mesh="main_cube"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_content)
+
+            # Should succeed — main_cube.stl resolved relative to main file dir,
+            # not affected by included file's meshdir="robot_meshes"
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 2)
