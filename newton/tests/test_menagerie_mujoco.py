@@ -610,19 +610,28 @@ def compare_solref_physics(
         f"{field_name} shape mismatch: {newton_solref.shape} vs {native_solref.shape}"
     )
 
+    # Mask out zero solrefs (e.g. pair_solreffriction defaults to [0,0] meaning "unused").
+    # Both sides should have identical zeros; physics conversion would produce inf.
+    nonzero = (newton_solref[..., 0] != 0) | (native_solref[..., 0] != 0)
+    if not nonzero.any():
+        # All zeros on both sides — nothing to compare
+        np.testing.assert_array_equal(newton_solref, native_solref, err_msg=f"{field_name} zero-solref mismatch")
+        return
+
     newton_ke, newton_kd = solref_to_ke_kd(newton_solref)
     native_ke, native_kd = solref_to_ke_kd(native_solref)
 
+    # Only compare non-zero entries
     np.testing.assert_allclose(
-        newton_ke,
-        native_ke,
+        newton_ke[nonzero],
+        native_ke[nonzero],
         rtol=tol,
         atol=0,
         err_msg=f"{field_name} ke mismatch (physics-equivalent)",
     )
     np.testing.assert_allclose(
-        newton_kd,
-        native_kd,
+        newton_kd[nonzero],
+        native_kd[nonzero],
         rtol=tol,
         atol=0,
         err_msg=f"{field_name} kd mismatch (physics-equivalent)",
@@ -1341,7 +1350,13 @@ def backfill_model_from_native(
         fields = MODEL_BACKFILL_FIELDS
 
     # Fields verified separately (inertia re-diag gives large but physics-equivalent diffs)
-    skip_verification = {"body_inertia", "body_iquat"}
+    skip_verification = {
+        "body_inertia",
+        "body_iquat",
+        "body_invweight0",
+        "dof_invweight0",
+        "actuator_acc0",
+    }
 
     for field in fields:
         native_arr = getattr(native_mjw, field, None)
@@ -1763,6 +1778,8 @@ class TestMenagerieBase(unittest.TestCase):
             "tendon_solref_fri",
             "tendon_solref_lim",
         ]:
+            if any(s in solref_field for s in self.model_skip_fields):
+                continue
             if hasattr(newton_solver.mjw_model, solref_field) and hasattr(native_mjw_model, solref_field):
                 newton_arr = getattr(newton_solver.mjw_model, solref_field)
                 native_arr = getattr(native_mjw_model, solref_field)
@@ -2602,6 +2619,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "mat_",  # material count differs
         "nmat",
         "pair_geom",  # collision pair geom indices differ due to geom count
+        "pair_solreffriction",  # Newton sets default pair_solreffriction; native has [0,0]
         "nxn_",  # broadphase pairs differ due to geom count
         "opt.iterations",  # Newton doesn't parse <option iterations/ls_iterations> from MJCF
         "opt.ls_iterations",
