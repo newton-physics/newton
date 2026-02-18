@@ -268,6 +268,11 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
     if isinstance(pattern, str):
         return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
 
+    has_str = any(isinstance(item, str) for item in pattern)
+    has_int = any(isinstance(item, int) for item in pattern)
+    if has_str and has_int:
+        raise TypeError("Pattern list contains int elements")
+
     matches = []
     for item in pattern:
         if isinstance(item, str):

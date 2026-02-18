@@ -101,6 +101,13 @@ class MatchAny:
     """Wildcard counterpart; matches any object."""
 
 
+def _check_index_bounds(indices: list[int], count: int, param_name: str, entity_name: str) -> None:
+    """Raise IndexError if any index is out of range [0, count)."""
+    for idx in indices:
+        if idx < 0 or idx >= count:
+            raise IndexError(f"{param_name} contains index {idx}, but model only has {count} {entity_name}")
+
+
 class SensorContact:
     """Sensor that measures contact forces between bodies or shapes.
 
@@ -211,19 +218,23 @@ class SensorContact:
 
         if sensing_obj_bodies is not None:
             s_bodies = match_labels(model.body_key, sensing_obj_bodies)  # FIXME: rename to label
+            _check_index_bounds(s_bodies, len(model.body_key), "sensing_obj_bodies", "bodies")
             s_shapes = []
         else:
             s_bodies = []
             s_shapes = match_labels(model.shape_key, sensing_obj_shapes)  # FIXME: rename to label
+            _check_index_bounds(s_shapes, len(model.shape_key), "sensing_obj_shapes", "shapes")
 
         if counterpart_bodies is not None:
             c_bodies = match_labels(model.body_key, counterpart_bodies)  # FIXME: rename to label
+            _check_index_bounds(c_bodies, len(model.body_key), "counterpart_bodies", "bodies")
             c_shapes = []
             if include_total:
                 c_bodies = [MatchAny, *c_bodies]
         elif counterpart_shapes is not None:
             c_bodies = []
             c_shapes = match_labels(model.shape_key, counterpart_shapes)  # FIXME: rename to label
+            _check_index_bounds(c_shapes, len(model.shape_key), "counterpart_shapes", "shapes")
             if include_total:
                 c_shapes = [MatchAny, *c_shapes]
         else:
@@ -316,7 +327,7 @@ class SensorContact:
         for sensing_obj_idx, sensing_obj in enumerate(sensing_objs):
             if sensing_obj is MatchAny:
                 raise ValueError("Sensing object cannot be MatchAny")
-            sens_counterparts: list[tuple[int, SensorContact.MatchKind], ...] = []
+            sens_counterparts: list[tuple[int, SensorContact.MatchKind]] = []
             reading_idx = 0
             for counterpart_idx, counterpart in enumerate(counterparts):
                 if counterpart is MatchAny:
