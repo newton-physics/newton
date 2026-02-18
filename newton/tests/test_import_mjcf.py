@@ -2209,15 +2209,15 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_mu_torsional[2], 0.0, places=5)
         self.assertAlmostEqual(builder.shape_material_mu_rolling[2], 0.0, places=5)
 
-        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.25, 0.0005)
+        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.005, 0.0001)
         self.assertAlmostEqual(builder.shape_material_mu[3], 1.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_torsional[3], 0.25, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_rolling[3], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[3], 0.005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[3], 0.0001, places=5)
 
-        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0005)
+        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0001)
         self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
         self.assertAlmostEqual(builder.shape_material_mu_torsional[4], 0.15, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0001, places=5)
 
     def test_mjcf_geom_solref_parsing(self):
         """Test MJCF geom solref parsing for contact stiffness/damping.

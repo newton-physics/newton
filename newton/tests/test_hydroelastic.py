@@ -95,6 +95,7 @@ def build_stacked_cubes_scene(
 
     builder = newton.ModelBuilder()
     builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+        mu=0.5,
         sdf_max_resolution=32,
         is_hydroelastic=True,
         sdf_narrow_band_range=(-narrow_band, narrow_band),
