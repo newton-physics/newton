@@ -66,7 +66,7 @@ class TestConeOrientation(unittest.TestCase):
         ):
             tid = wp.tid()
             p = points[tid]
-            sdf_values[tid] = kernels.cone_sdf(radius, half_height, p)
+            sdf_values[tid] = kernels.sdf_cone(p, radius, half_height, up_axis=int(newton.Axis.Z))
 
         # Test points with expected SDF values
         test_cases = [
@@ -74,7 +74,7 @@ class TestConeOrientation(unittest.TestCase):
             ((0, 0, self.half_height), 0.0, "Apex"),
             ((0, 0, -self.half_height), 0.0, "Base center"),
             ((self.radius, 0, -self.half_height), 0.0, "Base edge"),
-            ((0, 0, 0), -0.5, "Origin (inside)"),
+            ((0, 0, 0), -0.48507124, "Origin (inside)"),
             ((self.radius / 2, 0, 0), 0.0, "Mid-height edge"),
         ]
 
