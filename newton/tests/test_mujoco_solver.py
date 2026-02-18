@@ -6082,6 +6082,33 @@ class TestMuJoCoSolverFreeJointBodyPos(unittest.TestCase):
         )
 
 
+class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
+    def test_zero_mass_body(self):
+        """SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames).
+
+        With ensure_nonstatic_links=False (the default), zero-mass bodies keep
+        their zero mass. MuJoCo handles these natively when they have fixed joints.
+        """
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="sensor_frame" pos="0 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        self.assertIsNotNone(solver.mj_model)
+
+
 class TestMuJoCoSolverQpos0(unittest.TestCase):
     """Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correctness."""
 

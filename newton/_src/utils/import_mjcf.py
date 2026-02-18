@@ -155,7 +155,7 @@ def parse_mjcf(
     force_show_colliders: bool = False,
     enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = False,
-    ensure_nonstatic_links: bool = True,
+    ensure_nonstatic_links: bool = False,
     static_link_mass: float = 1e-2,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
