@@ -5042,14 +5042,14 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
 
-        # Use update_newton_state with eval_fk=False to get body transforms from MuJoCo
-        solver.update_newton_state(model, state, solver.mjw_data, eval_fk=False)
+        # Use update_newton_state to get body transforms from MuJoCo
+        solver.update_newton_state(model, state, solver.mjw_data)
 
         # Compare Newton's body_q (now from MuJoCo) with MuJoCo's xpos/xquat
         newton_body_q = state.body_q.numpy()
         mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
 
-        for body_name in ["child1", "child2"]:
+        for body_name in ["child"]:
             newton_body_idx = next(
                 (i for i, lbl in enumerate(model.body_label) if lbl.endswith(f"/{body_name}")),
                 None,
