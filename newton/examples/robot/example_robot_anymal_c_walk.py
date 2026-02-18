@@ -169,10 +169,6 @@ class Example:
 
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
 
-        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
-        if not use_mujoco_contacts:
-            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             use_mujoco_contacts=use_mujoco_contacts,
@@ -203,11 +199,11 @@ class Example:
         # Evaluate forward kinematics to update body poses based on initial joint configuration
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        # Initialize contacts using collision pipeline
+        # Initialize contacts
         if use_mujoco_contacts:
             self.contacts = None
         else:
-            self.contacts = self.collision_pipeline.contacts()
+            self.contacts = self.model.contacts()
 
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
@@ -247,9 +243,8 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            # Compute contacts using collision pipeline for terrain mesh
             if self.contacts is not None:
-                self.collision_pipeline.collide(self.state_0, self.contacts)
+                self.model.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 

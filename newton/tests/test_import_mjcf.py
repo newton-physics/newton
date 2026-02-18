@@ -6025,6 +6025,97 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertIn("parent_xform", str(ctx.exception))
 
 
+class TestJointFrictionloss(unittest.TestCase):
+    """Verify MJCF joint frictionloss is parsed into Newton's joint_friction."""
+
+    def test_hinge_frictionloss(self):
+        """Verify frictionloss on a hinge joint is parsed correctly."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" frictionloss="5.0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 5.0, atol=1e-6)
+
+    def test_slide_frictionloss(self):
+        """Verify frictionloss on a slide joint is parsed correctly."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" frictionloss="2.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 2.5, atol=1e-6)
+
+    def test_frictionloss_default_zero(self):
+        """Verify frictionloss defaults to 0 when not specified."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 0.0, atol=1e-6)
+
+    def test_frictionloss_propagates_to_mujoco(self):
+        """Verify frictionloss propagates to dof_frictionloss in the MuJoCo solver."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" frictionloss="7.7"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        dof_frictionloss = solver.mjw_model.dof_frictionloss.numpy()
+        np.testing.assert_allclose(dof_frictionloss[0, 0], 7.7, atol=1e-5)
+
+    def test_frictionloss_from_default_class(self):
+        """Verify frictionloss is inherited from a default class."""
+        mjcf = """<mujoco>
+            <default>
+                <joint frictionloss="3.3"/>
+            </default>
+            <worldbody>
+                <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="child" pos="0 0 1">
+                        <joint type="hinge" axis="0 1 0"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 3.3, atol=1e-5)
+
+
 class TestZeroMassBodies(unittest.TestCase):
     """Verify that ``ensure_nonstatic_links`` correctly handles zero-mass bodies.
 
