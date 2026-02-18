@@ -99,14 +99,28 @@ def build_stacked_cubes_scene(
     narrow_band = cube_half * 0.2
     contact_margin = cube_half * 0.2
 
+    if cube_mesh is not None:
+        cube_mesh.build_sdf(
+            max_resolution=32,
+            narrow_band_range=(-narrow_band, narrow_band),
+            margin=contact_margin,
+        )
+
     builder = newton.ModelBuilder()
-    builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-        mu=0.5,
-        sdf_max_resolution=32,
-        is_hydroelastic=True,
-        sdf_narrow_band_range=(-narrow_band, narrow_band),
-        contact_margin=contact_margin,
-    )
+    if shape_type == ShapeType.PRIMITIVE:
+        builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            mu=0.5,
+            sdf_max_resolution=32,
+            is_hydroelastic=True,
+            sdf_narrow_band_range=(-narrow_band, narrow_band),
+            contact_margin=contact_margin,
+        )
+    else:
+        builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            mu=0.5,
+            is_hydroelastic=True,
+            contact_margin=contact_margin,
+        )
 
     builder.add_ground_plane()
 
@@ -341,7 +355,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     sdf_config = HydroelasticSDF.Config(output_contact_surface=True)
     collision_pipeline = newton.CollisionPipeline(
         model,
-        broad_phase_mode="explicit",
+        broad_phase="explicit",
         sdf_hydroelastic_config=sdf_config,
     )
     # Enable contact surface output for this test (validates penetration depth)
