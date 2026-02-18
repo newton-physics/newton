@@ -219,8 +219,8 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 type_a, type_b = type_b, type_a
 
             # Check if both shapes are hydroelastic - route to SDF-SDF pipeline
-            is_hydro_a = (shape_flags[shape_a] & int(ShapeFlags.HYDROELASTIC)) != 0
-            is_hydro_b = (shape_flags[shape_b] & int(ShapeFlags.HYDROELASTIC)) != 0
+            is_hydro_a = (shape_flags[shape_a] & ShapeFlags.HYDROELASTIC) != 0
+            is_hydro_b = (shape_flags[shape_b] & ShapeFlags.HYDROELASTIC) != 0
             if is_hydro_a and is_hydro_b and shape_pairs_sdf_sdf:
                 idx = wp.atomic_add(shape_pairs_sdf_sdf_count, 0, 1)
                 if idx < shape_pairs_sdf_sdf.shape[0]:
@@ -251,15 +251,15 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             # =====================================================================
             # Route heightfield pairs to specialized buffer
             # =====================================================================
-            is_hfield_a = type_a == int(GeoType.HFIELD)
-            is_hfield_b = type_b == int(GeoType.HFIELD)
+            is_hfield_a = type_a == GeoType.HFIELD
+            is_hfield_b = type_b == GeoType.HFIELD
 
             # Skip unsupported heightfield combinations
             if is_hfield_a and is_hfield_b:
                 continue
-            if type_a == int(GeoType.PLANE) and is_hfield_b:
+            if type_a == GeoType.PLANE and is_hfield_b:
                 continue
-            if is_hfield_a and (type_b == int(GeoType.MESH) or type_b == int(GeoType.SDF)):
+            if is_hfield_a and (type_b == GeoType.MESH or type_b == GeoType.SDF):
                 continue
 
             # Route heightfield-convex to dedicated buffer
@@ -272,9 +272,9 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             # =====================================================================
             # Route mesh pairs to specialized buffers
             # =====================================================================
-            is_mesh_a = type_a == int(GeoType.MESH)
-            is_mesh_b = type_b == int(GeoType.MESH)
-            is_plane_a = type_a == int(GeoType.PLANE)
+            is_mesh_a = type_a == GeoType.MESH
+            is_mesh_b = type_b == GeoType.MESH
+            is_plane_a = type_a == GeoType.PLANE
             is_infinite_plane_a = is_plane_a and (scale_a[0] == 0.0 and scale_a[1] == 0.0)
 
             # Mesh-mesh collision
@@ -308,13 +308,13 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
             # =====================================================================
             # Handle lightweight primitives analytically
             # =====================================================================
-            is_sphere_a = type_a == int(GeoType.SPHERE)
-            is_sphere_b = type_b == int(GeoType.SPHERE)
-            is_capsule_a = type_a == int(GeoType.CAPSULE)
-            is_capsule_b = type_b == int(GeoType.CAPSULE)
-            is_ellipsoid_b = type_b == int(GeoType.ELLIPSOID)
-            is_cylinder_b = type_b == int(GeoType.CYLINDER)
-            is_box_b = type_b == int(GeoType.BOX)
+            is_sphere_a = type_a == GeoType.SPHERE
+            is_sphere_b = type_b == GeoType.SPHERE
+            is_capsule_a = type_a == GeoType.CAPSULE
+            is_capsule_b = type_b == GeoType.CAPSULE
+            is_ellipsoid_b = type_b == GeoType.ELLIPSOID
+            is_cylinder_b = type_b == GeoType.CYLINDER
+            is_box_b = type_b == GeoType.BOX
 
             # Compute effective radii for spheres and capsules
             # (radius that can be represented as Minkowski sum with a sphere)
@@ -658,8 +658,8 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
             )
 
             # Check for infinite planes
-            is_infinite_plane_a = (type_a == int(GeoType.PLANE)) and (scale_a[0] == 0.0 and scale_a[1] == 0.0)
-            is_infinite_plane_b = (type_b == int(GeoType.PLANE)) and (scale_b[0] == 0.0 and scale_b[1] == 0.0)
+            is_infinite_plane_a = (type_a == GeoType.PLANE) and (scale_a[0] == 0.0 and scale_a[1] == 0.0)
+            is_infinite_plane_b = (type_b == GeoType.PLANE) and (scale_b[0] == 0.0 and scale_b[1] == 0.0)
 
             # Early exit: both infinite planes can't collide
             if is_infinite_plane_a and is_infinite_plane_b:
@@ -678,7 +678,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                 margin_vec_b = wp.vec3(margin_b, margin_b, margin_b)
 
                 # Shape A AABB
-                is_sdf_a = type_a == int(GeoType.SDF)
+                is_sdf_a = type_a == GeoType.SDF
                 if is_infinite_plane_a or is_sdf_a:
                     radius_a = shape_collision_radius[shape_a]
                     half_extents_a = wp.vec3(radius_a, radius_a, radius_a)
@@ -693,7 +693,7 @@ def create_narrow_phase_kernel_gjk_mpr(external_aabb: bool, writer_func: Any):
                     aabb_a_upper = aabb_a_upper + margin_vec_a
 
                 # Shape B AABB
-                is_sdf_b = type_b == int(GeoType.SDF)
+                is_sdf_b = type_b == GeoType.SDF
                 if is_infinite_plane_b or is_sdf_b:
                     radius_b = shape_collision_radius[shape_b]
                     half_extents_b = wp.vec3(radius_b, radius_b, radius_b)
@@ -789,10 +789,10 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
         mesh_shape = -1
         non_mesh_shape = -1
 
-        if type_a == int(GeoType.MESH) and type_b != int(GeoType.MESH):
+        if type_a == GeoType.MESH and type_b != GeoType.MESH:
             mesh_shape = shape_a
             non_mesh_shape = shape_b
-        elif type_b == int(GeoType.MESH) and type_a != int(GeoType.MESH):
+        elif type_b == GeoType.MESH and type_a != GeoType.MESH:
             mesh_shape = shape_b
             non_mesh_shape = shape_a
         else:
@@ -1252,7 +1252,7 @@ def heightfield_midphase_kernel(
         # Determine which is the heightfield
         hfield_shape = shape_a
         other_shape = shape_b
-        if shape_types[shape_b] == int(GeoType.HFIELD):
+        if shape_types[shape_b] == GeoType.HFIELD:
             hfield_shape = shape_b
             other_shape = shape_a
 
