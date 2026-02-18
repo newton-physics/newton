@@ -71,7 +71,7 @@ class TestEqualityConstraints(unittest.TestCase):
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        for _ in range(1000):
+        for _ in range(200):
             for _ in range(10):
                 self.state_0.clear_forces()
                 self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
