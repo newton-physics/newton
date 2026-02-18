@@ -54,7 +54,7 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
     if os.path.isabs(file_path):
         return os.path.normpath(file_path)
     elif base_dir:
-        return os.path.normpath(os.path.join(base_dir, file_path))
+        return os.path.abspath(os.path.join(base_dir, file_path))
     else:
         raise ValueError(f"Cannot resolve relative path '{file_path}' without base directory")
 

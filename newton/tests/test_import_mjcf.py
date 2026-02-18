@@ -28,6 +28,7 @@ import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
 from newton._src.sim.builder import ShapeFlags
+from newton._src.utils.import_mjcf import _load_and_expand_mjcf
 from newton.solvers import SolverMuJoCo
 
 
@@ -6355,6 +6356,14 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             with open(main_path, "w") as f:
                 f.write(main_content)
 
-            # Should not raise - texture resolved via texturedir
+            # Verify the expanded MJCF has the texture file path rewritten to absolute
+            root, _ = _load_and_expand_mjcf(main_path)
+            tex_elem = root.find(".//texture[@name='checker']")
+            self.assertIsNotNone(tex_elem, "texture element not found after include expansion")
+            expanded_path = tex_elem.get("file")
+            expected_path = os.path.join(tmpdir, "textures", "checker.png")
+            self.assertEqual(expanded_path, expected_path)
+
+            # Also verify full import succeeds
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path, parse_visuals=True)
