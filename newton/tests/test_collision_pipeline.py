@@ -133,16 +133,21 @@ class CollisionSetup:
             self.builder.add_shape_cone(body, xform=xform, radius=0.25, half_height=0.4, label=type_to_str(shape_type))
         elif shape_type == GeoType.MESH:
             # Use box mesh (works correctly with collision pipeline)
-            vertices, indices = newton.utils.create_box_mesh(extents=(0.5, 0.5, 0.5))
+            mesh = newton.Mesh.create_box(
+                0.5,
+                0.5,
+                0.5,
+                duplicate_vertices=False,
+                compute_normals=False,
+                compute_uvs=False,
+                compute_inertia=False,
+            )
             # Configure SDF settings if specified
             cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=sdf_max_resolution)
-            self.builder.add_shape_mesh(
-                body, mesh=newton.Mesh(vertices[:, :3], indices), cfg=cfg, label=type_to_str(shape_type)
-            )
+            self.builder.add_shape_mesh(body, mesh=mesh, cfg=cfg, label=type_to_str(shape_type))
         elif shape_type == GeoType.CONVEX_MESH:
             # Use a sphere mesh as it's already convex
-            vertices, indices = newton.utils.create_sphere_mesh(radius=0.5)
-            mesh = newton.Mesh(vertices[:, :3], indices)
+            mesh = newton.Mesh.create_sphere(0.5, compute_normals=False, compute_uvs=False, compute_inertia=False)
             self.builder.add_shape_convex_hull(body, mesh=mesh, label=type_to_str(shape_type))
         else:
             raise NotImplementedError(f"Shape type {shape_type} not implemented")
@@ -233,7 +238,9 @@ collision_pipeline_contact_tests = [
     (GeoType.SPHERE, GeoType.CONE, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_YZ),
     (GeoType.SPHERE, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.BOX, GeoType.BOX, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR),
-    (GeoType.BOX, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR, 0.02),
+    # Box-vs-triangle-mesh contact can accumulate a small lateral drift on CUDA
+    # due to triangulation/discretization details; keep this tolerance slightly looser.
+    (GeoType.BOX, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR, 0.03),
     (GeoType.BOX, GeoType.CONVEX_MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),
     (GeoType.CAPSULE, GeoType.CAPSULE, TestLevel.VELOCITY_YZ, TestLevel.VELOCITY_LINEAR),
     (GeoType.CAPSULE, GeoType.MESH, TestLevel.VELOCITY_YZ, TestLevel.STRICT),

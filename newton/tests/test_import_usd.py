@@ -25,7 +25,7 @@ import newton
 import newton.examples
 import newton.usd as usd
 from newton import JointType
-from newton._src.geometry.utils import create_box_mesh, transform_points
+from newton._src.geometry.utils import transform_points
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import quat_between_axes
@@ -1132,7 +1132,16 @@ def Xform "Articulation" (
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
-            vertices, indices = create_box_mesh(scale)
+            mesh = newton.Mesh.create_box(
+                scale[0],
+                scale[1],
+                scale[2],
+                duplicate_vertices=False,
+                compute_normals=False,
+                compute_uvs=False,
+                compute_inertia=False,
+            )
+            vertices, indices = mesh.vertices, mesh.indices
             if transform is not None:
                 vertices = transform_points(vertices, transform)
             return (vertices, indices)
@@ -2427,7 +2436,7 @@ def Xform "Root" (
         self.assertEqual(builder.joint_child[joint_id], body0)
         self.assertEqual(builder.joint_parent[joint_id], -1)
 
-    def test_add_base_joint_custom_key(self):
+    def test_add_base_joint_custom_label(self):
         """Test add_base_joint with custom label."""
         builder = newton.ModelBuilder()
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
@@ -4810,7 +4819,8 @@ def Xform "Articulation" (
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        body_idx = next(i for i, name in enumerate(model.body_label) if "FloatingBody" in name)
+        body_idx = next((i for i, name in enumerate(model.body_label) if "FloatingBody" in name), None)
+        self.assertIsNotNone(body_idx, "Expected a body with 'FloatingBody' in its label")
         body_q = state.body_q.numpy()[body_idx]
 
         # Expected position: import_pos + rotate_90z(body_pos)
@@ -5189,12 +5199,16 @@ def Xform "Articulation" (
         # Level 1: Add arm (3 links)
         arm_stage = create_simple_articulation("Arm", 3)
         builder.add_usd(arm_stage, floating=False)
-        ee_idx = next(i for i, name in enumerate(builder.body_label) if "Link2" in name)
+        ee_idx = next((i for i, name in enumerate(builder.body_label) if "Link2" in name), None)
+        self.assertIsNotNone(ee_idx, "Expected a body with 'Link2' in its label")
 
         # Level 2: Attach gripper to end effector (2 links)
         gripper_stage = create_simple_articulation("Gripper", 2)
         builder.add_usd(gripper_stage, parent_body=ee_idx, floating=False)
-        finger_idx = next(i for i, name in enumerate(builder.body_label) if "Gripper" in name and "Link1" in name)
+        finger_idx = next(
+            (i for i, name in enumerate(builder.body_label) if "Gripper" in name and "Link1" in name), None
+        )
+        self.assertIsNotNone(finger_idx, "Expected a Gripper body with 'Link1' in its label")
 
         # Level 3: Attach sensor to gripper finger (1 link)
         sensor_stage = create_simple_articulation("Sensor", 1)

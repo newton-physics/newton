@@ -4637,6 +4637,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.mu = 0.5
 
         # Create fixed-base (mocap) body at root (at origin)
         # This body will have a FIXED joint to the world, making it a mocap body in MuJoCo
@@ -5015,26 +5016,20 @@ class TestMuJoCoAttributes(unittest.TestCase):
         # 6 DOFs from floating base (all 0.0) + 1 DOF from revolute joint (5.0)
         assert damping_values[-1] == 5.0, f"Expected last DOF damping to be 5.0, got {damping_values}"
 
-    def test_ref_fk_matches_mujoco(self):
-        """Test that Newton's state matches MuJoCo's FK for joints with ref attribute.
+    def test_ref_coordinate_conversion(self):
+        """Verify ref offset in coordinate conversion.
 
-        When ref is used, Newton relies on MuJoCo's FK (via update_newton_state with eval_fk=False)
-        because ref is a MuJoCo-specific feature handled via qpos0.
+        With a hinge joint at ref=90 degrees, setting joint_q=0 in Newton
+        should produce qpos=pi/2 in MuJoCo after update_mjc_data.
         """
-        import mujoco_warp
-
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test_ref_fk">
+<mujoco model="test_ref">
     <worldbody>
         <body name="base">
             <geom type="box" size="0.1 0.1 0.1"/>
-            <body name="child1" pos="0 0 1">
+            <body name="child" pos="0 0 1">
                 <joint name="hinge" type="hinge" axis="0 1 0" ref="90"/>
                 <geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child2" pos="0 0 1">
-                    <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
             </body>
         </body>
     </worldbody>
@@ -5045,13 +5040,12 @@ class TestMuJoCoAttributes(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model)
 
-        # Verify that _has_ref is True for this model
-        assert solver._has_ref, "Solver should detect that ref is used"
-
-        # Set qpos=0 in MuJoCo and run FK
+        # joint_q=0 should map to qpos=ref (pi/2)
         state = model.state()
-        state.joint_q.zero_()
         solver.update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5, err_msg="joint_q=0 should map to qpos=ref")
+
         mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
 
         # Use update_newton_state with eval_fk=False to get body transforms from MuJoCo
@@ -5062,7 +5056,11 @@ class TestMuJoCoAttributes(unittest.TestCase):
         mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
 
         for body_name in ["child1", "child2"]:
-            newton_body_idx = next(i for i, lbl in enumerate(model.body_label) if lbl.endswith(f"/{body_name}"))
+            newton_body_idx = next(
+                (i for i, lbl in enumerate(model.body_label) if lbl.endswith(f"/{body_name}")),
+                None,
+            )
+            self.assertIsNotNone(newton_body_idx, f"Expected a body with '{body_name}' in its label")
             mjc_body_idx = np.where(mjc_body_to_newton[0] == newton_body_idx)[0][0]
 
             # Get Newton body position and quaternion (populated from MuJoCo via update_newton_state)
@@ -6081,6 +6079,617 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             np.testing.assert_allclose(
                 eq_data[w, 0, 1], new_coef1[w], rtol=1e-5, err_msg=f"coef1 mismatch in world {w}"
             )
+
+
+class TestMuJoCoSolverFreeJointBodyPos(unittest.TestCase):
+    """Verify free joint bodies preserve their initial position in qpos0."""
+
+    def test_free_joint_body_pos(self):
+        """Verify free joint qpos0 contains the MJCF body position.
+
+        A free joint body placed at pos="0 0 1.5" should produce
+        ``solver.mj_model.qpos0`` whose first three elements match
+        the body's initial z-offset ``[0, 0, 1.5]``.
+        """
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1.5">
+                    <freejoint name="root"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # qpos0 should have the body's initial z position
+        qpos0 = np.array(solver.mj_model.qpos0)
+        np.testing.assert_allclose(
+            qpos0[:3],
+            [0.0, 0.0, 1.5],
+            atol=1e-6,
+            err_msg="Free joint qpos0 position should match body pos from MJCF",
+        )
+
+
+class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
+    def test_zero_mass_body(self):
+        """SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames).
+
+        With ensure_nonstatic_links=False (the default), zero-mass bodies keep
+        their zero mass. MuJoCo handles these natively when they have fixed joints.
+        """
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="sensor_frame" pos="0 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        self.assertIsNotNone(solver.mj_model)
+
+
+class TestMuJoCoSolverQpos0(unittest.TestCase):
+    """Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correctness."""
+
+    # -- Group A: qpos0 initial values per joint type --
+
+    def test_free_joint_qpos0(self):
+        """Verify free joint qpos0 contains body position and identity quaternion.
+
+        A free joint body at pos="0 0 1.5" should produce qpos0 with
+        position [0, 0, 1.5] and identity quaternion [1, 0, 0, 0] (wxyz).
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="0 0 1.5">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, :3], [0, 0, 1.5], atol=1e-6)
+        np.testing.assert_allclose(qpos0[0, 3:7], [1, 0, 0, 0], atol=1e-6)  # wxyz identity
+
+    def test_hinge_with_ref_qpos0(self):
+        """Verify hinge joint qpos0 equals ref in radians.
+
+        A hinge with ref=90 degrees should produce qpos0 approximately
+        equal to pi/2 radians.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], np.pi / 2, atol=1e-5)
+
+    def test_slide_with_ref_qpos0(self):
+        """Verify slide joint qpos0 equals ref value.
+
+        A slide joint with ref=0.1 should produce qpos0 equal to 0.1.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" ref="0.1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.1, atol=1e-6)
+
+    def test_ball_joint_qpos0(self):
+        """Verify ball joint qpos0 is an identity quaternion.
+
+        A ball joint should produce qpos0 equal to [1, 0, 0, 0] (wxyz).
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        parent = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body=parent, hx=0.1, hy=0.1, hz=0.1)
+        j0 = builder.add_joint_fixed(-1, parent)
+        child = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body=child, hx=0.1, hy=0.1, hz=0.1)
+        j1 = builder.add_joint_ball(parent, child)
+        builder.add_articulation([j0, j1])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, :4], [1, 0, 0, 0], atol=1e-6)
+
+    def test_hinge_no_ref_qpos0(self):
+        """Verify hinge joint without ref has qpos0 of zero."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.0, atol=1e-6)
+
+    def test_mixed_model_qpos0(self):
+        """Verify qpos0 for a model with free, hinge, and slide joints.
+
+        All joint types should produce correct qpos0 values simultaneously:
+        free joint from body_q, hinge from ref, slide from ref.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="floating" pos="0 0 2">
+                <joint name="free_jnt" type="free"/>
+                <geom type="sphere" size="0.1"/>
+                <body name="hinge_body" pos="0 0 0.5">
+                    <joint name="hinge_jnt" type="hinge" axis="0 1 0" ref="45"/>
+                    <geom type="box" size="0.05 0.05 0.05" mass="0.1"/>
+                    <body name="slide_body" pos="0 0 0.5">
+                        <joint name="slide_jnt" type="slide" axis="0 0 1" ref="0.2"/>
+                        <geom type="box" size="0.05 0.05 0.05" mass="0.1"/>
+                    </body>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()[0]
+        # Free joint: 7 coords (pos + quat wxyz)
+        np.testing.assert_allclose(qpos0[:3], [0, 0, 2], atol=1e-5)
+        np.testing.assert_allclose(qpos0[3:7], [1, 0, 0, 0], atol=1e-5)
+        # Hinge with ref=45deg
+        np.testing.assert_allclose(qpos0[7], np.deg2rad(45), atol=1e-5)
+        # Slide with ref=0.2
+        np.testing.assert_allclose(qpos0[8], 0.2, atol=1e-6)
+
+    # -- Group B: qpos_spring values --
+
+    def test_hinge_springref_qpos_spring(self):
+        """Verify hinge qpos_spring equals springref in radians.
+
+        A hinge with springref=30 degrees should produce qpos_spring
+        approximately equal to pi/6 radians.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" springref="30"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos_spring = solver.mjw_model.qpos_spring.numpy()
+        np.testing.assert_allclose(qpos_spring[0, 0], np.deg2rad(30), atol=1e-5)
+
+    def test_free_joint_qpos_spring_matches_qpos0(self):
+        """Verify free joint qpos_spring equals qpos0."""
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="1 2 3">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        qpos_spring = solver.mjw_model.qpos_spring.numpy()
+        np.testing.assert_allclose(qpos_spring, qpos0, atol=1e-6)
+
+    def test_slide_springref_qpos_spring(self):
+        """Verify slide qpos_spring equals springref value."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" springref="0.25"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos_spring = solver.mjw_model.qpos_spring.numpy()
+        np.testing.assert_allclose(qpos_spring[0, 0], 0.25, atol=1e-6)
+
+    # -- Group C: Coordinate conversion with ref offset --
+
+    def test_hinge_ref_newton_to_mujoco(self):
+        """Verify Newton-to-MuJoCo conversion adds ref offset.
+
+        With ref=90 degrees, joint_q=0 should map to qpos=pi/2.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        # joint_q defaults to 0 for hinge
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5)
+
+    def test_hinge_ref_mujoco_to_newton(self):
+        """Verify MuJoCo-to-Newton conversion subtracts ref offset.
+
+        With ref=90 degrees, qpos=pi/2+0.1 should map to joint_q=0.1.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        # Set qpos = ref + 0.1
+        qpos = solver.mjw_data.qpos.numpy()
+        qpos[0, 0] = np.pi / 2 + 0.1
+        solver.mjw_data.qpos.assign(qpos)
+        state = model.state()
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver.update_newton_state(model, state, solver.mjw_data)
+        joint_q = state.joint_q.numpy()
+        np.testing.assert_allclose(joint_q[0], 0.1, atol=1e-5)
+
+    def test_slide_ref_roundtrip(self):
+        """Verify slide joint_q survives Newton-MuJoCo-Newton roundtrip with ref.
+
+        Sets joint_q=0.3 with ref=0.5, converts to MuJoCo (expecting qpos=0.8),
+        then back to Newton (expecting joint_q=0.3).
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" ref="0.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+
+        # Set a known joint_q value
+        test_q = 0.3
+        q = state.joint_q.numpy()
+        q[0] = test_q
+        state.joint_q.assign(q)
+
+        # Newton → MuJoCo
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        np.testing.assert_allclose(qpos[0, 0], test_q + 0.5, atol=1e-5)
+
+        # MuJoCo → Newton
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        state2 = model.state()
+        solver.update_newton_state(model, state2, solver.mjw_data)
+        np.testing.assert_allclose(state2.joint_q.numpy()[0], test_q, atol=1e-5)
+
+    def test_free_joint_position_roundtrip(self):
+        """Verify free joint position survives Newton-MuJoCo-Newton roundtrip.
+
+        Free joints have no ref offset, so joint_q should be preserved
+        exactly through the coordinate conversion cycle.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="1 2 3">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        original_q = state.joint_q.numpy().copy()
+
+        # Newton → MuJoCo → Newton
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver.update_newton_state(model, state, solver.mjw_data)
+        roundtrip_q = state.joint_q.numpy()
+
+        np.testing.assert_allclose(roundtrip_q[:3], original_q[:3], atol=1e-5)
+        # Quaternion comparison (sign-invariant)
+        q_orig = original_q[3:7]
+        q_rt = roundtrip_q[3:7]
+        quat_dist = min(np.linalg.norm(q_orig - q_rt), np.linalg.norm(q_orig + q_rt))
+        self.assertLess(quat_dist, 1e-5)
+
+    # -- Group D: FK correctness --
+
+    def _compare_body_positions(self, model, solver, state, body_names, atol=0.01):
+        """Compare Newton and MuJoCo body positions after FK.
+
+        Runs update_mjc_data, kinematics, and update_newton_state, then
+        asserts that Newton body positions match MuJoCo xpos for each
+        named body.
+        """
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver.update_newton_state(model, state, solver.mjw_data)
+
+        newton_body_q = state.body_q.numpy()
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+        mj_xpos = solver.mjw_data.xpos.numpy()
+
+        for name in body_names:
+            newton_idx = next(
+                (i for i, lbl in enumerate(model.body_label) if lbl.endswith(f"/{name}")),
+                None,
+            )
+            assert newton_idx is not None, f"Body '{name}' not found in model.body_label"
+            mjc_idx = np.where(mjc_body_to_newton[0] == newton_idx)[0][0]
+            newton_pos = newton_body_q[newton_idx, :3]
+            mj_pos = mj_xpos[0, mjc_idx]
+            np.testing.assert_allclose(newton_pos, mj_pos, atol=atol, err_msg=f"Position mismatch for {name}")
+
+    def test_ref_fk_matches_mujoco(self):
+        """Verify Newton FK matches MuJoCo FK for joints with ref.
+
+        At joint_q=0 (Newton) / qpos=ref (MuJoCo), both should produce
+        the same body positions corresponding to the MJCF configuration.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child1" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="child2" pos="0 0 1">
+                        <joint type="slide" axis="0 0 1" ref="0.5"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        self._compare_body_positions(model, solver, state, ["child1", "child2"])
+
+    def test_ref_fk_after_stepping(self):
+        """Verify Newton and MuJoCo body positions match after stepping with ref."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="45"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        for _ in range(10):
+            solver.step(state_in, state_out, control, contacts, 0.01)
+            state_in, state_out = state_out, state_in
+        self._compare_body_positions(model, solver, state_in, ["child"])
+
+    def test_multi_joint_ref_fk(self):
+        """Verify FK matches MuJoCo for a multi-joint chain with mixed ref values."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="b1" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="30"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="b2" pos="0 0 1">
+                        <joint type="hinge" axis="1 0 0" ref="60"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                        <body name="b3" pos="0 0 1">
+                            <joint type="slide" axis="0 0 1" ref="0.3"/>
+                            <geom type="box" size="0.1 0.1 0.1"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        self._compare_body_positions(model, solver, state, ["b1", "b2", "b3"])
+
+    # -- Group E: Runtime randomization --
+
+    def test_multiworld_free_joint_qpos0_differs(self):
+        """Verify per-world qpos0 differs after changing body_q per world."""
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="0 0 1">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        template = newton.ModelBuilder()
+        template.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Set different body_q for each world
+        body_q = model.body_q.numpy()
+        body_q[0, :3] = [0, 0, 1.0]  # world 0
+        body_q[1, :3] = [0, 0, 2.0]  # world 1
+        model.body_q.assign(body_q)
+
+        solver.notify_model_changed(SolverNotifyFlags.ALL)
+
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 2], 1.0, atol=1e-5)
+        np.testing.assert_allclose(qpos0[1, 2], 2.0, atol=1e-5)
+
+    def test_multiworld_hinge_ref_qpos0_differs(self):
+        """Verify per-world qpos0 differs after setting different dof_ref per world."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        template = newton.ModelBuilder()
+        template.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Set different dof_ref per world
+        dof_ref = model.mujoco.dof_ref.numpy()
+        dof_ref[0] = 0.5  # world 0
+        dof_ref[1] = 1.0  # world 1
+        model.mujoco.dof_ref.assign(dof_ref)
+
+        solver.notify_model_changed(SolverNotifyFlags.ALL)
+
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.5, atol=1e-5)
+        np.testing.assert_allclose(qpos0[1, 0], 1.0, atol=1e-5)
+
+    def test_dof_ref_runtime_change_updates_qpos0(self):
+        """Verify qpos0 updates after runtime dof_ref change via notify_model_changed."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Initially ref=0, so qpos0=0
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.0, atol=1e-6)
+
+        # Change ref at runtime
+        dof_ref = model.mujoco.dof_ref.numpy()
+        dof_ref[0] = 0.7
+        model.mujoco.dof_ref.assign(dof_ref)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.7, atol=1e-5)
+
+    # -- Group F: Edge cases --
+
+    def test_ref_zero_no_offset(self):
+        """Verify no offset is applied when ref defaults to zero."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        # Set a known joint_q
+        q = state.joint_q.numpy()
+        q[0] = 0.5
+        state.joint_q.assign(q)
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        np.testing.assert_allclose(qpos[0, 0], 0.5, atol=1e-6, err_msg="With ref=0, qpos should equal joint_q")
+
+    def test_free_joint_non_identity_orientation_qpos0(self):
+        """Verify free joint qpos0 quaternion for non-identity initial orientation."""
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="0 0 1" quat="0.707 0 0.707 0">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        # Position
+        np.testing.assert_allclose(qpos0[0, :3], [0, 0, 1], atol=1e-3)
+        # Quaternion in wxyz - should be approximately [0.707, 0, 0.707, 0]
+        q = qpos0[0, 3:7]
+        expected = np.array([0.707, 0, 0.707, 0])
+        expected = expected / np.linalg.norm(expected)
+        quat_dist = min(np.linalg.norm(q - expected), np.linalg.norm(q + expected))
+        self.assertLess(quat_dist, 0.01)
 
 
 if __name__ == "__main__":

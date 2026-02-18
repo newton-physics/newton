@@ -194,8 +194,8 @@ class Example:
             joint_child = self.model.joint_child.numpy()
             joint_qd_start = self.model.joint_qd_start.numpy()
             joint_f = self.control.joint_f.numpy()
-            for body_idx, key in enumerate(self.model.body_key):
-                if key == "gear_large":
+            for body_idx, lbl in enumerate(self.model.body_label):
+                if lbl.endswith("/gear_large") or lbl == "gear_large":
                     for j in range(self.model.joint_count):
                         if joint_child[j] == body_idx:
                             qd_start = int(joint_qd_start[j])

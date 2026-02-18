@@ -155,7 +155,7 @@ def parse_mjcf(
     force_show_colliders: bool = False,
     enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = False,
-    ensure_nonstatic_links: bool = True,
+    ensure_nonstatic_links: bool = False,
     static_link_mass: float = 1e-2,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
@@ -1263,6 +1263,7 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
+                    friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
                     actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
                 )
@@ -1838,7 +1839,8 @@ def parse_mjcf(
 
     def _find_shape_idx(name: str) -> int | None:
         """Look up shape index by name, supporting hierarchical labels (e.g. "prefix/geom_name")."""
-        for idx, label in enumerate(builder.shape_label):
+        for idx in range(start_shape_count, len(builder.shape_label)):
+            label = builder.shape_label[idx]
             if label == name or label.endswith(f"/{name}"):
                 return idx
         return None
