@@ -25,7 +25,7 @@ import newton
 import newton.examples
 import newton.usd as usd
 from newton import JointType
-from newton._src.geometry.utils import create_box_mesh, transform_points
+from newton._src.geometry.utils import transform_points
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
 from newton.utils import quat_between_axes
@@ -1130,7 +1130,16 @@ def Xform "Articulation" (
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
-            vertices, indices = create_box_mesh(scale)
+            mesh = newton.Mesh.create_box(
+                scale[0],
+                scale[1],
+                scale[2],
+                duplicate_vertices=False,
+                compute_normals=False,
+                compute_uvs=False,
+                compute_inertia=False,
+            )
+            vertices, indices = mesh.vertices, mesh.indices
             if transform is not None:
                 vertices = transform_points(vertices, transform)
             return (vertices, indices)

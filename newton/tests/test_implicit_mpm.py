@@ -140,12 +140,20 @@ def test_finite_difference_collider_velocity(test, device):
 
         # Add a platform that particles rest on
         platform_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
-        vertices, indices = newton.utils.create_box_mesh(extents=(0.5, 0.1, 0.5))
+        platform_mesh = newton.Mesh.create_box(
+            0.5,
+            0.1,
+            0.5,
+            duplicate_vertices=False,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)  # kinematic
         shape_cfg.thickness = 0.02
         builder.add_shape_mesh(
             body=platform_body,
-            mesh=newton.Mesh(vertices[:, :3], indices),
+            mesh=platform_mesh,
             cfg=shape_cfg,
         )
 

@@ -124,9 +124,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.collision_pipeline.contacts()
+        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -148,7 +146,7 @@ class Example:
             self.viewer.apply_forces(self.state_0)
 
             # Collide for contact detection
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.model.collide(self.state_0, self.contacts)
 
             self.solver.step(
                 self.state_0,

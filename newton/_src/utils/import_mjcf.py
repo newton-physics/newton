@@ -1244,6 +1244,7 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
+                    friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
                     actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
                 )
