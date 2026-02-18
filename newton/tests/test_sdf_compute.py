@@ -1120,11 +1120,12 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         """Mesh SDF built via mesh.build_sdf() should be used by builder."""
         builder = newton.ModelBuilder()
         cfg = newton.ModelBuilder.ShapeConfig()
-        self.mesh.build_sdf(max_resolution=64)
+        mesh = create_box_mesh(self.half_extents)
+        mesh.build_sdf(max_resolution=64)
 
         # Add a mesh shape
         builder.add_body()
-        builder.add_shape_mesh(body=-1, mesh=self.mesh, cfg=cfg)
+        builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
 
         # Should work on GPU
         model = builder.finalize(device="cuda:0")
