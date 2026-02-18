@@ -6079,8 +6079,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         for i in range(6):
             self.assertAlmostEqual(float(armature[qd_start + i]), 0.0, places=5)
 
-        mode = model.joint_kinematic_type.numpy()[joint]
-        self.assertEqual(mode, int(newton.KinematicType.NONE))
+        # joint_kinematic_type is None when no kinematic joints exist
+        self.assertIsNone(model.joint_kinematic_type)
 
     def test_kinematic_velocity_target_applied(self):
         """Test that VELOCITY mode kinematic target is applied to joint_qd."""

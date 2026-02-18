@@ -817,7 +817,8 @@ class Model:
             c.tet_activations = self.tet_activations
             c.muscle_activations = self.muscle_activations
 
-        # Initialize kinematic_target from joint_q, zeroing velocity-mode entries
+        # Initialize kinematic_target from joint_q, zeroing velocity-mode entries.
+        # Only create when kinematic joints exist (avoids GPU->CPU copy during graph capture).
         if self.joint_count and self.joint_kinematic_type is not None:
             from .joints import KinematicType  # noqa: PLC0415
 

@@ -8959,7 +8959,8 @@ class ModelBuilder:
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32)
-            m.joint_kinematic_type = wp.array(self.joint_kinematic_type, dtype=wp.int32)
+            if any(k != 0 for k in self.joint_kinematic_type):
+                m.joint_kinematic_type = wp.array(self.joint_kinematic_type, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
