@@ -263,11 +263,8 @@ class TestComputeSDF(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
         wp.init()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.half_extents = (0.5, 0.5, 0.5)
-        self.mesh = create_box_mesh(self.half_extents)
+        cls.half_extents = (0.5, 0.5, 0.5)
+        cls.mesh = create_box_mesh(cls.half_extents)
 
     def test_sdf_returns_valid_data(self):
         """Test that compute_sdf returns valid data."""
@@ -703,11 +700,8 @@ class TestComputeSDFGridSampling(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
         wp.init()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.half_extents = (0.5, 0.5, 0.5)
-        self.mesh = create_box_mesh(self.half_extents)
+        cls.half_extents = (0.5, 0.5, 0.5)
+        cls.mesh = create_box_mesh(cls.half_extents)
 
     def test_grid_sampling_sparse_sdf_near_surface(self):
         """Sample sparse SDF on a grid near the surface and verify values are valid.
@@ -843,14 +837,11 @@ class TestSDFExtrapolation(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
         wp.init()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.half_extents = (0.5, 0.5, 0.5)
-        self.mesh = create_box_mesh(self.half_extents)
+        cls.half_extents = (0.5, 0.5, 0.5)
+        cls.mesh = create_box_mesh(cls.half_extents)
         # Create SDF with known parameters
-        self.sdf_data, self.sparse_volume, self.coarse_volume, _ = compute_sdf(
-            mesh_src=self.mesh,
+        cls.sdf_data, cls.sparse_volume, cls.coarse_volume, _ = compute_sdf(
+            mesh_src=cls.mesh,
             shape_type=GeoType.MESH,
             shape_thickness=0.0,
             narrow_band_distance=(-0.1, 0.1),
@@ -1085,11 +1076,8 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
         wp.init()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.half_extents = (0.5, 0.5, 0.5)
-        self.mesh = create_box_mesh(self.half_extents)
+        cls.half_extents = (0.5, 0.5, 0.5)
+        cls.mesh = create_box_mesh(cls.half_extents)
 
     def test_sdf_max_resolution_raises_on_cpu(self):
         """Test that sdf_max_resolution != None raises ValueError on CPU."""
