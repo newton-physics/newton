@@ -312,12 +312,16 @@ class ArticulationView:
     control routine operates on many parallel environments with consistent tensor shapes.
 
     Example:
-        >>> import newton
-        >>> view = newton.selection.ArticulationView(model, pattern="robot*")
-        >>> q = view.get_dof_positions(state)
-        >>> q_np = q.numpy()
-        >>> q_np[..., 0] = 0.0
-        >>> view.set_dof_positions(state, q_np)
+
+    .. code-block:: python
+
+        import newton
+
+        view = newton.selection.ArticulationView(model, pattern="robot*")
+        q = view.get_dof_positions(state)
+        q_np = q.numpy()
+        q_np[..., 0] = 0.0
+        view.set_dof_positions(state, q_np)
 
     Args:
         model (Model): The model containing the articulations.
