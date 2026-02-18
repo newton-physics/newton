@@ -16,12 +16,16 @@
 import enum
 import os
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
 
-from ..core.types import Axis, Devicelike, Mat33, Vec2, Vec3, nparray, override
+from ..core.types import Axis, Devicelike, Vec2, Vec3, nparray, override
 from ..utils.texture import compute_texture_hash
+
+if TYPE_CHECKING:
+    from .sdf_utils import SDF
 
 
 def _normalize_texture_input(texture: str | os.PathLike[str] | nparray | None) -> str | nparray | None:
@@ -73,9 +77,6 @@ class GeoType(enum.IntEnum):
     MESH = 7
     """Triangle mesh."""
 
-    SDF = 8
-    """Signed distance field."""
-
     CONE = 9
     """Cone."""
 
@@ -84,54 +85,6 @@ class GeoType(enum.IntEnum):
 
     NONE = 11
     """No geometry (placeholder)."""
-
-
-class SDF:
-    """
-    Represents a signed distance field (SDF) for simulation.
-
-    An SDF is a volumetric representation of a shape, where each point in the volume
-    stores the signed distance to the closest surface. This class encapsulates the
-    SDF volume and its physical properties for use in simulation.
-    """
-
-    def __init__(
-        self,
-        volume: wp.Volume | None = None,
-        inertia: Mat33 | None = None,
-        mass: float = 1.0,
-        com: Vec3 | None = None,
-    ):
-        """
-        Initialize an SDF object.
-
-        Args:
-            volume: The Warp volume object representing the SDF.
-            inertia: 3x3 inertia matrix. Defaults to identity.
-            mass: Total mass. Defaults to 1.0.
-            com: Center of mass. Defaults to zero vector.
-        """
-        self.volume = volume
-        self.I = inertia if inertia is not None else wp.mat33(np.eye(3))
-        self.mass = mass
-        self.com = com if com is not None else wp.vec3()
-
-        # Need to specify these for now
-        self.has_inertia = True
-        self.is_solid = True
-
-    def finalize(self) -> wp.uint64:
-        """
-        Returns the ID of the underlying SDF volume.
-
-        Returns:
-            The unique identifier of the SDF volume.
-        """
-        return self.volume.id
-
-    @override
-    def __hash__(self) -> int:
-        return hash(self.volume.id)
 
 
 class Mesh:
@@ -173,6 +126,8 @@ class Mesh:
         roughness: float | None = None,
         metallic: float | None = None,
         texture: str | nparray | None = None,
+        *,
+        sdf: "SDF | None" = None,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -193,6 +148,7 @@ class Mesh:
             roughness: Optional mesh roughness in [0, 1].
             metallic: Optional mesh metallic in [0, 1].
             texture: Optional texture path/URL or image data (H, W, C).
+            sdf: Optional prebuilt SDF object owned by this mesh.
         """
         from .inertia import compute_mesh_inertia  # noqa: PLC0415
 
@@ -214,6 +170,7 @@ class Mesh:
         self.maxhullvert = maxhullvert
         self._cached_hash = None
         self._texture_hash = None
+        self.sdf = sdf
 
         if compute_inertia:
             self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
@@ -697,7 +654,70 @@ class Mesh:
             m.mass = self.mass
             m.com = self.com
             m.has_inertia = self.has_inertia
+        m.sdf = self.sdf
         return m
+
+    def build_sdf(
+        self,
+        *,
+        narrow_band_range: tuple[float, float] | None = None,
+        target_voxel_size: float | None = None,
+        max_resolution: int | None = None,
+        margin: float | None = None,
+        thickness: float = 0.0,
+        scale: tuple[float, float, float] | None = None,
+    ) -> "SDF":
+        """Build and attach an SDF for this mesh.
+
+        Args:
+            narrow_band_range: Signed narrow-band distance range [m] as
+                ``(inner, outer)``. Uses ``(-0.1, 0.1)`` when not provided.
+            target_voxel_size: Target sparse-grid voxel size [m]. If provided,
+                takes precedence over ``max_resolution``.
+            max_resolution: Maximum sparse-grid dimension [voxel] when
+                ``target_voxel_size`` is not provided.
+            margin: Extra AABB padding [m] added before discretization. Uses
+                ``0.05`` when not provided.
+            thickness: Thickness offset [m] to subtract from SDF values. When
+                non-zero, the SDF surface is effectively shrunk inward by this
+                amount. Useful for modeling compliant layers in hydroelastic
+                collision. Defaults to ``0.0`` (no offset, thickness applied
+                at runtime).
+            scale: Scale factors ``(sx, sy, sz)`` to bake into the SDF. When
+                provided, the mesh vertices are scaled before SDF generation
+                and ``scale_baked`` is set to ``True`` in the resulting SDF.
+                Required for hydroelastic collision with non-unit shape scale.
+                Defaults to ``None`` (no scale baking, scale applied at runtime).
+
+        Returns:
+            The attached :class:`SDF` instance.
+
+        Raises:
+            RuntimeError: If this mesh already has an SDF attached.
+        """
+        if self.sdf is not None:
+            raise RuntimeError("Mesh already has an SDF. Call clear_sdf() before rebuilding.")
+
+        from .sdf_utils import SDF  # noqa: PLC0415
+
+        self.sdf = SDF.create_from_mesh(
+            self,
+            narrow_band_range=narrow_band_range if narrow_band_range is not None else (-0.1, 0.1),
+            target_voxel_size=target_voxel_size,
+            max_resolution=max_resolution,
+            margin=margin if margin is not None else 0.05,
+            thickness=thickness,
+            scale=scale,
+        )
+        return self.sdf
+
+    def clear_sdf(self) -> None:
+        """Detach and release the currently attached SDF.
+
+        Returns:
+            ``None``.
+        """
+        self.sdf = None
 
     @property
     def vertices(self):

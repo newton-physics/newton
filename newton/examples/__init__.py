@@ -318,11 +318,11 @@ def create_parser():
         help="Whether to run the example in test mode.",
     )
     parser.add_argument(
-        "--broad-phase-mode",
+        "--broad-phase",
         type=str,
         default="explicit",
         choices=["nxn", "sap", "explicit"],
-        help="Broad phase mode for collision detection.",
+        help="Broad phase for collision detection.",
     )
     parser.add_argument(
         "--use-mujoco-contacts",
@@ -399,7 +399,7 @@ def init(parser=None):
 
 
 def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs):
-    """Create a collision pipeline, optionally using --broad-phase-mode from args.
+    """Create a collision pipeline, optionally using --broad-phase from args.
 
     Args:
         model: The Newton model to create the pipeline for.
@@ -410,15 +410,9 @@ def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs):
     Returns:
         CollisionPipeline instance.
     """
-    import newton  # noqa: PLC0415
 
     if broad_phase is None:
-        broad_phase = (
-            kwargs.pop("broad_phase_mode", None)
-            or (getattr(args, "broad_phase_mode", None) if args else None)
-            or (getattr(args, "broad_phase", None) if args else None)
-            or "explicit"
-        )
+        broad_phase = (getattr(args, "broad_phase", None) if args else None) or "explicit"
 
     return newton.CollisionPipeline(model, broad_phase=broad_phase, **kwargs)
 
@@ -479,4 +473,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_collision_pipeline", "create_parser", "init", "run", "test_body_state", "test_particle_state"]
+__all__ = ["create_parser", "init", "run", "test_body_state", "test_particle_state"]
