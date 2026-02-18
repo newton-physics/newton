@@ -221,7 +221,7 @@ def run(example, args):
 
 
 def compute_world_offsets(
-    num_worlds: int,
+    world_count: int,
     world_offset: tuple[float, float, float] = (5.0, 5.0, 0.0),
     up_axis: newton.AxisType = newton.Axis.Z,
 ):
@@ -241,13 +241,13 @@ def compute_world_offsets(
     nonzeros = np.nonzero(world_offset)[0]
     num_dim = nonzeros.shape[0]
     if num_dim > 0:
-        side_length = int(np.ceil(num_worlds ** (1.0 / num_dim)))
+        side_length = int(np.ceil(world_count ** (1.0 / num_dim)))
         world_offsets = []
         if num_dim == 1:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 world_offsets.append(i * world_offset)
         elif num_dim == 2:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 d0 = i // side_length
                 d1 = i % side_length
                 offset = np.zeros(3)
@@ -255,7 +255,7 @@ def compute_world_offsets(
                 offset[nonzeros[1]] = d1 * world_offset[nonzeros[1]]
                 world_offsets.append(offset)
         elif num_dim == 3:
-            for i in range(num_worlds):
+            for i in range(world_count):
                 d0 = i // (side_length * side_length)
                 d1 = (i // side_length) % side_length
                 d2 = i % side_length
@@ -266,7 +266,7 @@ def compute_world_offsets(
                 world_offsets.append(offset)
         world_offsets = np.array(world_offsets)
     else:
-        world_offsets = np.zeros((num_worlds, 3))
+        world_offsets = np.zeros((world_count, 3))
     min_offsets = np.min(world_offsets, axis=0)
     correction = min_offsets + (np.max(world_offsets, axis=0) - min_offsets) / 2.0
     # ensure the envs are not shifted below the ground plane
@@ -398,32 +398,29 @@ def init(parser=None):
     return viewer, args
 
 
-def create_collision_pipeline(model, args=None, broad_phase_mode=None):
+def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs):
     """Create a collision pipeline, optionally using --broad-phase-mode from args.
 
     Args:
         model: The Newton model to create the pipeline for.
         args: Parsed arguments from create_parser() (optional).
-        broad_phase_mode: Override broad phase mode ("nxn", "sap", "explicit"). Default from args or "explicit".
+        broad_phase: Override broad phase ("nxn", "sap", "explicit"). Default from args or "explicit".
+        **kwargs: Additional keyword arguments passed to CollisionPipeline.
 
     Returns:
         CollisionPipeline instance.
     """
     import newton  # noqa: PLC0415
 
-    if broad_phase_mode is None:
-        broad_phase_mode = getattr(args, "broad_phase_mode", "explicit") if args else "explicit"
-    # Accept both string names and BroadPhaseMode enum values
-    if isinstance(broad_phase_mode, newton.BroadPhaseMode):
-        mode = broad_phase_mode
-    else:
-        broad_phase_map = {
-            "nxn": newton.BroadPhaseMode.NXN,
-            "sap": newton.BroadPhaseMode.SAP,
-            "explicit": newton.BroadPhaseMode.EXPLICIT,
-        }
-        mode = broad_phase_map.get(str(broad_phase_mode).lower(), newton.BroadPhaseMode.EXPLICIT)
-    return newton.CollisionPipeline.from_model(model, broad_phase_mode=mode)
+    if broad_phase is None:
+        broad_phase = (
+            kwargs.pop("broad_phase_mode", None)
+            or (getattr(args, "broad_phase_mode", None) if args else None)
+            or (getattr(args, "broad_phase", None) if args else None)
+            or "explicit"
+        )
+
+    return newton.CollisionPipeline(model, broad_phase=broad_phase, **kwargs)
 
 
 def main():

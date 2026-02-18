@@ -34,12 +34,12 @@ newton
 
    ActuatorMode
    Axis
-   BroadPhaseMode
    CollisionPipeline
    Contacts
    Control
    EqType
    GeoType
+   Heightfield
    JointType
    Mesh
    Model

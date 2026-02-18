@@ -20,7 +20,7 @@
 # Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
 # Supports different scene configurations: pen or cube.
 #
-# Command: python -m newton.examples panda_hydro --scene pen --num-worlds 1
+# Command: python -m newton.examples panda_hydro --scene pen --world-count 1
 #
 ###########################################################################
 
@@ -36,7 +36,7 @@ import newton.examples
 import newton.ik as ik
 import newton.usd
 import newton.utils
-from newton.geometry import SDFHydroelasticConfig, create_box_mesh
+from newton.geometry import HydroelasticSDF, create_box_mesh
 
 
 class SceneType(Enum):
@@ -63,7 +63,7 @@ def broadcast_ik_solution_kernel(
 
 
 class Example:
-    def __init__(self, viewer, scene=SceneType.PEN, num_worlds=1, test_mode=False):
+    def __init__(self, viewer, scene=SceneType.PEN, world_count=1, test_mode=False):
         self.scene = SceneType(scene)
         self.test_mode = test_mode
         self.show_isosurface = False  # Disabled by default for performance
@@ -73,17 +73,17 @@ class Example:
         self.sim_substeps = 10
         self.collide_substeps = 2  # run collision detection every X simulation steps
         self.sim_dt = self.frame_dt / self.sim_substeps
-        self.num_worlds = num_worlds
+        self.world_count = world_count
         self.viewer = viewer
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
-            k_hydro=1e11,
+            kh=1e11,
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.01, 0.01),
             contact_margin=0.01,
-            torsional_friction=0.0,
-            rolling_friction=0.0,
+            mu_torsional=0.0,
+            mu_rolling=0.0,
         )
 
         builder = newton.ModelBuilder()
@@ -125,7 +125,7 @@ class Example:
         builder.joint_q[:9] = [*init_q, 0.05, 0.05]
         builder.joint_target_pos[:9] = [*init_q, 1.0, 1.0]
 
-        builder.joint_target_ke[:9] = [500.0] * 9
+        builder.joint_target_ke[:9] = [650.0] * 9
         builder.joint_target_kd[:9] = [100.0] * 9
         builder.joint_effort_limit[:7] = [80.0] * 7
         builder.joint_effort_limit[7:9] = [20.0] * 2
@@ -214,7 +214,7 @@ class Example:
         self.bodies_per_world = builder.body_count
 
         scene = newton.ModelBuilder()
-        scene.replicate(builder, self.num_worlds)
+        scene.replicate(builder, self.world_count)
         scene.add_ground_plane()
 
         self.model = scene.finalize()
@@ -229,16 +229,16 @@ class Example:
         # Create collision pipeline with SDF hydroelastic config
         # Enable output_contact_surface so the kernel code is compiled (allows runtime toggle)
         # The actual writing is controlled by set_output_contact_surface() at runtime
-        sdf_hydroelastic_config = SDFHydroelasticConfig(
+        sdf_hydroelastic_config = HydroelasticSDF.Config(
             output_contact_surface=hasattr(viewer, "renderer"),  # Compile in if viewer supports it
         )
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
-            broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+            broad_phase="explicit",
             sdf_hydroelastic_config=sdf_hydroelastic_config,
         )
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Create MuJoCo solver with Newton contacts
         self.solver = newton.solvers.SolverMuJoCo(
@@ -268,12 +268,12 @@ class Example:
 
         self.setup_ik()
         self.control = self.model.control()
-        self.joint_target_shape = self.control.joint_target_pos.reshape((self.num_worlds, -1)).shape
+        self.joint_target_shape = self.control.joint_target_pos.reshape((self.world_count, -1)).shape
         self.joint_targets_2d = wp.zeros(self.joint_target_shape, dtype=wp.float32)
         wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
 
         # Track maximum object height for testing (only in test mode)
-        self.object_max_z = [self.object_pos[2]] * self.num_worlds if self.test_mode else None
+        self.object_max_z = [self.object_pos[2]] * self.world_count if self.test_mode else None
 
         self.capture()
         self.capture_ik()
@@ -303,7 +303,7 @@ class Example:
         gripper_value = 0.06 * (1 - t_gripper)
         wp.launch(
             broadcast_ik_solution_kernel,
-            dim=self.num_worlds,
+            dim=self.world_count,
             inputs=[self.joint_q_ik, self.joint_targets_2d, gripper_value],
         )
         wp.copy(self.control.joint_target_pos, self.joint_targets_2d.flatten())
@@ -331,7 +331,7 @@ class Example:
 
         for i in range(self.sim_substeps):
             if i % self.collide_substeps == 0:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -347,7 +347,7 @@ class Example:
         # Track maximum object height for testing (only in test mode)
         if self.test_mode:
             body_q = self.state_0.body_q.numpy()
-            for world_idx in range(self.num_worlds):
+            for world_idx in range(self.world_count):
                 object_body_idx = world_idx * self.bodies_per_world + self.object_body_local
                 z_pos = float(body_q[object_body_idx][2])
                 self.object_max_z[world_idx] = max(self.object_max_z[world_idx], z_pos)
@@ -375,7 +375,7 @@ class Example:
         initial_z = self.object_pos[2]
         min_lift_height = 0.25  # Object should be lifted at least 25cm above initial position
 
-        for world_idx in range(self.num_worlds):
+        for world_idx in range(self.world_count):
             max_z = self.object_max_z[world_idx]
             max_lift = max_z - initial_z
 
@@ -465,7 +465,7 @@ if __name__ == "__main__":
         help="Scene type to load (pen, cube)",
     )
     parser.add_argument(
-        "--num-worlds",
+        "--world-count",
         type=int,
         default=1,
         help="Number of parallel worlds to simulate",
@@ -475,6 +475,6 @@ if __name__ == "__main__":
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, scene=args.scene, num_worlds=args.num_worlds, test_mode=args.test)
+    example = Example(viewer, scene=args.scene, world_count=args.world_count, test_mode=args.test)
 
     newton.examples.run(example, args)

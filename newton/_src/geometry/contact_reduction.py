@@ -520,12 +520,12 @@ class ContactReductionFunctions:
     """
 
     def __init__(self):
-        self.num_reduction_slots = compute_num_reduction_slots()
+        self.reduction_slot_count = compute_num_reduction_slots()
 
         # Shared memory pointers
-        self.get_smem_slots_plus_1 = create_shared_memory_pointer_func_4_byte_aligned(self.num_reduction_slots + 1)
-        self.get_smem_slots_contacts = create_shared_memory_pointer_func_4_byte_aligned(self.num_reduction_slots * 9)
-        self.get_smem_reduction = create_shared_memory_pointer_func_8_byte_aligned(self.num_reduction_slots)
+        self.get_smem_slots_plus_1 = create_shared_memory_pointer_func_4_byte_aligned(self.reduction_slot_count + 1)
+        self.get_smem_slots_contacts = create_shared_memory_pointer_func_4_byte_aligned(self.reduction_slot_count * 9)
+        self.get_smem_reduction = create_shared_memory_pointer_func_8_byte_aligned(self.reduction_slot_count)
 
         # Warp functions
         self.store_reduced_contact = self._create_store_reduced_contact()
@@ -541,7 +541,7 @@ class ContactReductionFunctions:
 
         Winners write their contact to the shared buffer.
         """
-        NUM_REDUCTION_SLOTS = self.num_reduction_slots
+        NUM_REDUCTION_SLOTS = self.reduction_slot_count
         BETA = self.BETA_THRESHOLD
         get_smem = self.get_smem_reduction
         # Number of per-bin slots (6 spatial directions + 1 max-depth per bin)
@@ -668,7 +668,7 @@ class ContactReductionFunctions:
         but originate from the same geometric feature (e.g., same triangle).
         Only the first occurrence per feature is kept.
         """
-        NUM_REDUCTION_SLOTS = self.num_reduction_slots
+        NUM_REDUCTION_SLOTS = self.reduction_slot_count
         get_smem = self.get_smem_reduction
         # Number of per-bin slots (6 spatial directions + 1 max-depth per bin)
         num_per_bin_slots = NUM_NORMAL_BINS * (NUM_SPATIAL_DIRECTIONS + 1)

@@ -28,9 +28,9 @@ This can be done by running ``uv lock -P <package-name>``:
 
     uv lock -P warp-lang --prerelease allow
 
-    uv lock -P mujoco-warp --prerelease allow
+    uv lock -P mujoco-warp
 
-The ``--prerelease allow`` flag is used to allow updating to pre-release versions of dependencies.
+The ``--prerelease allow`` flag is needed for dependencies that use pre-release versions (e.g. ``warp-lang``).
 
 uv also provides a command to update all dependencies in the lockfile:
 

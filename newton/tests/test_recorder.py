@@ -23,15 +23,14 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.utils.import_mjcf import parse_mjcf
-from newton._src.utils.recorder import (
+from newton._src.viewer.viewer_file import (
     HAS_CBOR2,
-    RecorderBasic,
-    RecorderModelAndState,
     RingBuffer,
     depointer_as_key,
     pointer_as_key,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.viewer import ViewerFile
 
 
 class TestRecorder(unittest.TestCase):
@@ -120,9 +119,9 @@ def test_ringbuffer_edge_cases(test: TestRecorder, device):
 
 
 def test_recorder_with_ringbuffer(test: TestRecorder, device):
-    """Test RecorderModelAndState with RingBuffer."""
+    """Test ViewerFile with RingBuffer-backed history."""
     # Test with ring buffer (capacity 3)
-    recorder_rb = RecorderModelAndState(max_history_size=3)
+    recorder_rb = ViewerFile("recording.json", auto_save=False, max_history_size=3)
 
     # Simulate recording states
     for i in range(5):
@@ -143,9 +142,9 @@ def test_recorder_with_ringbuffer(test: TestRecorder, device):
 
 
 def test_recorder_backward_compatibility(test: TestRecorder, device):
-    """Test that RecorderModelAndState maintains backward compatibility."""
+    """Test that ViewerFile keeps backward-compatible unlimited history behavior."""
     # Test with default (unlimited history)
-    recorder_list = RecorderModelAndState()
+    recorder_list = ViewerFile("recording.json", auto_save=False)
 
     # Should use regular list
     test.assertIsInstance(recorder_list.history, list)
@@ -162,14 +161,14 @@ def test_recorder_backward_compatibility(test: TestRecorder, device):
 
 
 def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
-    """Test RecorderModelAndState with RingBuffer save/load functionality."""
+    """Test ViewerFile with RingBuffer save/load functionality."""
     builder = newton.ModelBuilder()
     body = builder.add_body()
     builder.add_shape_capsule(body)
     model = builder.finalize(device=device)
 
     # Create recorder with ring buffer (capacity 3)
-    recorder = RecorderModelAndState(max_history_size=3)
+    recorder = ViewerFile("recording.json", auto_save=False, max_history_size=3)
     recorder.record_model(model)
 
     # Record 5 states (should only keep last 3)
@@ -188,11 +187,11 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
         file_path = tmp.name
 
     try:
-        recorder.save_to_file(file_path)
+        recorder.save_recording(file_path)
 
         # Load into a new recorder with different capacity
-        new_recorder = RecorderModelAndState(max_history_size=5)
-        new_recorder.load_from_file(file_path)
+        new_recorder = ViewerFile(file_path, auto_save=False, max_history_size=5)
+        new_recorder.load_recording()
 
         # Should have loaded the 3 states that were saved
         test.assertEqual(len(new_recorder.history), 3)
@@ -215,33 +214,60 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
             os.remove(file_path)
 
 
-def test_body_transform_recorder(test: TestRecorder, device):
-    recorder = RecorderBasic()
+def test_viewer_file_playback(test: TestRecorder, device):
+    """Test ViewerFile load_recording, load_model, and load_state for playback."""
+    builder = newton.ModelBuilder()
+    body = builder.add_body()
+    builder.add_shape_capsule(body)
+    model = builder.finalize(device=device)
 
-    transform1 = wp.array([wp.transform([1, 2, 3], [0, 0, 0, 1])], dtype=wp.transform, device=device)
-    transform2 = wp.array([wp.transform([4, 5, 6], [0, 0, 0, 1])], dtype=wp.transform, device=device)
+    states = []
+    for i in range(3):
+        state = model.state()
+        state.body_q.fill_(wp.transform([1.0 + i, 2.0 + i, 3.0 + i], wp.quat_identity()))
+        state.body_qd.fill_(wp.spatial_vector([0.1 * i, 0.2 * i, 0.3 * i, 0.4 * i, 0.5 * i, 0.6 * i]))
+        states.append(state)
 
-    recorder.record(transform1)
-    recorder.record(transform2)
-
-    test.assertEqual(len(recorder.transforms_history), 2)
-
-    np.testing.assert_allclose(recorder.transforms_history[0].numpy(), transform1.numpy())
-    np.testing.assert_allclose(recorder.transforms_history[1].numpy(), transform2.numpy())
-
-    with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         file_path = tmp.name
 
     try:
-        recorder.save_to_file(file_path)
+        # Record via ViewerFile
+        viewer_file_record = ViewerFile(file_path, auto_save=False)
+        viewer_file_record.set_model(model)
+        for state in states:
+            viewer_file_record.log_state(state)
+        viewer_file_record.save_recording()
+        viewer_file_record.close()
 
-        new_recorder = RecorderBasic()
-        new_recorder.load_from_file(file_path, device=device)
+        # Playback via ViewerFile
+        viewer_file_play = ViewerFile(file_path)
+        viewer_file_play.load_recording()
 
-        test.assertEqual(len(new_recorder.transforms_history), 2)
-        np.testing.assert_allclose(new_recorder.transforms_history[0].numpy(), transform1.numpy())
-        np.testing.assert_allclose(new_recorder.transforms_history[1].numpy(), transform2.numpy())
+        test.assertTrue(viewer_file_play.has_model())
+        test.assertEqual(viewer_file_play.get_frame_count(), 3)
 
+        restored_model = newton.Model(device=device)
+        viewer_file_play.load_model(restored_model)
+
+        test.assertEqual(restored_model.body_count, model.body_count)
+        test.assertEqual(restored_model.shape_count, model.shape_count)
+
+        for frame_id in range(3):
+            restored_state = restored_model.state()
+            viewer_file_play.load_state(restored_state, frame_id)
+            np.testing.assert_allclose(
+                restored_state.body_q.numpy(),
+                states[frame_id].body_q.numpy(),
+                atol=1e-6,
+                err_msg=f"body_q mismatch at frame {frame_id}",
+            )
+            np.testing.assert_allclose(
+                restored_state.body_qd.numpy(),
+                states[frame_id].body_qd.numpy(),
+                atol=1e-6,
+                err_msg=f"body_qd mismatch at frame {frame_id}",
+            )
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -288,7 +314,7 @@ def _test_model_and_state_recorder_with_format(test: TestRecorder, device, file_
         state.body_qd.fill_(wp.spatial_vector([0.1 * i, 0.2 * i, 0.3 * i, 0.4 * i, 0.5 * i, 0.6 * i]))
         states.append(state)
 
-    recorder = RecorderModelAndState()
+    recorder = ViewerFile("recording.json", auto_save=False)
     recorder.record_model(model)
     for state in states:
         recorder.record(state)
@@ -297,7 +323,7 @@ def _test_model_and_state_recorder_with_format(test: TestRecorder, device, file_
         file_path = tmp.name
 
     try:
-        recorder.save_to_file(file_path)
+        recorder.save_recording(file_path)
 
         # Verify the file was created with the expected format
         test.assertTrue(os.path.exists(file_path), f"File {file_path} was not created")
@@ -309,8 +335,8 @@ def _test_model_and_state_recorder_with_format(test: TestRecorder, device, file_
                 # CBOR2 binary data should not be readable as text
                 test.assertIsInstance(data, bytes, "Binary file should contain bytes")
 
-        new_recorder = RecorderModelAndState()
-        new_recorder.load_from_file(file_path)
+        new_recorder = ViewerFile(file_path, auto_save=False)
+        new_recorder.load_recording()
 
         # Test that the model was loaded correctly
         test.assertIsNotNone(new_recorder.deserialized_model)
@@ -387,9 +413,10 @@ add_function_test(
 
 add_function_test(
     TestRecorder,
-    "test_body_transform_recorder",
-    test_body_transform_recorder,
+    "test_viewer_file_playback",
+    test_viewer_file_playback,
     devices=devices,
+    check_output=False,  # ViewerFile prints save/load messages
 )
 
 add_function_test(
@@ -572,15 +599,15 @@ def test_warp_dtype_file_roundtrip(test: TestRecorder, device):
 
             try:
                 # Record
-                recorder = RecorderModelAndState()
+                recorder = ViewerFile("recording.json", auto_save=False)
                 recorder.record(state)
 
                 # Save
-                recorder.save_to_file(file_path)
+                recorder.save_recording(file_path)
 
                 # Load into new recorder
-                new_recorder = RecorderModelAndState()
-                new_recorder.load_from_file(file_path)
+                new_recorder = ViewerFile(file_path, auto_save=False)
+                new_recorder.load_recording()
 
                 # Verify
                 test.assertEqual(len(new_recorder.history), 1)
@@ -654,7 +681,7 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
     state = model.state()
 
     # Record the model and state
-    recorder = RecorderModelAndState()
+    recorder = ViewerFile("recording.json", auto_save=False)
     recorder.record_model(model)
     recorder.record(state)
 
@@ -669,11 +696,11 @@ def test_real_model_recording_roundtrip(test: TestRecorder, device):
 
             try:
                 # Save
-                recorder.save_to_file(file_path)
+                recorder.save_recording(file_path)
 
                 # Load
-                new_recorder = RecorderModelAndState()
-                new_recorder.load_from_file(file_path)
+                new_recorder = ViewerFile(file_path, auto_save=False)
+                new_recorder.load_recording()
 
                 # Verify model loaded
                 test.assertIsNotNone(new_recorder.deserialized_model, f"Model not loaded in {format_name}")
