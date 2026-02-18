@@ -125,7 +125,8 @@ def _load_and_expand_mjcf(
             if file_attr and not os.path.isabs(file_attr):
                 asset_dir = _asset_dir_tags.get(elem.tag, ".")
                 resolved_path = os.path.join(asset_dir, file_attr) if asset_dir != "." else file_attr
-                elem.set("file", path_resolver(included_base_dir, resolved_path))
+                if included_base_dir is not None or os.path.isabs(resolved_path):
+                    elem.set("file", path_resolver(included_base_dir, resolved_path))
 
         # Replace include element with children of included root
         idx = list(parent).index(include)

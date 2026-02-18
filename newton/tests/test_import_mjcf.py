@@ -6170,7 +6170,11 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
     """Tests for meshdir/texturedir resolution in included MJCF files."""
 
     def _create_cube_stl(self, path):
-        """Write a minimal binary STL cube to the given path."""
+        """Write a minimal binary STL cube to the given path.
+
+        Args:
+            path: Filesystem path for the STL output.
+        """
 
         vertices = [
             ((-1, -1, -1), (-1, -1, 1), (-1, 1, 1)),
@@ -6315,6 +6319,11 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             # Minimal 1x1 PNG
 
             def _make_png(path):
+                """Write a minimal 1x1 PNG image.
+
+                Args:
+                    path: Filesystem path for the PNG output.
+                """
                 sig = b"\x89PNG\r\n\x1a\n"
                 ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
                 ihdr_crc = zlib.crc32(b"IHDR" + ihdr_data)
