@@ -71,7 +71,7 @@ from .joints import (
     ActuatorMode,
     EqType,
     JointType,
-    KinematicMode,
+    KinematicType,
 )
 from .model import Model
 
@@ -809,7 +809,7 @@ class ModelBuilder:
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
         self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
-        self.joint_kinematic_mode = []  # per-joint KinematicMode value
+        self.joint_kinematic_type = []  # per-joint KinematicType value
 
         self.articulation_start = []
         self.articulation_key = []
@@ -2409,7 +2409,7 @@ class ModelBuilder:
             "joint_target_ke",
             "joint_target_kd",
             "joint_act_mode",
-            "joint_kinematic_mode",
+            "joint_kinematic_type",
             "joint_effort_limit",
             "joint_velocity_limit",
             "joint_friction",
@@ -2716,7 +2716,7 @@ class ModelBuilder:
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
         lock_inertia: bool = False,
-        kinematic: KinematicMode = KinematicMode.NONE,
+        kinematic: KinematicType = KinematicType.NONE,
     ) -> int:
         """Adds a stand-alone free-floating rigid body to the model.
 
@@ -2742,7 +2742,7 @@ class ModelBuilder:
             lock_inertia: If True, prevents subsequent shape additions from modifying this body's mass,
                 center of mass, or inertia. This does not affect merging behavior in
                 :meth:`collapse_fixed_joints`, which always accumulates mass and inertia across merged bodies.
-            kinematic: Kinematic mode for the auto-created free joint (see :class:`KinematicMode`).
+            kinematic: Kinematic mode for the auto-created free joint (see :class:`KinematicType`).
                 Use ``NONE`` for dynamic bodies; ``VELOCITY`` or ``POSITION`` drives the joint
                 via ``control.kinematic_target``.
 
@@ -2793,7 +2793,7 @@ class ModelBuilder:
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        kinematic: KinematicMode = KinematicMode.NONE,
+        kinematic: KinematicType = KinematicType.NONE,
     ) -> int:
         """
         Generic method to add any type of joint to this ModelBuilder.
@@ -2869,11 +2869,11 @@ class ModelBuilder:
         self.joint_world.append(self.current_world)
         self.joint_articulation.append(-1)
 
-        self.joint_kinematic_mode.append(int(kinematic))
+        self.joint_kinematic_type.append(int(kinematic))
 
         # Armature override for kinematic joints
         KINEMATIC_ARMATURE = 1.0e10
-        armature_override = KINEMATIC_ARMATURE if kinematic != KinematicMode.NONE else None
+        armature_override = KINEMATIC_ARMATURE if kinematic != KinematicType.NONE else None
 
         def add_axis_dim(dim: ModelBuilder.JointDofConfig):
             self.joint_axis.append(dim.axis)
@@ -2980,7 +2980,7 @@ class ModelBuilder:
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        kinematic: KinematicMode = KinematicMode.NONE,
+        kinematic: KinematicType = KinematicType.NONE,
         **kwargs,
     ) -> int:
         """Adds a revolute (hinge) joint to the model. It has one degree of freedom.
@@ -3075,7 +3075,7 @@ class ModelBuilder:
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        kinematic: KinematicMode = KinematicMode.NONE,
+        kinematic: KinematicType = KinematicType.NONE,
     ) -> int:
         """Adds a prismatic (sliding) joint to the model. It has one degree of freedom.
 
@@ -3157,7 +3157,7 @@ class ModelBuilder:
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
         actuator_mode: ActuatorMode | None = None,
-        kinematic: KinematicMode = KinematicMode.NONE,
+        kinematic: KinematicType = KinematicType.NONE,
     ) -> int:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
 
@@ -3275,7 +3275,7 @@ class ModelBuilder:
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        kinematic: KinematicMode = KinematicMode.NONE,
+        kinematic: KinematicType = KinematicType.NONE,
     ) -> int:
         """Adds a free joint to the model.
         It has 7 positional degrees of freedom (first 3 linear and then 4 angular dimensions for the orientation quaternion in `xyzw` notation) and 6 velocity degrees of freedom (see :ref:`Twist conventions in Newton <Twist conventions>`).
@@ -3946,7 +3946,7 @@ class ModelBuilder:
                 "axis_dim": self.joint_dof_dim[i],
                 "parent": parent,
                 "child": child,
-                "kinematic_mode": self.joint_kinematic_mode[i],
+                "kinematic_type": self.joint_kinematic_type[i],
                 "original_id": i,
             }
             num_lin_axes, num_ang_axes = self.joint_dof_dim[i]
@@ -4179,7 +4179,7 @@ class ModelBuilder:
         self.joint_target_vel.clear()
         self.joint_world.clear()
         self.joint_articulation.clear()
-        self.joint_kinematic_mode.clear()
+        self.joint_kinematic_type.clear()
         for joint in retained_joints:
             self.joint_key.append(joint["key"])
             self.joint_type.append(joint["type"])
@@ -4207,7 +4207,7 @@ class ModelBuilder:
                 self.joint_articulation.append(original_articulation[joint["original_id"]])
             else:
                 self.joint_articulation.append(-1)
-            self.joint_kinematic_mode.append(joint["kinematic_mode"])
+            self.joint_kinematic_type.append(joint["kinematic_type"])
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
                 self.joint_act_mode.append(axis["actuator_mode"])
@@ -8959,7 +8959,7 @@ class ModelBuilder:
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32)
-            m.joint_kinematic_mode = wp.array(self.joint_kinematic_mode, dtype=wp.int32)
+            m.joint_kinematic_type = wp.array(self.joint_kinematic_type, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)

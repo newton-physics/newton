@@ -191,7 +191,7 @@ class ActuatorMode(IntEnum):
             return ActuatorMode.EFFORT
 
 
-class KinematicMode(IntEnum):
+class KinematicType(IntEnum):
     """Kinematic mode for a joint.
 
     Kinematic joints have very high armature on all DOFs, making them effectively
@@ -222,5 +222,5 @@ __all__ = [
     "ActuatorMode",
     "EqType",
     "JointType",
-    "KinematicMode",
+    "KinematicType",
 ]

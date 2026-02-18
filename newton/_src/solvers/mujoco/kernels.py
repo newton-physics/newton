@@ -22,7 +22,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import ActuatorMode, EqType, JointType, KinematicMode
+from ...sim import ActuatorMode, EqType, JointType, KinematicType
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
@@ -1919,7 +1919,7 @@ def update_pair_properties_kernel(
 
 @wp.kernel
 def apply_kinematic_target_kernel(
-    joint_kinematic_mode: wp.array(dtype=wp.int32),
+    joint_kinematic_type: wp.array(dtype=wp.int32),
     joint_type: wp.array(dtype=wp.int32),
     joint_q_start: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
@@ -1938,8 +1938,8 @@ def apply_kinematic_target_kernel(
     """
     worldid, jntid = wp.tid()
 
-    mode = joint_kinematic_mode[jntid]
-    if mode == int(KinematicMode.NONE):
+    mode = joint_kinematic_type[jntid]
+    if mode == int(KinematicType.NONE):
         return
 
     jtype = joint_type[jntid]
@@ -1947,12 +1947,12 @@ def apply_kinematic_target_kernel(
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
     dof_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
 
-    if mode == int(KinematicMode.VELOCITY):
+    if mode == int(KinematicType.VELOCITY):
         # Copy target velocities directly to joint_qd
         for i in range(dof_count):
             joint_qd[wqd_i + i] = kinematic_target[wq_i + i]
 
-    elif mode == int(KinematicMode.POSITION):
+    elif mode == int(KinematicType.POSITION):
         if jtype == int(JointType.FREE):
             # Linear velocity: (target_pos - current_pos) * inv_dt
             for i in range(3):

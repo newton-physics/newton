@@ -16,7 +16,7 @@
 ###########################################################################
 # Example Basic Kinematic Platform
 #
-# Demonstrates kinematic joints in MuJoCo using KinematicMode.
+# Demonstrates kinematic joints in MuJoCo using KinematicType.
 #
 # A rotating kinematic platform (free joint, VELOCITY mode) with
 # two-link capsule articulations dropped on top. Each articulation has
@@ -33,7 +33,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import KinematicMode
+from newton import KinematicType
 
 PLATFORM_ANGULAR_VEL = 1.0  # rad/s around Z axis
 HINGE_AMPLITUDE = 0.8  # radians
@@ -91,7 +91,7 @@ class Example:
         )
         platform_joint = builder.add_joint_free(
             platform_body,
-            kinematic=KinematicMode.VELOCITY,
+            kinematic=KinematicType.VELOCITY,
         )
         builder.add_articulation([platform_joint], key="platform")
 
@@ -142,7 +142,7 @@ class Example:
                 axis=wp.vec3(0.0, 0.0, 1.0),
                 parent_xform=wp.transform(p=wp.vec3(capsule_half_length, 0.0, 0.0)),
                 child_xform=wp.transform(p=wp.vec3(-capsule_half_length, 0.0, 0.0)),
-                kinematic=KinematicMode.POSITION,
+                kinematic=KinematicType.POSITION,
             )
             self.hinge_joints.append(j_hinge)
 

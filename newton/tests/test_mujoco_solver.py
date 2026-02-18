@@ -6082,12 +6082,12 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
                 eq_data[w, 0, 1], new_coef1[w], rtol=1e-5, err_msg=f"coef1 mismatch in world {w}"
             )
 
-    def test_kinematic_mode_builder_sets_armature(self):
+    def test_kinematic_type_builder_sets_armature(self):
         """Test that kinematic joints get high armature on all DOFs."""
         builder = newton.ModelBuilder()
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-        joint = builder.add_joint_free(body, kinematic=newton.KinematicMode.VELOCITY)
+        joint = builder.add_joint_free(body, kinematic=newton.KinematicType.VELOCITY)
         builder.add_articulation([joint])
         model = builder.finalize()
 
@@ -6097,11 +6097,11 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         for i in range(6):
             self.assertAlmostEqual(float(armature[qd_start + i]), 1.0e10, places=0)
 
-        # joint_kinematic_mode should be VELOCITY
-        mode = model.joint_kinematic_mode.numpy()[joint]
-        self.assertEqual(mode, int(newton.KinematicMode.VELOCITY))
+        # joint_kinematic_type should be VELOCITY
+        mode = model.joint_kinematic_type.numpy()[joint]
+        self.assertEqual(mode, int(newton.KinematicType.VELOCITY))
 
-    def test_kinematic_mode_none_no_armature_override(self):
+    def test_kinematic_type_none_no_armature_override(self):
         """Test that non-kinematic joints keep their original armature."""
         builder = newton.ModelBuilder()
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -6116,8 +6116,8 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         for i in range(6):
             self.assertAlmostEqual(float(armature[qd_start + i]), 0.0, places=5)
 
-        mode = model.joint_kinematic_mode.numpy()[joint]
-        self.assertEqual(mode, int(newton.KinematicMode.NONE))
+        mode = model.joint_kinematic_type.numpy()[joint]
+        self.assertEqual(mode, int(newton.KinematicType.NONE))
 
     def test_kinematic_velocity_target_applied(self):
         """Test that VELOCITY mode kinematic target is applied to joint_qd."""
@@ -6128,7 +6128,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             inertia=wp.mat33(np.eye(3)),
         )
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-        joint = builder.add_joint_free(body, kinematic=newton.KinematicMode.VELOCITY)
+        joint = builder.add_joint_free(body, kinematic=newton.KinematicType.VELOCITY)
         builder.add_articulation([joint])
         builder.add_ground_plane()
         model = builder.finalize()
@@ -6162,7 +6162,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             inertia=wp.mat33(np.eye(3)),
         )
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-        joint = builder.add_joint_free(body, kinematic=newton.KinematicMode.POSITION)
+        joint = builder.add_joint_free(body, kinematic=newton.KinematicType.POSITION)
         builder.add_articulation([joint])
         builder.add_ground_plane()
         model = builder.finalize()
@@ -6197,7 +6197,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             inertia=wp.mat33(np.eye(3)),
         )
         builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
-        joint = builder.add_joint_free(body, kinematic=newton.KinematicMode.VELOCITY)
+        joint = builder.add_joint_free(body, kinematic=newton.KinematicType.VELOCITY)
         builder.add_articulation([joint])
         builder.add_ground_plane()
         model = builder.finalize()
@@ -6225,15 +6225,15 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         body = builder.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)),
             mass=1.0,
-            kinematic=newton.KinematicMode.POSITION,
+            kinematic=newton.KinematicType.POSITION,
         )
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize()
 
         # Should have 1 joint with kinematic mode POSITION
         self.assertEqual(model.joint_count, 1)
-        mode = model.joint_kinematic_mode.numpy()[0]
-        self.assertEqual(mode, int(newton.KinematicMode.POSITION))
+        mode = model.joint_kinematic_type.numpy()[0]
+        self.assertEqual(mode, int(newton.KinematicType.POSITION))
 
         # All 6 DOFs should have high armature
         armature = model.joint_armature.numpy()
@@ -6248,14 +6248,14 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
         builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
         j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
-        j2 = builder.add_joint_revolute(b1, b2, axis=(0, 0, 1), kinematic=newton.KinematicMode.VELOCITY)
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0, 0, 1), kinematic=newton.KinematicType.VELOCITY)
         builder.add_articulation([j1, j2])
         model = builder.finalize()
 
         # j1 should be NONE, j2 should be VELOCITY
-        modes = model.joint_kinematic_mode.numpy()
-        self.assertEqual(modes[0], int(newton.KinematicMode.NONE))
-        self.assertEqual(modes[1], int(newton.KinematicMode.VELOCITY))
+        modes = model.joint_kinematic_type.numpy()
+        self.assertEqual(modes[0], int(newton.KinematicType.NONE))
+        self.assertEqual(modes[1], int(newton.KinematicType.VELOCITY))
 
         # j2 armature should be high
         armature = model.joint_armature.numpy()
@@ -6271,7 +6271,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             inertia=wp.mat33(np.eye(3)),
         )
         template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-        joint = template.add_joint_free(body, kinematic=newton.KinematicMode.VELOCITY)
+        joint = template.add_joint_free(body, kinematic=newton.KinematicType.VELOCITY)
         template.add_articulation([joint])
         template.add_ground_plane()
 
@@ -6314,7 +6314,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         template.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
         template.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
         j1 = template.add_joint_revolute(-1, b1, axis=(0, 0, 1))
-        j2 = template.add_joint_revolute(b1, b2, axis=(0, 0, 1), kinematic=newton.KinematicMode.POSITION)
+        j2 = template.add_joint_revolute(b1, b2, axis=(0, 0, 1), kinematic=newton.KinematicType.POSITION)
         template.add_articulation([j1, j2])
 
         num_worlds = 3

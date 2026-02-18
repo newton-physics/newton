@@ -419,8 +419,8 @@ class Model:
         """Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_act_mode = None
         """Actuator mode per DOF, see :class:`newton.ActuatorMode`. Shape [joint_dof_count], dtype int32."""
-        self.joint_kinematic_mode = None
-        """Kinematic mode per joint, see :class:`newton.KinematicMode`. Shape [joint_count], dtype int32."""
+        self.joint_kinematic_type = None
+        """Kinematic mode per joint, see :class:`newton.KinematicType`. Shape [joint_count], dtype int32."""
         self.joint_target_ke = None
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd = None
@@ -701,7 +701,7 @@ class Model:
         self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_act_mode"] = Model.AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_kinematic_mode"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_kinematic_type"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_lower"] = Model.AttributeFrequency.JOINT_DOF
@@ -818,12 +818,12 @@ class Model:
             c.muscle_activations = self.muscle_activations
 
         # Initialize kinematic_target from joint_q, zeroing velocity-mode entries
-        if self.joint_count and self.joint_kinematic_mode is not None:
-            from .joints import KinematicMode  # noqa: PLC0415
+        if self.joint_count and self.joint_kinematic_type is not None:
+            from .joints import KinematicType  # noqa: PLC0415
 
             target_np = self.joint_q.numpy()
-            modes = self.joint_kinematic_mode.numpy()
-            vel_joints = np.where(modes == int(KinematicMode.VELOCITY))[0]
+            modes = self.joint_kinematic_type.numpy()
+            vel_joints = np.where(modes == int(KinematicType.VELOCITY))[0]
             if len(vel_joints) > 0:
                 q_starts = self.joint_q_start.numpy()
                 dof_dims = self.joint_dof_dim.numpy()

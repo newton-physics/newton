@@ -2115,7 +2115,7 @@ class SolverMuJoCo(SolverBase):
                 apply_kinematic_target_kernel,
                 dim=(self.model.world_count, joints_per_world),
                 inputs=[
-                    self.model.joint_kinematic_mode,
+                    self.model.joint_kinematic_type,
                     self.model.joint_type,
                     self.model.joint_q_start,
                     self.model.joint_qd_start,

@@ -41,7 +41,7 @@ newton
    GeoType
    Heightfield
    JointType
-   KinematicMode
+   KinematicType
    Mesh
    Model
    ModelBuilder
