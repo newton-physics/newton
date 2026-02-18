@@ -24,7 +24,7 @@ import warnings
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
@@ -73,6 +73,9 @@ from .joints import (
     JointType,
 )
 from .model import Model
+
+if TYPE_CHECKING:
+    from newton_actuators import Actuator
 
 
 class ModelBuilder:
@@ -1192,7 +1195,7 @@ class ModelBuilder:
 
     def add_external_actuator(
         self,
-        actuator_class: type,
+        actuator_class: type[Actuator],
         input_indices: list[int],
         output_indices: list[int] | None = None,
         **kwargs,
@@ -1205,7 +1208,7 @@ class ModelBuilder:
         instance is created during ``finalize()``.
 
         Args:
-            actuator_class: The actuator class (e.g., ``ActuatorPD``).
+            actuator_class: The actuator class (must derive from ``Actuator``).
             input_indices: DOF indices this actuator reads from. Length 1 for single-input,
                 length > 1 for multi-input actuators.
             output_indices: DOF indices for writing output. Defaults to *input_indices*.
