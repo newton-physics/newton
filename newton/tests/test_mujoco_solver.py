@@ -6087,8 +6087,8 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
     def test_zero_mass_body(self):
         """SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames).
 
-        With ensure_nonstatic_links=False (the default), zero-mass bodies keep
-        their zero mass. MuJoCo handles these natively when they have fixed joints.
+        Zero-mass bodies keep their zero mass. MuJoCo handles these natively
+        when they have fixed joints.
         """
         mjcf = """
         <mujoco>
