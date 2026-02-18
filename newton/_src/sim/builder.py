@@ -166,13 +166,13 @@ class ModelBuilder:
         """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
         ka: float = 0.0
         """The contact adhesion distance. Used by SemiImplicit, Featherstone."""
-        mu: float = 0.5
+        mu: float = 1.0
         """The coefficient of friction. Used by all solvers."""
         restitution: float = 0.0
         """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
-        mu_torsional: float = 0.25
+        mu_torsional: float = 0.005
         """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
-        mu_rolling: float = 0.0005
+        mu_rolling: float = 0.0001
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
         thickness: float = 1e-5
         """Outward offset from the shape's surface for collision detection.
@@ -1495,7 +1495,7 @@ class ModelBuilder:
         force_show_colliders: bool = False,
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
-        ensure_nonstatic_links: bool = True,
+        ensure_nonstatic_links: bool = False,
         static_link_mass: float = 1e-2,
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
@@ -1850,7 +1850,7 @@ class ModelBuilder:
         force_show_colliders: bool = False,
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
-        ensure_nonstatic_links: bool = True,
+        ensure_nonstatic_links: bool = False,
         static_link_mass: float = 1e-2,
         collapse_fixed_joints: bool = False,
         verbose: bool = False,
