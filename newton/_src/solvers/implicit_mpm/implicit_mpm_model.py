@@ -129,14 +129,14 @@ def _merge_meshes(
     )
 
 
-def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType, geo_scale: wp.vec3):
+def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType, geo_scale: wp.vec3) -> newton.Mesh:
     """Get a shape mesh from a model."""
 
     if geo_type == newton.GeoType.MESH:
         src_mesh = model.shape_source[shape_id]
         vertices = src_mesh.vertices * np.array(geo_scale)
         indices = src_mesh.indices
-        return vertices, indices
+        return newton.Mesh(vertices, indices, compute_inertia=False)
     if geo_type == newton.GeoType.PLANE:
         # Handle "infinite" planes encoded with non-positive scales
         width = geo_scale[0] if len(geo_scale) > 0 and geo_scale[0] > 0.0 else 1000.0
@@ -148,7 +148,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
             compute_uvs=False,
             compute_inertia=False,
         )
-        return mesh.vertices, mesh.indices
+        return mesh
     elif geo_type == newton.GeoType.SPHERE:
         radius = geo_scale[0]
         mesh = newton.Mesh.create_sphere(
@@ -157,7 +157,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
             compute_uvs=False,
             compute_inertia=False,
         )
-        return mesh.vertices, mesh.indices
+        return mesh
 
     elif geo_type == newton.GeoType.CAPSULE:
         radius, half_height = geo_scale[:2]
@@ -169,7 +169,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
             compute_uvs=False,
             compute_inertia=False,
         )
-        return mesh.vertices, mesh.indices
+        return mesh
 
     elif geo_type == newton.GeoType.CYLINDER:
         radius, half_height = geo_scale[:2]
@@ -181,7 +181,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
             compute_uvs=False,
             compute_inertia=False,
         )
-        return mesh.vertices, mesh.indices
+        return mesh
 
     elif geo_type == newton.GeoType.CONE:
         radius, half_height = geo_scale[:2]
@@ -193,7 +193,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
             compute_uvs=False,
             compute_inertia=False,
         )
-        return mesh.vertices, mesh.indices
+        return mesh
 
     elif geo_type == newton.GeoType.BOX:
         if len(geo_scale) == 1:
@@ -209,7 +209,7 @@ def _get_shape_mesh(model: newton.Model, shape_id: int, geo_type: newton.GeoType
             compute_uvs=False,
             compute_inertia=False,
         )
-        return mesh.vertices, mesh.indices
+        return mesh
 
     raise NotImplementedError(f"Shape type {geo_type} not supported")
 
@@ -256,7 +256,8 @@ def _create_body_collider_mesh(
     shape_meshes = [_get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid]) for sid in shape_ids]
 
     collider_points, collider_indices, vertex_shape_ids, face_material_ids = _merge_meshes(
-        *zip(*shape_meshes, strict=True),
+        points=[mesh.vertices for mesh in shape_meshes],
+        indices=[mesh.indices for mesh in shape_meshes],
         shape_ids=shape_ids,
         material_ids=material_ids,
     )

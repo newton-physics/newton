@@ -1119,8 +1119,8 @@ def create_mesh_arrow(
 
     base_positions = base_positions.copy()
     cap_positions = cap_positions.copy()
-    base_positions[:, :3] += base_height / 2 * up_vector
-    cap_positions[:, :3] += (base_height + cap_height / 2 - 1e-3 * base_height) * up_vector
+    base_positions += base_height / 2 * up_vector
+    cap_positions += (base_height + cap_height / 2 - 1e-3 * base_height) * up_vector
 
     positions = np.vstack((base_positions, cap_positions))
     indices = np.hstack((base_indices, cap_indices + len(base_positions)))

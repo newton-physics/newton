@@ -463,9 +463,11 @@ class Mesh:
 
         Args:
             base_radius [m]: Shaft radius.
-            base_height [m]: Shaft height.
-            cap_radius [m]: Optional arrowhead base radius.
-            cap_height [m]: Optional arrowhead height.
+            base_height [m]: Shaft full height (not half-height).
+            cap_radius [m]: Optional arrowhead base radius. If ``None``, uses
+                ``base_radius * 1.8``.
+            cap_height [m]: Optional arrowhead full height (not half-height).
+                If ``None``, uses ``base_height * 0.18``.
             up_axis: Long axis as a ``newton.Axis`` value.
             segments: Circumferential tessellation resolution.
             compute_normals: If ``True``, generate per-vertex normals.
@@ -554,6 +556,8 @@ class Mesh:
     ) -> "Mesh":
         """Create a rectangular plane mesh.
 
+        The plane lies in the XY plane and faces +Z (normals point along +Z).
+
         Args:
             width [m]: Plane width along X.
             length [m]: Plane length along Y.
@@ -628,7 +632,8 @@ class Mesh:
         """Create a watertight mesh from a 2D heightfield.
 
         Args:
-            heightfield: Height samples as a 2D array.
+            heightfield: Height samples as a 2D array using ij-indexing where
+                ``heightfield[i, j]`` maps to ``(x_i, y_j)`` (i = X, j = Y).
             extent_x [m]: Total extent along X.
             extent_y [m]: Total extent along Y.
             center_x [m]: Heightfield center position along X.
