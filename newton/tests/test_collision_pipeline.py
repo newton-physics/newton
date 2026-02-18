@@ -65,7 +65,7 @@ class CollisionSetup:
         shape_type_b,
         solver_fn,
         sim_substeps,
-        broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+        broad_phase="explicit",
         sdf_max_resolution_a=None,
         sdf_max_resolution_b=None,
     ):
@@ -98,12 +98,11 @@ class CollisionSetup:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline with the requested broad phase mode
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            broad_phase_mode=broad_phase_mode,
+            broad_phase_mode=broad_phase,
         )
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.solver = solver_fn(self.model)
 
@@ -112,6 +111,8 @@ class CollisionSetup:
 
         self.graph = None
         if wp.get_device(device).is_cuda:
+            # Warm-up: run once outside capture
+            self.simulate()
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -155,7 +156,7 @@ class CollisionSetup:
             self.graph = None
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -255,7 +256,7 @@ def test_collision_pipeline(
     shape_type_b: GeoType,
     test_level_a: TestLevel,
     test_level_b: TestLevel,
-    broad_phase_mode: newton.BroadPhaseMode,
+    broad_phase: str,
     tolerance: float = 3e-3,
 ):
     viewer = newton.viewer.ViewerNull()
@@ -266,7 +267,7 @@ def test_collision_pipeline(
         sim_substeps=10,
         shape_type_a=shape_type_a,
         shape_type_b=shape_type_b,
-        broad_phase_mode=broad_phase_mode,
+        broad_phase=broad_phase,
     )
     for _ in range(200):
         setup.step()
@@ -286,7 +287,7 @@ def test_collision_pipeline_explicit(
     tolerance: float = 3e-3,
 ):
     test_collision_pipeline(
-        _test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, newton.BroadPhaseMode.EXPLICIT, tolerance
+        _test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, "explicit", tolerance
     )
 
 
@@ -299,9 +300,7 @@ def test_collision_pipeline_nxn(
     test_level_b: TestLevel,
     tolerance: float = 3e-3,
 ):
-    test_collision_pipeline(
-        _test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, newton.BroadPhaseMode.NXN, tolerance
-    )
+    test_collision_pipeline(_test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, "nxn", tolerance)
 
 
 def test_collision_pipeline_sap(
@@ -313,9 +312,7 @@ def test_collision_pipeline_sap(
     test_level_b: TestLevel,
     tolerance: float = 3e-3,
 ):
-    test_collision_pipeline(
-        _test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, newton.BroadPhaseMode.SAP, tolerance
-    )
+    test_collision_pipeline(_test, device, shape_type_a, shape_type_b, test_level_a, test_level_b, "sap", tolerance)
 
 
 for test_config in collision_pipeline_contact_tests:
@@ -366,7 +363,7 @@ def test_mesh_mesh_sdf_modes(
     device,
     sdf_max_resolution_a: int | None,
     sdf_max_resolution_b: int | None,
-    broad_phase_mode: newton.BroadPhaseMode,
+    broad_phase: str,
     tolerance: float = 3e-3,
 ):
     """Test mesh-mesh collision with specific SDF configurations."""
@@ -378,7 +375,7 @@ def test_mesh_mesh_sdf_modes(
         sim_substeps=10,
         shape_type_a=GeoType.MESH,
         shape_type_b=GeoType.MESH,
-        broad_phase_mode=broad_phase_mode,
+        broad_phase=broad_phase,
         sdf_max_resolution_a=sdf_max_resolution_a,
         sdf_max_resolution_b=sdf_max_resolution_b,
     )
@@ -390,15 +387,15 @@ def test_mesh_mesh_sdf_modes(
 
 
 # Wrapper functions for different SDF modes
-def test_mesh_mesh_sdf_vs_sdf(_test, device, broad_phase_mode: newton.BroadPhaseMode):
+def test_mesh_mesh_sdf_vs_sdf(_test, device, broad_phase: str):
     """Test mesh-mesh collision where both meshes have SDFs."""
     # SDF-SDF hydroelastic contacts can have some variability in contact normal direction
     test_mesh_mesh_sdf_modes(
-        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase_mode=broad_phase_mode, tolerance=0.1
+        _test, device, sdf_max_resolution_a=8, sdf_max_resolution_b=8, broad_phase=broad_phase, tolerance=0.1
     )
 
 
-def test_mesh_mesh_sdf_vs_bvh(_test, device, broad_phase_mode: newton.BroadPhaseMode):
+def test_mesh_mesh_sdf_vs_bvh(_test, device, broad_phase: str):
     """Test mesh-mesh collision where first mesh has SDF, second uses BVH."""
     # Mixed SDF/BVH mode has slightly more asymmetric contact behavior, use higher tolerance
     test_mesh_mesh_sdf_modes(
@@ -406,12 +403,12 @@ def test_mesh_mesh_sdf_vs_bvh(_test, device, broad_phase_mode: newton.BroadPhase
         device,
         sdf_max_resolution_a=8,
         sdf_max_resolution_b=None,
-        broad_phase_mode=broad_phase_mode,
+        broad_phase=broad_phase,
         tolerance=0.2,
     )
 
 
-def test_mesh_mesh_bvh_vs_sdf(_test, device, broad_phase_mode: newton.BroadPhaseMode):
+def test_mesh_mesh_bvh_vs_sdf(_test, device, broad_phase: str):
     """Test mesh-mesh collision where first mesh uses BVH, second has SDF."""
     # Mixed SDF/BVH mode has slightly more asymmetric contact behavior, use higher tolerance
     test_mesh_mesh_sdf_modes(
@@ -419,15 +416,15 @@ def test_mesh_mesh_bvh_vs_sdf(_test, device, broad_phase_mode: newton.BroadPhase
         device,
         sdf_max_resolution_a=None,
         sdf_max_resolution_b=8,
-        broad_phase_mode=broad_phase_mode,
+        broad_phase=broad_phase,
         tolerance=0.5,
     )
 
 
-def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase_mode: newton.BroadPhaseMode):
+def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     """Test mesh-mesh collision where both meshes use BVH (no SDF)."""
     test_mesh_mesh_sdf_modes(
-        _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=None, broad_phase_mode=broad_phase_mode
+        _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=None, broad_phase=broad_phase
     )
 
 
@@ -440,17 +437,17 @@ mesh_mesh_sdf_tests = [
 ]
 
 for mode_name, test_func in mesh_mesh_sdf_tests:
-    for broad_phase_name, broad_phase_mode in [
-        ("explicit", newton.BroadPhaseMode.EXPLICIT),
-        ("nxn", newton.BroadPhaseMode.NXN),
-        ("sap", newton.BroadPhaseMode.SAP),
+    for broad_phase_name, broad_phase in [
+        ("explicit", "explicit"),
+        ("nxn", "nxn"),
+        ("sap", "sap"),
     ]:
         add_function_test(
             TestCollisionPipeline,
             f"test_mesh_mesh_{mode_name}_{broad_phase_name}",
             test_func,
             devices=devices,
-            broad_phase_mode=broad_phase_mode,
+            broad_phase=broad_phase,
             check_output=False,  # Disable output checking due to Warp module loading messages
         )
 
@@ -464,7 +461,7 @@ class TestCollisionPipelineFilterPairs(unittest.TestCase):
     pass
 
 
-def test_shape_collision_filter_pairs(test, device, broad_phase_mode: newton.BroadPhaseMode):
+def test_shape_collision_filter_pairs(test, device, broad_phase_mode: str):
     """Verify that excluded shape pairs produce no contacts under NxN or SAP broad phase.
 
     Args:
@@ -483,12 +480,10 @@ def test_shape_collision_filter_pairs(test, device, broad_phase_mode: newton.Bro
         # Exclude this pair so they must not generate contacts
         builder.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
         model = builder.finalize(device=device)
-        pipeline = newton.CollisionPipeline.from_model(
-            model,
-            broad_phase_mode=broad_phase_mode,
-        )
+        pipeline = newton.CollisionPipeline(model, broad_phase_mode=broad_phase_mode)
         state = model.state()
-        contacts = pipeline.collide(model, state)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
         n = contacts.rigid_contact_count.numpy()[0]
         excluded = (min(shape_a, shape_b), max(shape_a, shape_b))
         for i in range(n):
@@ -498,7 +493,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase_mode: newton.Bro
             test.assertNotEqual(
                 pair,
                 excluded,
-                f"Excluded pair {excluded} must not appear in contacts (broad_phase={broad_phase_mode.name})",
+                f"Excluded pair {excluded} must not appear in contacts (broad_phase={broad_phase_mode})",
             )
         # With the only pair excluded, we must have zero rigid contacts
         test.assertEqual(n, 0, f"Expected 0 rigid contacts when only pair is excluded (got {n})")
@@ -509,14 +504,14 @@ add_function_test(
     "test_shape_collision_filter_pairs_nxn",
     test_shape_collision_filter_pairs,
     devices=devices,
-    broad_phase_mode=newton.BroadPhaseMode.NXN,
+    broad_phase_mode="nxn",
 )
 add_function_test(
     TestCollisionPipelineFilterPairs,
     "test_shape_collision_filter_pairs_sap",
     test_shape_collision_filter_pairs,
     devices=devices,
-    broad_phase_mode=newton.BroadPhaseMode.SAP,
+    broad_phase_mode="sap",
 )
 
 
@@ -545,9 +540,10 @@ def test_collision_filter_consistent_across_broadphases(test, device):
         model = builder.finalize(device=device)
 
         def _contact_pairs(broad_phase_mode):
-            pipeline = newton.CollisionPipeline.from_model(model, broad_phase_mode=broad_phase_mode)
+            pipeline = newton.CollisionPipeline(model, broad_phase_mode=broad_phase_mode)
             state = model.state()
-            contacts = pipeline.collide(model, state)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
             n = contacts.rigid_contact_count.numpy()[0]
             pairs = set()
             for i in range(n):
@@ -556,9 +552,9 @@ def test_collision_filter_consistent_across_broadphases(test, device):
                 pairs.add((min(s0, s1), max(s0, s1)))
             return pairs
 
-        pairs_explicit = _contact_pairs(newton.BroadPhaseMode.EXPLICIT)
-        pairs_nxn = _contact_pairs(newton.BroadPhaseMode.NXN)
-        pairs_sap = _contact_pairs(newton.BroadPhaseMode.SAP)
+        pairs_explicit = _contact_pairs("explicit")
+        pairs_nxn = _contact_pairs("nxn")
+        pairs_sap = _contact_pairs("sap")
 
         # The excluded pair must not appear in any broad phase result
         for name, pairs in [("EXPLICIT", pairs_explicit), ("NXN", pairs_nxn), ("SAP", pairs_sap)]:
@@ -597,7 +593,7 @@ class TestContactEstimator(unittest.TestCase):
     def test_heuristic_caps_large_pair_count(self):
         """When pair count is huge, the heuristic provides a tighter bound."""
         model = newton.Model()
-        model.num_worlds = 1
+        model.world_count = 1
         model.shape_contact_pair_count = 999999
 
         # 4 primitives (CPP=5), 3 meshes (CPP=40), 2 planes, all in world 0.
@@ -620,7 +616,7 @@ class TestContactEstimator(unittest.TestCase):
     def test_world_aware_plane_estimate(self):
         """Per-world plane computation avoids quadratic cross-world overcount."""
         model = newton.Model()
-        model.num_worlds = 4
+        model.world_count = 4
         model.shape_contact_pair_count = 0
 
         # 4 worlds, each with 10 boxes (CPP=5) and 10 planes.
@@ -643,7 +639,7 @@ class TestContactEstimator(unittest.TestCase):
     def test_pair_count_tighter_than_heuristic(self):
         """When precomputed pair count is tighter than the heuristic, it is used."""
         model = newton.Model()
-        model.num_worlds = 4
+        model.world_count = 4
         model.shape_contact_pair_count = 300
 
         # 40 boxes (CPP=5) across 4 worlds, no planes.
@@ -710,16 +706,17 @@ def test_particle_shape_contacts(test, device, shape_type: GeoType):
         model = builder.finalize(device=device)
 
         # Create collision pipeline
-        collision_pipeline = newton.CollisionPipeline.from_model(
+        collision_pipeline = newton.CollisionPipeline(
             model,
-            broad_phase_mode=newton.BroadPhaseMode.NXN,
+            broad_phase="nxn",
             soft_contact_margin=soft_contact_margin,
         )
 
         state = model.state()
 
         # Run collision detection
-        contacts = collision_pipeline.collide(model, state)
+        contacts = collision_pipeline.contacts()
+        collision_pipeline.collide(state, contacts)
 
         # Verify soft contacts were generated
         soft_count = contacts.soft_contact_count.numpy()[0]

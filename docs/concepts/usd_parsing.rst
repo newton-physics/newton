@@ -34,6 +34,38 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+Mass and Inertia Precedence
+---------------------------
+
+For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves inertial properties using the
+following precedence:
+
+1. If both ``physics:mass`` and ``physics:diagonalInertia`` are authored on the rigid body, those
+   authored values are used directly (no mass-property recomputation).
+   If ``physics:centerOfMass`` is missing, ``(0, 0, 0)`` is used.
+   If ``physics:principalAxes`` is missing, identity rotation is used.
+2. If either mass or diagonal inertia is missing, Newton falls back to
+   ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
+   In this fallback path, collider contributions use a two-level precedence:
+
+   a. If collider ``UsdPhysics.MassAPI`` has authored ``mass`` and ``diagonalInertia``, those
+      authored values are converted to unit-density collider mass information.
+   b. Otherwise, Newton derives unit-density collider mass information from collider geometry.
+
+   A collider is skipped (with warning) only if neither path provides usable collider mass
+   information.
+
+   .. note::
+
+      The callback payload provided by Newton in this path is unit-density collider shape
+      information (volume/COM/inertia basis). Collider density authored via ``UsdPhysics.MassAPI``
+      (for example, ``physics:density``) or via bound ``UsdPhysics.MaterialAPI`` is still applied
+      by USD during ``ComputeMassProperties(...)``. In other words, unit-density callback data does
+      not mean authored densities are ignored.
+
+When a body mass value is resolved in either path, Newton always overwrites body mass and inverse
+mass for the imported body. If resolved mass is non-positive, inverse mass is set to ``0``.
+
 .. _schema_resolvers:
 
 1. Solver Attribute Remapping

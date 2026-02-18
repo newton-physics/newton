@@ -25,6 +25,7 @@ import warp as wp
 from .types import (
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
     Vec3,
 )
@@ -458,7 +459,7 @@ def transform_inertia(m: float, I: wp.mat33, p: wp.vec3, q: wp.quat) -> wp.mat33
 def compute_shape_inertia(
     type: int,
     scale: Vec3,
-    src: SDF | Mesh | None,
+    src: SDF | Mesh | Heightfield | None,
     density: float,
     is_solid: bool = True,
     thickness: list[float] | float = 0.001,
@@ -532,6 +533,9 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow ellipsoid geom"
             hollow = compute_ellipsoid_inertia(density, a - thickness, b - thickness, c - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
+    elif type == GeoType.HFIELD:
+        # Heightfields are always static terrain (zero mass, zero inertia)
+        return 0.0, wp.vec3(), wp.mat33()
     elif type == GeoType.MESH or type == GeoType.SDF or type == GeoType.CONVEX_MESH:
         assert src is not None, "src must be provided for mesh, SDF, or convex hull shapes"
         if src.has_inertia and src.mass > 0.0 and src.is_solid == is_solid:

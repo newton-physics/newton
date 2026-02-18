@@ -36,6 +36,7 @@ __all__ = [
 from ._src.geometry import (
     SDF,
     GeoType,
+    Heightfield,
     Mesh,
     ParticleFlags,
     SAPSortType,
@@ -45,6 +46,7 @@ from ._src.geometry import (
 __all__ += [
     "SDF",
     "GeoType",
+    "Heightfield",
     "Mesh",
     "ParticleFlags",
     "SAPSortType",
@@ -56,7 +58,6 @@ __all__ += [
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
     ActuatorMode,
-    BroadPhaseMode,
     CollisionPipeline,
     Contacts,
     Control,
@@ -73,7 +74,6 @@ from ._src.sim import (  # noqa: E402
 
 __all__ += [
     "ActuatorMode",
-    "BroadPhaseMode",
     "CollisionPipeline",
     "Contacts",
     "Control",
