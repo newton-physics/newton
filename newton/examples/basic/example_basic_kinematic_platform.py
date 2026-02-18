@@ -179,11 +179,8 @@ class Example:
 
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
-        # Initialize hinge position targets to match t=0 values (avoid jump on first step)
-        for ci, qs in enumerate(hinge_q_starts):
-            phase = ci * 0.5
-            target[qs] = HINGE_AMPLITUDE * math.sin(phase)
-        self.control.kinematic_target = wp.array(target, dtype=wp.float32, device=self.model.device)
+        # Note: hinge position targets are already initialized correctly by model.control()
+        # because builder.joint_q was set to the t=0 target angles before finalize().
 
         self.viewer.set_model(self.model)
 

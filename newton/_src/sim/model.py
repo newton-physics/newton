@@ -689,6 +689,7 @@ class Model:
         self.attribute_frequency["joint_enabled"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_twist_lower"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_twist_upper"] = Model.AttributeFrequency.JOINT
+        self.attribute_frequency["joint_kinematic_type"] = Model.AttributeFrequency.JOINT
 
         # attributes per joint coord
         self.attribute_frequency["joint_q"] = Model.AttributeFrequency.JOINT_COORD
@@ -701,7 +702,6 @@ class Model:
         self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_act_mode"] = Model.AttributeFrequency.JOINT_DOF
-        self.attribute_frequency["joint_kinematic_type"] = Model.AttributeFrequency.JOINT
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_kd"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_limit_lower"] = Model.AttributeFrequency.JOINT_DOF
