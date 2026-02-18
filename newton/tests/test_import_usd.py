@@ -3990,11 +3990,11 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.shape_material_restitution.numpy()[shape_idx], 0.3, places=4)
 
         # Check torsional friction
-        torsional = model.shape_material_torsional_friction.numpy()[shape_idx]
+        torsional = model.shape_material_mu_torsional.numpy()[shape_idx]
         self.assertAlmostEqual(torsional, 0.15, places=4)
 
         # Check rolling friction
-        rolling = model.shape_material_rolling_friction.numpy()[shape_idx]
+        rolling = model.shape_material_mu_rolling.numpy()[shape_idx]
         self.assertAlmostEqual(rolling, 0.08, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

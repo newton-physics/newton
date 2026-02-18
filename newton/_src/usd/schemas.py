@@ -71,8 +71,8 @@ class SchemaResolverNewton(SchemaResolver):
         },
         PrimType.BODY: {},
         PrimType.MATERIAL: {
-            "torsional_friction": SchemaAttribute("newton:torsionalFriction", 0.25),
-            "rolling_friction": SchemaAttribute("newton:rollingFriction", 0.0005),
+            "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
+            "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
         },
         PrimType.ACTUATOR: {},
     }
@@ -257,8 +257,8 @@ class SchemaResolverMjc(SchemaResolver):
         },
         PrimType.MATERIAL: {
             # Materials
-            "torsional_friction": SchemaAttribute("mjc:torsionalfriction", 0.005),
-            "rolling_friction": SchemaAttribute("mjc:rollingfriction", 0.0001),
+            "mu_torsional": SchemaAttribute("mjc:torsionalfriction", 0.005),
+            "mu_rolling": SchemaAttribute("mjc:rollingfriction", 0.0001),
             # Contact models
             "priority": SchemaAttribute("mjc:priority", 0),
             "weight": SchemaAttribute("mjc:solmix", 1.0),
