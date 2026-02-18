@@ -309,6 +309,7 @@ class ImplicitMPMModel:
 
         self.collider_body_mass = None
         self.collider_body_inv_inertia = None
+        self.collider_body_q = None
 
         self.setup_particle_material()
         self.setup_collider()

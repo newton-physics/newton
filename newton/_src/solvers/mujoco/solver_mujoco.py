@@ -2952,8 +2952,8 @@ class SolverMuJoCo(SolverBase):
         shape_mu = model.shape_material_mu.numpy()
         shape_ke = model.shape_material_ke.numpy()
         shape_kd = model.shape_material_kd.numpy()
-        shape_torsional_friction = model.shape_material_torsional_friction.numpy()
-        shape_rolling_friction = model.shape_material_rolling_friction.numpy()
+        shape_mu_torsional = model.shape_material_mu_torsional.numpy()
+        shape_mu_rolling = model.shape_material_mu_rolling.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -3252,8 +3252,8 @@ class SolverMuJoCo(SolverBase):
 
                 # set friction from Newton shape materials
                 mu = shape_mu[shape]
-                torsional = shape_torsional_friction[shape]
-                rolling = shape_rolling_friction[shape]
+                torsional = shape_mu_torsional[shape]
+                rolling = shape_mu_rolling[shape]
                 geom_params["friction"] = [
                     mu,
                     torsional,
@@ -4543,8 +4543,8 @@ class SolverMuJoCo(SolverBase):
                 self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
-                self.model.shape_material_torsional_friction,
-                self.model.shape_material_rolling_friction,
+                self.model.shape_material_mu_torsional,
+                self.model.shape_material_mu_rolling,
                 shape_geom_solimp,
                 shape_geom_solmix,
                 shape_geom_gap,

@@ -36,7 +36,7 @@ import newton.examples
 import newton.ik as ik
 import newton.usd
 import newton.utils
-from newton.geometry import SDFHydroelasticConfig
+from newton.geometry import HydroelasticSDF
 
 
 class SceneType(Enum):
@@ -77,13 +77,13 @@ class Example:
         self.viewer = viewer
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
-            k_hydro=1e11,
+            kh=1e11,
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.01, 0.01),
             contact_margin=0.01,
-            torsional_friction=0.0,
-            rolling_friction=0.0,
+            mu_torsional=0.0,
+            mu_rolling=0.0,
         )
 
         builder = newton.ModelBuilder()
@@ -236,13 +236,13 @@ class Example:
         # Create collision pipeline with SDF hydroelastic config
         # Enable output_contact_surface so the kernel code is compiled (allows runtime toggle)
         # The actual writing is controlled by set_output_contact_surface() at runtime
-        sdf_hydroelastic_config = SDFHydroelasticConfig(
+        sdf_hydroelastic_config = HydroelasticSDF.Config(
             output_contact_surface=hasattr(viewer, "renderer"),  # Compile in if viewer supports it
         )
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
-            broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+            broad_phase="explicit",
             sdf_hydroelastic_config=sdf_hydroelastic_config,
         )
         self.contacts = self.collision_pipeline.contacts()
