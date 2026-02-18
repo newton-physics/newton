@@ -238,6 +238,13 @@ class SolverMuJoCo(SolverBase):
         lower_value = str(value).lower().strip()
         if lower_value in mapping:
             return mapping[lower_value]
+        # Support MuJoCo enum string reprs like "mjtCone.mjCONE_ELLIPTIC".
+        last_component = lower_value.rsplit(".", maxsplit=1)[-1]
+        if last_component in mapping:
+            return mapping[last_component]
+        enum_suffix = last_component.rsplit("_", maxsplit=1)[-1]
+        if enum_suffix in mapping:
+            return mapping[enum_suffix]
         if fallback_on_unknown is not None:
             return fallback_on_unknown
         return int(lower_value)
@@ -1014,13 +1021,6 @@ class SolverMuJoCo(SolverBase):
                 rmax = 0.0
             return float(rmin), float(rmax)
 
-        def get_usd_compiler_autolimits(context: dict[str, Any]) -> bool:
-            """Return compiler autoLimits from import context (defaults to True)."""
-            result = context.get("result", {})
-            scene_attrs = result.get("scene_attributes", {}) if isinstance(result, dict) else {}
-            value = scene_attrs.get("mjc:compiler:autoLimits", True)
-            return parse_bool(value)
-
         def make_usd_range_transformer(range_attr_name: str):
             """Create a transformer that parses a USD min/max range pair."""
 
@@ -1042,23 +1042,22 @@ class SolverMuJoCo(SolverBase):
             return transform
 
         def make_usd_limited_transformer(limited_attr_name: str, range_attr_name: str):
-            """Create a transformer for MuJoCo tri-state limited tokens (true/false/auto)."""
+            """Create a transformer for MuJoCo tri-state limited tokens.
 
-            def transform(_: Any, context: dict[str, Any]) -> bool:
+            The corresponding USD attributes are token-valued with allowed values
+            ``"false"``, ``"true"``, and ``"auto"``. We preserve this tristate
+            representation as integers ``0/1/2`` and defer any autolimits-based
+            resolution to MuJoCo compilation.
+            """
+
+            def transform(_: Any, context: dict[str, Any]) -> int:
                 prim = context["prim"]
 
                 limited_attr = prim.GetAttribute(limited_attr_name)
                 if limited_attr and limited_attr.HasAuthoredValue():
-                    token = limited_attr.Get()
-                    token_str = str(token).strip().lower()
-                    if token_str != "auto":
-                        return parse_bool(token)
-
-                if not get_usd_compiler_autolimits(context):
-                    return False
-
-                range_vals = get_usd_range_if_authored(prim, range_attr_name)
-                return range_vals is not None and range_vals[0] < range_vals[1]
+                    return parse_tristate(limited_attr.Get())
+                # Keep MuJoCo's default tri-state semantics: omitted means "auto" (2).
+                return 2
 
             return transform
 
@@ -1253,16 +1252,14 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        def parse_limited(value: str, context: dict[str, Any] | None = None) -> int:
-            """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
-            v = value.lower().strip()
-            if v in ("false", "0"):
-                return 0
-            if v in ("true", "1"):
-                return 1
-            if v in ("auto", "2"):
-                return 2
-            return int(value)
+        def parse_tristate(value: Any, _context: dict[str, Any] | None = None) -> int:
+            """Parse MuJoCo tri-state values to int.
+
+            Accepts ``"false"``, ``"true"``, and ``"auto"`` (or their numeric
+            equivalents ``0``, ``1``, and ``2``) and returns the corresponding
+            integer code expected by MuJoCo custom attributes.
+            """
+            return SolverMuJoCo._parse_named_int(value, {"false": 0, "true": 1, "auto": 2})
 
         def parse_presence(_value: str, _context: dict[str, Any] | None = None) -> int:
             """Return 1 to indicate the attribute was explicitly present in the MJCF."""
@@ -1348,11 +1345,11 @@ class SolverMuJoCo(SolverBase):
                 name="actuator_ctrllimited",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
-                dtype=wp.bool,
-                default=False,
+                dtype=wp.int32,
+                default=2,
                 namespace="mujoco",
                 mjcf_attribute_name="ctrllimited",
-                mjcf_value_transformer=parse_bool,
+                mjcf_value_transformer=parse_tristate,
                 usd_attribute_name="*",
                 usd_value_transformer=make_usd_limited_transformer("mjc:ctrlLimited", "mjc:ctrlRange"),
             )
@@ -1362,11 +1359,11 @@ class SolverMuJoCo(SolverBase):
                 name="actuator_forcelimited",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
-                dtype=wp.bool,
-                default=False,
+                dtype=wp.int32,
+                default=2,
                 namespace="mujoco",
                 mjcf_attribute_name="forcelimited",
-                mjcf_value_transformer=parse_bool,
+                mjcf_value_transformer=parse_tristate,
                 usd_attribute_name="*",
                 usd_value_transformer=make_usd_limited_transformer("mjc:forceLimited", "mjc:forceRange"),
             )
@@ -1482,11 +1479,11 @@ class SolverMuJoCo(SolverBase):
                 name="actuator_actlimited",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
-                dtype=wp.bool,
-                default=False,
+                dtype=wp.int32,
+                default=2,
                 namespace="mujoco",
                 mjcf_attribute_name="actlimited",
-                mjcf_value_transformer=parse_bool,
+                mjcf_value_transformer=parse_tristate,
                 usd_attribute_name="*",
                 usd_value_transformer=make_usd_limited_transformer("mjc:actLimited", "mjc:actRange"),
             )
@@ -1622,10 +1619,6 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        def parse_limited_tendon(value: Any, _context: dict[str, Any] | None = None) -> int:
-            """Parse MuJoCo limited attribute: false=0, true=1, auto=2."""
-            return SolverMuJoCo._parse_named_int(value, {"false": 0, "true": 1, "auto": 2})
-
         def resolve_context_builder(context: dict[str, Any]) -> ModelBuilder:
             """Resolve builder from transformer context, falling back to current builder."""
             context_builder = context.get("builder")
@@ -1653,9 +1646,9 @@ class SolverMuJoCo(SolverBase):
                 default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
                 mjcf_attribute_name="limited",
-                mjcf_value_transformer=parse_limited_tendon,
+                mjcf_value_transformer=parse_tristate,
                 usd_attribute_name="mjc:limited",
-                usd_value_transformer=parse_limited_tendon,
+                usd_value_transformer=parse_tristate,
             )
         )
         builder.add_custom_attribute(
@@ -1791,9 +1784,9 @@ class SolverMuJoCo(SolverBase):
                 default=2,  # 0=false, 1=true, 2=auto
                 namespace="mujoco",
                 mjcf_attribute_name="actuatorfrclimited",
-                mjcf_value_transformer=parse_limited_tendon,
+                mjcf_value_transformer=parse_tristate,
                 usd_attribute_name="mjc:actuatorfrclimited",
-                usd_value_transformer=parse_limited_tendon,
+                usd_value_transformer=parse_tristate,
             )
         )
         # Tendon names (string attribute - stored as list[str], not warp array)
