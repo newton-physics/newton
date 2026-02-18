@@ -20,7 +20,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from ..core.types import Devicelike, Mat33, Vec2, Vec3, nparray, override
+from ..core.types import Axis, Devicelike, Mat33, Vec2, Vec3, nparray, override
 from ..utils.texture import compute_texture_hash
 
 
@@ -158,7 +158,7 @@ class Mesh:
     """
 
     MAX_HULL_VERTICES = 64
-    _color: Vec3 | None = None
+    """Default maximum vertex count for convex hull approximation."""
 
     def __init__(
         self,
@@ -200,6 +200,7 @@ class Mesh:
         self._indices = np.array(indices, dtype=np.int32).flatten()
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
+        self._color: Vec3 | None = None
         self.color = color
         # Store texture lazily: strings/paths are kept as-is, arrays are normalized
         self._texture = _normalize_texture_input(texture)
@@ -220,6 +221,440 @@ class Mesh:
             self.I = wp.mat33(np.eye(3))
             self.mass = 1.0
             self.com = wp.vec3()
+
+    @staticmethod
+    def create_sphere(
+        radius: float = 1.0,
+        *,
+        num_latitudes: int = 32,
+        num_longitudes: int = 32,
+        reverse_winding: bool = False,
+        compute_normals: bool = True,
+        compute_uvs: bool = True,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a UV sphere mesh.
+
+        Args:
+            radius [m]: Sphere radius.
+            num_latitudes: Number of latitude subdivisions.
+            num_longitudes: Number of longitude subdivisions.
+            reverse_winding: If ``True``, reverse triangle winding order.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            A sphere mesh.
+        """
+        from ..utils.mesh import create_mesh_sphere  # noqa: PLC0415
+
+        positions, indices, normals, uvs = create_mesh_sphere(
+            radius,
+            num_latitudes=num_latitudes,
+            num_longitudes=num_longitudes,
+            reverse_winding=reverse_winding,
+            compute_normals=compute_normals,
+            compute_uvs=compute_uvs,
+        )
+        return Mesh(
+            vertices=positions,
+            indices=indices,
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=compute_inertia,
+        )
+
+    @staticmethod
+    def create_ellipsoid(
+        rx: float = 1.0,
+        ry: float = 1.0,
+        rz: float = 1.0,
+        *,
+        num_latitudes: int = 32,
+        num_longitudes: int = 32,
+        reverse_winding: bool = False,
+        compute_normals: bool = True,
+        compute_uvs: bool = True,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a UV ellipsoid mesh.
+
+        Args:
+            rx [m]: Semi-axis length along X.
+            ry [m]: Semi-axis length along Y.
+            rz [m]: Semi-axis length along Z.
+            num_latitudes: Number of latitude subdivisions.
+            num_longitudes: Number of longitude subdivisions.
+            reverse_winding: If ``True``, reverse triangle winding order.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            An ellipsoid mesh.
+        """
+        from ..utils.mesh import create_mesh_ellipsoid  # noqa: PLC0415
+
+        positions, indices, normals, uvs = create_mesh_ellipsoid(
+            rx,
+            ry,
+            rz,
+            num_latitudes=num_latitudes,
+            num_longitudes=num_longitudes,
+            reverse_winding=reverse_winding,
+            compute_normals=compute_normals,
+            compute_uvs=compute_uvs,
+        )
+        return Mesh(
+            vertices=positions,
+            indices=indices,
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=compute_inertia,
+        )
+
+    @staticmethod
+    def create_capsule(
+        radius: float,
+        half_height: float,
+        *,
+        up_axis: Axis = Axis.Y,
+        segments: int = 32,
+        compute_normals: bool = True,
+        compute_uvs: bool = True,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a capsule mesh.
+
+        Args:
+            radius [m]: Radius of the capsule hemispheres and cylindrical body.
+            half_height [m]: Half-height of the cylindrical section.
+            up_axis: Long axis as a ``newton.Axis`` value.
+            segments: Tessellation resolution for both caps and body.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            A capsule mesh.
+        """
+        from ..utils.mesh import create_mesh_capsule  # noqa: PLC0415
+
+        positions, indices, normals, uvs = create_mesh_capsule(
+            radius,
+            half_height,
+            up_axis=int(up_axis),
+            segments=segments,
+            compute_normals=compute_normals,
+            compute_uvs=compute_uvs,
+        )
+        return Mesh(
+            vertices=positions,
+            indices=indices,
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=compute_inertia,
+        )
+
+    @staticmethod
+    def create_cylinder(
+        radius: float,
+        half_height: float,
+        *,
+        up_axis: Axis = Axis.Y,
+        segments: int = 32,
+        top_radius: float | None = None,
+        compute_normals: bool = True,
+        compute_uvs: bool = True,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a cylinder or truncated cone mesh.
+
+        Args:
+            radius [m]: Bottom radius.
+            half_height [m]: Half-height along the cylinder axis.
+            up_axis: Long axis as a ``newton.Axis`` value.
+            segments: Circumferential tessellation resolution.
+            top_radius [m]: Optional top radius. If ``None``, equals ``radius``.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            A cylinder or truncated-cone mesh.
+        """
+        from ..utils.mesh import create_mesh_cylinder  # noqa: PLC0415
+
+        positions, indices, normals, uvs = create_mesh_cylinder(
+            radius,
+            half_height,
+            up_axis=int(up_axis),
+            segments=segments,
+            top_radius=top_radius,
+            compute_normals=compute_normals,
+            compute_uvs=compute_uvs,
+        )
+        return Mesh(
+            vertices=positions,
+            indices=indices,
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=compute_inertia,
+        )
+
+    @staticmethod
+    def create_cone(
+        radius: float,
+        half_height: float,
+        *,
+        up_axis: Axis = Axis.Y,
+        segments: int = 32,
+        compute_normals: bool = True,
+        compute_uvs: bool = True,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a cone mesh.
+
+        Args:
+            radius [m]: Base radius.
+            half_height [m]: Half-height from center to apex/base.
+            up_axis: Long axis as a ``newton.Axis`` value.
+            segments: Circumferential tessellation resolution.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            A cone mesh.
+        """
+        from ..utils.mesh import create_mesh_cone  # noqa: PLC0415
+
+        positions, indices, normals, uvs = create_mesh_cone(
+            radius,
+            half_height,
+            up_axis=int(up_axis),
+            segments=segments,
+            compute_normals=compute_normals,
+            compute_uvs=compute_uvs,
+        )
+        return Mesh(
+            vertices=positions,
+            indices=indices,
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=compute_inertia,
+        )
+
+    @staticmethod
+    def create_arrow(
+        base_radius: float,
+        base_height: float,
+        *,
+        cap_radius: float | None = None,
+        cap_height: float | None = None,
+        up_axis: Axis = Axis.Y,
+        segments: int = 32,
+        compute_normals: bool = True,
+        compute_uvs: bool = True,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create an arrow mesh (cylinder shaft + cone head).
+
+        Args:
+            base_radius [m]: Shaft radius.
+            base_height [m]: Shaft full height (not half-height).
+            cap_radius [m]: Optional arrowhead base radius. If ``None``, uses
+                ``base_radius * 1.8``.
+            cap_height [m]: Optional arrowhead full height (not half-height).
+                If ``None``, uses ``base_height * 0.18``.
+            up_axis: Long axis as a ``newton.Axis`` value.
+            segments: Circumferential tessellation resolution.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            An arrow mesh.
+        """
+        from ..utils.mesh import create_mesh_arrow  # noqa: PLC0415
+
+        positions, indices, normals, uvs = create_mesh_arrow(
+            base_radius,
+            base_height,
+            cap_radius=cap_radius,
+            cap_height=cap_height,
+            up_axis=int(up_axis),
+            segments=segments,
+            compute_normals=compute_normals,
+            compute_uvs=compute_uvs,
+        )
+        return Mesh(
+            vertices=positions,
+            indices=indices,
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=compute_inertia,
+        )
+
+    @staticmethod
+    def create_box(
+        hx: float,
+        hy: float | None = None,
+        hz: float | None = None,
+        *,
+        duplicate_vertices: bool = True,
+        compute_normals: bool = True,
+        compute_uvs: bool = True,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a box mesh from half-extents.
+
+        Args:
+            hx [m]: Half-extent along X.
+            hy [m]: Half-extent along Y. If ``None``, uses ``hx``.
+            hz [m]: Half-extent along Z. If ``None``, uses ``hx``.
+            duplicate_vertices: If ``True``, duplicate vertices per face.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            A box mesh.
+        """
+        from ..utils.mesh import create_mesh_box  # noqa: PLC0415
+
+        if hy is None:
+            hy = hx
+        if hz is None:
+            hz = hx
+
+        positions, indices, normals, uvs = create_mesh_box(
+            float(hx),
+            float(hy),
+            float(hz),
+            duplicate_vertices=duplicate_vertices,
+            compute_normals=compute_normals,
+            compute_uvs=compute_uvs,
+        )
+        return Mesh(
+            vertices=positions,
+            indices=indices,
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=compute_inertia,
+        )
+
+    @staticmethod
+    def create_plane(
+        width: float,
+        length: float,
+        *,
+        compute_normals: bool = True,
+        compute_uvs: bool = True,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a rectangular plane mesh.
+
+        The plane lies in the XY plane and faces +Z (normals point along +Z).
+
+        Args:
+            width [m]: Plane width along X.
+            length [m]: Plane length along Y.
+            compute_normals: If ``True``, generate per-vertex normals.
+            compute_uvs: If ``True``, generate per-vertex UV coordinates.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            A plane mesh.
+        """
+        from ..utils.mesh import create_mesh_plane  # noqa: PLC0415
+
+        positions, indices, normals, uvs = create_mesh_plane(
+            width,
+            length,
+            compute_normals=compute_normals,
+            compute_uvs=compute_uvs,
+        )
+        return Mesh(
+            vertices=positions,
+            indices=indices,
+            normals=normals,
+            uvs=uvs,
+            compute_inertia=compute_inertia,
+        )
+
+    @staticmethod
+    def create_terrain(
+        grid_size: tuple[int, int] = (4, 4),
+        block_size: tuple[float, float] = (5.0, 5.0),
+        terrain_types: list[str] | str | object | None = None,
+        terrain_params: dict | None = None,
+        seed: int | None = None,
+        *,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a procedural terrain mesh from terrain blocks.
+
+        Args:
+            grid_size: Terrain grid size as ``(rows, cols)``.
+            block_size [m]: Terrain block dimensions as ``(width, length)``.
+            terrain_types: Terrain type name(s) or callable generator(s).
+            terrain_params: Optional per-terrain parameter dictionary.
+            seed: Optional random seed for deterministic terrain generation.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            A terrain mesh.
+        """
+        from .terrain_generator import create_mesh_terrain  # noqa: PLC0415
+
+        vertices, indices = create_mesh_terrain(
+            grid_size=grid_size,
+            block_size=block_size,
+            terrain_types=terrain_types,
+            terrain_params=terrain_params,
+            seed=seed,
+        )
+        return Mesh(vertices, indices, compute_inertia=compute_inertia)
+
+    @staticmethod
+    def create_heightfield(
+        heightfield: nparray,
+        extent_x: float,
+        extent_y: float,
+        center_x: float = 0.0,
+        center_y: float = 0.0,
+        ground_z: float = 0.0,
+        *,
+        compute_inertia: bool = True,
+    ) -> "Mesh":
+        """Create a watertight mesh from a 2D heightfield.
+
+        Args:
+            heightfield: Height samples as a 2D array using ij-indexing where
+                ``heightfield[i, j]`` maps to ``(x_i, y_j)`` (i = X, j = Y).
+            extent_x [m]: Total extent along X.
+            extent_y [m]: Total extent along Y.
+            center_x [m]: Heightfield center position along X.
+            center_y [m]: Heightfield center position along Y.
+            ground_z [m]: Bottom surface Z value for watertight side walls.
+            compute_inertia: If ``True``, compute mesh mass properties.
+
+        Returns:
+            A heightfield mesh.
+        """
+        from .terrain_generator import create_mesh_heightfield  # noqa: PLC0415
+
+        vertices, indices = create_mesh_heightfield(
+            heightfield=heightfield,
+            extent_x=extent_x,
+            extent_y=extent_y,
+            center_x=center_x,
+            center_y=center_y,
+            ground_z=ground_z,
+        )
+        return Mesh(vertices, indices, compute_inertia=compute_inertia)
 
     def copy(
         self,
