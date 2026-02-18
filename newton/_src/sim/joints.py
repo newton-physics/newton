@@ -205,12 +205,6 @@ class KinematicMode(IntEnum):
       ``q_start`` (extra coordinate slots unused for free/ball joints).
     - ``POSITION``: target values are per-coordinate positions [m or rad] in the same
       layout as ``joint_q``. The solver computes the required velocity internally.
-
-    Attributes:
-        NONE: Normal dynamic joint. No kinematic control.
-        VELOCITY: Velocity-controlled kinematic joint. Target is per-DOF velocity [m/s or rad/s].
-        POSITION: Position-controlled kinematic joint. Target is per-coordinate position [m or rad],
-            velocity is computed as ``(target - current) / dt``.
     """
 
     NONE = 0
