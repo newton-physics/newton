@@ -4124,14 +4124,8 @@ class TestMuJoCoConversion(unittest.TestCase):
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
             return
 
-        # Run forward kinematics using mujoco_warp (skip if not available)
-        try:
-            import mujoco_warp
-
-            mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        except ImportError as e:
-            self.skipTest(f"mujoco_warp not installed. Skipping test: {e}")
-            return
+        # Run forward kinematics using mujoco_warp
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
 
         # Extract computed positions and orientations from MuJoCo data
         parent_pos = solver.mjw_data.xpos.numpy()[0, 1]
@@ -5046,7 +5040,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5, err_msg="joint_q=0 should map to qpos=ref")
 
-        mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
 
         # Use update_newton_state with eval_fk=False to get body transforms from MuJoCo
         solver.update_newton_state(model, state, solver.mjw_data, eval_fk=False)

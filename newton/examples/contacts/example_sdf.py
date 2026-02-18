@@ -48,14 +48,14 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     mu=0.01,
     ke=1e7,  # Contact stiffness for MuJoCo solver
     kd=1e4,  # Contact damping
-    sdf_max_resolution=512,
-    sdf_narrow_band_range=(-0.005, 0.005),
     contact_margin=0.005,
     density=8000.0,
     mu_torsional=0.0,
     mu_rolling=0.0,
     is_hydroelastic=False,
 )
+MESH_SDF_MAX_RESOLUTION = 512
+MESH_SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
 
 
 def add_mesh_object(
@@ -81,6 +81,11 @@ def add_mesh_object(
         transform = wp.transform(transform.p + center_world, transform.q)
 
     mesh = newton.Mesh(vertices, indices)
+    mesh.build_sdf(
+        max_resolution=MESH_SDF_MAX_RESOLUTION,
+        narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
+        margin=shape_cfg.contact_margin if shape_cfg and shape_cfg.contact_margin is not None else 0.05,
+    )
 
     if label == "gear_base":
         body = -1
