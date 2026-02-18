@@ -99,7 +99,7 @@ class Example:
         # Use collision pipeline for particle-shape contacts
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            broad_phase_mode=newton.BroadPhaseMode.NXN,
+            broad_phase="nxn",
             soft_contact_margin=0.1,
         )
 

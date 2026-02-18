@@ -161,8 +161,8 @@ class ViewerBase:
         if self.model is None:
             return 0
         if self.max_worlds is None:
-            return self.model.num_worlds
-        return min(self.max_worlds, self.model.num_worlds)
+            return self.model.world_count
+        return min(self.max_worlds, self.model.world_count)
 
     def _get_shape_isomesh(self, shape_idx: int):
         """Get the isomesh for a collision shape with an SDF volume.
@@ -216,7 +216,7 @@ class ViewerBase:
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        num_worlds = self._get_render_world_count()
+        world_count = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -226,7 +226,7 @@ class ViewerBase:
             spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
         # Compute offsets using the shared utility function
-        world_offsets = compute_world_offsets(num_worlds, spacing, up_axis)
+        world_offsets = compute_world_offsets(world_count, spacing, up_axis)
 
         # Convert to warp array
         self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
@@ -236,11 +236,11 @@ class ViewerBase:
         if self.model is None:
             return None
 
-        num_worlds = self.model.num_worlds
+        world_count = self.model.world_count
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), MAXVAL, dtype=wp.float32, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), -MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_min = wp.full((world_count, 3), MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((world_count, 3), -MAXVAL, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()
@@ -255,7 +255,7 @@ class ViewerBase:
                 self.model.shape_collision_radius,
                 self.model.shape_world,
                 state.body_q,
-                num_worlds,
+                world_count,
             ],
             outputs=[world_bounds_min, world_bounds_max],
             device=self.device,
@@ -346,7 +346,12 @@ class ViewerBase:
 
             shapes.colors_changed = False
 
-        # render SDF isomesh instances for collision visualization (lazily populated)
+        self._log_non_shape_state(state)
+        self.model_changed = False
+
+    def _log_non_shape_state(self, state):
+        """Log SDF isomeshes, inertia boxes, triangles, particles, joints, COM."""
+
         sdf_isomesh_just_populated = False
         if self.show_collision and not self._sdf_isomesh_populated:
             self._populate_sdf_isomesh_instances()
@@ -355,11 +360,8 @@ class ViewerBase:
 
         for shapes in self._sdf_isomesh_instances.values():
             visible = self.show_collision
-
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
-
-            # Send colors/materials on model change OR when isomeshes were just populated
             send_appearance = self.model_changed or sdf_isomesh_just_populated
             self.log_instances(
                 shapes.name,
@@ -371,13 +373,10 @@ class ViewerBase:
                 hidden=not visible,
             )
 
-        # update inertia box transforms if visible
         if self.show_inertia_boxes:
             if self._inertia_box_instances is None:
-                # create instance batch on-demand
                 self._populate_inertia_boxes()
             self._inertia_box_instances.update(state, world_offsets=self.world_offsets)
-
         if self._inertia_box_instances is not None:
             self.log_instances(
                 self._inertia_box_instances.name,
@@ -393,8 +392,6 @@ class ViewerBase:
         self._log_particles(state)
         self._log_joints(state)
         self._log_com(state)
-
-        self.model_changed = False
 
     def log_contacts(self, contacts, state):
         """
@@ -1194,7 +1191,7 @@ class ViewerBase:
 
             # Use distinct collision color palette (different from visual shapes)
             color = wp.vec3(self._collision_color_map(s))
-            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             batch.add(
                 parent=parent,
@@ -1283,7 +1280,7 @@ class ViewerBase:
             else:
                 color = wp.vec3(color)
 
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             # add render instance
             batch.add(
