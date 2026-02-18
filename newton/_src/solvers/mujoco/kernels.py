@@ -1619,6 +1619,9 @@ def update_geom_properties_kernel(
     Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
     this internally based on the geometry, and Newton's shape_collision_radius
     is not compatible with MuJoCo's bounding sphere calculation.
+
+    Note: geom_margin is always updated from shape_thickness (unconditionally,
+    unlike the optional shape_geom_gap/solimp/solmix fields).
     """
     world, geom_idx = wp.tid()
 

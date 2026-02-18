@@ -2695,7 +2695,12 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
     def test_geom_margin_from_thickness(self):
-        """Test shape_thickness → geom_margin conversion and runtime updates across multiple worlds."""
+        """Test shape_thickness to geom_margin conversion and runtime updates.
+
+        Verifies that shape_thickness [m] values are correctly propagated to
+        geom_margin [m] during solver initialization and after runtime updates
+        via notify_model_changed across multiple worlds.
+        """
         num_worlds = 2
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)

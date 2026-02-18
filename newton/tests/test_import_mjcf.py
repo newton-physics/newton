@@ -2220,7 +2220,12 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0001, places=5)
 
     def test_mjcf_geom_margin_parsing(self):
-        """Test MJCF geom margin is parsed to shape thickness."""
+        """Test MJCF geom margin is parsed to shape thickness.
+
+        Verifies that MJCF geom margin values are mapped to shape thickness and
+        that geoms without an explicit margin use the default thickness.
+        Also checks that the model scale is applied to the margin value.
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
