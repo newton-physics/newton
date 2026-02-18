@@ -854,16 +854,13 @@
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.ParticleFlags.html#newton.ParticleFlags" title="newton.ParticleFlags"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ParticleFlags</span></code></a></p></td>
 <td><p>Flags for particle properties.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.SAPSortType.html#newton.SAPSortType" title="newton.SAPSortType"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SAPSortType</span></code></a></p></td>
-<td><p>Sort algorithm to use for SAP broad phase.</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.SDF.html#newton.SDF" title="newton.SDF"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SDF</span></code></a></p></td>
+<td><p>Opaque SDF container owning kernel payload and runtime references.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.SDF.html#newton.SDF" title="newton.SDF"><code class="xref py py-obj docutils literal notranslate"><span class="pre">SDF</span></code></a></p></td>
-<td><p>Represents a signed distance field (SDF) for simulation.</p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.ShapeFlags.html#newton.ShapeFlags" title="newton.ShapeFlags"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ShapeFlags</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.ShapeFlags.html#newton.ShapeFlags" title="newton.ShapeFlags"><code class="xref py py-obj docutils literal notranslate"><span class="pre">ShapeFlags</span></code></a></p></td>
 <td><p>Flags for shape properties.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-obj docutils literal notranslate"><span class="pre">State</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.State.html#newton.State" title="newton.State"><code class="xref py py-obj docutils literal notranslate"><span class="pre">State</span></code></a></p></td>
 <td><p>Represents the time-varying state of a <a class="reference internal" href="_generated/newton.Model.html#newton.Model" title="newton.Model"><code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code></a> in a simulation.</p></td>
 </tr>
 </tbody>
@@ -874,6 +871,12 @@
 <tbody>
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.AxisType.html#newton.AxisType" title="newton.AxisType"><code class="xref py py-obj docutils literal notranslate"><span class="pre">AxisType</span></code></a></p></td>
 <td><p>alias of <a class="reference internal" href="_generated/newton.Axis.html#newton.Axis" title="newton._src.core.types.Axis"><code class="xref py py-class docutils literal notranslate"><span class="pre">Axis</span></code></a> | <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">Literal</span></code></a>['X', 'Y', 'Z'] | <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">Literal</span></code></a>[0, 1, 2] | <a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">int</span></code></a> | <a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">str</span></code></a></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.BroadPhaseInstance.html#newton.BroadPhaseInstance" title="newton.BroadPhaseInstance"><code class="xref py py-obj docutils literal notranslate"><span class="pre">BroadPhaseInstance</span></code></a></p></td>
+<td><p>Represent a PEP 604 union type</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.BroadPhaseMode.html#newton.BroadPhaseMode" title="newton.BroadPhaseMode"><code class="xref py py-obj docutils literal notranslate"><span class="pre">BroadPhaseMode</span></code></a></p></td>
+<td><p>alias of <a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><code class="xref py py-obj docutils literal notranslate"><span class="pre">Literal</span></code></a>['nxn', 'sap', 'explicit']</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.eval_fk.html#newton.eval_fk" title="newton.eval_fk"><code class="xref py py-obj docutils literal notranslate"><span class="pre">eval_fk</span></code></a>(model, joint_q, joint_qd, state[, ...])</p></td>
 <td><p>Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (<a class="reference internal" href="_generated/newton.State.html#newton.State.body_q" title="newton.State.body_q"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_q</span></code></a> and <a class="reference internal" href="_generated/newton.State.html#newton.State.body_qd" title="newton.State.body_qd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qd</span></code></a>).</p></td>

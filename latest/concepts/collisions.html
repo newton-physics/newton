@@ -820,7 +820,8 @@
     <span class="n">model</span><span class="p">,</span>
     <span class="n">broad_phase</span><span class="o">=</span><span class="s2">&quot;sap&quot;</span><span class="p">,</span>
 <span class="p">)</span>
-<span class="n">contacts</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">collision_pipeline</span><span class="o">=</span><span class="n">pipeline</span><span class="p">)</span>
+<span class="n">contacts</span> <span class="o">=</span> <span class="n">pipeline</span><span class="o">.</span><span class="n">contacts</span><span class="p">()</span>
+<span class="n">pipeline</span><span class="o">.</span><span class="n">collide</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">contacts</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -874,11 +875,10 @@
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>SDF is a collision option</strong>, not a standalone shape type. Enable SDF generation on any shape
-via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code> to precompute a signed distance field
-from the shape’s geometry. The SDF provides O(1) distance queries that accelerate collision
-detection, especially for mesh-mesh pairs. The collision pipeline decides when to use SDF data
-based on efficiency.</p>
+<p><strong>SDF is collision data, not a standalone shape type.</strong> For mesh shapes, build and attach
+an SDF explicitly with <code class="docutils literal notranslate"><span class="pre">mesh.build_sdf(...)</span></code> and then pass that mesh to
+<code class="docutils literal notranslate"><span class="pre">builder.add_shape_mesh(...)</span></code>. For primitive hydroelastic workflows, SDF generation uses
+<code class="docutils literal notranslate"><span class="pre">ShapeConfig</span></code> SDF parameters.</p>
 </div>
 </section>
 <section id="shapes-and-rigid-bodies">
@@ -889,7 +889,7 @@ based on efficiency.</p>
 <li><p><strong>Local transform</strong> (<code class="docutils literal notranslate"><span class="pre">shape_transform</span></code>): Position and orientation relative to the body frame.</p></li>
 <li><p><strong>Scale</strong> (<code class="docutils literal notranslate"><span class="pre">shape_scale</span></code>): 3D scale factors applied to the shape geometry.</p></li>
 <li><p><strong>Thickness</strong> (<code class="docutils literal notranslate"><span class="pre">shape_thickness</span></code>): Surface thickness used in contact generation (see <a class="reference internal" href="#shape-configuration"><span class="std std-ref">Shape Configuration</span></a>).</p></li>
-<li><p><strong>Source geometry</strong> (<code class="docutils literal notranslate"><span class="pre">shape_source</span></code>): Reference to the underlying geometry object (e.g., <a class="reference internal" href="../api/_generated/newton.Mesh.html#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>, <a class="reference internal" href="../api/_generated/newton.SDF.html#newton.SDF" title="newton.SDF"><code class="xref py py-class docutils literal notranslate"><span class="pre">SDF</span></code></a>).</p></li>
+<li><p><strong>Source geometry</strong> (<code class="docutils literal notranslate"><span class="pre">shape_source</span></code>): Reference to the underlying geometry object (e.g., <a class="reference internal" href="../api/_generated/newton.Mesh.html#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>).</p></li>
 </ul>
 <p>During collision detection, shapes are transformed to world space using their parent body’s pose:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Shape world transform = body_pose * shape_local_transform</span>
@@ -1287,7 +1287,8 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 <p>Ellipsoid and ConvexMesh are also fully supported. The only unsupported type is <code class="docutils literal notranslate"><span class="pre">HFIELD</span></code> (heightfield) - convert to mesh instead.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p><strong>SDF</strong> in this table refers to shapes with precomputed SDF data (via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code>). SDFs are generated from a shape’s primary geometry and provide O(1) distance queries.</p>
+<p><strong>SDF</strong> in this table refers to shapes with precomputed SDF data. Mesh SDFs are attached
+through <code class="docutils literal notranslate"><span class="pre">mesh.build_sdf(...)</span></code> and provide O(1) distance queries.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -1315,17 +1316,15 @@ UsdPhysics <code class="docutils literal notranslate"><span class="pre">physics:
 <li><p><strong>BVH-based</strong> (default when no SDF configured): Iterates mesh vertices against the other mesh’s BVH.
 Performance scales with triangle count - can be very slow for complex meshes.</p></li>
 <li><p><strong>SDF-based</strong> (recommended): Uses precomputed signed distance fields for fast queries.
-Enable by setting <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code> on shapes.</p></li>
+For mesh shapes, call <code class="docutils literal notranslate"><span class="pre">mesh.build_sdf(...)</span></code> once and reuse the mesh.</p></li>
 </ol>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p>If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
-which are <strong>significantly slower</strong>. For production use with complex meshes, configure SDF
-via <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span>
-    <span class="n">sdf_max_resolution</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>  <span class="c1"># Precompute SDF for fast mesh-mesh collision</span>
-<span class="p">)</span>
-<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_mesh</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">my_mesh</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">cfg</span><span class="p">)</span>
+which are <strong>significantly slower</strong>. For production use with complex meshes, precompute and
+attach SDF data on meshes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">my_mesh</span><span class="o">.</span><span class="n">build_sdf</span><span class="p">(</span><span class="n">max_resolution</span><span class="o">=</span><span class="mi">64</span><span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_shape_mesh</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">my_mesh</span><span class="p">)</span>
 </pre></div>
 </div>
 </div>
@@ -1469,7 +1468,7 @@ geometric area. This provides a floor value so they still generate repulsive for
 <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">=</span> <span class="pre">surface_distance</span> <span class="pre">-</span> <span class="pre">(thickness_a</span> <span class="pre">+</span> <span class="pre">thickness_b)</span></code>. The solver enforces <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">&gt;=</span> <span class="pre">0</span></code>,
 so objects at rest settle with surfaces separated by <code class="docutils literal notranslate"><span class="pre">thickness_a</span> <span class="pre">+</span> <span class="pre">thickness_b</span></code>.</p>
 </div>
-<p><strong>SDF configuration (generates SDF from shape geometry):</strong></p>
+<p><strong>SDF configuration (primitive generation defaults):</strong></p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 30.0%" />
@@ -1482,10 +1481,10 @@ so objects at rest settle with surfaces separated by <code class="docutils liter
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code></p></td>
-<td><p>Maximum SDF grid dimension (must be divisible by 8). Either this or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code> enables SDF.</p></td>
+<td><p>Maximum SDF grid dimension (must be divisible by 8) for primitive SDF generation.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code></p></td>
-<td><p>Target voxel size for SDF. Takes precedence over <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code>.</p></td>
+<td><p>Target voxel size for primitive SDF generation. Takes precedence over <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sdf_narrow_band_range</span></code></p></td>
 <td><p>SDF narrow band distance range (inner, outer). Default: (-0.1, 0.1).</p></td>
@@ -1493,13 +1492,13 @@ so objects at rest settle with surfaces separated by <code class="docutils liter
 </tbody>
 </table>
 </div>
-<p>Example:</p>
+<p>Example (mesh SDF workflow):</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span>
     <span class="n">collision_group</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span>           <span class="c1"># Collide with everything</span>
     <span class="n">thickness</span><span class="o">=</span><span class="mf">0.001</span><span class="p">,</span>              <span class="c1"># 1mm thickness</span>
     <span class="n">contact_margin</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>          <span class="c1"># 1cm margin</span>
-    <span class="n">sdf_max_resolution</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span>        <span class="c1"># Enable SDF for mesh</span>
 <span class="p">)</span>
+<span class="n">my_mesh</span><span class="o">.</span><span class="n">build_sdf</span><span class="p">(</span><span class="n">max_resolution</span><span class="o">=</span><span class="mi">64</span><span class="p">)</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_mesh</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">my_mesh</span><span class="p">,</span> <span class="n">cfg</span><span class="o">=</span><span class="n">cfg</span><span class="p">)</span>
 </pre></div>
 </div>
@@ -1530,7 +1529,7 @@ so objects at rest settle with surfaces separated by <code class="docutils liter
 <span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">kd</span> <span class="o">=</span> <span class="mf">1000.0</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">mu</span> <span class="o">=</span> <span class="mf">0.5</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">is_hydroelastic</span> <span class="o">=</span> <span class="kc">True</span>
-<span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">sdf_max_resolution</span> <span class="o">=</span> <span class="mi">64</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">default_shape_cfg</span><span class="o">.</span><span class="n">sdf_max_resolution</span> <span class="o">=</span> <span class="mi">64</span>  <span class="c1"># Primitive SDF defaults</span>
 </pre></div>
 </div>
 <p><strong>Running collision less frequently</strong></p>
@@ -1701,7 +1700,10 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <p><strong>Requirements:</strong></p>
 <ul class="simple">
 <li><p>Both shapes in a pair must have <code class="docutils literal notranslate"><span class="pre">is_hydroelastic=True</span></code></p></li>
-<li><p>Shapes must have SDF enabled (<code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code>)</p></li>
+<li><p>Shapes must have SDF data available:
+- mesh shapes: call <code class="docutils literal notranslate"><span class="pre">mesh.build_sdf(...)</span></code>
+- primitive shapes: use <code class="docutils literal notranslate"><span class="pre">sdf_max_resolution</span></code> or <code class="docutils literal notranslate"><span class="pre">sdf_target_voxel_size</span></code> in <code class="docutils literal notranslate"><span class="pre">ShapeConfig</span></code></p></li>
+<li><p>For non-unit shape scale, the attached SDF must be scale-baked</p></li>
 <li><p>Only volumetric shapes supported (not planes, heightfields, or non-watertight meshes)</p></li>
 </ul>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">cfg</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">ShapeConfig</span><span class="p">(</span>

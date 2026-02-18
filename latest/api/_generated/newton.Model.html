@@ -2048,6 +2048,36 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.sdf_block_coords">
+<span class="sig-name descname"><span class="pre">sdf_block_coords</span></span><a class="headerlink" href="#newton.Model.sdf_block_coords" title="Link to this definition">#</a></dt>
+<dd><p>Compact flat array of active SDF block coordinates.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.sdf_coarse_volume">
+<span class="sig-name descname"><span class="pre">sdf_coarse_volume</span></span><a class="headerlink" href="#newton.Model.sdf_coarse_volume" title="Link to this definition">#</a></dt>
+<dd><p>Coarse SDF volumes matching sdf_data by index. Kept for reference counting.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.sdf_data">
+<span class="sig-name descname"><span class="pre">sdf_data</span></span><a class="headerlink" href="#newton.Model.sdf_data" title="Link to this definition">#</a></dt>
+<dd><p>Compact array of SDFData structs, shape [num_sdfs].</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.sdf_index2blocks">
+<span class="sig-name descname"><span class="pre">sdf_index2blocks</span></span><a class="headerlink" href="#newton.Model.sdf_index2blocks" title="Link to this definition">#</a></dt>
+<dd><p>Per-SDF [start, end) indices into sdf_block_coords, shape [num_sdfs, 2].</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.sdf_volume">
+<span class="sig-name descname"><span class="pre">sdf_volume</span></span><a class="headerlink" href="#newton.Model.sdf_volume" title="Link to this definition">#</a></dt>
+<dd><p>Sparse SDF volumes matching sdf_data by index. Kept for reference counting.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_body">
 <span class="sig-name descname"><span class="pre">shape_body</span></span><a class="headerlink" href="#newton.Model.shape_body" title="Link to this definition">#</a></dt>
 <dd><p>Rigid shape body index, shape [shape_count], int.</p>
@@ -2176,7 +2206,7 @@ but multiplied by ke as a relative damping factor by VBD.</p>
 <dt class="sig sig-object py" id="newton.Model.shape_material_kh">
 <span class="sig-name descname"><span class="pre">shape_material_kh</span></span><a class="headerlink" href="#newton.Model.shape_material_kh" title="Link to this definition">#</a></dt>
 <dd><p>Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
-Contact stiffness is computed as <code class="docutils literal notranslate"><span class="pre">area</span> <span class="pre">*</span> <span class="pre">k_hydro</span></code>, yielding an effective spring constant [N/m].</p>
+Contact stiffness is computed as <code class="docutils literal notranslate"><span class="pre">area</span> <span class="pre">*</span> <span class="pre">kh</span></code>, yielding an effective spring constant [N/m].</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2210,27 +2240,15 @@ Contact stiffness is computed as <code class="docutils literal notranslate"><spa
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_sdf_coarse_volume">
-<span class="sig-name descname"><span class="pre">shape_sdf_coarse_volume</span></span><a class="headerlink" href="#newton.Model.shape_sdf_coarse_volume" title="Link to this definition">#</a></dt>
-<dd><p>List of coarse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_sdf_data">
-<span class="sig-name descname"><span class="pre">shape_sdf_data</span></span><a class="headerlink" href="#newton.Model.shape_sdf_data" title="Link to this definition">#</a></dt>
-<dd><p>Array of SDFData structs for mesh shapes, shape [shape_count]. Contains sparse and coarse SDF pointers, extents, and voxel sizes. Empty array if there are no colliding meshes.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_sdf_volume">
-<span class="sig-name descname"><span class="pre">shape_sdf_volume</span></span><a class="headerlink" href="#newton.Model.shape_sdf_volume" title="Link to this definition">#</a></dt>
-<dd><p>List of sparse SDF volume references for mesh shapes, shape [shape_count]. None for non-mesh shapes. Empty if there are no colliding meshes. Kept for reference counting.</p>
+<dt class="sig sig-object py" id="newton.Model.shape_sdf_index">
+<span class="sig-name descname"><span class="pre">shape_sdf_index</span></span><a class="headerlink" href="#newton.Model.shape_sdf_index" title="Link to this definition">#</a></dt>
+<dd><p>Per-shape SDF index, shape [shape_count]. -1 means shape has no SDF.</p>
 </dd></dl>
 
 <dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.shape_source">
 <span class="sig-name descname"><span class="pre">shape_source</span></span><a class="headerlink" href="#newton.Model.shape_source" title="Link to this definition">#</a></dt>
-<dd><p>List of source geometry objects (e.g., <a class="reference internal" href="newton.Mesh.html#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>, <a class="reference internal" href="newton.SDF.html#newton.SDF" title="newton.SDF"><code class="xref py py-class docutils literal notranslate"><span class="pre">SDF</span></code></a>) used for rendering and broadphase, shape [shape_count].</p>
+<dd><p>List of source geometry objects (e.g., <a class="reference internal" href="newton.Mesh.html#newton.Mesh" title="newton.Mesh"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mesh</span></code></a>) used for rendering and broadphase, shape [shape_count].</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2633,6 +2651,11 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.particle_world_start"><code class="docutils literal notranslate"><span class="pre">Model.particle_world_start</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.requires_grad"><code class="docutils literal notranslate"><span class="pre">Model.requires_grad</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.rigid_contact_max"><code class="docutils literal notranslate"><span class="pre">Model.rigid_contact_max</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.sdf_block_coords"><code class="docutils literal notranslate"><span class="pre">Model.sdf_block_coords</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.sdf_coarse_volume"><code class="docutils literal notranslate"><span class="pre">Model.sdf_coarse_volume</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.sdf_data"><code class="docutils literal notranslate"><span class="pre">Model.sdf_data</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.sdf_index2blocks"><code class="docutils literal notranslate"><span class="pre">Model.sdf_index2blocks</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.sdf_volume"><code class="docutils literal notranslate"><span class="pre">Model.sdf_volume</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_body"><code class="docutils literal notranslate"><span class="pre">Model.shape_body</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_aabb_lower"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_aabb_lower</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_collision_aabb_upper"><code class="docutils literal notranslate"><span class="pre">Model.shape_collision_aabb_upper</span></code></a></li>
@@ -2658,9 +2681,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_mu_torsional"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_mu_torsional</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_restitution"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_restitution</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_scale"><code class="docutils literal notranslate"><span class="pre">Model.shape_scale</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_sdf_coarse_volume"><code class="docutils literal notranslate"><span class="pre">Model.shape_sdf_coarse_volume</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_sdf_data"><code class="docutils literal notranslate"><span class="pre">Model.shape_sdf_data</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_sdf_volume"><code class="docutils literal notranslate"><span class="pre">Model.shape_sdf_volume</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_sdf_index"><code class="docutils literal notranslate"><span class="pre">Model.shape_sdf_index</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_source"><code class="docutils literal notranslate"><span class="pre">Model.shape_source</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_source_ptr"><code class="docutils literal notranslate"><span class="pre">Model.shape_source_ptr</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_thickness"><code class="docutils literal notranslate"><span class="pre">Model.shape_thickness</span></code></a></li>

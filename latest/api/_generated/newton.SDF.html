@@ -59,7 +59,7 @@
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="newton.ShapeFlags" href="newton.ShapeFlags.html" />
-    <link rel="prev" title="newton.SAPSortType" href="newton.SAPSortType.html" />
+    <link rel="prev" title="newton.ParticleFlags" href="newton.ParticleFlags.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -808,41 +808,112 @@
 <h1>newton.SDF<a class="headerlink" href="#newton-sdf" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.SDF">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">SDF</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mass</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">com</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/types.py#L89"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.SDF" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">SDF</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">data</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sparse_volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">coarse_volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">block_coords</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_internal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/geometry/sdf_utils.py#L55"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.SDF" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
-<p>Represents a signed distance field (SDF) for simulation.</p>
-<p>An SDF is a volumetric representation of a shape, where each point in the volume
-stores the signed distance to the closest surface. This class encapsulates the
-SDF volume and its physical properties for use in simulation.</p>
+<p>Opaque SDF container owning kernel payload and runtime references.</p>
 <dl class="field-list simple">
 </dl>
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.SDF.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mass</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">com</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.__init__" title="Link to this definition">#</a></dt>
-<dd><p>Initialize an SDF object.</p>
+<dt class="sig sig-object py" id="newton.SDF.create_from_data">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_from_data</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">sparse_volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">coarse_volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">block_coords</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">center</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">half_extents</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">background_value</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">MAXVAL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale_baked</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.create_from_data" title="Link to this definition">#</a></dt>
+<dd><p>Create an SDF from precomputed runtime resources.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.SDF.create_from_mesh">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_from_mesh</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">mesh</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">narrow_band_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-0.1,</span> <span class="pre">0.1)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target_voxel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_resolution</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">thickness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.create_from_mesh" title="Link to this definition">#</a></dt>
+<dd><p>Create an SDF from a mesh in local mesh coordinates.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>volume</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.Volume.html#warp.Volume" title="(in Warp v1.11.1)"><em>Volume</em></a><em> | </em><em>None</em>) – The Warp volume object representing the SDF.</p></li>
-<li><p><strong>inertia</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.mat33f.html#warp.mat33f" title="(in Warp v1.11.1)"><em>mat33f</em></a><em> | </em><em>None</em>) – 3x3 inertia matrix. Defaults to identity.</p></li>
-<li><p><strong>mass</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Total mass. Defaults to 1.0.</p></li>
-<li><p><strong>com</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.vec3f.html#warp.vec3f" title="(in Warp v1.11.1)"><em>vec3f</em></a><em> | </em><em>None</em>) – Center of mass. Defaults to zero vector.</p></li>
+<li><p><strong>mesh</strong> (<a class="reference internal" href="newton.Mesh.html#newton.Mesh" title="newton._src.geometry.types.Mesh"><em>Mesh</em></a>) – Source mesh geometry.</p></li>
+<li><p><strong>narrow_band_range</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>]</em>) – Signed narrow-band distance range [m] as
+<code class="docutils literal notranslate"><span class="pre">(inner,</span> <span class="pre">outer)</span></code>.</p></li>
+<li><p><strong>target_voxel_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Target sparse-grid voxel size [m]. If provided,
+takes precedence over <code class="docutils literal notranslate"><span class="pre">max_resolution</span></code>.</p></li>
+<li><p><strong>max_resolution</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum sparse-grid dimension [voxel]. Used when
+<code class="docutils literal notranslate"><span class="pre">target_voxel_size</span></code> is not provided.</p></li>
+<li><p><strong>margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Extra AABB padding [m] added before discretization.</p></li>
+<li><p><strong>thickness</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Thickness offset [m] to subtract from SDF values. When
+non-zero, the SDF surface is effectively shrunk inward by this
+amount. Useful for modeling compliant layers in hydroelastic
+collision. Defaults to <code class="docutils literal notranslate"><span class="pre">0.0</span></code> (no offset, thickness applied
+at runtime).</p></li>
+<li><p><strong>scale</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Scale factors <code class="docutils literal notranslate"><span class="pre">(sx,</span> <span class="pre">sy,</span> <span class="pre">sz)</span></code> [unitless] to bake into the
+SDF. When provided, mesh vertices are scaled before SDF
+generation and <code class="docutils literal notranslate"><span class="pre">scale_baked</span></code> is set to <code class="docutils literal notranslate"><span class="pre">True</span></code> in the
+resulting SDF. Required for hydroelastic collision with
+non-unit shape scale. Defaults to <code class="docutils literal notranslate"><span class="pre">None</span></code> (no scale baking;
+scale applied at runtime).</p></li>
 </ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A validated <a class="reference internal" href="#newton.SDF" title="newton.SDF"><code class="xref py py-class docutils literal notranslate"><span class="pre">SDF</span></code></a> runtime handle with sparse/coarse volumes.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.SDF" title="newton._src.geometry.sdf_utils.SDF"><em>SDF</em></a></p>
 </dd>
 </dl>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.SDF.finalize">
-<span class="sig-name descname"><span class="pre">finalize</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.finalize" title="Link to this definition">#</a></dt>
-<dd><p>Returns the ID of the underlying SDF volume.</p>
+<dt class="sig sig-object py" id="newton.SDF.create_from_points">
+<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_from_points</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">points</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">indices</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">narrow_band_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-0.1,</span> <span class="pre">0.1)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target_voxel_size</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_resolution</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.05</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">thickness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.create_from_points" title="Link to this definition">#</a></dt>
+<dd><p>Create an SDF from triangle mesh points and indices.</p>
 <dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p>The unique identifier of the SDF volume.</p>
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>points</strong> (<a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.4)"><em>ndarray</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a><em>, </em><a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.dtype.html#numpy.dtype" title="(in NumPy v2.4)"><em>dtype</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a><em>]</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.14)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.14)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>]</em><em>]</em>) – Vertex positions [m], shape <code class="docutils literal notranslate"><span class="pre">(N,</span> <span class="pre">3)</span></code>.</p></li>
+<li><p><strong>indices</strong> (<a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.ndarray.html#numpy.ndarray" title="(in NumPy v2.4)"><em>ndarray</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a><em>, </em><a class="reference external" href="https://numpy.org/doc/stable/reference/generated/numpy.dtype.html#numpy.dtype" title="(in NumPy v2.4)"><em>dtype</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a><em>]</em><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.14)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – Triangle vertex indices [index], flattened or shape <code class="docutils literal notranslate"><span class="pre">(M,</span> <span class="pre">3)</span></code>.</p></li>
+<li><p><strong>narrow_band_range</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>]</em>) – Signed narrow-band distance range [m] as <code class="docutils literal notranslate"><span class="pre">(inner,</span> <span class="pre">outer)</span></code>.</p></li>
+<li><p><strong>target_voxel_size</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Target sparse-grid voxel size [m]. If provided, takes
+precedence over <code class="docutils literal notranslate"><span class="pre">max_resolution</span></code>.</p></li>
+<li><p><strong>max_resolution</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum sparse-grid dimension [voxel]. Used when
+<code class="docutils literal notranslate"><span class="pre">target_voxel_size</span></code> is not provided.</p></li>
+<li><p><strong>margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Extra AABB padding [m] added before discretization.</p></li>
+<li><p><strong>thickness</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Thickness offset [m] to subtract from SDF values.</p></li>
+<li><p><strong>scale</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Scale factors <code class="docutils literal notranslate"><span class="pre">(sx,</span> <span class="pre">sy,</span> <span class="pre">sz)</span></code> to bake into the SDF.</p></li>
+</ul>
 </dd>
-<dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.uint64.html#warp.uint64" title="(in Warp v1.11.1)"><em>uint64</em></a></p>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A validated <a class="reference internal" href="#newton.SDF" title="newton.SDF"><code class="xref py py-class docutils literal notranslate"><span class="pre">SDF</span></code></a> runtime handle with sparse/coarse volumes.</p>
 </dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.SDF" title="newton._src.geometry.sdf_utils.SDF"><em>SDF</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.SDF.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">data</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sparse_volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">coarse_volume</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">block_coords</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">_internal</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.SDF.is_empty">
+<span class="sig-name descname"><span class="pre">is_empty</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.is_empty" title="Link to this definition">#</a></dt>
+<dd><p>Return True when this SDF has no sparse/coarse payload.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.SDF.to_kernel_data">
+<span class="sig-name descname"><span class="pre">to_kernel_data</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.to_kernel_data" title="Link to this definition">#</a></dt>
+<dd><p>Return kernel-facing SDF payload.</p>
+<dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.SDF.validate">
+<span class="sig-name descname"><span class="pre">validate</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.SDF.validate" title="Link to this definition">#</a></dt>
+<dd><p>Validate consistency of kernel pointers and owned volumes.</p>
+<dl class="field-list simple">
 </dl>
 </dd></dl>
 
@@ -874,8 +945,13 @@ SDF volume and its physical properties for use in simulation.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF"><code class="docutils literal notranslate"><span class="pre">SDF</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF.create_from_data"><code class="docutils literal notranslate"><span class="pre">SDF.create_from_data()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF.create_from_mesh"><code class="docutils literal notranslate"><span class="pre">SDF.create_from_mesh()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF.create_from_points"><code class="docutils literal notranslate"><span class="pre">SDF.create_from_points()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF.__init__"><code class="docutils literal notranslate"><span class="pre">SDF.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF.finalize"><code class="docutils literal notranslate"><span class="pre">SDF.finalize()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF.is_empty"><code class="docutils literal notranslate"><span class="pre">SDF.is_empty()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF.to_kernel_data"><code class="docutils literal notranslate"><span class="pre">SDF.to_kernel_data()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.SDF.validate"><code class="docutils literal notranslate"><span class="pre">SDF.validate()</span></code></a></li>
 </ul>
 </li>
 </ul>
