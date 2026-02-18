@@ -268,6 +268,7 @@ class TestSelection(unittest.TestCase):
     <worldbody>
     <!-- Root body (fixed to world) -->
     <body name="root" pos="0 0 0">
+        <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
 
       <!-- First child link with prismatic joint along x -->
       <body name="link1" pos="0.0 -0.5 0">
@@ -299,7 +300,7 @@ class TestSelection(unittest.TestCase):
         # Create a single articulation with 3 joints.
         single_articuation_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(single_articuation_builder)
-        single_articuation_builder.add_mjcf(mjcf)
+        single_articuation_builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
 
         # Create a world with 2 articulations
         single_world_builder = newton.ModelBuilder()
@@ -671,7 +672,9 @@ class TestSelection(unittest.TestCase):
     <worldbody>
     <!-- Root body (fixed to world) -->
     <body name="root" pos="0 0 0">
-      <!-- First child link with prismatic joint along x -->
+       <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+
+          <!-- First child link with prismatic joint along x -->
       <body name="link1" pos="0.0 -0.5 0">
         <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
@@ -700,7 +703,7 @@ class TestSelection(unittest.TestCase):
         # Create a single articulation
         single_articulation_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(single_articulation_builder)
-        single_articulation_builder.add_mjcf(mjcf)
+        single_articulation_builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
 
         # Create a world with 2 articulations
         single_world_builder = newton.ModelBuilder()
@@ -758,30 +761,30 @@ class TestSelection(unittest.TestCase):
         if use_mask:
             if use_multiple_artics_per_view:
                 expected_body_masses = [
-                    0.01,  # world0/artic0
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world0/artic1
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world1/artic0
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world1/artic1
-                    7.01,
-                    8.01,
-                    0.01,
-                    0.01,  # world2/artic0
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world2/artic1
-                    0.01,
-                    0.01,
-                    0.01,
+                    1.0,  # world0/artic0
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world0/artic1
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world1/artic0
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world1/artic1
+                    8.0,
+                    9.0,
+                    1.0,
+                    1.0,  # world2/artic0
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world2/artic1
+                    1.0,
+                    1.0,
+                    1.0,
                 ]
                 expected_body_vels = [
                     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
@@ -811,30 +814,30 @@ class TestSelection(unittest.TestCase):
                 ]
             else:
                 expected_body_masses = [
-                    0.01,  # world0/artic0
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world0/artic1
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world1/artic0
-                    3.01,
-                    4.01,
-                    0.01,
-                    0.01,  # world1/artic1
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world2/artic0
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world2/artic1
-                    0.01,
-                    0.01,
-                    0.01,
+                    1.0,  # world0/artic0
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world0/artic1
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world1/artic0
+                    4.0,
+                    5.0,
+                    1.0,
+                    1.0,  # world1/artic1
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world2/artic0
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world2/artic1
+                    1.0,
+                    1.0,
+                    1.0,
                 ]
                 expected_body_vels = [
                     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
@@ -865,30 +868,30 @@ class TestSelection(unittest.TestCase):
         else:
             if use_multiple_artics_per_view:
                 expected_body_masses = [
-                    0.01,  # world0/artic0
-                    1.01,
-                    2.01,
-                    0.01,
-                    0.01,  # world0/artic1
-                    3.01,
-                    4.01,
-                    0.01,
-                    0.01,  # world1/artic0
-                    5.01,
-                    6.01,
-                    0.01,
-                    0.01,  # world1/artic1
-                    7.01,
-                    8.01,
-                    0.01,
-                    0.01,  # world2/artic0
-                    9.01,
-                    10.01,
-                    0.01,
-                    0.01,  # world2/artic1
-                    11.01,
-                    12.01,
-                    0.01,
+                    1.0,  # world0/artic0
+                    2.0,
+                    3.0,
+                    1.0,
+                    1.0,  # world0/artic1
+                    4.0,
+                    5.0,
+                    1.0,
+                    1.0,  # world1/artic0
+                    6.0,
+                    7.0,
+                    1.0,
+                    1.0,  # world1/artic1
+                    8.0,
+                    9.0,
+                    1.0,
+                    1.0,  # world2/artic0
+                    10.0,
+                    11.0,
+                    1.0,
+                    1.0,  # world2/artic1
+                    12.0,
+                    13.0,
+                    1.0,
                 ]
                 expected_body_vels = [
                     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
@@ -918,30 +921,30 @@ class TestSelection(unittest.TestCase):
                 ]
             else:
                 expected_body_masses = [
-                    0.01,  # world0/artic0
-                    1.01,
-                    2.01,
-                    0.01,
-                    0.01,  # world0/artic1
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world1/artic0
-                    3.01,
-                    4.01,
-                    0.01,
-                    0.01,  # world1/artic1
-                    0.01,
-                    0.01,
-                    0.01,
-                    0.01,  # world2/artic0
-                    5.01,
-                    6.01,
-                    0.01,
-                    0.01,  # world2/artic1
-                    0.01,
-                    0.01,
-                    0.01,
+                    1.0,  # world0/artic0
+                    2.0,
+                    3.0,
+                    1.0,
+                    1.0,  # world0/artic1
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world1/artic0
+                    4.0,
+                    5.0,
+                    1.0,
+                    1.0,  # world1/artic1
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,  # world2/artic0
+                    6.0,
+                    7.0,
+                    1.0,
+                    1.0,  # world2/artic1
+                    1.0,
+                    1.0,
+                    1.0,
                 ]
                 expected_body_vels = [
                     [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],  # world0/artic0/root
