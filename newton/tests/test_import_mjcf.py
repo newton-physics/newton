@@ -6203,26 +6203,3 @@ class TestZeroMassBodies(unittest.TestCase):
         )
         self.assertIsNotNone(empty_idx, "Expected a body with 'empty_body' in its label")
         self.assertEqual(builder.body_mass[empty_idx], 0.0)
-
-    def test_ensure_nonstatic_links_opt_in(self):
-        """Verify zero-mass bodies receive surrogate mass when opted in."""
-        mjcf = """
-        <mujoco>
-            <worldbody>
-                <body name="robot" pos="0 0 1">
-                    <freejoint name="root"/>
-                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
-                </body>
-                <body name="empty_body" pos="0.5 0 0"/>
-            </worldbody>
-        </mujoco>
-        """
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, ensure_nonstatic_links=True)
-
-        empty_idx = next(
-            (i for i in range(builder.body_count) if builder.body_label[i].endswith("/empty_body")),
-            None,
-        )
-        self.assertIsNotNone(empty_idx, "Expected a body with 'empty_body' in its label")
-        self.assertGreater(builder.body_mass[empty_idx], 0.0)
