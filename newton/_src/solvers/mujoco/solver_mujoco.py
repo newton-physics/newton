@@ -2926,6 +2926,7 @@ class SolverMuJoCo(SolverBase):
         shape_type = model.shape_type.numpy()
         shape_size = model.shape_scale.numpy()
         shape_flags = model.shape_flags.numpy()
+        shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
         shape_ke = model.shape_material_ke.numpy()
@@ -3187,8 +3188,9 @@ class SolverMuJoCo(SolverBase):
                     geom_params["rgba"] = [0.0, 0.3, 0.6, 1.0]
 
                 # encode collision filtering information
-                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
-                    # this shape is not colliding with anything
+                if not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) or shape_collision_group[shape] == 0:
+                    # Non-colliding shape, or collision_group=0 (e.g. MJCF contype=conaffinity=0
+                    # geoms that only participate in explicit <pair> contacts)
                     geom_params["contype"] = 0
                     geom_params["conaffinity"] = 0
                 else:

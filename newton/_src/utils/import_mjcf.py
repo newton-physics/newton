@@ -590,6 +590,13 @@ def parse_mjcf(
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
 
+            # Respect MJCF contype/conaffinity=0: disable automatic broadphase contacts
+            # while keeping the shape as a collider for explicit <pair> contacts.
+            contype = int(geom_attrib.get("contype", 1))
+            conaffinity = int(geom_attrib.get("conaffinity", 1))
+            if contype == 0 and conaffinity == 0 and not just_visual:
+                shape_cfg.collision_group = 0
+
             # Parse MJCF friction: "slide [torsion [roll]]"
             # Can't use parse_vec - it would replicate single values to all dimensions
             if "friction" in geom_attrib:

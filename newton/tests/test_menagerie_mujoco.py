@@ -1476,6 +1476,7 @@ MODEL_BACKFILL_FIELDS: list[str] = [
     "body_inertia",
     "body_iquat",
     "body_invweight0",
+    "dof_invweight0",
     "body_pos",
     "body_quat",
     "actuator_acc0",
@@ -2793,6 +2794,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
 
     robot_folder = "apptronik_apollo"
     backfill_model = True
+    use_split_pipeline = True
     discard_visual = False
     parse_visuals = True
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
