@@ -44,6 +44,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from newton._src.core.types import MAXVAL
@@ -64,6 +65,29 @@ from .sdf_utils import SDFData
 from .utils import scan_with_total
 
 vec8f = wp.types.vector(length=8, dtype=wp.float32)
+
+
+@wp.kernel
+def map_shape_sdf_data_kernel(
+    sdf_data: wp.array(dtype=SDFData),
+    shape_sdf_index: wp.array(dtype=wp.int32),
+    out_shape_sdf_data: wp.array(dtype=SDFData),
+):
+    """Map compact SDF table entries to per-shape SDFData."""
+    shape_idx = wp.tid()
+    sdf_idx = shape_sdf_index[shape_idx]
+    if sdf_idx < 0:
+        out_shape_sdf_data[shape_idx].sparse_sdf_ptr = wp.uint64(0)
+        out_shape_sdf_data[shape_idx].sparse_voxel_size = wp.vec3(0.0, 0.0, 0.0)
+        out_shape_sdf_data[shape_idx].sparse_voxel_radius = 0.0
+        out_shape_sdf_data[shape_idx].coarse_sdf_ptr = wp.uint64(0)
+        out_shape_sdf_data[shape_idx].coarse_voxel_size = wp.vec3(0.0, 0.0, 0.0)
+        out_shape_sdf_data[shape_idx].center = wp.vec3(0.0, 0.0, 0.0)
+        out_shape_sdf_data[shape_idx].half_extents = wp.vec3(0.0, 0.0, 0.0)
+        out_shape_sdf_data[shape_idx].background_value = MAXVAL
+        out_shape_sdf_data[shape_idx].scale_baked = False
+    else:
+        out_shape_sdf_data[shape_idx] = sdf_data[sdf_idx]
 
 
 @wp.func
@@ -321,7 +345,10 @@ class HydroelasticSDF:
         if num_hydroelastic_pairs == 0:
             return None
 
-        shape_sdf_shape2blocks = model.shape_sdf_shape2blocks.numpy()
+        shape_sdf_index = model.shape_sdf_index.numpy()
+        sdf_index2blocks = model.sdf_index2blocks.numpy()
+        sdf_data = model.sdf_data.numpy()
+        shape_scale = model.shape_scale.numpy()
 
         # Get indices of shapes that can collide and are hydroelastic
         hydroelastic_indices = [
@@ -330,15 +357,26 @@ class HydroelasticSDF:
             if (shape_flags[i] & ShapeFlags.COLLIDE_SHAPES) and (shape_flags[i] & ShapeFlags.HYDROELASTIC)
         ]
 
-        # Verify all hydroelastic shapes have scale baked into their SDF
-        shape_sdf_data = model.shape_sdf_data.numpy()
         for idx in hydroelastic_indices:
-            if not shape_sdf_data[idx]["scale_baked"]:
-                raise ValueError(f"Hydroelastic shape {idx} does not have scale baked into its SDF.")
+            sdf_idx = shape_sdf_index[idx]
+            if sdf_idx < 0:
+                raise ValueError(f"Hydroelastic shape {idx} requires SDF data but has no attached/generated SDF.")
+            if not sdf_data[sdf_idx]["scale_baked"]:
+                sx, sy, sz = shape_scale[idx]
+                if not (np.isclose(sx, 1.0) and np.isclose(sy, 1.0) and np.isclose(sz, 1.0)):
+                    raise ValueError(
+                        f"Hydroelastic shape {idx} uses non-unit scale but its SDF is not scale-baked. "
+                        "Build a scale-baked SDF for hydroelastic use."
+                    )
 
         # Count total tiles and max blocks per shape for hydroelastic shapes
         total_num_tiles = 0
         max_num_blocks_per_shape = 0
+        shape_sdf_shape2blocks = np.zeros((model.shape_count, 2), dtype=np.int32)
+        for shape_idx in range(model.shape_count):
+            sdf_idx = shape_sdf_index[shape_idx]
+            if sdf_idx >= 0:
+                shape_sdf_shape2blocks[shape_idx] = sdf_index2blocks[sdf_idx]
         for idx in hydroelastic_indices:
             start_block, end_block = shape_sdf_shape2blocks[idx]
             num_blocks = end_block - start_block
@@ -349,8 +387,8 @@ class HydroelasticSDF:
             num_shape_pairs=num_hydroelastic_pairs,
             total_num_tiles=total_num_tiles,
             max_num_blocks_per_shape=max_num_blocks_per_shape,
-            shape_sdf_block_coords=model.shape_sdf_block_coords,
-            shape_sdf_shape2blocks=model.shape_sdf_shape2blocks,
+            shape_sdf_block_coords=model.sdf_block_coords,
+            shape_sdf_shape2blocks=wp.array(shape_sdf_shape2blocks, dtype=wp.vec2i, device=model.device),
             shape_material_kh=model.shape_material_kh,
             n_shapes=model.shape_count,
             config=config,
@@ -387,7 +425,8 @@ class HydroelasticSDF:
 
     def launch(
         self,
-        shape_sdf_data: wp.array(dtype=SDFData),
+        sdf_data: wp.array(dtype=SDFData),
+        shape_sdf_index: wp.array(dtype=wp.int32),
         shape_transform: wp.array(dtype=wp.transform),
         shape_contact_margin: wp.array(dtype=wp.float32),
         shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
@@ -400,7 +439,8 @@ class HydroelasticSDF:
         """Run the full hydroelastic collision pipeline.
 
         Args:
-            shape_sdf_data: SDF data for each shape.
+            sdf_data: Compact SDF table.
+            shape_sdf_index: Per-shape SDF index into sdf_data.
             shape_transform: World transforms for each shape.
             shape_contact_margin: Contact margin for each shape.
             shape_collision_aabb_lower: Per-shape collision AABB lower bounds.
@@ -410,6 +450,15 @@ class HydroelasticSDF:
             shape_pairs_sdf_sdf_count: Number of valid shape pairs.
             writer_data: Contact data writer for output.
         """
+        shape_sdf_data = wp.empty(shape=(shape_sdf_index.shape[0],), dtype=SDFData, device=self.device)
+        wp.launch(
+            kernel=map_shape_sdf_data_kernel,
+            dim=shape_sdf_index.shape[0],
+            inputs=[sdf_data, shape_sdf_index],
+            outputs=[shape_sdf_data],
+            device=self.device,
+        )
+
         self._broadphase_sdfs(
             shape_sdf_data,
             shape_transform,

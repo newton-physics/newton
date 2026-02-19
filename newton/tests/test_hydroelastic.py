@@ -99,14 +99,30 @@ def build_stacked_cubes_scene(
     narrow_band = cube_half * 0.2
     contact_margin = cube_half * 0.2
 
+    if cube_mesh is not None:
+        cube_mesh.build_sdf(
+            max_resolution=32,
+            narrow_band_range=(-narrow_band, narrow_band),
+            margin=contact_margin,
+        )
+
     builder = newton.ModelBuilder()
-    builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-        mu=0.5,
-        sdf_max_resolution=32,
-        is_hydroelastic=True,
-        sdf_narrow_band_range=(-narrow_band, narrow_band),
-        contact_margin=contact_margin,
-    )
+    if shape_type == ShapeType.PRIMITIVE:
+        builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
+            mu=0.5,
+            sdf_max_resolution=32,
+            is_hydroelastic=True,
+            sdf_narrow_band_range=(-narrow_band, narrow_band),
+            contact_margin=contact_margin,
+        )
+    else:
+        builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
+            mu=0.5,
+            is_hydroelastic=True,
+            contact_margin=contact_margin,
+        )
 
     builder.add_ground_plane()
 
@@ -277,6 +293,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         I_m_upper = wp.mat33(inertia_upper, 0.0, 0.0, 0.0, inertia_upper, 0.0, 0.0, 0.0, inertia_upper)
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.1, 0.1),
@@ -341,7 +358,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     sdf_config = HydroelasticSDF.Config(output_contact_surface=True)
     collision_pipeline = newton.CollisionPipeline(
         model,
-        broad_phase_mode="explicit",
+        broad_phase="explicit",
         sdf_hydroelastic_config=sdf_config,
     )
     # Enable contact surface output for this test (validates penetration depth)
@@ -353,19 +370,19 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     substeps = 10
     sim_time = 3.0
     num_frames = int(sim_time / sim_dt)
+    total_steps = num_frames * substeps
 
-    for _ in range(num_frames):
-        for _ in range(substeps):
-            state_0.clear_forces()
-            # Apply external force to upper boxes
-            forces = np.zeros(model.body_count * 6, dtype=np.float32)
-            for body_idx in upper_body_indices:
-                forces[body_idx * 6 + 2] = -external_force
-            state_0.body_f.assign(forces)
+    # Pre-compute forces as a Warp array
+    forces_np = np.zeros(model.body_count * 6, dtype=np.float32)
+    for body_idx in upper_body_indices:
+        forces_np[body_idx * 6 + 2] = -external_force
+    precomputed_forces = wp.array(forces_np.reshape(model.body_count, 6), dtype=wp.spatial_vector, device=device)
 
-            collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
-            state_0, state_1 = state_1, state_0
+    for _ in range(total_steps):
+        wp.copy(state_0.body_f, precomputed_forces)
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
+        state_0, state_1 = state_1, state_0
 
     # Check that upper cubes are near their original positions
     body_q = state_0.body_q.numpy()

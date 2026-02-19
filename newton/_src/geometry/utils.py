@@ -25,7 +25,6 @@ import warp as wp
 from ..core.types import Vec3, nparray
 from .inertia import compute_mesh_inertia
 from .types import (
-    SDF,
     GeoType,
     Heightfield,
     Mesh,
@@ -83,7 +82,7 @@ def compute_obb_candidates(
     transforms[angle_idx, axis_idx] = wp.transform(world_center, wp.quat_inverse(quat))
 
 
-def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | Heightfield | None) -> float:
+def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | None) -> float:
     """
     Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
     """

@@ -155,8 +155,6 @@ def parse_mjcf(
     force_show_colliders: bool = False,
     enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = False,
-    ensure_nonstatic_links: bool = False,
-    static_link_mass: float = 1e-2,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
@@ -256,8 +254,6 @@ def parse_mjcf(
         force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
         enable_self_collisions (bool): If True, self-collisions are enabled.
         ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
-        ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-        static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
@@ -599,6 +595,10 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
+            # Parse MJCF margin for collision thickness (only if explicitly specified)
+            if "margin" in geom_attrib:
+                shape_cfg.thickness = float(geom_attrib["margin"]) * scale
+
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
                 "key": geom_name,
@@ -680,10 +680,17 @@ def parse_mjcf(
                         if verbose:
                             print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
                         m_mesh.texture = None
+                    # Mesh shapes must not use cfg.sdf_*; SDFs are built on the mesh itself.
+                    mesh_shape_kwargs = dict(shape_kwargs)
+                    mesh_cfg = shape_cfg.copy()
+                    mesh_cfg.sdf_max_resolution = None
+                    mesh_cfg.sdf_target_voxel_size = None
+                    mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
+                    mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
-                        **shape_kwargs,
+                        **mesh_shape_kwargs,
                     )
                     shapes.append(s)
 
@@ -1448,16 +1455,6 @@ def parse_mjcf(
                 builder.body_inv_inertia[link] = wp.inverse(I_m)
             else:
                 builder.body_inv_inertia[link] = I_m
-        if m == 0.0 and ensure_nonstatic_links:
-            # set the mass to something nonzero to ensure the body is dynamic
-            m = static_link_mass
-            # cube with side length 0.5
-            I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(builder.default_body_armature * np.eye(3))
-            builder.body_mass[link] = m
-            builder.body_inv_mass[link] = 1.0 / m
-            builder.body_inertia[link] = I_m
-            builder.body_inv_inertia[link] = wp.inverse(I_m)
 
         # -----------------
         # recurse
