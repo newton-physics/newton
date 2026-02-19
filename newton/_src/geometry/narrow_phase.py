@@ -116,11 +116,10 @@ def write_contact_simple(
         if d >= contact_data.margin:
             return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
-        if index >= writer_data.contact_max:
-            wp.atomic_add(writer_data.contact_count, 0, -1)
-            return
     else:
         index = output_index
+    if index >= writer_data.contact_max:
+        return
 
     writer_data.contact_pair[index] = wp.vec2i(contact_data.shape_a, contact_data.shape_b)
     writer_data.contact_position[index] = contact_data.contact_point_center
@@ -546,11 +545,10 @@ def create_narrow_phase_primitive_kernel(writer_func: Any):
                 num_valid = int(contact_0_valid) + int(contact_1_valid) + int(contact_2_valid) + int(contact_3_valid)
                 if num_valid > 0:
                     base_index = wp.atomic_add(writer_data.contact_count, 0, num_valid)
-
-                    # Bounds check: ensure we don't overflow the contact buffer
+                    # Do not invoke the writer callback for overflowing batches.
+                    # This keeps user-provided writers safe while still preserving
+                    # overflow visibility via contact_count > contact_max.
                     if base_index + num_valid > writer_data.contact_max:
-                        # Rollback the allocation
-                        wp.atomic_add(writer_data.contact_count, 0, -num_valid)
                         continue
 
                     # Write first contact if valid
@@ -1029,7 +1027,8 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                     contact_data.shape_b = plane_shape
                     contact_data.margin = margin
 
-                    writer_func(contact_data, writer_data, -1)
+                    if writer_data.contact_count[0] < writer_data.contact_max:
+                        writer_func(contact_data, writer_data, -1)
 
     # Return early if contact reduction is disabled
     if contact_reduction_funcs is None:
@@ -1207,7 +1206,8 @@ def create_narrow_phase_process_mesh_plane_contacts_kernel(
                 contact_data.shape_b = plane_shape
                 contact_data.margin = margin
 
-                writer_func(contact_data, writer_data, -1)
+                if writer_data.contact_count[0] < writer_data.contact_max:
+                    writer_func(contact_data, writer_data, -1)
 
             # Ensure all threads complete before processing next pair
             synchronize()

@@ -113,11 +113,6 @@ def write_contact(
         if d > contact_margin:
             return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
-        if index >= writer_data.contact_max:
-            # Reached buffer limit
-            wp.atomic_add(writer_data.contact_count, 0, -1)
-            return
-
     if index >= writer_data.contact_max:
         return
 
@@ -416,10 +411,10 @@ class CollisionPipeline:
             model (Model): The simulation model.
             reduce_contacts (bool, optional): Whether to reduce contacts for mesh-mesh collisions. Defaults to True.
             rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
-                If None, estimated based on broad phase mode:
-                - EXPLICIT: len(shape_pairs_filtered) * 10 contacts
-                - NXN/SAP: shape_count * 20 contacts (assumes ~20 contacts per shape)
-                For better memory efficiency, use rigid_contact_max computed from actual collision pairs.
+                Resolution order:
+                - If provided, use this value.
+                - Else if ``model.rigid_contact_max > 0``, use the model value.
+                - Else estimate automatically from model shape and pair metadata.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
@@ -447,10 +442,17 @@ class CollisionPipeline:
         particle_count = model.particle_count
         device = model.device
 
-        # Estimate rigid_contact_max for collision pipeline (accounts for contact reduction)
+        # Resolve rigid contact capacity with explicit > model > estimated precedence.
         if rigid_contact_max is None:
-            rigid_contact_max = _estimate_rigid_contact_max(model)
-        self.rigid_contact_max = rigid_contact_max
+            model_rigid_contact_max = int(getattr(model, "rigid_contact_max", 0) or 0)
+            if model_rigid_contact_max > 0:
+                rigid_contact_max = model_rigid_contact_max
+            else:
+                rigid_contact_max = _estimate_rigid_contact_max(model)
+        self._rigid_contact_max = rigid_contact_max
+        # Keep model-level default in sync with the resolved pipeline capacity.
+        # This avoids divergence between model- and contacts-based users (e.g. VBD init).
+        model.rigid_contact_max = rigid_contact_max
         if requires_grad is None:
             requires_grad = model.requires_grad
 
@@ -603,8 +605,18 @@ class CollisionPipeline:
         if soft_contact_max is None:
             soft_contact_max = shape_count * particle_count
         self.soft_contact_margin = soft_contact_margin
-        self.soft_contact_max = soft_contact_max
+        self._soft_contact_max = soft_contact_max
         self.requires_grad = requires_grad
+
+    @property
+    def rigid_contact_max(self) -> int:
+        """Maximum rigid contact buffer capacity used by this pipeline."""
+        return self._rigid_contact_max
+
+    @property
+    def soft_contact_max(self) -> int:
+        """Maximum soft contact buffer capacity used by this pipeline."""
+        return self._soft_contact_max
 
     def contacts(self) -> Contacts:
         """
