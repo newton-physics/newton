@@ -959,24 +959,6 @@ Setting them excessively large may increase memory usage and degrade performance
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverVBD.compute_rigid_force_element_adjacency">
-<span class="sig-name descname"><span class="pre">compute_rigid_force_element_adjacency</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.compute_rigid_force_element_adjacency" title="Link to this definition">#</a></dt>
-<dd><p>Build CSR adjacency between rigid bodies and joints.</p>
-<dl class="simple">
-<dt>Returns an instance of RigidForceElementAdjacencyInfo with:</dt><dd><ul class="simple">
-<li><p>body_adj_joints: flattened joint ids</p></li>
-<li><p>body_adj_joints_offsets: CSR offsets of size body_count + 1</p></li>
-</ul>
-</dd>
-</dl>
-<p class="rubric">Notes</p>
-<ul class="simple">
-<li><p>Runs on CPU to avoid GPU atomics; kernels iterate serially over joints (dim=1).</p></li>
-<li><p>When there are no joints, offsets are an all-zero array of length body_count + 1.</p></li>
-</ul>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverVBD.finalize_particles">
 <span class="sig-name descname"><span class="pre">finalize_particles</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state_out</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dt</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverVBD.finalize_particles" title="Link to this definition">#</a></dt>
 <dd><p>Finalize particle velocities after VBD iterations.</p>
@@ -1119,7 +1101,6 @@ depend on this argument.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD"><code class="docutils literal notranslate"><span class="pre">SolverVBD</span></code></a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.register_custom_attributes"><code class="docutils literal notranslate"><span class="pre">SolverVBD.register_custom_attributes()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.__init__"><code class="docutils literal notranslate"><span class="pre">SolverVBD.__init__()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.compute_rigid_force_element_adjacency"><code class="docutils literal notranslate"><span class="pre">SolverVBD.compute_rigid_force_element_adjacency()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.finalize_particles"><code class="docutils literal notranslate"><span class="pre">SolverVBD.finalize_particles()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.finalize_rigid_bodies"><code class="docutils literal notranslate"><span class="pre">SolverVBD.finalize_rigid_bodies()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverVBD.initialize_particles"><code class="docutils literal notranslate"><span class="pre">SolverVBD.initialize_particles()</span></code></a></li>

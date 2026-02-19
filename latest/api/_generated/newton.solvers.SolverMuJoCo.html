@@ -926,38 +926,6 @@ where attributes are named <code class="docutils literal notranslate"><span clas
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.color_collision_shapes">
-<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">color_collision_shapes</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">selected_shapes</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">visualize_graph</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_keys</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.color_collision_shapes" title="Link to this definition">#</a></dt>
-<dd><p>Find a graph coloring of the collision filter pairs in the model.
-Shapes within the same color cannot collide with each other.
-Shapes can only collide with shapes of different colors.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><ul class="simple">
-<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>Model</em></a>) – The model to color the collision shapes of.</p></li>
-<li><p><strong>selected_shapes</strong> (<em>nparray</em>) – The indices of the collision shapes to color.</p></li>
-<li><p><strong>visualize_graph</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to visualize the graph coloring.</p></li>
-<li><p><strong>shape_keys</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>]</em>) – The keys of the shapes, only used for visualization.</p></li>
-</ul>
-</dd>
-<dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>An integer array of shape (num_shapes,), where each element is the color of the corresponding shape.</p>
-</dd>
-<dt class="field-odd">Return type<span class="colon">:</span></dt>
-<dd class="field-odd"><p>nparray</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.find_body_collision_filter_pairs">
-<em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">find_body_collision_filter_pairs</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">selected_bodies</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colliding_shapes</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.find_body_collision_filter_pairs" title="Link to this definition">#</a></dt>
-<dd><p>For shape collision filter pairs, find body collision filter pairs that are contained within.</p>
-<dl class="field-list simple">
-</dl>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.__init__">
 <span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">mjw_model</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mjw_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">separate_worlds</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">njmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">nconmax</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_iterations</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_initpoints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solver</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">integrator</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cone</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">jacobian</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">impratio</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ccd_tolerance</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">density</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">viscosity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">wind</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">magnetic</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_cpu</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">disable_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default_actuator_gear</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">actuator_gears</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">update_data_interval</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_to_mjcf</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ls_parallel</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">use_mujoco_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_sites</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.__init__" title="Link to this definition">#</a></dt>
 <dd><p>Solver options (e.g., <code class="docutils literal notranslate"><span class="pre">impratio</span></code>) follow this resolution priority:</p>
@@ -1073,7 +1041,7 @@ unless <code class="xref py py-attr docutils literal notranslate"><span class="p
 <span class="sig-name descname"><span class="pre">update_actuator_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_actuator_properties" title="Link to this definition">#</a></dt>
 <dd><p>Update CTRL_DIRECT actuator properties (gainprm, biasprm) in the MuJoCo model.</p>
 <p>Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
-updated via update_joint_dof_properties() using joint_target_ke/kd.</p>
+updated via _update_joint_dof_properties() using joint_target_ke/kd.</p>
 </dd></dl>
 
 <dl class="py method">
@@ -1106,24 +1074,6 @@ in the MuJoCo model.</p>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_geom_properties">
-<span class="sig-name descname"><span class="pre">update_geom_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_geom_properties" title="Link to this definition">#</a></dt>
-<dd><p>Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model.</p>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_joint_dof_properties">
-<span class="sig-name descname"><span class="pre">update_joint_dof_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_joint_dof_properties" title="Link to this definition">#</a></dt>
-<dd><p>Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, passive stiffness and damping, and joint limit ranges in the MuJoCo model.</p>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_joint_properties">
-<span class="sig-name descname"><span class="pre">update_joint_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_joint_properties" title="Link to this definition">#</a></dt>
-<dd><p>Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model.</p>
-</dd></dl>
-
-<dl class="py method">
 <dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_mimic_eq_properties">
 <span class="sig-name descname"><span class="pre">update_mimic_eq_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_mimic_eq_properties" title="Link to this definition">#</a></dt>
 <dd><p>Update mimic constraint properties in the MuJoCo model.</p>
@@ -1134,12 +1084,6 @@ in the MuJoCo model.</p>
 </ul>
 <p>Maps mimic constraints to MuJoCo mjEQ_JOINT equality constraints
 using the polycoef representation: q1 = coef0 + coef1 * q2.</p>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.solvers.SolverMuJoCo.update_model_properties">
-<span class="sig-name descname"><span class="pre">update_model_properties</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.SolverMuJoCo.update_model_properties" title="Link to this definition">#</a></dt>
-<dd><p>Update model properties including gravity in the MuJoCo model.</p>
 </dd></dl>
 
 <dl class="py method">
@@ -1304,8 +1248,6 @@ A value of -1 indicates that the MuJoCo equality constraint is not associated wi
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.import_mujoco"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.import_mujoco()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.register_custom_attributes"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.register_custom_attributes()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.color_collision_shapes"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.color_collision_shapes()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.find_body_collision_filter_pairs"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.find_body_collision_filter_pairs()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.__init__"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.__init__()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.close_mujoco_viewer"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.close_mujoco_viewer()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.enable_rne_postconstraint"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.enable_rne_postconstraint()</span></code></a></li>
@@ -1316,11 +1258,7 @@ A value of -1 indicates that the MuJoCo equality constraint is not associated wi
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_actuator_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_actuator_properties()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_contacts"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_contacts()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_eq_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_eq_properties()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_geom_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_geom_properties()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_joint_dof_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_joint_dof_properties()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_joint_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_joint_properties()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_mimic_eq_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_mimic_eq_properties()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_model_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_model_properties()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_pair_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_pair_properties()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.update_tendon_properties"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.update_tendon_properties()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.SolverMuJoCo.body_free_qd_start"><code class="docutils literal notranslate"><span class="pre">SolverMuJoCo.body_free_qd_start</span></code></a></li>
