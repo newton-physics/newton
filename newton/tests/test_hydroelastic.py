@@ -109,6 +109,7 @@ def build_stacked_cubes_scene(
     builder = newton.ModelBuilder()
     if shape_type == ShapeType.PRIMITIVE:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
             mu=0.5,
             sdf_max_resolution=32,
             is_hydroelastic=True,
@@ -117,6 +118,7 @@ def build_stacked_cubes_scene(
         )
     else:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
             mu=0.5,
             is_hydroelastic=True,
             contact_margin=contact_margin,
@@ -291,6 +293,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         I_m_upper = wp.mat33(inertia_upper, 0.0, 0.0, 0.0, inertia_upper, 0.0, 0.0, 0.0, inertia_upper)
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.1, 0.1),

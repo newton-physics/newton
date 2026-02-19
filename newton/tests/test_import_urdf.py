@@ -1643,7 +1643,7 @@ class TestMimicConstraints(unittest.TestCase):
 
         builder = _SkippingLinkBuilder()
         with self.assertWarnsRegex(UserWarning, "was not created, skipping mimic constraint"):
-            builder.add_urdf(urdf, joint_ordering=None, ensure_nonstatic_links=False)
+            builder.add_urdf(urdf, joint_ordering=None)
 
         # No mimic constraint should be created because the follower joint was skipped.
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
