@@ -531,6 +531,13 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "nmeshvert",
     "nmeshnormal",
     "nmeshpoly",
+    # Geom ordering: Newton's solver may order geoms differently (e.g. colliders before
+    # visuals). Content is verified by compare_geom_fields_unordered() instead.
+    "body_geomadr",
+    "body_geomnum",
+    "geom_",
+    "pair_geom",  # geom indices depend on geom ordering
+    "nxn_",  # broadphase pairs depend on geom ordering
 }
 
 
@@ -1970,15 +1977,10 @@ class TestMenagerieBase(unittest.TestCase):
                     ):
                         compare_solref_physics(newton_solver.mjw_model, native_mjw_model, solref_field)
 
-        # Compare geom fields: use unordered matching when geom ordering may differ
-        # (e.g. parse_visuals=True), otherwise use direct index comparison
+        # Compare geom fields by content (unordered matching by body+type).
+        # Newton's solver may order geoms differently than native MuJoCo.
         if newton_solver.mjw_model.ngeom == native_mjw_model.ngeom:
-            if self.parse_visuals:
-                compare_geom_fields_unordered(
-                    newton_solver.mjw_model, native_mjw_model, skip_fields=self.model_skip_fields
-                )
-            else:
-                compare_geom_sizes(newton_solver.mjw_model, native_mjw_model)
+            compare_geom_fields_unordered(newton_solver.mjw_model, native_mjw_model, skip_fields=self.model_skip_fields)
 
         # Compare joint ranges only for limited joints (unlimited joints may differ in representation)
         compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
@@ -2794,11 +2796,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     discard_visual = False
     parse_visuals = True
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "body_geomadr",  # geom ordering differs (compare_geom_fields_unordered handles content)
-        "body_geomnum",
-        "geom_",  # geom ordering differs; content checked by compare_geom_fields_unordered
-        "pair_geom",  # geom indices differ due to ordering
-        "nxn_",  # broadphase pairs differ due to geom ordering
         "body_tree",  # tuple comparison; content equivalent but objects differ
         "qLD_updates",
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
