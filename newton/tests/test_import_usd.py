@@ -4488,8 +4488,6 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
         """Test that NewtonMimicAPI on a joint is parsed into a mimic constraint."""
-        import newton_usd_schemas  # noqa: F401  # register schemas before stage
-
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
