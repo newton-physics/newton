@@ -48,14 +48,14 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     mu=0.01,
     ke=1e7,  # Contact stiffness for MuJoCo solver
     kd=1e4,  # Contact damping
-    sdf_max_resolution=512,
-    sdf_narrow_band_range=(-0.005, 0.005),
     contact_margin=0.005,
     density=8000.0,
     mu_torsional=0.0,
     mu_rolling=0.0,
     is_hydroelastic=False,
 )
+MESH_SDF_MAX_RESOLUTION = 512
+MESH_SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
 
 
 def add_mesh_object(
@@ -81,6 +81,11 @@ def add_mesh_object(
         transform = wp.transform(transform.p + center_world, transform.q)
 
     mesh = newton.Mesh(vertices, indices)
+    mesh.build_sdf(
+        max_resolution=MESH_SDF_MAX_RESOLUTION,
+        narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
+        margin=shape_cfg.contact_margin if shape_cfg and shape_cfg.contact_margin is not None else 0.05,
+    )
 
     if key == "gear_base":
         body = -1
@@ -120,9 +125,9 @@ class Example:
         self.grid_x = int(np.ceil(np.sqrt(num_per_world)))
         self.grid_y = int(np.ceil(num_per_world / self.grid_x))
 
-        # Maximum number of rigid contacts to allocate (limits memory usage)
-        # None = auto-calculate (can be very large), or set explicit limit (e.g., 1_000_000)
-        self.rigid_contact_max = 100000
+        # Maximum number of rigid contacts to allocate (limits memory usage).
+        # Use a per-world budget so default world_count=100 scales appropriately.
+        self.rigid_contact_max = 500 * self.world_count
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
         self.broad_phase = "sap"
@@ -149,12 +154,13 @@ class Example:
 
         self.model = main_scene.finalize()
 
-        # Override rigid_contact_max BEFORE creating collision pipeline to limit memory allocation
+        # Keep model and pipeline contact capacities aligned.
         self.model.rigid_contact_max = self.rigid_contact_max
 
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
+            rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase,
         )
 
@@ -166,7 +172,7 @@ class Example:
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
             )
         elif self.solver_type == "mujoco":
-            num_per_world = self.rigid_contact_max // self.world_count
+            num_per_world = self.collision_pipeline.rigid_contact_max // self.world_count
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_contacts=False,

@@ -155,8 +155,6 @@ def parse_mjcf(
     force_show_colliders: bool = False,
     enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = False,
-    ensure_nonstatic_links: bool = False,
-    static_link_mass: float = 1e-2,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
@@ -256,8 +254,6 @@ def parse_mjcf(
         force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
         enable_self_collisions (bool): If True, self-collisions are enabled.
         ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
-        ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-        static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
@@ -337,12 +333,15 @@ def parse_mjcf(
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
+    # Use findall for <option> to handle multiple elements after include expansion
+    # (later values override earlier ones, matching MuJoCo's merge behavior).
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
             [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
         if builder_custom_attr_option:
-            for elem in (compiler, root.find("option")):
+            option_elems = [compiler, *root.findall("option")]
+            for elem in option_elems:
                 if elem is not None:
                     parsed = parse_custom_attributes(elem.attrib, builder_custom_attr_option, "mjcf")
                     for key, value in parsed.items():
@@ -599,6 +598,10 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
+            # Parse MJCF margin for collision thickness (only if explicitly specified)
+            if "margin" in geom_attrib:
+                shape_cfg.thickness = float(geom_attrib["margin"]) * scale
+
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
                 "key": geom_name,
@@ -680,10 +683,17 @@ def parse_mjcf(
                         if verbose:
                             print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
                         m_mesh.texture = None
+                    # Mesh shapes must not use cfg.sdf_*; SDFs are built on the mesh itself.
+                    mesh_shape_kwargs = dict(shape_kwargs)
+                    mesh_cfg = shape_cfg.copy()
+                    mesh_cfg.sdf_max_resolution = None
+                    mesh_cfg.sdf_target_voxel_size = None
+                    mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
+                    mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
-                        **shape_kwargs,
+                        **mesh_shape_kwargs,
                     )
                     shapes.append(s)
 
@@ -1238,6 +1248,7 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
+                    friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
                     actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
                 )
@@ -1447,16 +1458,6 @@ def parse_mjcf(
                 builder.body_inv_inertia[link] = wp.inverse(I_m)
             else:
                 builder.body_inv_inertia[link] = I_m
-        if m == 0.0 and ensure_nonstatic_links:
-            # set the mass to something nonzero to ensure the body is dynamic
-            m = static_link_mass
-            # cube with side length 0.5
-            I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(builder.default_body_armature * np.eye(3))
-            builder.body_mass[link] = m
-            builder.body_inv_mass[link] = 1.0 / m
-            builder.body_inertia[link] = I_m
-            builder.body_inv_inertia[link] = wp.inverse(I_m)
 
         # -----------------
         # recurse
@@ -2102,6 +2103,19 @@ def parse_mjcf(
 
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
+
+            # Set implicit type defaults per actuator shortcut type.
+            # MuJoCo shortcut elements (position, velocity, etc.) implicitly set
+            # biastype/gaintype/dyntype without writing them to the XML. We mirror
+            # these defaults here so the CTRL_DIRECT path recreates faithful actuators.
+            # Only override when the XML didn't explicitly specify the attribute.
+            shortcut_type_defaults = {
+                "position": {"mujoco:actuator_biastype": 1},  # affine
+                "velocity": {"mujoco:actuator_biastype": 1},  # affine
+            }
+            for key, value in shortcut_type_defaults.get(actuator_type, {}).items():
+                if key not in parsed_attrs:
+                    parsed_attrs[key] = value
 
             # Build full values dict
             actuator_values: dict[str, Any] = {}

@@ -19,7 +19,6 @@ from math import sqrt
 import numpy as np
 import warp as wp
 
-from newton._src.geometry.broad_phase_sap import SAPSortType
 from newton._src.geometry.flags import ShapeFlags
 from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, BroadPhaseSAP
 
@@ -927,11 +926,11 @@ class TestBroadPhase(unittest.TestCase):
 
     def test_sap_broadphase_segmented(self):
         """Test SAP broad phase with segmented sort."""
-        self._test_sap_broadphase_impl(SAPSortType.SEGMENTED)
+        self._test_sap_broadphase_impl("segmented")
 
     def test_sap_broadphase_tile(self):
         """Test SAP broad phase with tile sort."""
-        self._test_sap_broadphase_impl(SAPSortType.TILE)
+        self._test_sap_broadphase_impl("tile")
 
     def _test_sap_broadphase_multiple_worlds_impl(self, sort_type):
         """Test SAP broad phase with objects in different worlds and mixed collision groups."""
@@ -1076,11 +1075,11 @@ class TestBroadPhase(unittest.TestCase):
 
     def test_sap_broadphase_multiple_worlds_segmented(self):
         """Test SAP broad phase with multiple worlds using segmented sort."""
-        self._test_sap_broadphase_multiple_worlds_impl(SAPSortType.SEGMENTED)
+        self._test_sap_broadphase_multiple_worlds_impl("segmented")
 
     def test_sap_broadphase_multiple_worlds_tile(self):
         """Test SAP broad phase with multiple worlds using tile sort."""
-        self._test_sap_broadphase_multiple_worlds_impl(SAPSortType.TILE)
+        self._test_sap_broadphase_multiple_worlds_impl("tile")
 
     def _test_sap_broadphase_with_shape_flags_impl(self, sort_type):
         """Test SAP broad phase with ShapeFlags filtering.
@@ -1239,11 +1238,11 @@ class TestBroadPhase(unittest.TestCase):
 
     def test_sap_broadphase_with_shape_flags_segmented(self):
         """Test SAP broad phase with ShapeFlags using segmented sort."""
-        self._test_sap_broadphase_with_shape_flags_impl(SAPSortType.SEGMENTED)
+        self._test_sap_broadphase_with_shape_flags_impl("segmented")
 
     def test_sap_broadphase_with_shape_flags_tile(self):
         """Test SAP broad phase with ShapeFlags using tile sort."""
-        self._test_sap_broadphase_with_shape_flags_impl(SAPSortType.TILE)
+        self._test_sap_broadphase_with_shape_flags_impl("tile")
 
     def test_nxn_edge_cases(self):
         """Test NxN broad phase with tricky edge cases to verify GPU code correctness.
@@ -2046,11 +2045,11 @@ class TestBroadPhase(unittest.TestCase):
 
     def test_sap_edge_cases_segmented(self):
         """Test SAP edge cases with segmented sort."""
-        self._test_sap_edge_cases_impl(SAPSortType.SEGMENTED)
+        self._test_sap_edge_cases_impl("segmented")
 
     def test_sap_edge_cases_tile(self):
         """Test SAP edge cases with tile sort."""
-        self._test_sap_edge_cases_impl(SAPSortType.TILE)
+        self._test_sap_edge_cases_impl("tile")
 
     def test_per_shape_contact_margin_broad_phase(self):
         """

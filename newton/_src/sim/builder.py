@@ -46,7 +46,6 @@ from ..core.types import (
     nparray,
 )
 from ..geometry import (
-    SDF,
     GeoType,
     Mesh,
     ParticleFlags,
@@ -166,15 +165,15 @@ class ModelBuilder:
         """The friction damping coefficient. Used by SemiImplicit, Featherstone."""
         ka: float = 0.0
         """The contact adhesion distance. Used by SemiImplicit, Featherstone."""
-        mu: float = 0.5
+        mu: float = 1.0
         """The coefficient of friction. Used by all solvers."""
         restitution: float = 0.0
         """The coefficient of restitution. Used by XPBD. To take effect, enable restitution in solver constructor via ``enable_restitution=True``."""
-        mu_torsional: float = 0.25
+        mu_torsional: float = 0.005
         """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
-        mu_rolling: float = 0.0005
+        mu_rolling: float = 0.0001
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
-        thickness: float = 1e-5
+        thickness: float = 0.0
         """Outward offset from the shape's surface for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
         their thicknesses are summed (thickness_a + thickness_b) to determine the total separation."""
@@ -197,16 +196,15 @@ class ModelBuilder:
         is_site: bool = False
         """Indicates whether the shape is a site (non-colliding reference point). Directly setting this to True will NOT enforce site invariants. Use `mark_as_site()` or set via the `flags` property to ensure invariants. Defaults to False."""
         sdf_narrow_band_range: tuple[float, float] = (-0.1, 0.1)
-        """The narrow band distance range (inner, outer) for SDF computation. Only used for mesh shapes when SDF is enabled."""
+        """The narrow band distance range (inner, outer) for primitive SDF computation."""
         sdf_target_voxel_size: float | None = None
         """Target voxel size for sparse SDF grid.
-        If provided, enables SDF generation and takes precedence over sdf_max_resolution.
-        Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
+        If provided, enables primitive SDF generation and takes precedence over
+        sdf_max_resolution. Requires GPU since wp.Volume only supports CUDA."""
         sdf_max_resolution: int | None = None
         """Maximum dimension for sparse SDF grid (must be divisible by 8).
-        If provided (and sdf_target_voxel_size is None), enables SDF-based mesh-mesh collision.
-        Set to None (default) to disable SDF generation for this shape (uses BVH-based collision for mesh-mesh instead).
-        Requires GPU since wp.Volume only supports CUDA. Only used for mesh shapes."""
+        If provided (and sdf_target_voxel_size is None), enables primitive SDF
+        generation. Requires GPU since wp.Volume only supports CUDA."""
         is_hydroelastic: bool = False
         """Whether the shape collides using SDF-based hydroelastics. For hydroelastic collisions, both participating shapes must have is_hydroelastic set to True. Defaults to False.
 
@@ -266,15 +264,26 @@ class ModelBuilder:
                 shape_type: Optional shape geometry type used for context-specific
                     validation.
             """
+            if self.sdf_max_resolution is not None and self.sdf_target_voxel_size is not None:
+                raise ValueError("Set only one of sdf_max_resolution or sdf_target_voxel_size, not both.")
             if self.sdf_max_resolution is not None and self.sdf_max_resolution % 8 != 0:
                 raise ValueError(
                     f"sdf_max_resolution must be divisible by 8 (got {self.sdf_max_resolution}). "
                     "This is required because SDF volumes are allocated in 8x8x8 tiles."
                 )
             hydroelastic_supported = shape_type not in (GeoType.PLANE, GeoType.HFIELD)
+            hydroelastic_requires_configured_sdf = shape_type in (
+                GeoType.SPHERE,
+                GeoType.BOX,
+                GeoType.CAPSULE,
+                GeoType.CYLINDER,
+                GeoType.ELLIPSOID,
+                GeoType.CONE,
+            )
             if (
                 self.is_hydroelastic
                 and hydroelastic_supported
+                and hydroelastic_requires_configured_sdf
                 and self.has_shape_collision
                 and self.sdf_max_resolution is None
                 and self.sdf_target_voxel_size is None
@@ -1495,8 +1504,6 @@ class ModelBuilder:
         force_show_colliders: bool = False,
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
-        ensure_nonstatic_links: bool = False,
-        static_link_mass: float = 1e-2,
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
@@ -1581,8 +1588,6 @@ class ModelBuilder:
             force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
             enable_self_collisions (bool): If True, self-collisions are enabled.
             ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
-            ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-            static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
             joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
             bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
@@ -1610,8 +1615,6 @@ class ModelBuilder:
             force_show_colliders=force_show_colliders,
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
-            ensure_nonstatic_links=ensure_nonstatic_links,
-            static_link_mass=static_link_mass,
             joint_ordering=joint_ordering,
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
@@ -1850,8 +1853,6 @@ class ModelBuilder:
         force_show_colliders: bool = False,
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
-        ensure_nonstatic_links: bool = False,
-        static_link_mass: float = 1e-2,
         collapse_fixed_joints: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
@@ -1950,8 +1951,6 @@ class ModelBuilder:
             force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
             enable_self_collisions (bool): If True, self-collisions are enabled.
             ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
-            ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-            static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             verbose (bool): If True, print additional information about parsing the MJCF.
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
@@ -1992,8 +1991,6 @@ class ModelBuilder:
             force_show_colliders=force_show_colliders,
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
-            ensure_nonstatic_links=ensure_nonstatic_links,
-            static_link_mass=static_link_mass,
             collapse_fixed_joints=collapse_fixed_joints,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,
@@ -3780,8 +3777,6 @@ class ModelBuilder:
                 return "cone"
             if type == GeoType.MESH:
                 return "mesh"
-            if type == GeoType.SDF:
-                return "sdf"
             if type == GeoType.PLANE:
                 return "plane"
             if type == GeoType.CONVEX_MESH:
@@ -4339,7 +4334,7 @@ class ModelBuilder:
         xform: Transform | None = None,
         cfg: ShapeConfig | None = None,
         scale: Vec3 | None = None,
-        src: SDF | Mesh | Any | None = None,
+        src: Mesh | Any | None = None,
         is_static: bool = False,
         key: str | None = None,
         custom_attributes: dict[str, Any] | None = None,
@@ -4354,7 +4349,7 @@ class ModelBuilder:
             xform (Transform | None): The transform of the shape in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
             cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
             scale (Vec3 | None): The scale of the geometry. The interpretation depends on the shape type. Defaults to `(1.0, 1.0, 1.0)` if `None`.
-            src (SDF | Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH` or an :class:`SDF` object for `GeoType.SDF`. Defaults to `None`.
+            src (Mesh | Any | None): The source geometry data, e.g., a :class:`Mesh` object for `GeoType.MESH`. Defaults to `None`.
             is_static (bool): If `True`, the shape will have zero mass, and its density property in `cfg` will be effectively ignored for mass calculation. Typically used for fixed, non-movable collision geometry. Defaults to `False`.
             key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated (e.g., "shape_N"). Defaults to `None`.
             custom_attributes: Dictionary of custom attribute names to values.
@@ -4369,6 +4364,21 @@ class ModelBuilder:
         if cfg is None:
             cfg = self.default_shape_cfg
         cfg.validate(shape_type=type)
+        if type == GeoType.MESH:
+            if (
+                cfg.sdf_max_resolution is not None
+                or cfg.sdf_target_voxel_size is not None
+                or cfg.sdf_narrow_band_range != (-0.1, 0.1)
+            ):
+                raise ValueError(
+                    "Mesh shapes do not use cfg.sdf_* for SDF generation. "
+                    "Build and attach an SDF on the mesh via mesh.build_sdf()."
+                )
+            if cfg.is_hydroelastic and (src is None or getattr(src, "sdf", None) is None):
+                raise ValueError(
+                    "Hydroelastic mesh shapes require mesh.sdf. "
+                    "Call mesh.build_sdf() before add_shape_mesh(..., cfg=...)."
+                )
         if scale is None:
             scale = (1.0, 1.0, 1.0)
 
@@ -4889,40 +4899,6 @@ class ModelBuilder:
             cfg=cfg,
             scale=scale,
             src=mesh,
-            key=key,
-            custom_attributes=custom_attributes,
-        )
-
-    def add_shape_sdf(
-        self,
-        body: int,
-        xform: Transform | None = None,
-        sdf: SDF | None = None,
-        cfg: ShapeConfig | None = None,
-        key: str | None = None,
-        custom_attributes: dict[str, Any] | None = None,
-    ) -> int:
-        """Adds a signed distance field (SDF) collision shape to a body.
-
-        Args:
-            body (int): The index of the parent body this shape belongs to. Use -1 for shapes not attached to any specific body.
-            xform (Transform | None): The transform of the SDF in the parent body's local frame. If `None`, the identity transform `wp.transform()` is used. Defaults to `None`.
-            sdf (SDF | None): The :class:`SDF` object representing the signed distance field. Defaults to `None`.
-            cfg (ShapeConfig | None): The configuration for the shape's physical and collision properties. If `None`, :attr:`default_shape_cfg` is used. Defaults to `None`.
-            key (str | None): An optional unique key for identifying the shape. If `None`, a default key is automatically generated. Defaults to `None`.
-            custom_attributes: Dictionary of custom attribute values for SHAPE frequency attributes.
-
-        Returns:
-            int: The index of the newly added shape.
-        """
-        if cfg is None:
-            cfg = self.default_shape_cfg
-        return self.add_shape(
-            body=body,
-            type=GeoType.SDF,
-            xform=xform,
-            cfg=cfg,
-            src=sdf,
             key=key,
             custom_attributes=custom_attributes,
         )
@@ -8560,158 +8536,120 @@ class ModelBuilder:
             m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
-            # Compute SDFs for mesh shapes (per-shape opt-in via sdf_max_resolution, sdf_target_voxel_size or is_hydroelastic)
-            from ..geometry.sdf_utils import (  # noqa: PLC0415
-                SDFData,
-                compute_sdf,
-                create_empty_sdf_data,
-            )
+            # Compute and compact SDF resources (shared table + per-shape index indirection)
+            from ..geometry.sdf_utils import SDFData, compute_sdf_from_shape  # noqa: PLC0415
 
-            # Check if we're running on GPU - wp.Volume only supports CUDA
             current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
-            # Check if there are any mesh shapes with collision enabled that request SDF generation
-            has_sdf_meshes = any(
+            has_mesh_sdf = any(
                 stype == GeoType.MESH
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
-                and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
-                for stype, ssrc, sflags, sdf_max_resolution, sdf_target_voxel_size in zip(
-                    self.shape_type,
-                    self.shape_source,
-                    self.shape_flags,
-                    self.shape_sdf_max_resolution,
-                    self.shape_sdf_target_voxel_size,
-                    strict=True,
-                )
+                and getattr(ssrc, "sdf", None) is not None
+                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=True)
             )
-
-            # Check if there are any shapes with hydroelastic collision enabled
             has_hydroelastic_shapes = any(
                 (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
                 for sflags in self.shape_flags
             )
-
-            if has_sdf_meshes and not is_gpu:
+            if (has_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
-                    "SDF generation for mesh shapes (sdf_max_resolution != None) requires a CUDA-capable GPU device. "
-                    "wp.Volume (used for SDF generation) only supports CUDA. "
-                    "Either set sdf_max_resolution=None for all mesh shapes or use a CUDA device."
+                    "SDF collision paths require a CUDA-capable GPU device. "
+                    "wp.Volume (used for SDF collision) only supports CUDA."
                 )
 
-            if has_hydroelastic_shapes and not is_gpu:
-                raise ValueError(
-                    "Hydroelastic collision (is_hydroelastic=True) requires a CUDA-capable GPU device. "
-                    "wp.Volume (used for SDF generation) only supports CUDA. "
-                    "Either set is_hydroelastic=False for all shapes or use a CUDA device."
-                )
+            compact_sdf_data = []
+            compact_sdf_volume = []
+            compact_sdf_coarse_volume = []
+            sdf_block_coords = []
+            sdf_index2blocks = []
+            shape_sdf_index = [-1] * len(self.shape_type)
+            sdf_cache = {}
 
-            if has_sdf_meshes or has_hydroelastic_shapes:
-                sdf_data_list = []
-                # Keep volume objects alive for reference counting
-                sdf_volumes = []
-                sdf_coarse_volumes = []
+            for i in range(len(self.shape_type)):
+                shape_type = self.shape_type[i]
+                shape_src = self.shape_source[i]
+                shape_flags = self.shape_flags[i]
+                shape_scale = self.shape_scale[i]
+                shape_thickness = self.shape_thickness[i]
+                shape_contact_margin = self.shape_contact_margin[i]
+                sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
+                sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
+                sdf_max_resolution = self.shape_sdf_max_resolution[i]
+                is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
+                has_shape_collision = bool(shape_flags & ShapeFlags.COLLIDE_SHAPES)
 
-                # caches
-                sdf_cache = {}
+                sdf_data = None
+                sparse_volume = None
+                coarse_volume = None
+                block_coords = []
+                cache_key = None
 
-                sdf_block_coords = []  # flat array of coordinates of active SDF tiles
-                sdf_shape2blocks = []  # array indexing into sdf_block_coords for each shape. Multiple shapes can index into the same block range.
-
-                # Create empty SDF data once for reuse by non-SDF shapes
-                empty_sdf_data = create_empty_sdf_data()
-
-                for i in range(len(self.shape_type)):
-                    shape_type = self.shape_type[i]
-                    shape_src = self.shape_source[i]
-                    shape_flags = self.shape_flags[i]
-                    shape_scale = self.shape_scale[i]
-                    shape_thickness = self.shape_thickness[i]
-                    shape_contact_margin = self.shape_contact_margin[i]
-                    sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
-                    sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
-                    sdf_max_resolution = self.shape_sdf_max_resolution[i]
-                    is_hydroelastic = bool(shape_flags & ShapeFlags.HYDROELASTIC)
-
-                    # Determine if this shape needs SDF:
-                    # - Mesh shapes with sdf_max_resolution/sdf_target_voxel_size set, OR
-                    # - Any colliding shape with is_hydroelastic=True
-                    needs_sdf = (
-                        shape_type == GeoType.MESH
-                        and shape_src is not None
-                        and shape_flags & ShapeFlags.COLLIDE_SHAPES
-                        and (sdf_max_resolution is not None or sdf_target_voxel_size is not None)
-                    ) or (is_hydroelastic and shape_flags & ShapeFlags.COLLIDE_SHAPES)
-
-                    if needs_sdf:
-                        # Mesh-sdf collisions handle shape scaling at collision time,
-                        # in which case we can compute SDF for this mesh shape in unscaled local space here.
-                        # For hydrelastic collisions this impact of this approximation has yet to be quantified
-                        # so we will bake scale into the SDF data here for now.
-                        bake_scale = is_hydroelastic
-
-                        cache_key = (
-                            hash(shape_src),
-                            shape_type,
-                            shape_thickness,
-                            shape_contact_margin,
-                            tuple(sdf_narrow_band_range),
-                            sdf_target_voxel_size,
-                            sdf_max_resolution,
-                            tuple(shape_scale) if bake_scale else None,
+                if shape_type == GeoType.MESH and has_shape_collision and shape_src is not None:
+                    mesh_sdf = getattr(shape_src, "sdf", None)
+                    if mesh_sdf is not None:
+                        cache_key = ("mesh_sdf", id(mesh_sdf))
+                        sdf_data = mesh_sdf.to_kernel_data()
+                        sparse_volume = mesh_sdf.sparse_volume
+                        coarse_volume = mesh_sdf.coarse_volume
+                        block_coords = list(mesh_sdf.block_coords) if mesh_sdf.block_coords is not None else []
+                elif is_hydroelastic and has_shape_collision:
+                    bake_scale = True
+                    # Keep voxel-size-driven generation independent from max_resolution.
+                    effective_max_resolution = sdf_max_resolution
+                    if sdf_target_voxel_size is None and effective_max_resolution is None:
+                        effective_max_resolution = 64
+                    cache_key = (
+                        "primitive_generated",
+                        shape_type,
+                        shape_thickness,
+                        shape_contact_margin,
+                        tuple(sdf_narrow_band_range),
+                        sdf_target_voxel_size,
+                        effective_max_resolution,
+                        tuple(shape_scale),
+                    )
+                    if cache_key not in sdf_cache:
+                        sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf_from_shape(
+                            shape_type=shape_type,
+                            shape_geo=None,
+                            shape_scale=shape_scale,
+                            shape_thickness=shape_thickness,
+                            narrow_band_distance=sdf_narrow_band_range,
+                            margin=shape_contact_margin,
+                            target_voxel_size=sdf_target_voxel_size,
+                            max_resolution=effective_max_resolution,
+                            bake_scale=bake_scale,
                         )
-                        if cache_key in sdf_cache:
-                            idx = sdf_cache[cache_key]
-                            sdf_data = sdf_data_list[idx]
-                            sparse_volume = sdf_volumes[idx]
-                            coarse_volume = sdf_coarse_volumes[idx]
-                            shape2blocks = [sdf_shape2blocks[idx][0], sdf_shape2blocks[idx][1]]
-                        else:
-                            sdf_data, sparse_volume, coarse_volume, block_coords = compute_sdf(
-                                mesh_src=shape_src,
-                                shape_type=shape_type,
-                                shape_scale=shape_scale,
-                                shape_thickness=shape_thickness,
-                                narrow_band_distance=sdf_narrow_band_range,
-                                margin=shape_contact_margin,
-                                target_voxel_size=sdf_target_voxel_size,
-                                max_resolution=sdf_max_resolution,
-                                bake_scale=bake_scale,
-                            )
-                            sdf_cache[cache_key] = i
-                            block_start_idx = len(sdf_block_coords)
-                            num_blocks = len(block_coords)
-                            shape2blocks = [block_start_idx, block_start_idx + num_blocks]
-                            sdf_block_coords.extend(block_coords)
+
+                if cache_key is not None:
+                    if cache_key in sdf_cache:
+                        shape_sdf_index[i] = sdf_cache[cache_key]
                     else:
-                        # Non-SDF shapes get empty SDFData
-                        sdf_data = empty_sdf_data
-                        sparse_volume = None
-                        coarse_volume = None
-                        shape2blocks = [0, 0]
+                        sdf_idx = len(compact_sdf_data)
+                        sdf_cache[cache_key] = sdf_idx
+                        shape_sdf_index[i] = sdf_idx
 
-                    sdf_data_list.append(sdf_data)
-                    sdf_volumes.append(sparse_volume)
-                    sdf_coarse_volumes.append(coarse_volume)
-                    sdf_shape2blocks.append(shape2blocks)
+                        compact_sdf_data.append(sdf_data)
+                        compact_sdf_volume.append(sparse_volume)
+                        compact_sdf_coarse_volume.append(coarse_volume)
+                        block_start_idx = len(sdf_block_coords)
+                        sdf_block_coords.extend(block_coords)
+                        sdf_index2blocks.append([block_start_idx, len(sdf_block_coords)])
 
-                # Create array of SDFData structs
-                m.shape_sdf_data = wp.array(sdf_data_list, dtype=SDFData, device=device)
-                # Keep volume objects alive for reference counting
-                m.shape_sdf_volume = sdf_volumes
-                m.shape_sdf_coarse_volume = sdf_coarse_volumes
-                m.shape_sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
-                m.shape_sdf_shape2blocks = wp.array(sdf_shape2blocks, dtype=wp.vec2i)
-            else:
-                # SDF mesh-mesh collision and hydroelastics not enabled or no colliding meshes/shapes
-                # Still need one SDFData per shape (all empty) so narrow phase can safely access shape_sdf_data[shape_idx]
-                empty_sdf_data = create_empty_sdf_data()
-                m.shape_sdf_data = wp.array([empty_sdf_data] * len(self.shape_type), dtype=SDFData, device=device)
-                m.shape_sdf_volume = [None] * len(self.shape_type)
-                m.shape_sdf_coarse_volume = [None] * len(self.shape_type)
-                m.shape_sdf_block_coords = wp.array([], dtype=wp.vec3us)
-                m.shape_sdf_shape2blocks = wp.array([], dtype=wp.vec2i)
+            m.sdf_data = (
+                wp.array(compact_sdf_data, dtype=SDFData, device=device)
+                if compact_sdf_data
+                else wp.array([], dtype=SDFData, device=device)
+            )
+            m.sdf_volume = compact_sdf_volume
+            m.sdf_coarse_volume = compact_sdf_coarse_volume
+            m.shape_sdf_index = wp.array(shape_sdf_index, dtype=wp.int32, device=device)
+            m.sdf_block_coords = wp.array(sdf_block_coords, dtype=wp.vec3us)
+            m.sdf_index2blocks = (
+                wp.array(sdf_index2blocks, dtype=wp.vec2i) if sdf_index2blocks else wp.array([], dtype=wp.vec2i)
+            )
 
             # ---------------------
             # heightfield collision data
