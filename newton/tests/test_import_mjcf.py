@@ -6293,6 +6293,134 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
             self.assertEqual(int(ls_iters[0]), 10)
 
 
+class TestContypeConaffinityZero(unittest.TestCase):
+    """Verify MJCF geoms with contype=conaffinity=0 get collision_group=0."""
+
+    def test_collision_group_zero_for_zero_contype(self):
+        """Collision-class geoms with contype=conaffinity=0 get collision_group=0."""
+        mjcf = """<mujoco>
+            <default>
+                <default class="collision"><geom contype="0" conaffinity="0"/></default>
+            </default>
+            <worldbody>
+                <body name="a">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.shape_collision_group[0], 0)
+
+    def test_collision_group_default_for_nonzero_contype(self):
+        """Collision-class geoms with nonzero contype keep default collision_group=1."""
+        mjcf = """<mujoco>
+            <default>
+                <default class="collision"><geom contype="1" conaffinity="1"/></default>
+            </default>
+            <worldbody>
+                <body name="a">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.shape_collision_group[0], 1)
+
+    def test_collision_group_zero_from_global_default(self):
+        """Collision-class geoms inheriting contype=conaffinity=0 from global default."""
+        # Apollo pattern: global default sets contype=conaffinity=0, collision class inherits it
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="collision">
+                    <geom group="3"/>
+                </default>
+            </default>
+            <worldbody>
+                <body name="a">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.shape_collision_group[0], 0)
+
+    def test_solver_contype_zero_for_group_zero(self):
+        """Solver sets contype=conaffinity=0 on MuJoCo geoms with collision_group=0."""
+        try:
+            import mujoco  # noqa: F401
+        except ImportError:
+            self.skipTest("mujoco not available")
+
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="collision"><geom group="3"/></default>
+            </default>
+            <worldbody>
+                <body name="a" pos="0 0 1">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Find the geom (skip world body geom if any)
+        geom_idx = solver.mj_model.ngeom - 1
+        self.assertEqual(solver.mj_model.geom_contype[geom_idx], 0)
+        self.assertEqual(solver.mj_model.geom_conaffinity[geom_idx], 0)
+
+    def test_no_automatic_contacts_with_group_zero(self):
+        """Overlapping geoms with collision_group=0 produce no automatic contacts."""
+        try:
+            import mujoco
+        except ImportError:
+            self.skipTest("mujoco not available")
+
+        # Two overlapping collision geoms with contype=conaffinity=0
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="collision"><geom group="3"/></default>
+            </default>
+            <worldbody>
+                <body name="a" pos="0 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="g1" type="sphere" size="0.2" class="collision"/>
+                </body>
+                <body name="b" pos="0 0 0.1">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="g2" type="sphere" size="0.2" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        import mujoco
+
+        mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        # Spheres overlap but contype=conaffinity=0 should prevent automatic contacts
+        self.assertEqual(solver.mj_data.ncon, 0, "No automatic contacts for contype=conaffinity=0")
+
+
 class TestJointFrictionloss(unittest.TestCase):
     """Verify MJCF joint frictionloss is parsed into Newton's joint_friction."""
 
