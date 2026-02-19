@@ -6083,6 +6083,114 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertIn("parent_xform", str(ctx.exception))
 
 
+class TestMjcfIncludeOptionMerge(unittest.TestCase):
+    """Tests for <option> attribute merging across multiple elements after include expansion."""
+
+    def test_option_from_included_file(self):
+        """Verify <option> attributes from an included file are parsed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            included = """\
+<mujoco>
+    <option iterations="4" ls_iterations="10"/>
+    <worldbody>
+        <body name="robot">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            with open(os.path.join(tmpdir, "robot.xml"), "w") as f:
+                f.write(included)
+
+            main = """\
+<mujoco model="test">
+    <include file="robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main)
+
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            builder.add_mjcf(main_path)
+
+            iters = builder.custom_attributes["mujoco:iterations"].values
+            ls_iters = builder.custom_attributes["mujoco:ls_iterations"].values
+            self.assertEqual(int(iters[0]), 4)
+            self.assertEqual(int(ls_iters[0]), 10)
+
+    def test_scene_option_overrides_included(self):
+        """Verify scene <option> overrides included <option> (later wins)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Included file has iterations=100 (default-like)
+            included = """\
+<mujoco>
+    <option iterations="100"/>
+    <worldbody>
+        <body name="robot">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            with open(os.path.join(tmpdir, "robot.xml"), "w") as f:
+                f.write(included)
+
+            # Scene overrides to iterations=4
+            main = """\
+<mujoco model="test">
+    <include file="robot.xml"/>
+    <option iterations="4" ls_iterations="10"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main)
+
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            builder.add_mjcf(main_path)
+
+            iters = builder.custom_attributes["mujoco:iterations"].values
+            ls_iters = builder.custom_attributes["mujoco:ls_iterations"].values
+            self.assertEqual(int(iters[0]), 4)
+            self.assertEqual(int(ls_iters[0]), 10)
+
+    def test_partial_option_preserves_unset(self):
+        """Verify attributes not in the second <option> keep values from the first."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Included file sets iterations=4
+            included = """\
+<mujoco>
+    <option iterations="4"/>
+    <worldbody>
+        <body name="robot">
+            <geom type="sphere" size="0.1"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            with open(os.path.join(tmpdir, "robot.xml"), "w") as f:
+                f.write(included)
+
+            # Scene sets ls_iterations=10 but NOT iterations
+            main = """\
+<mujoco model="test">
+    <include file="robot.xml"/>
+    <option ls_iterations="10"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main)
+
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            builder.add_mjcf(main_path)
+
+            iters = builder.custom_attributes["mujoco:iterations"].values
+            ls_iters = builder.custom_attributes["mujoco:ls_iterations"].values
+            # iterations=4 from included file preserved
+            self.assertEqual(int(iters[0]), 4)
+            # ls_iterations=10 from scene
+            self.assertEqual(int(ls_iters[0]), 10)
+
+
 class TestJointFrictionloss(unittest.TestCase):
     """Verify MJCF joint frictionloss is parsed into Newton's joint_friction."""
 

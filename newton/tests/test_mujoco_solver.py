@@ -5082,7 +5082,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         """Verify ref offset in coordinate conversion.
 
         With a hinge joint at ref=90 degrees, setting joint_q=0 in Newton
-        should produce qpos=pi/2 in MuJoCo after update_mjc_data.
+        should produce qpos=pi/2 in MuJoCo after _update_mjc_data.
         """
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_ref">
@@ -5104,7 +5104,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         # joint_q=0 should map to qpos=ref (pi/2)
         state = model.state()
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5, err_msg="joint_q=0 should map to qpos=ref")
 
@@ -6419,7 +6419,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         solver = SolverMuJoCo(model)
         state = model.state()
         # joint_q defaults to 0 for hinge
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5)
 
@@ -6446,7 +6446,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         solver.mjw_data.qpos.assign(qpos)
         state = model.state()
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver.update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data)
         joint_q = state.joint_q.numpy()
         np.testing.assert_allclose(joint_q[0], 0.1, atol=1e-5)
 
@@ -6477,14 +6477,14 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         state.joint_q.assign(q)
 
         # Newton → MuJoCo
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], test_q + 0.5, atol=1e-5)
 
         # MuJoCo → Newton
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         state2 = model.state()
-        solver.update_newton_state(model, state2, solver.mjw_data)
+        solver._update_newton_state(model, state2, solver.mjw_data)
         np.testing.assert_allclose(state2.joint_q.numpy()[0], test_q, atol=1e-5)
 
     def test_free_joint_position_roundtrip(self):
@@ -6507,9 +6507,9 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         original_q = state.joint_q.numpy().copy()
 
         # Newton → MuJoCo → Newton
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver.update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data)
         roundtrip_q = state.joint_q.numpy()
 
         np.testing.assert_allclose(roundtrip_q[:3], original_q[:3], atol=1e-5)
@@ -6524,13 +6524,13 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
     def _compare_body_positions(self, model, solver, state, body_names, atol=0.01):
         """Compare Newton and MuJoCo body positions after FK.
 
-        Runs update_mjc_data, kinematics, and update_newton_state, then
+        Runs _update_mjc_data, kinematics, and _update_newton_state, then
         asserts that Newton body positions match MuJoCo xpos for each
         named body.
         """
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver.update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data)
 
         newton_body_q = state.body_q.numpy()
         mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
@@ -6727,7 +6727,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         q = state.joint_q.numpy()
         q[0] = 0.5
         state.joint_q.assign(q)
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], 0.5, atol=1e-6, err_msg="With ref=0, qpos should equal joint_q")
 

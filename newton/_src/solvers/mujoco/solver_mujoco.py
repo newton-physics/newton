@@ -2091,34 +2091,34 @@ class SolverMuJoCo(SolverBase):
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
 
     @event_scope
-    def mujoco_warp_step(self):
+    def _mujoco_warp_step(self):
         self._mujoco_warp.step(self.mjw_model, self.mjw_data)
 
     @event_scope
     @override
     def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float):
         if self.use_mujoco_cpu:
-            self.apply_mjc_control(self.model, state_in, control, self.mj_data)
+            self._apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
-                self.update_mjc_data(self.mj_data, self.model, state_in)
+                self._update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
             self._mujoco.mj_step(self.mj_model, self.mj_data)
-            self.update_newton_state(self.model, state_out, self.mj_data)
+            self._update_newton_state(self.model, state_out, self.mj_data)
         else:
             self.enable_rne_postconstraint(state_out)
-            self.apply_mjc_control(self.model, state_in, control, self.mjw_data)
+            self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
-                self.update_mjc_data(self.mjw_data, self.model, state_in)
+                self._update_mjc_data(self.mjw_data, self.model, state_in)
             self.mjw_model.opt.timestep.fill_(dt)
             with wp.ScopedDevice(self.model.device):
                 if self.mjw_model.opt.run_collision_detection:
-                    self.mujoco_warp_step()
+                    self._mujoco_warp_step()
                 else:
-                    self.convert_contacts_to_mjwarp(self.model, state_in, contacts)
-                    self.mujoco_warp_step()
+                    self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
+                    self._mujoco_warp_step()
 
-            self.update_newton_state(self.model, state_out, self.mjw_data)
+            self._update_newton_state(self.model, state_out, self.mjw_data)
         self._step += 1
         return state_out
 
@@ -2135,7 +2135,7 @@ class SolverMuJoCo(SolverBase):
                 print("Setting model.sensor_rne_postconstraint True")
             m.sensor_rne_postconstraint = True
 
-    def convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
+    def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
         # Ensure the inverse shape mapping exists (lazy creation)
         if self.newton_shape_to_mjc_geom is None:
             self._create_inverse_shape_mapping()
@@ -2194,16 +2194,16 @@ class SolverMuJoCo(SolverBase):
     @override
     def notify_model_changed(self, flags: int):
         if flags & SolverNotifyFlags.BODY_INERTIAL_PROPERTIES:
-            self.update_model_inertial_properties()
+            self._update_model_inertial_properties()
         if flags & SolverNotifyFlags.JOINT_PROPERTIES:
-            self.update_joint_properties()
+            self._update_joint_properties()
         if flags & SolverNotifyFlags.JOINT_DOF_PROPERTIES:
-            self.update_joint_dof_properties()
+            self._update_joint_dof_properties()
         if flags & SolverNotifyFlags.SHAPE_PROPERTIES:
-            self.update_geom_properties()
+            self._update_geom_properties()
             self.update_pair_properties()
         if flags & SolverNotifyFlags.MODEL_PROPERTIES:
-            self.update_model_properties()
+            self._update_model_properties()
         if flags & SolverNotifyFlags.CONSTRAINT_PROPERTIES:
             self.update_eq_properties()
             self.update_mimic_eq_properties()
@@ -2241,7 +2241,7 @@ class SolverMuJoCo(SolverBase):
         # Check if the data is a mujoco_warp Data object
         return hasattr(data, "nworld")
 
-    def apply_mjc_control(self, model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
+    def _apply_mjc_control(self, model: Model, state: State, control: Control | None, mj_data: MjWarpData | MjData):
         if control is None or control.joint_f is None:
             if state.body_f is None:
                 return
@@ -2337,7 +2337,7 @@ class SolverMuJoCo(SolverBase):
             mj_data.ctrl[:] = ctrl.numpy().flatten()
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
-    def update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
+    def _update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have an MjWarp Data object
@@ -2380,7 +2380,7 @@ class SolverMuJoCo(SolverBase):
             mj_data.qpos[:] = qpos.numpy().flatten()[: len(mj_data.qpos)]
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
 
-    def update_newton_state(
+    def _update_newton_state(
         self,
         model: Model,
         state: State,
@@ -2468,7 +2468,7 @@ class SolverMuJoCo(SolverBase):
             )
 
     @staticmethod
-    def find_body_collision_filter_pairs(
+    def _find_body_collision_filter_pairs(
         model: Model,
         selected_bodies: nparray,
         colliding_shapes: nparray,
@@ -2504,7 +2504,7 @@ class SolverMuJoCo(SolverBase):
         return body_exclude_pairs
 
     @staticmethod
-    def color_collision_shapes(
+    def _color_collision_shapes(
         model: Model, selected_shapes: nparray, visualize_graph: bool = False, shape_labels: list[str] | None = None
     ) -> nparray:
         """
@@ -3083,13 +3083,13 @@ class SolverMuJoCo(SolverBase):
         colliding_shapes_per_world = len(colliding_shapes)
 
         # filter out non-colliding bodies using excludes
-        body_filters = self.find_body_collision_filter_pairs(
+        body_filters = self._find_body_collision_filter_pairs(
             model,
             selected_bodies,
             colliding_shapes,
         )
 
-        shape_color = self.color_collision_shapes(
+        shape_color = self._color_collision_shapes(
             model, colliding_shapes, visualize_graph=False, shape_labels=model.shape_label
         )
 
@@ -3821,9 +3821,9 @@ class SolverMuJoCo(SolverBase):
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
 
-        self.update_mjc_data(self.mj_data, model, state)
+        self._update_mjc_data(self.mj_data, model, state)
 
-        # fill some MjWarp model fields that are outdated after update_mjc_data.
+        # fill some MjWarp model fields that are outdated after _update_mjc_data.
         # just setting qpos0 to d.qpos leads to weird behavior here, needs
         # to be investigated.
 
@@ -4092,7 +4092,7 @@ class SolverMuJoCo(SolverBase):
             )
 
             # expand model fields that can be expanded:
-            self.expand_model_fields(self.mjw_model, nworld)
+            self._expand_model_fields(self.mjw_model, nworld)
 
             # update solver options from Newton model (only if not overridden by constructor)
             self._update_solver_options(overridden_options=overridden_options)
@@ -4101,7 +4101,7 @@ class SolverMuJoCo(SolverBase):
             # now complete the data from the Newton model
             self.notify_model_changed(SolverNotifyFlags.ALL)
 
-    def expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
+    def _expand_model_fields(self, mj_model: MjWarpModel, nworld: int):
         if nworld == 1:
             return
 
@@ -4311,7 +4311,7 @@ class SolverMuJoCo(SolverBase):
             device=self.model.device,
         )
 
-    def update_model_inertial_properties(self):
+    def _update_model_inertial_properties(self):
         if self.model.body_count == 0:
             return
 
@@ -4359,7 +4359,7 @@ class SolverMuJoCo(SolverBase):
         # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
         self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
 
-    def update_joint_dof_properties(self):
+    def _update_joint_dof_properties(self):
         """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, passive stiffness and damping, and joint limit ranges in the MuJoCo model."""
         if self.model.joint_dof_count == 0:
             return
@@ -4484,7 +4484,7 @@ class SolverMuJoCo(SolverBase):
         # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
         self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
 
-    def update_joint_properties(self):
+    def _update_joint_properties(self):
         """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""
         if self.model.joint_count == 0:
             return
@@ -4537,7 +4537,7 @@ class SolverMuJoCo(SolverBase):
                 device=self.model.device,
             )
 
-    def update_geom_properties(self):
+    def _update_geom_properties(self):
         """Update geom properties including collision radius, friction, and contact parameters in the MuJoCo model."""
 
         # Get number of geoms and worlds from MuJoCo model
@@ -4652,7 +4652,7 @@ class SolverMuJoCo(SolverBase):
                 device=self.model.device,
             )
 
-    def update_model_properties(self):
+    def _update_model_properties(self):
         """Update model properties including gravity in the MuJoCo model."""
         if self.use_mujoco_cpu:
             self.mj_model.opt.gravity[:] = np.array([*self.model.gravity.numpy()[0]])
@@ -4845,7 +4845,7 @@ class SolverMuJoCo(SolverBase):
         """Update CTRL_DIRECT actuator properties (gainprm, biasprm) in the MuJoCo model.
 
         Only updates actuators that use CTRL_DIRECT mode. JOINT_TARGET actuators are
-        updated via update_joint_dof_properties() using joint_target_ke/kd.
+        updated via _update_joint_dof_properties() using joint_target_ke/kd.
         """
         if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
             return
