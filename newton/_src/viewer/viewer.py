@@ -23,17 +23,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.utils import (
-    compute_world_offsets,
-    create_box_mesh,
-    create_capsule_mesh,
-    create_cone_mesh,
-    create_cylinder_mesh,
-    create_ellipsoid_mesh,
-    create_plane_mesh,
-    create_sphere_mesh,
-    solidify_mesh,
-)
+from newton.utils import compute_world_offsets, solidify_mesh
 
 from ..core.types import MAXVAL, nparray
 from .kernels import compute_hydro_contact_surface_lines, estimate_world_extents
@@ -107,6 +97,9 @@ class ViewerBase:
         # SDF isomesh instances -- created on-demand for collision visualization
         self._sdf_isomesh_instances: dict[int, ViewerBase.ShapeInstances] = {}
         self._sdf_isomesh_populated: bool = False  # lazy flag for SDF isomesh population
+        # Host mirror of per-shape SDF table indices. Filled once in set_model()
+        # to avoid repeated device->host copies in shape population loops.
+        self._shape_sdf_index_host: nparray | None = None
 
     def is_running(self) -> bool:
         return True
@@ -142,6 +135,7 @@ class ViewerBase:
 
         if model is not None:
             self.device = model.device
+            self._shape_sdf_index_host = model.shape_sdf_index.numpy() if model.shape_sdf_index is not None else None
             self._populate_shapes()
 
             # Auto-compute world offsets if not already set
@@ -161,8 +155,8 @@ class ViewerBase:
         if self.model is None:
             return 0
         if self.max_worlds is None:
-            return self.model.num_worlds
-        return min(self.max_worlds, self.model.num_worlds)
+            return self.model.world_count
+        return min(self.max_worlds, self.model.world_count)
 
     def _get_shape_isomesh(self, shape_idx: int):
         """Get the isomesh for a collision shape with an SDF volume.
@@ -181,7 +175,8 @@ class ViewerBase:
             return None
 
         # Check if this shape has an SDF volume
-        sdf_volume = self.model.shape_sdf_volume[shape_idx] if self.model.shape_sdf_volume else None
+        sdf_idx = int(self._shape_sdf_index_host[shape_idx]) if self._shape_sdf_index_host is not None else -1
+        sdf_volume = self.model.sdf_volume[sdf_idx] if (sdf_idx >= 0 and self.model.sdf_volume) else None
         if sdf_volume is None:
             return None
 
@@ -216,7 +211,7 @@ class ViewerBase:
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_world_offsets()")
 
-        num_worlds = self._get_render_world_count()
+        world_count = self._get_render_world_count()
 
         # Get up axis from model
         up_axis = self.model.up_axis
@@ -226,7 +221,7 @@ class ViewerBase:
             spacing = (float(spacing[0]), float(spacing[1]), float(spacing[2]))
 
         # Compute offsets using the shared utility function
-        world_offsets = compute_world_offsets(num_worlds, spacing, up_axis)
+        world_offsets = compute_world_offsets(world_count, spacing, up_axis)
 
         # Convert to warp array
         self.world_offsets = wp.array(world_offsets, dtype=wp.vec3, device=self.device)
@@ -236,11 +231,11 @@ class ViewerBase:
         if self.model is None:
             return None
 
-        num_worlds = self.model.num_worlds
+        world_count = self.model.world_count
 
         # Initialize bounds arrays for all worlds
-        world_bounds_min = wp.full((num_worlds, 3), MAXVAL, dtype=wp.float32, device=self.device)
-        world_bounds_max = wp.full((num_worlds, 3), -MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_min = wp.full((world_count, 3), MAXVAL, dtype=wp.float32, device=self.device)
+        world_bounds_max = wp.full((world_count, 3), -MAXVAL, dtype=wp.float32, device=self.device)
 
         # Get initial state for body transforms
         state = self.model.state()
@@ -255,7 +250,7 @@ class ViewerBase:
                 self.model.shape_collision_radius,
                 self.model.shape_world,
                 state.body_q,
-                num_worlds,
+                world_count,
             ],
             outputs=[world_bounds_min, world_bounds_max],
             device=self.device,
@@ -346,7 +341,12 @@ class ViewerBase:
 
             shapes.colors_changed = False
 
-        # render SDF isomesh instances for collision visualization (lazily populated)
+        self._log_non_shape_state(state)
+        self.model_changed = False
+
+    def _log_non_shape_state(self, state):
+        """Log SDF isomeshes, inertia boxes, triangles, particles, joints, COM."""
+
         sdf_isomesh_just_populated = False
         if self.show_collision and not self._sdf_isomesh_populated:
             self._populate_sdf_isomesh_instances()
@@ -355,11 +355,8 @@ class ViewerBase:
 
         for shapes in self._sdf_isomesh_instances.values():
             visible = self.show_collision
-
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets)
-
-            # Send colors/materials on model change OR when isomeshes were just populated
             send_appearance = self.model_changed or sdf_isomesh_just_populated
             self.log_instances(
                 shapes.name,
@@ -371,13 +368,10 @@ class ViewerBase:
                 hidden=not visible,
             )
 
-        # update inertia box transforms if visible
         if self.show_inertia_boxes:
             if self._inertia_box_instances is None:
-                # create instance batch on-demand
                 self._populate_inertia_boxes()
             self._inertia_box_instances.update(state, world_offsets=self.world_offsets)
-
         if self._inertia_box_instances is not None:
             self.log_instances(
                 self._inertia_box_instances.name,
@@ -393,8 +387,6 @@ class ViewerBase:
         self._log_particles(state)
         self._log_joints(state)
         self._log_com(state)
-
-        self.model_changed = False
 
     def log_contacts(self, contacts, state):
         """
@@ -630,6 +622,27 @@ class ViewerBase:
         and an index buffer. Slices them into separate arrays and forwards to log_mesh.
         """
 
+        # Heightfield: convert to mesh for rendering
+        if geo_type == newton.GeoType.HFIELD:
+            if geo_src is None:
+                raise ValueError(f"log_geo requires geo_src for HFIELD (name={name})")
+
+            # Denormalize elevation data to actual Z heights.
+            # Transpose because create_mesh_heightfield uses ij indexing (i=X, j=Y)
+            # while Heightfield uses row-major (row=Y, col=X).
+            actual_heights = geo_src.min_z + geo_src.data * (geo_src.max_z - geo_src.min_z)
+            mesh = newton.Mesh.create_heightfield(
+                heightfield=actual_heights.T,
+                extent_x=geo_src.hx * 2.0,
+                extent_y=geo_src.hy * 2.0,
+                ground_z=geo_src.min_z,
+                compute_inertia=False,
+            )
+            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
+            self.log_mesh(name, points, indices, hidden=hidden)
+            return
+
         # GEO_MESH handled by provided source geometry
         if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH):
             if geo_src is None:
@@ -673,45 +686,45 @@ class ViewerBase:
             # Handle "infinite" planes encoded with non-positive scales
             width = geo_scale[0] if geo_scale and geo_scale[0] > 0.0 else 1000.0
             length = geo_scale[1] if len(geo_scale) > 1 and geo_scale[1] > 0.0 else 1000.0
-            vertices, indices = create_plane_mesh(width, length)
+            mesh = newton.Mesh.create_plane(width, length, compute_inertia=False)
 
         elif geo_type == newton.GeoType.SPHERE:
             radius = geo_scale[0]
-            vertices, indices = create_sphere_mesh(radius)
+            mesh = newton.Mesh.create_sphere(radius, compute_inertia=False)
 
         elif geo_type == newton.GeoType.CAPSULE:
             radius, half_height = geo_scale[:2]
-            vertices, indices = create_capsule_mesh(radius, half_height, up_axis=2)
+            mesh = newton.Mesh.create_capsule(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
 
         elif geo_type == newton.GeoType.CYLINDER:
             radius, half_height = geo_scale[:2]
-            vertices, indices = create_cylinder_mesh(radius, half_height, up_axis=2)
+            mesh = newton.Mesh.create_cylinder(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
 
         elif geo_type == newton.GeoType.CONE:
             radius, half_height = geo_scale[:2]
-            vertices, indices = create_cone_mesh(radius, half_height, up_axis=2)
+            mesh = newton.Mesh.create_cone(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
 
         elif geo_type == newton.GeoType.BOX:
             if len(geo_scale) == 1:
                 ext = (geo_scale[0],) * 3
             else:
                 ext = tuple(geo_scale[:3])
-            vertices, indices = create_box_mesh(ext)
+            mesh = newton.Mesh.create_box(ext[0], ext[1], ext[2], duplicate_vertices=True, compute_inertia=False)
 
         elif geo_type == newton.GeoType.ELLIPSOID:
             # geo_scale contains (rx, ry, rz) semi-axes
             rx = geo_scale[0] if len(geo_scale) > 0 else 1.0
             ry = geo_scale[1] if len(geo_scale) > 1 else rx
             rz = geo_scale[2] if len(geo_scale) > 2 else rx
-            vertices, indices = create_ellipsoid_mesh(rx, ry, rz)
+            mesh = newton.Mesh.create_ellipsoid(rx, ry, rz, compute_inertia=False)
         else:
             raise ValueError(f"log_geo does not support geo_type={geo_type} (name={name})")
 
         # Convert to Warp arrays and forward to log_mesh
-        points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
-        normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
-        uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.int32, device=self.device)
+        points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+        normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+        uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+        indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
 
         self.log_mesh(name, points, indices, normals, uvs, hidden=hidden, texture=None)
 
@@ -910,6 +923,7 @@ class ViewerBase:
             newton.GeoType.ELLIPSOID: "ellipsoid",
             newton.GeoType.MESH: "mesh",
             newton.GeoType.CONVEX_MESH: "convex_hull",
+            newton.GeoType.HFIELD: "heightfield",
         }.get(geo_type)
 
         if base_name is None:
@@ -922,7 +936,9 @@ class ViewerBase:
             tuple(scale_list),
             float(thickness),
             bool(is_solid),
-            geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
+            geo_src=geo_src
+            if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+            else None,
             hidden=True,
         )
         self._geometry_cache[geo_hash] = mesh_path
@@ -940,6 +956,7 @@ class ViewerBase:
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
+        shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
         # loop over shapes
@@ -953,10 +970,6 @@ class ViewerBase:
             geo_thickness = float(shape_geo_thickness[s])
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
-
-            # skip unsupported
-            if geo_type == newton.GeoType.SDF:
-                continue
 
             # check whether we can instance an already created shape with the same geometry
             geo_hash = self._hash_geometry(
@@ -974,7 +987,9 @@ class ViewerBase:
                     tuple(geo_scale),
                     float(geo_thickness),
                     bool(geo_is_solid),
-                    geo_src=geo_src if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH) else None,
+                    geo_src=geo_src
+                    if geo_type in (newton.GeoType.MESH, newton.GeoType.CONVEX_MESH, newton.GeoType.HFIELD)
+                    else None,
                 )
             else:
                 mesh_name = self._geometry_cache[geo_hash]
@@ -994,7 +1009,8 @@ class ViewerBase:
             is_collision_shape = flags & int(newton.ShapeFlags.COLLIDE_SHAPES)
             is_visible = flags & int(newton.ShapeFlags.VISIBLE)
             # Check for SDF volume existence without computing the isomesh (lazy evaluation)
-            has_sdf = self.model.shape_sdf_volume and self.model.shape_sdf_volume[s] is not None
+            sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
+            has_sdf = sdf_idx >= 0 and self.model.sdf_volume and self.model.sdf_volume[sdf_idx] is not None
             if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
@@ -1099,7 +1115,8 @@ class ViewerBase:
         shape_flags = self.model.shape_flags.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        shape_sdf_data = self.model.shape_sdf_data.numpy() if self.model.shape_sdf_data is not None else None
+        sdf_data = self.model.sdf_data.numpy() if self.model.sdf_data is not None else None
+        shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
 
         for s in range(shape_count):
@@ -1117,7 +1134,8 @@ class ViewerBase:
                 continue
 
             # Check if scale was baked into the SDF
-            scale_baked = shape_sdf_data[s]["scale_baked"] if shape_sdf_data is not None else True
+            sdf_idx = int(shape_sdf_index[s]) if shape_sdf_index is not None else -1
+            scale_baked = bool(sdf_data[sdf_idx]["scale_baked"]) if (sdf_data is not None and sdf_idx >= 0) else True
 
             # Create isomesh geometry (always use (1,1,1) for geometry since isomesh is in SDF space)
             geo_type = newton.GeoType.MESH
@@ -1168,7 +1186,7 @@ class ViewerBase:
 
             # Use distinct collision color palette (different from visual shapes)
             color = wp.vec3(self._collision_color_map(s))
-            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.3, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             batch.add(
                 parent=parent,
@@ -1257,7 +1275,7 @@ class ViewerBase:
             else:
                 color = wp.vec3(color)
 
-            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, unused
+            material = wp.vec4(0.5, 0.0, 0.0, 0.0)  # roughness, metallic, checker, texture_enable
 
             # add render instance
             batch.add(

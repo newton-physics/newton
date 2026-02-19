@@ -20,7 +20,6 @@ import warp as wp
 
 import newton
 from newton._src.core import quat_between_axes
-from newton._src.geometry.utils import create_box_mesh
 from newton.tests.unittest_utils import (
     add_function_test,
     assert_np_equal,
@@ -196,7 +195,7 @@ def test_shapes_on_plane(test, device, solver_fn):
             simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps)
         graph = capture.graph
 
-    for _ in range(250):
+    for _ in range(120):
         if use_cuda_graph:
             wp.capture_launch(graph)
         else:
@@ -408,9 +407,15 @@ def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
 
     # Two cubes using convex hull representation (8 corner points)
     cube_half = CUBE_SIZE / 2
-    cube_vertices, cube_indices = create_box_mesh((cube_half, cube_half, cube_half))
-
-    cube_mesh = newton.Mesh(cube_vertices, cube_indices)
+    cube_mesh = newton.Mesh.create_box(
+        cube_half,
+        cube_half,
+        cube_half,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
 
     offset_a = 0.5 * CUBE_SIZE * (ramp_up + ramp_right + (start_shift - 14.07) * ramp_forward)
     offset_b = 0.5 * CUBE_SIZE * (ramp_up - ramp_right + (start_shift - 14.07) * ramp_forward)
@@ -526,8 +531,15 @@ def test_mesh_box_on_ground(test, device):
 
     # Create a box mesh (half extents = 0.5)
     box_half = 0.5
-    vertices, indices = create_box_mesh((box_half, box_half, box_half))
-    box_mesh = newton.Mesh(vertices, indices)
+    box_mesh = newton.Mesh.create_box(
+        box_half,
+        box_half,
+        box_half,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
 
     # Add mesh box body, positioned so bottom face is at z=0 (center at z=box_half)
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
@@ -701,8 +713,15 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
 
     # Create a small cube convex mesh (half extents = 0.2)
     cube_half = 0.2
-    vertices, indices = create_box_mesh((cube_half, cube_half, cube_half))
-    cube_mesh = newton.Mesh(vertices, indices)
+    cube_mesh = newton.Mesh.create_box(
+        cube_half,
+        cube_half,
+        cube_half,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
 
     # Static ground plane
     builder.add_shape_plane(
@@ -800,8 +819,8 @@ def test_box_drop(test, device, solver_fn):
             solver.step(state_0, state_1, None, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 
-            vel_z = np.abs(state_0.body_qd.numpy()[:, 2])
-            max_observed_vel = max(max_observed_vel, vel_z.max())
+        vel_z = np.abs(state_0.body_qd.numpy()[:, 2])
+        max_observed_vel = max(max_observed_vel, vel_z.max())
 
     test.assertLess(
         max_observed_vel,

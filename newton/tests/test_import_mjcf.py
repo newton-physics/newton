@@ -29,14 +29,14 @@ from newton._src.sim.builder import ShapeFlags
 from newton.solvers import SolverMuJoCo
 
 
-class TestImportMjcf(unittest.TestCase):
+class TestImportMjcfBasic(unittest.TestCase):
     def test_humanoid_mjcf(self):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 123.0
         builder.default_shape_cfg.kd = 456.0
         builder.default_shape_cfg.mu = 789.0
-        builder.default_shape_cfg.torsional_friction = 0.999
-        builder.default_shape_cfg.rolling_friction = 0.888
+        builder.default_shape_cfg.mu_torsional = 0.999
+        builder.default_shape_cfg.mu_rolling = 0.888
         builder.default_joint_cfg.armature = 42.0
         mjcf_filename = newton.examples.get_asset("nv_humanoid.xml")
         builder.add_mjcf(
@@ -56,8 +56,8 @@ class TestImportMjcf(unittest.TestCase):
         # Check friction values from nv_humanoid.xml: friction="1.0 0.05 0.05"
         # mu = 1.0, torsional = 0.05, rolling = 0.05
         self.assertTrue(np.allclose(np.array(builder.shape_material_mu)[non_site_indices], 1.0))
-        self.assertTrue(np.allclose(np.array(builder.shape_material_torsional_friction)[non_site_indices], 0.05))
-        self.assertTrue(np.allclose(np.array(builder.shape_material_rolling_friction)[non_site_indices], 0.05))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_mu_torsional)[non_site_indices], 0.05))
+        self.assertTrue(np.allclose(np.array(builder.shape_material_mu_rolling)[non_site_indices], 0.05))
         self.assertTrue(all(np.array(builder.joint_armature[:6]) == 0.0))
         self.assertEqual(
             builder.joint_armature[6:],
@@ -610,6 +610,8 @@ class TestImportMjcf(unittest.TestCase):
         # note we need to swap quaternion order wxyz -> xyzw
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+
+class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
         # Create MJCF content with cylinder geometry
@@ -1199,8 +1201,8 @@ class TestImportMjcf(unittest.TestCase):
         # tendon_invweight0 is computed by MuJoCo based on the mass matrix and tendon geometry.
         # The formula accounts for: sum(coef^2 * effective_dof_inv_weight) / (1 + armature)
         # where effective_dof_inv_weight depends on the full articulated body inertia.
-        # These expected values are verified against the Newton -> MuJoCo pipeline.
-        expected_invweight0 = [4.6796, 5.9226]  # Values after Newton's inertia processing
+        # These expected values are verified against the Newton -> MuJoCo pipeline using MJCF-defined inertia.
+        expected_invweight0 = [4.5780, 5.7940]  # Values when using MJCF-defined inertia
         invweight0 = solver.mj_model.tendon_invweight0
         for i, expected in enumerate(expected_invweight0):
             self.assertAlmostEqual(
@@ -1507,12 +1509,12 @@ class TestImportMjcf(unittest.TestCase):
 </mujoco>
 """
 
-        # Newton hard-codes spec.compiler.automlimits=1.
-        # 1) With automlimits=1 we should not have to specify limited="true" on each tendon. It should be sufficient
+        # MuJoCo defaults spec.compiler.autolimits=true (Newton now parses this from <compiler>).
+        # 1) With autolimits=true we should not have to specify limited="true" on each tendon. It should be sufficient
         # just to set the range. coupling_tendon1 is the test for this.
-        # 2) With compiler.autolimits=1 it shouldn't matter if we do specify limited="true.  We should still end up
+        # 2) With compiler.autolimits=true it shouldn't matter if we do specify limited="true". We should still end up
         # with an active limit with limited="true". coupling_tendon2 is the test for this.
-        # 3) With compiler.autolimits=1  and limited="false" we should end up with an inactive limit. coupling_tendon3
+        # 3) With compiler.autolimits=true and limited="false" we should end up with an inactive limit. coupling_tendon3
         # is the test for this.
         # 4) repeat the test with actuatorfrclimited.
 
@@ -1577,6 +1579,184 @@ class TestImportMjcf(unittest.TestCase):
                 expected,
                 msg=f"Expected tendon actuator force limited value: {expected}, Measured value: {measured}",
             )
+
+    def test_autolimits_false_tendon(self):
+        """Tests autolimits=false handling for tendon limit flags.
+
+        Verifies that explicit limited/actuatorfrclimited values are respected:
+            - explicit ``limited="true"`` -> limited=1
+            - explicit ``limited="false"`` -> limited=0
+            - same logic applies to ``actuatorfrclimited``
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+      <body name="link2" pos="0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <tendon>
+    <fixed limited="true" range="-10.0 11.0"
+           actuatorfrclimited="true" actuatorfrcrange="-2.2 2.2"
+           name="tendon_explicit_true">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="-1"/>
+    </fixed>
+  </tendon>
+
+  <tendon>
+    <fixed limited="false" range="-12.0 13.0"
+           actuatorfrclimited="false" actuatorfrcrange="-3.3 3.3"
+           name="tendon_explicit_false">
+      <joint joint="joint1" coef="1"/>
+      <joint joint="joint2" coef="1"/>
+    </fixed>
+  </tendon>
+
+</mujoco>
+"""
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_world(individual_builder)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # Tendon with explicit limited="true" -> limited=1
+        self.assertEqual(
+            solver.mjw_model.tendon_limited.numpy()[0],
+            1,
+            msg="Tendon with explicit limited='true' should have limited=1",
+        )
+        # Tendon with explicit limited="false" -> limited=0
+        self.assertEqual(
+            solver.mjw_model.tendon_limited.numpy()[1],
+            0,
+            msg="Tendon with explicit limited='false' should have limited=0",
+        )
+        # Same for actuatorfrclimited
+        self.assertEqual(
+            solver.mjw_model.tendon_actfrclimited.numpy()[0],
+            1,
+            msg="Tendon with explicit actuatorfrclimited='true' should have actfrclimited=1",
+        )
+        self.assertEqual(
+            solver.mjw_model.tendon_actfrclimited.numpy()[1],
+            0,
+            msg="Tendon with explicit actuatorfrclimited='false' should have actfrclimited=0",
+        )
+
+    def test_autolimits_false_actuator(self):
+        """Test that autolimits=false is respected for actuator ctrllimited."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5" limited="true"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="act_explicit_true" joint="joint1"
+              ctrllimited="true" ctrlrange="-1 1"/>
+    <position name="act_explicit_false" joint="joint1"
+              ctrllimited="false" ctrlrange="-1 1"/>
+  </actuator>
+
+</mujoco>
+"""
+        individual_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(individual_builder)
+        individual_builder.add_mjcf(mjcf, ctrl_direct=True)
+        builder = newton.ModelBuilder()
+        builder.add_world(individual_builder)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        # MuJoCo stores ctrllimited as boolean after compilation
+        # Actuator with explicit ctrllimited="true" -> True
+        self.assertTrue(
+            solver.mjw_model.actuator_ctrllimited.numpy()[0],
+            msg="Actuator with explicit ctrllimited='true' should be limited",
+        )
+        # Actuator with explicit ctrllimited="false" -> False
+        self.assertFalse(
+            solver.mjw_model.actuator_ctrllimited.numpy()[1],
+            msg="Actuator with explicit ctrllimited='false' should not be limited",
+        )
+
+    def test_autolimits_false_joint_effort_limit(self):
+        """Test that autolimits=false prevents auto-applying effort_limit from actuatorfrcrange."""
+        mjcf_autolimits_true = """<?xml version="1.0" ?>
+<mujoco>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-1 1"
+               actuatorfrcrange="-100 100"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+        mjcf_autolimits_false = """<?xml version="1.0" ?>
+<mujoco>
+  <compiler autolimits="false"/>
+  <worldbody>
+    <body name="root" pos="0 0 0">
+      <geom type="box" size="0.1 0.1 0.1"/>
+      <body name="link1" pos="0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-1 1" limited="true"
+               actuatorfrcrange="-100 100"/>
+        <geom type="cylinder" size="0.05 0.025"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+        # With autolimits=true (default), actuatorfrclimited="auto" resolves to true
+        builder_true = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder_true)
+        builder_true.add_mjcf(mjcf_autolimits_true)
+        model_true = newton.ModelBuilder()
+        model_true.add_world(builder_true)
+        model_true = model_true.finalize()
+        effort_limit_true = model_true.joint_effort_limit.numpy()[0]
+        self.assertAlmostEqual(effort_limit_true, 100.0, places=4)
+
+        # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
+        builder_false = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder_false)
+        builder_false.add_mjcf(mjcf_autolimits_false)
+        model_false = newton.ModelBuilder()
+        model_false.add_world(builder_false)
+        model_false = model_false.finalize()
+        effort_limit_false = model_false.joint_effort_limit.numpy()[0]
+        # Should use default effort limit, not 100.0 from actuatorfrcrange
+        self.assertNotAlmostEqual(effort_limit_false, 100.0, places=4)
 
     def test_single_mujoco_fixed_tendon_auto_springlength(self):
         """Test that springlength=-1 auto-computes the spring length from initial joint positions.
@@ -1651,6 +1831,8 @@ class TestImportMjcf(unittest.TestCase):
             msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
         )
 
+
+class TestImportMjcfSolverParams(unittest.TestCase):
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
@@ -2018,28 +2200,61 @@ class TestImportMjcf(unittest.TestCase):
 
         # 3-element: friction="0.5 0.1 0.01" → absolute values
         self.assertAlmostEqual(builder.shape_material_mu[0], 0.5, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[0], 0.1, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[0], 0.01, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[0], 0.1, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[0], 0.01, places=5)
 
         # 3-element: friction="0.8 0.2 0.05" → absolute values
         self.assertAlmostEqual(builder.shape_material_mu[1], 0.8, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[1], 0.2, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[1], 0.05, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[1], 0.2, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[1], 0.05, places=5)
 
         # 3-element with zeros
         self.assertAlmostEqual(builder.shape_material_mu[2], 0.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[2], 0.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[2], 0.0, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[2], 0.0, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[2], 0.0, places=5)
 
-        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.25, 0.0005)
+        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.005, 0.0001)
         self.assertAlmostEqual(builder.shape_material_mu[3], 1.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[3], 0.25, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[3], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[3], 0.005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[3], 0.0001, places=5)
 
-        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0005)
+        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0001)
         self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
-        self.assertAlmostEqual(builder.shape_material_torsional_friction[4], 0.15, places=5)
-        self.assertAlmostEqual(builder.shape_material_rolling_friction[4], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[4], 0.15, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0001, places=5)
+
+    def test_mjcf_geom_margin_parsing(self):
+        """Test MJCF geom margin is parsed to shape thickness.
+
+        Verifies that MJCF geom margin values are mapped to shape thickness and
+        that geoms without an explicit margin use the default thickness.
+        Also checks that the model scale is applied to the margin value.
+        """
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="test_body">
+                    <geom name="geom1" type="box" size="0.1 0.1 0.1" margin="0.003"/>
+                    <geom name="geom2" type="sphere" size="0.1" margin="0.01"/>
+                    <geom name="geom3" type="capsule" size="0.1 0.2"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, up_axis="Z")
+
+        self.assertEqual(builder.shape_count, 3)
+        self.assertAlmostEqual(builder.shape_thickness[0], 0.003, places=6)
+        self.assertAlmostEqual(builder.shape_thickness[1], 0.01, places=6)
+        # geom3 has no margin, should use ShapeConfig default (0.0)
+        self.assertAlmostEqual(builder.shape_thickness[2], 0.0, places=8)
+
+        # Verify scale is applied to margin
+        builder_scaled = newton.ModelBuilder()
+        builder_scaled.add_mjcf(mjcf_content, up_axis="Z", scale=2.0)
+        self.assertAlmostEqual(builder_scaled.shape_thickness[0], 0.006, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_thickness[1], 0.02, places=6)
 
     def test_mjcf_geom_solref_parsing(self):
         """Test MJCF geom solref parsing for contact stiffness/damping.
@@ -2724,6 +2939,8 @@ class TestImportMjcf(unittest.TestCase):
         else:
             self.fail("Model should have mujoco.condim attribute")
 
+
+class TestImportMjcfActuatorsFrames(unittest.TestCase):
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -3563,6 +3780,8 @@ class TestImportMjcf(unittest.TestCase):
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
         np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
 
+
+class TestImportMjcfComposition(unittest.TestCase):
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -5488,8 +5707,11 @@ class TestMjcfMultipleWorldbody(unittest.TestCase):
 class TestMjcfActuatorAutoLimited(unittest.TestCase):
     """Test auto-enabling of actuator *limited flags when *range is specified."""
 
-    def test_ctrllimited_auto_enabled_when_ctrlrange_specified(self):
-        """Test that ctrllimited is auto-enabled when ctrlrange is specified."""
+    def test_ctrllimited_auto_when_ctrlrange_specified(self):
+        """Test that ctrllimited is auto (2) when ctrlrange is specified but ctrllimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -5508,12 +5730,15 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
-        # ctrllimited should be auto-enabled (1) because ctrlrange was specified
+        # ctrllimited should be auto (2) — MuJoCo resolves it during compilation
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
-        self.assertEqual(ctrllimited[0], 1)
+        self.assertEqual(ctrllimited[0], 2)
 
-    def test_ctrllimited_not_auto_enabled_without_ctrlrange(self):
-        """Test that ctrllimited stays disabled when ctrlrange is not specified."""
+    def test_ctrllimited_auto_without_ctrlrange(self):
+        """Test that ctrllimited defaults to auto (2) when ctrlrange is not specified.
+
+        MuJoCo resolves auto to false during model.compile() when no ctrlrange is present.
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -5532,9 +5757,9 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
-        # ctrllimited should be disabled (0) because ctrlrange was not specified
+        # ctrllimited should be auto (2) — MuJoCo resolves it during compilation
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
-        self.assertEqual(ctrllimited[0], 0)
+        self.assertEqual(ctrllimited[0], 2)
 
     def test_ctrllimited_explicit_false_not_overridden(self):
         """Test that explicit ctrllimited=false is not overridden."""
@@ -5560,8 +5785,11 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         ctrllimited = model.mujoco.actuator_ctrllimited.numpy()
         self.assertEqual(ctrllimited[0], 0)
 
-    def test_forcelimited_auto_enabled_when_forcerange_specified(self):
-        """Test that forcelimited is auto-enabled when forcerange is specified."""
+    def test_forcelimited_auto_when_forcerange_specified(self):
+        """Test that forcelimited is auto (2) when forcerange is specified but forcelimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -5579,11 +5807,15 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
+        # forcelimited should be auto (2) — MuJoCo resolves it during compilation
         forcelimited = model.mujoco.actuator_forcelimited.numpy()
-        self.assertEqual(forcelimited[0], 1)
+        self.assertEqual(forcelimited[0], 2)
 
-    def test_actlimited_auto_enabled_when_actrange_specified(self):
-        """Test that actlimited is auto-enabled when actrange is specified."""
+    def test_actlimited_auto_when_actrange_specified(self):
+        """Test that actlimited is auto (2) when actrange is specified but actlimited is not.
+
+        MuJoCo resolves auto to true during model.compile() when autolimits=true (default).
+        """
         mjcf_content = """
         <mujoco>
             <worldbody>
@@ -5601,8 +5833,9 @@ class TestMjcfActuatorAutoLimited(unittest.TestCase):
         builder.add_mjcf(mjcf_content)
         model = builder.finalize()
 
+        # actlimited should be auto (2) — MuJoCo resolves it during compilation
         actlimited = model.mujoco.actuator_actlimited.numpy()
-        self.assertEqual(actlimited[0], 1)
+        self.assertEqual(actlimited[0], 2)
 
 
 class TestMjcfDefaultCustomAttributes(unittest.TestCase):
@@ -5831,3 +6064,121 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
             )
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent_xform", str(ctx.exception))
+
+
+class TestJointFrictionloss(unittest.TestCase):
+    """Verify MJCF joint frictionloss is parsed into Newton's joint_friction."""
+
+    def test_hinge_frictionloss(self):
+        """Verify frictionloss on a hinge joint is parsed correctly."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" frictionloss="5.0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 5.0, atol=1e-6)
+
+    def test_slide_frictionloss(self):
+        """Verify frictionloss on a slide joint is parsed correctly."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" frictionloss="2.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 2.5, atol=1e-6)
+
+    def test_frictionloss_default_zero(self):
+        """Verify frictionloss defaults to 0 when not specified."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 0.0, atol=1e-6)
+
+    def test_frictionloss_propagates_to_mujoco(self):
+        """Verify frictionloss propagates to dof_frictionloss in the MuJoCo solver."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" frictionloss="7.7"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        dof_frictionloss = solver.mjw_model.dof_frictionloss.numpy()
+        np.testing.assert_allclose(dof_frictionloss[0, 0], 7.7, atol=1e-5)
+
+    def test_frictionloss_from_default_class(self):
+        """Verify frictionloss is inherited from a default class."""
+        mjcf = """<mujoco>
+            <default>
+                <joint frictionloss="3.3"/>
+            </default>
+            <worldbody>
+                <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="child" pos="0 0 1">
+                        <joint type="hinge" axis="0 1 0"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 3.3, atol=1e-5)
+
+
+class TestZeroMassBodies(unittest.TestCase):
+    """Verify that zero-mass bodies are preserved as-is during import.
+
+    Models may contain zero-mass bodies (sensor frames, reference links).
+    These should keep their zero mass after import.
+    """
+
+    def test_zero_mass_body_preserved(self):
+        """Verify zero-mass bodies keep zero mass after import."""
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="empty_body" pos="0.5 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        empty_idx = next(i for i in range(builder.body_count) if builder.body_key[i] == "empty_body")
+        self.assertEqual(builder.body_mass[empty_idx], 0.0)

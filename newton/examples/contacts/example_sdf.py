@@ -48,14 +48,14 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     mu=0.01,
     ke=1e7,  # Contact stiffness for MuJoCo solver
     kd=1e4,  # Contact damping
-    sdf_max_resolution=512,
-    sdf_narrow_band_range=(-0.005, 0.005),
     contact_margin=0.005,
     density=8000.0,
-    torsional_friction=0.0,
-    rolling_friction=0.0,
+    mu_torsional=0.0,
+    mu_rolling=0.0,
     is_hydroelastic=False,
 )
+MESH_SDF_MAX_RESOLUTION = 512
+MESH_SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
 
 
 def add_mesh_object(
@@ -81,15 +81,23 @@ def add_mesh_object(
         transform = wp.transform(transform.p + center_world, transform.q)
 
     mesh = newton.Mesh(vertices, indices)
+    mesh.build_sdf(
+        max_resolution=MESH_SDF_MAX_RESOLUTION,
+        narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
+        margin=shape_cfg.contact_margin if shape_cfg and shape_cfg.contact_margin is not None else 0.05,
+    )
 
-    # Apply scale to the mesh shape
-    body = builder.add_body(key=key, xform=transform)
-    builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), cfg=shape_cfg)
+    if key == "gear_base":
+        body = -1
+        builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), xform=transform, cfg=shape_cfg, key=key)
+    else:
+        body = builder.add_body(key=key, xform=transform)
+        builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), cfg=shape_cfg)
     return body
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=1, num_per_world=1, scene="nut_bolt", solver="xpbd", test_mode=False):
+    def __init__(self, viewer, world_count=1, num_per_world=1, scene="nut_bolt", solver="xpbd", test_mode=False):
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -97,7 +105,7 @@ class Example:
         self.sim_substeps = 50 if scene == "gears" else 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
         self.viewer = viewer
         self.scene = scene
         self.solver_type = solver
@@ -122,7 +130,7 @@ class Example:
         self.rigid_contact_max = 100000
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
-        self.broad_phase_mode = newton.BroadPhaseMode.SAP
+        self.broad_phase = "sap"
 
         if scene == "nut_bolt":
             world_builder = self._build_nut_bolt_scene()
@@ -142,7 +150,7 @@ class Example:
             length=0.0,
             key="ground_plane",
         )
-        main_scene.replicate(world_builder, num_worlds=self.num_worlds)
+        main_scene.replicate(world_builder, world_count=self.world_count)
 
         self.model = main_scene.finalize()
 
@@ -152,7 +160,7 @@ class Example:
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
-            broad_phase_mode=self.broad_phase_mode,
+            broad_phase=self.broad_phase,
         )
 
         # Create solver based on user choice
@@ -163,7 +171,7 @@ class Example:
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
             )
         elif self.solver_type == "mujoco":
-            num_per_world = self.rigid_contact_max // self.num_worlds
+            num_per_world = self.rigid_contact_max // self.world_count
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_contacts=False,
@@ -184,6 +192,19 @@ class Example:
         self.control = self.model.control()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+
+        if self.scene == "gears":
+            joint_child = self.model.joint_child.numpy()
+            joint_qd_start = self.model.joint_qd_start.numpy()
+            joint_f = self.control.joint_f.numpy()
+            for body_idx, key in enumerate(self.model.body_key):
+                if key == "gear_large":
+                    for j in range(self.model.joint_count):
+                        if joint_child[j] == body_idx:
+                            qd_start = int(joint_qd_start[j])
+                            joint_f[qd_start + 5] = 2.0  # z-axis torque (N·m)
+                            break
+            self.control.joint_f.assign(joint_f)
 
         self.contacts = self.collision_pipeline.contacts()
 
@@ -420,7 +441,7 @@ class Example:
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--num-worlds",
+        "--world-count",
         type=int,
         default=100,
         help="Total number of simulated worlds.",
@@ -439,19 +460,12 @@ if __name__ == "__main__":
         default="mujoco",
         help="Solver to use: 'xpbd' (Extended Position-Based Dynamics) or 'mujoco' (MuJoCo constraint solver).",
     )
-    parser.add_argument(
-        "--num-per-world",
-        type=int,
-        default=1,
-        help="Number of assemblies per world.",
-    )
 
     viewer, args = newton.examples.init(parser)
 
     example = Example(
         viewer,
-        num_worlds=args.num_worlds,
-        num_per_world=args.num_per_world,
+        world_count=args.world_count,
         scene=args.scene,
         solver=args.solver,
         test_mode=args.test,

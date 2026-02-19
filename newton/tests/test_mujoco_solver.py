@@ -184,7 +184,7 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         self.seed = 123
         self.rng = np.random.default_rng(self.seed)
 
-        num_worlds = 2
+        world_count = 2
         self.debug_stage_path = "newton/tests/test_mujoco_render.usda"
 
         template_builder = newton.ModelBuilder()
@@ -255,17 +255,17 @@ class TestMuJoCoSolverPropertiesBase(TestMuJoCoSolver):
         self.builder = newton.ModelBuilder()
         self.builder.add_shape_plane()
 
-        for i in range(num_worlds):
+        for i in range(world_count):
             world_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
             self.builder.add_world(template_builder, xform=world_transform)
 
         try:
-            if self.builder.num_worlds == 0 and num_worlds > 0:
-                self.builder.num_worlds = num_worlds
+            if self.builder.world_count == 0 and world_count > 0:
+                self.builder.world_count = world_count
             self.model = self.builder.finalize()
-            if self.model.num_worlds != num_worlds:
+            if self.model.world_count != world_count:
                 print(
-                    f"Warning: Model.num_worlds ({self.model.num_worlds}) does not match expected num_worlds ({num_worlds})."
+                    f"Warning: Model.world_count ({self.model.world_count}) does not match expected world_count ({world_count})."
                 )
         except Exception as e:
             self.fail(f"Model finalization failed: {e}")
@@ -421,7 +421,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
             return inertia
 
         new_inertias = np.zeros((self.model.body_count, 3, 3), dtype=np.float32)
-        bodies_per_world = self.model.body_count // self.model.num_worlds
+        bodies_per_world = self.model.body_count // self.model.world_count
         for i in range(self.model.body_count):
             world_idx = i // bodies_per_world
             # Unified inertia generation for all worlds, parameterized by world_idx
@@ -738,7 +738,7 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(self.model, ls_iterations=1, iterations=1, disable_contacts=True)
 
         # Get dimensions
-        nworld = self.model.num_worlds
+        nworld = self.model.world_count
         mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
         nbody = mjc_body_to_newton.shape[1]
         nv = solver.mjw_model.nv
@@ -823,8 +823,8 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
         # Step 1: Set initial values with different patterns for each attribute
         # Pattern: base_value + dof_idx * increment + world_offset
-        dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
-        joints_per_world = self.model.joint_count // self.model.num_worlds
+        dofs_per_world = self.model.joint_dof_count // self.model.world_count
+        joints_per_world = self.model.joint_count // self.model.world_count
 
         initial_effort_limits = np.zeros(self.model.joint_dof_count)
         initial_velocity_limits = np.zeros(self.model.joint_dof_count)
@@ -836,7 +836,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         joint_dof_dim = self.model.joint_dof_dim.numpy()
         joint_type = self.model.joint_type.numpy()
 
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             world_joint_offset = world_idx * joints_per_world
 
             for joint_idx in range(joints_per_world):
@@ -876,7 +876,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
 
         # Check armature: Newton value should appear directly in MuJoCo DOF armature
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for dof_idx in range(min(dofs_per_world, solver.mjw_model.dof_armature.shape[1])):
                 global_dof_idx = world_idx * dofs_per_world + dof_idx
                 expected_armature = initial_armature[global_dof_idx]
@@ -889,7 +889,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
         # Check friction: Newton value should appear in MuJoCo DOF friction loss
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for dof_idx in range(min(dofs_per_world, solver.mjw_model.dof_frictionloss.shape[1])):
                 global_dof_idx = world_idx * dofs_per_world + dof_idx
                 expected_friction = initial_friction[global_dof_idx]
@@ -908,7 +908,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         updated_armature = np.zeros(self.model.joint_dof_count)
 
         # Iterate over joints and set updated values for each DOF (skip free joints)
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             world_joint_offset = world_idx * joints_per_world
 
             for joint_idx in range(joints_per_world):
@@ -948,7 +948,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         # Check updated armature
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for dof_idx in range(min(dofs_per_world, solver.mjw_model.dof_armature.shape[1])):
                 global_dof_idx = world_idx * dofs_per_world + dof_idx
                 expected_armature = updated_armature[global_dof_idx]
@@ -961,7 +961,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
         # Check updated friction
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for dof_idx in range(min(dofs_per_world, solver.mjw_model.dof_frictionloss.shape[1])):
                 global_dof_idx = world_idx * dofs_per_world + dof_idx
                 expected_friction = updated_friction[global_dof_idx]
@@ -1040,13 +1040,13 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_articulation([joint1_idx, joint2_idx, joint3_idx])
 
         # Replicate to create multiple worlds
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         # Step 2: Set initial solimplimit values
-        joints_per_world = model.joint_count // model.num_worlds
+        joints_per_world = model.joint_count // model.world_count
 
         # Create initial solimplimit array
         initial_solimplimit = np.zeros((model.joint_dof_count, 5), dtype=np.float32)
@@ -1056,7 +1056,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         joint_dof_dim = model.joint_dof_dim.numpy()
         joint_type = model.joint_type.numpy()
 
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_joint_offset = world_idx * joints_per_world
 
             for joint_idx in range(joints_per_world):
@@ -1090,7 +1090,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
 
         # Step 4: Verify jnt_solimp is properly expanded for multi-world
         jnt_solimp = solver.mjw_model.jnt_solimp.numpy()
-        self.assertEqual(jnt_solimp.shape[0], model.num_worlds, "jnt_solimp should have one entry per world")
+        self.assertEqual(jnt_solimp.shape[0], model.world_count, "jnt_solimp should have one entry per world")
 
         # Step 5: Verify initial values were converted correctly
         # Iterate over MuJoCo joints and verify values match Newton's
@@ -1124,7 +1124,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         updated_solimplimit = np.zeros((model.joint_dof_count, 5), dtype=np.float32)
 
         # Iterate over joints and set updated values for each DOF (skip free joints)
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_joint_offset = world_idx * joints_per_world
 
             for joint_idx in range(joints_per_world):
@@ -1237,9 +1237,9 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_articulation([joint1_idx, joint2_idx, joint3_idx])
 
         # Step 2: Replicate to multiple worlds
-        num_worlds = 3
+        world_count = 3
         builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         # Step 3: Initialize solver
@@ -1253,7 +1253,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         joint_dof_dim = model.joint_dof_dim.numpy()
         joint_type = model.joint_type.numpy()
 
-        joints_per_world = model.joint_count // model.num_worlds
+        joints_per_world = model.joint_count // model.world_count
 
         # Step 4: Verify initial values - iterate over MuJoCo joints
         limit_margin = model.mujoco.limit_margin.numpy()
@@ -1274,7 +1274,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         # Step 5: Update limit_margin values at runtime
         new_margins = np.zeros_like(limit_margin)
 
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_joint_offset = world_idx * joints_per_world
             for joint_idx in range(joints_per_world):
                 global_joint_idx = world_joint_offset + joint_idx
@@ -1339,17 +1339,17 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         )
         template_builder.add_articulation([joint])
 
-        num_worlds = 3
+        world_count = 3
         builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
-        dofs_per_world = model.joint_dof_count // model.num_worlds
+        dofs_per_world = model.joint_dof_count // model.world_count
 
         initial_stiffness = np.zeros(model.joint_dof_count, dtype=np.float32)
         initial_damping = np.zeros(model.joint_dof_count, dtype=np.float32)
 
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_dof_offset = world_idx * dofs_per_world
             for dof_idx in range(dofs_per_world):
                 global_idx = world_dof_offset + dof_idx
@@ -1419,13 +1419,13 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             self.skipTest("No joints in model, skipping joint limit solref test")
 
         # Set initial joint limit stiffness and damping values
-        dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
+        dofs_per_world = self.model.joint_dof_count // self.model.world_count
 
         initial_limit_ke = np.zeros(self.model.joint_dof_count)
         initial_limit_kd = np.zeros(self.model.joint_dof_count)
 
         # Set different values for each DOF to catch indexing bugs
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             world_dof_offset = world_idx * dofs_per_world
 
             for dof_idx in range(dofs_per_world):
@@ -1448,7 +1448,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         mjc_revolute_indices = [2, 3]  # MuJoCo joint indices for revolute joints
         newton_revolute_dof_indices = [12, 13]  # Newton DOF indices for revolute joints
 
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for _i, (mjc_idx, newton_dof_idx) in enumerate(
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
@@ -1482,7 +1482,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         # Verify runtime updates to jnt_solref
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for _i, (mjc_idx, newton_dof_idx) in enumerate(
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
@@ -1517,13 +1517,13 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
             self.skipTest("No joints in model, skipping joint limit range test")
 
         # Set initial joint limit values
-        dofs_per_world = self.model.joint_dof_count // self.model.num_worlds
+        dofs_per_world = self.model.joint_dof_count // self.model.world_count
 
         initial_limit_lower = np.zeros(self.model.joint_dof_count)
         initial_limit_upper = np.zeros(self.model.joint_dof_count)
 
         # Set different values for each DOF and world to catch indexing bugs
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             world_dof_offset = world_idx * dofs_per_world
 
             for dof_idx in range(dofs_per_world):
@@ -1546,7 +1546,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         mjc_revolute_indices = [2, 3]  # MuJoCo joint indices for revolute joints
         newton_revolute_dof_indices = [12, 13]  # Newton DOF indices for revolute joints
 
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for _i, (mjc_idx, newton_dof_idx) in enumerate(
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
@@ -1573,7 +1573,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         updated_limit_lower = np.zeros(self.model.joint_dof_count)
         updated_limit_upper = np.zeros(self.model.joint_dof_count)
 
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             world_dof_offset = world_idx * dofs_per_world
 
             for dof_idx in range(dofs_per_world):
@@ -1591,7 +1591,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
 
         # Verify runtime updates to jnt_range with different values per world
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for _i, (mjc_idx, newton_dof_idx) in enumerate(
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
@@ -1615,7 +1615,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
         # Verify that the values changed from initial
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for _i, (_mjc_idx, newton_dof_idx) in enumerate(
                 zip(mjc_revolute_indices, newton_revolute_dof_indices, strict=False)
             ):
@@ -1701,11 +1701,11 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_articulation([j1, j2])
 
         # Create main builder with multiple worlds
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
 
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         # Verify we have the custom attribute
@@ -1739,7 +1739,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         nv = solver.mj_model.nv  # Number of MuJoCo DOFs
 
         def check_values(expected_values, actual_mjw_values, msg_prefix):
-            for w in range(num_worlds):
+            for w in range(world_count):
                 for mjc_dof in range(nv):
                     newton_dof = mjc_dof_to_newton_dof[w, mjc_dof]
                     if newton_dof < 0:
@@ -1810,11 +1810,11 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_articulation([j1, j2])
 
         # Create main builder with multiple worlds
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
 
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         # Verify we have the custom attribute
@@ -1846,7 +1846,7 @@ class TestMuJoCoSolverJointProperties(TestMuJoCoSolverPropertiesBase):
         nv = mjc_dof_to_newton_dof.shape[1]  # Number of MuJoCo DOFs
 
         def check_values(expected_values, actual_mjw_values, msg_prefix):
-            for w in range(num_worlds):
+            for w in range(world_count):
                 for mjc_dof in range(nv):
                     newton_dof = mjc_dof_to_newton_dof[w, mjc_dof]
                     if newton_dof < 0:
@@ -1928,7 +1928,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         # Test all properties for each geom in each world
         tested_count = 0
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = mjc_geom_to_newton_shape[world_idx, geom_idx]
                 if shape_idx < 0:  # No mapping for this geom
@@ -1950,8 +1950,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
                 # Torsional and rolling friction should be absolute values (not scaled by mu)
-                expected_torsional = self.model.shape_material_torsional_friction.numpy()[shape_idx]
-                expected_rolling = self.model.shape_material_rolling_friction.numpy()[shape_idx]
+                expected_torsional = self.model.shape_material_mu_torsional.numpy()[shape_idx]
+                expected_rolling = self.model.shape_material_mu_rolling.numpy()[shape_idx]
 
                 self.assertAlmostEqual(
                     float(actual_friction[1]),
@@ -2087,8 +2087,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
             new_torsional[i] = 0.6 + (i + 1) * 0.02  # Pattern: 0.62, 0.64, ...
             new_rolling[i] = 0.002 + (i + 1) * 0.0001  # Pattern: 0.0021, 0.0022, ...
         self.model.shape_material_mu.assign(new_mu)
-        self.model.shape_material_torsional_friction.assign(new_torsional)
-        self.model.shape_material_rolling_friction.assign(new_rolling)
+        self.model.shape_material_mu_torsional.assign(new_torsional)
+        self.model.shape_material_mu_rolling.assign(new_rolling)
 
         # 2. Update contact stiffness/damping
         new_ke = np.ones(shape_count) * 1000.0  # High stiffness
@@ -2127,7 +2127,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         updated_quat = solver.mjw_model.geom_quat.numpy()
 
         tested_count = 0
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = mjc_geom_to_newton_shape[world_idx, geom_idx]
                 if shape_idx < 0:  # No mapping
@@ -2342,7 +2342,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         initial_rolling = np.zeros(self.model.shape_count)
 
         # Set unique friction values per shape and world
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 initial_mu[shape_idx] = 0.5 + local_idx * 0.1 + world_idx * 0.3
@@ -2350,8 +2350,8 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 initial_rolling[shape_idx] = 0.001 + local_idx * 0.0005 + world_idx * 0.002
 
         self.model.shape_material_mu.assign(initial_mu)
-        self.model.shape_material_torsional_friction.assign(initial_torsional)
-        self.model.shape_material_rolling_friction.assign(initial_rolling)
+        self.model.shape_material_mu_torsional.assign(initial_torsional)
+        self.model.shape_material_mu_rolling.assign(initial_rolling)
 
         solver = SolverMuJoCo(self.model, iterations=1, disable_contacts=True)
         mjc_geom_to_newton_shape = solver.mjc_geom_to_newton_shape.numpy()
@@ -2360,7 +2360,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify initial conversion
         geom_friction = solver.mjw_model.geom_friction.numpy()
         tested_count = 0
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = mjc_geom_to_newton_shape[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2401,7 +2401,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         updated_torsional = np.zeros(self.model.shape_count)
         updated_rolling = np.zeros(self.model.shape_count)
 
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 updated_mu[shape_idx] = 1.0 + local_idx * 0.15 + world_idx * 0.4
@@ -2409,15 +2409,15 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 updated_rolling[shape_idx] = 0.005 + local_idx * 0.001 + world_idx * 0.003
 
         self.model.shape_material_mu.assign(updated_mu)
-        self.model.shape_material_torsional_friction.assign(updated_torsional)
-        self.model.shape_material_rolling_friction.assign(updated_rolling)
+        self.model.shape_material_mu_torsional.assign(updated_torsional)
+        self.model.shape_material_mu_rolling.assign(updated_rolling)
 
         solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
 
         # Verify updates
         updated_geom_friction = solver.mjw_model.geom_friction.numpy()
 
-        for world_idx in range(self.model.num_worlds):
+        for world_idx in range(self.model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = mjc_geom_to_newton_shape[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2489,7 +2489,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
     def test_geom_solimp_conversion_and_update(self):
         """Test per-shape geom_solimp conversion to MuJoCo and dynamic updates across multiple worlds."""
         # Create a model with custom attributes registered
-        num_worlds = 2
+        world_count = 2
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
@@ -2507,7 +2507,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace")
@@ -2518,7 +2518,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         initial_solimp = np.zeros((model.shape_count, 5), dtype=np.float32)
 
         # Set unique solimp values per shape and world
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 initial_solimp[shape_idx] = [
@@ -2538,7 +2538,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify initial conversion
         geom_solimp = solver.mjw_model.geom_solimp.numpy()
         tested_count = 0
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = mjc_geom_to_newton_shape[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2561,7 +2561,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Update with different values
         updated_solimp = np.zeros((model.shape_count, 5), dtype=np.float32)
 
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 updated_solimp[shape_idx] = [
@@ -2579,7 +2579,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify updates
         updated_geom_solimp = solver.mjw_model.geom_solimp.numpy()
 
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = mjc_geom_to_newton_shape[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2600,7 +2600,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         """Test per-shape geom_gap conversion to MuJoCo and dynamic updates across multiple worlds."""
 
         # Create a model with custom attributes registered
-        num_worlds = 2
+        world_count = 2
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
@@ -2618,7 +2618,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace")
@@ -2629,7 +2629,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         initial_gap = np.zeros(model.shape_count, dtype=np.float32)
 
         # Set unique gap values per shape and world
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 initial_gap[shape_idx] = 0.4 + local_idx * 0.2 + world_idx * 0.05
@@ -2643,7 +2643,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify initial conversion
         geom_gap = solver.mjw_model.geom_gap.numpy()
         tested_count = 0
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = to_newton_shape_index[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2666,7 +2666,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         updated_gap = np.zeros(model.shape_count, dtype=np.float32)
 
         # Set unique gap values per shape and world
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 updated_gap[shape_idx] = 0.7 + local_idx * 0.03 + world_idx * 0.06
@@ -2678,7 +2678,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify updates
         updated_geom_gap = solver.mjw_model.geom_gap.numpy()
 
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = to_newton_shape_index[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2694,11 +2694,79 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated geom_gap mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
+    def test_geom_margin_from_thickness(self):
+        """Test shape_thickness to geom_margin conversion and runtime updates.
+
+        Verifies that shape_thickness [m] values are correctly propagated to
+        geom_margin [m] during solver initialization and after runtime updates
+        via notify_model_changed across multiple worlds.
+        """
+        num_worlds = 2
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, thickness=0.005)
+
+        body1 = template_builder.add_link(mass=0.1)
+        template_builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        joint1 = template_builder.add_joint_free(child=body1)
+
+        body2 = template_builder.add_link(mass=0.1)
+        shape_cfg2 = newton.ModelBuilder.ShapeConfig(density=1000.0, thickness=0.01)
+        template_builder.add_shape_sphere(body=body2, radius=0.1, cfg=shape_cfg2)
+        joint2 = template_builder.add_joint_revolute(parent=body1, child=body2, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint1, joint2])
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        to_newton = solver.mjc_geom_to_newton_shape.numpy()
+        num_geoms = solver.mj_model.ngeom
+
+        # Verify initial conversion: geom_margin should match shape_thickness
+        shape_thickness = model.shape_thickness.numpy()
+        geom_margin = solver.mjw_model.geom_margin.numpy()
+        tested_count = 0
+        for world_idx in range(model.world_count):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+                tested_count += 1
+                self.assertAlmostEqual(
+                    float(geom_margin[world_idx, geom_idx]),
+                    float(shape_thickness[shape_idx]),
+                    places=5,
+                    msg=f"Initial geom_margin mismatch for shape {shape_idx} in world {world_idx}",
+                )
+        self.assertGreater(tested_count, 0)
+
+        # Update thickness values at runtime
+        new_thickness = np.array([0.02 + i * 0.005 for i in range(model.shape_count)], dtype=np.float32)
+        model.shape_thickness.assign(wp.array(new_thickness, dtype=wp.float32, device=model.device))
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        # Verify runtime update
+        updated_margin = solver.mjw_model.geom_margin.numpy()
+        for world_idx in range(model.world_count):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+                self.assertAlmostEqual(
+                    float(updated_margin[world_idx, geom_idx]),
+                    float(new_thickness[shape_idx]),
+                    places=5,
+                    msg=f"Updated geom_margin mismatch for shape {shape_idx} in world {world_idx}",
+                )
+
     def test_geom_solmix_conversion_and_update(self):
         """Test per-shape geom_solmix conversion to MuJoCo and dynamic updates across multiple worlds."""
 
         # Create a model with custom attributes registered
-        num_worlds = 2
+        world_count = 2
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
@@ -2716,7 +2784,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace")
@@ -2727,7 +2795,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         initial_solmix = np.zeros(model.shape_count, dtype=np.float32)
 
         # Set unique solmix values per shape and world
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 initial_solmix[shape_idx] = 0.4 + local_idx * 0.2 + world_idx * 0.05
@@ -2741,7 +2809,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify initial conversion
         geom_solmix = solver.mjw_model.geom_solmix.numpy()
         tested_count = 0
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = to_newton_shape_index[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2764,7 +2832,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         updated_solmix = np.zeros(model.shape_count, dtype=np.float32)
 
         # Set unique solmix values per shape and world
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             world_shape_indices = np.where(shape_world == world_idx)[0]
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 updated_solmix[shape_idx] = 0.7 + local_idx * 0.03 + world_idx * 0.06
@@ -2776,7 +2844,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         # Verify updates
         updated_geom_solmix = solver.mjw_model.geom_solmix.numpy()
 
-        for world_idx in range(model.num_worlds):
+        for world_idx in range(model.world_count):
             for geom_idx in range(num_geoms):
                 shape_idx = to_newton_shape_index[world_idx, geom_idx]
                 if shape_idx < 0:
@@ -2824,17 +2892,17 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         )
 
         # Create main builder with multiple worlds
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
 
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         # Verify we have the custom attribute
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "eq_solref"))
-        self.assertEqual(model.equality_constraint_count, num_worlds)  # 1 constraint per world
+        self.assertEqual(model.equality_constraint_count, world_count)  # 1 constraint per world
 
         # --- Step 1: Set initial values and verify conversion ---
 
@@ -2859,7 +2927,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         neq = mjc_eq_to_newton_eq.shape[1]  # Number of MuJoCo equality constraints
 
         def check_values(expected_values, actual_mjw_values, msg_prefix):
-            for w in range(num_worlds):
+            for w in range(world_count):
                 for mjc_eq in range(neq):
                     newton_eq = mjc_eq_to_newton_eq[w, mjc_eq]
                     if newton_eq < 0:
@@ -2891,7 +2959,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         model.mujoco.eq_solref.assign(updated_values)
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_solref_updated = solver.mjw_model.eq_solref.numpy()
@@ -2934,17 +3002,17 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         )
 
         # Create main builder with multiple worlds
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
 
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         # Verify we have the custom attribute
         self.assertTrue(hasattr(model, "mujoco"))
         self.assertTrue(hasattr(model.mujoco, "eq_solimp"))
-        self.assertEqual(model.equality_constraint_count, num_worlds)  # 1 constraint per world
+        self.assertEqual(model.equality_constraint_count, world_count)  # 1 constraint per world
 
         # --- Step 1: Set initial values and verify conversion ---
 
@@ -2972,7 +3040,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         neq = mjc_eq_to_newton_eq.shape[1]  # Number of MuJoCo equality constraints
 
         def check_values(expected_values, actual_mjw_values, msg_prefix):
-            for w in range(num_worlds):
+            for w in range(world_count):
                 for mjc_eq in range(neq):
                     newton_eq = mjc_eq_to_newton_eq[w, mjc_eq]
                     if newton_eq < 0:
@@ -3007,7 +3075,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         model.mujoco.eq_solimp.assign(wp.array(updated_values, dtype=vec5, device=model.device))
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_solimp_updated = solver.mjw_model.eq_solimp.numpy()
@@ -3086,10 +3154,10 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         )
 
         # Create main builder with multiple worlds
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -3105,7 +3173,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         eq_constraint_torquescale = model.equality_constraint_torquescale.numpy()
         eq_constraint_type = model.equality_constraint_type.numpy()
 
-        for w in range(num_worlds):
+        for w in range(world_count):
             for mjc_eq in range(neq):
                 newton_eq = mjc_eq_to_newton_eq[w, mjc_eq]
                 if newton_eq < 0:
@@ -3209,7 +3277,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         model.equality_constraint_polycoef.assign(new_polycoef)
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_data_updated = solver.mjw_model.eq_data.numpy()
@@ -3218,7 +3286,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         eq_constraint_polycoef_updated = model.equality_constraint_polycoef.numpy()
         eq_constraint_torquescale_updated = model.equality_constraint_torquescale.numpy()
 
-        for w in range(num_worlds):
+        for w in range(world_count):
             for mjc_eq in range(neq):
                 newton_eq = mjc_eq_to_newton_eq[w, mjc_eq]
                 if newton_eq < 0:
@@ -3315,13 +3383,13 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         )
 
         # Create main builder with multiple worlds
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
-        self.assertEqual(model.equality_constraint_count, num_worlds)  # 1 constraint per world
+        self.assertEqual(model.equality_constraint_count, world_count)  # 1 constraint per world
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
@@ -3332,7 +3400,7 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
 
         eq_enabled = model.equality_constraint_enabled.numpy()
 
-        for w in range(num_worlds):
+        for w in range(world_count):
             for mjc_eq in range(neq):
                 newton_eq = mjc_eq_to_newton_eq[w, mjc_eq]
                 if newton_eq < 0:
@@ -3352,12 +3420,12 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         model.equality_constraint_enabled.assign(new_enabled)
 
         # Notify solver
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify updates
         mjw_eq_active_updated = solver.mjw_data.eq_active.numpy()
 
-        for w in range(num_worlds):
+        for w in range(world_count):
             for mjc_eq in range(neq):
                 newton_eq = mjc_eq_to_newton_eq[w, mjc_eq]
                 if newton_eq < 0:
@@ -3375,11 +3443,11 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         new_enabled = np.array([True, True], dtype=bool)
         model.equality_constraint_enabled.assign(new_enabled)
 
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         mjw_eq_active_reenabled = solver.mjw_data.eq_active.numpy()
 
-        for w in range(num_worlds):
+        for w in range(world_count):
             for mjc_eq in range(neq):
                 newton_eq = mjc_eq_to_newton_eq[w, mjc_eq]
                 if newton_eq < 0:
@@ -3421,10 +3489,10 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         )
 
         # Create main builder
-        num_worlds = 2
+        world_count = 2
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -3433,11 +3501,11 @@ class TestMuJoCoSolverEqualityConstraintProperties(TestMuJoCoSolverPropertiesBas
         initial_eq_data = solver.mjw_model.eq_data.numpy().copy()
 
         # Notify solver to trigger the update kernel
-        solver.notify_model_changed(SolverNotifyFlags.EQUALITY_CONSTRAINT_PROPERTIES)
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
 
         # Verify data[3:6] (second anchor) was NOT overwritten
         updated_eq_data = solver.mjw_model.eq_data.numpy()
-        for w in range(num_worlds):
+        for w in range(world_count):
             np.testing.assert_allclose(
                 updated_eq_data[w, 0, 3:6],
                 initial_eq_data[w, 0, 3:6],
@@ -3487,10 +3555,10 @@ class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
         template_builder.add_mjcf(mjcf)
 
         # Create main builder with multiple worlds
-        num_worlds = 3
+        world_count = 3
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
         # Verify we have the custom attributes
@@ -3499,14 +3567,14 @@ class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
 
         # Get the total number of tendons (1 per world)
         tendon_count = len(model.mujoco.tendon_stiffness)
-        self.assertEqual(tendon_count, num_worlds)  # 1 tendon per world
+        self.assertEqual(tendon_count, world_count)  # 1 tendon per world
 
         # --- Step 1: Set initial values and verify conversion ---
 
         # Set different values for each world's tendon
-        initial_stiffness = np.array([1.0 + i * 0.5 for i in range(num_worlds)], dtype=np.float32)
-        initial_damping = np.array([2.0 + i * 0.3 for i in range(num_worlds)], dtype=np.float32)
-        initial_frictionloss = np.array([0.5 + i * 0.1 for i in range(num_worlds)], dtype=np.float32)
+        initial_stiffness = np.array([1.0 + i * 0.5 for i in range(world_count)], dtype=np.float32)
+        initial_damping = np.array([2.0 + i * 0.3 for i in range(world_count)], dtype=np.float32)
+        initial_frictionloss = np.array([0.5 + i * 0.1 for i in range(world_count)], dtype=np.float32)
 
         model.mujoco.tendon_stiffness.assign(initial_stiffness)
         model.mujoco.tendon_damping.assign(initial_damping)
@@ -3528,7 +3596,7 @@ class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
         def check_values(
             expected_stiff, expected_damp, expected_friction, actual_stiff, actual_damp, actual_friction, msg_prefix
         ):
-            for w in range(num_worlds):
+            for w in range(world_count):
                 for mjc_tendon in range(ntendon):
                     newton_tendon = mjc_tendon_to_newton[w, mjc_tendon]
                     if newton_tendon < 0:
@@ -3566,9 +3634,9 @@ class TestMuJoCoSolverFixedTendonProperties(TestMuJoCoSolverPropertiesBase):
         # --- Step 2: Runtime Update ---
 
         # Generate new unique values
-        updated_stiffness = np.array([10.0 + i * 2.0 for i in range(num_worlds)], dtype=np.float32)
-        updated_damping = np.array([5.0 + i * 1.0 for i in range(num_worlds)], dtype=np.float32)
-        updated_frictionloss = np.array([1.0 + i * 0.2 for i in range(num_worlds)], dtype=np.float32)
+        updated_stiffness = np.array([10.0 + i * 2.0 for i in range(world_count)], dtype=np.float32)
+        updated_damping = np.array([5.0 + i * 1.0 for i in range(world_count)], dtype=np.float32)
+        updated_frictionloss = np.array([1.0 + i * 0.2 for i in range(world_count)], dtype=np.float32)
 
         # Update model attributes
         model.mujoco.tendon_stiffness.assign(updated_stiffness)
@@ -3659,7 +3727,7 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
 class TestMuJoCoValidation(unittest.TestCase):
     """Test cases for SolverMuJoCo._validate_model_for_separate_worlds()."""
 
-    def _create_homogeneous_model(self, num_worlds=2, with_ground_plane=True):
+    def _create_homogeneous_model(self, world_count=2, with_ground_plane=True):
         """Create a valid homogeneous multi-world model for validation tests."""
         # Create a simple robot template (following pattern from working tests)
         template = newton.ModelBuilder()
@@ -3675,20 +3743,20 @@ class TestMuJoCoValidation(unittest.TestCase):
         builder = newton.ModelBuilder()
         if with_ground_plane:
             builder.add_ground_plane()  # Global static shape
-        builder.replicate(template, num_worlds)
+        builder.replicate(template, world_count)
 
         return builder.finalize()
 
     def test_valid_homogeneous_model_passes(self):
         """Test that a valid homogeneous model passes validation."""
-        model = self._create_homogeneous_model(num_worlds=2, with_ground_plane=False)
+        model = self._create_homogeneous_model(world_count=2, with_ground_plane=False)
         # Should not raise
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertIsNotNone(solver)
 
     def test_valid_model_with_global_shape_passes(self):
         """Test that a model with global static shapes (ground plane) passes validation."""
-        model = self._create_homogeneous_model(num_worlds=2, with_ground_plane=True)
+        model = self._create_homogeneous_model(world_count=2, with_ground_plane=True)
         # Should not raise - global shapes are allowed
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertIsNotNone(solver)
@@ -3861,7 +3929,7 @@ class TestMuJoCoValidation(unittest.TestCase):
 
     def test_single_world_model_skips_validation(self):
         """Test that single-world models skip validation (no homogeneity needed)."""
-        model = self._create_homogeneous_model(num_worlds=1)
+        model = self._create_homogeneous_model(world_count=1)
 
         # Should not raise - single world doesn't need homogeneity validation
         solver = SolverMuJoCo(model, separate_worlds=True)
@@ -3869,7 +3937,7 @@ class TestMuJoCoValidation(unittest.TestCase):
 
     def test_many_worlds_homogeneous_passes(self):
         """Test that a model with many homogeneous worlds passes validation."""
-        model = self._create_homogeneous_model(num_worlds=10)
+        model = self._create_homogeneous_model(world_count=10)
         # Should not raise
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertIsNotNone(solver)
@@ -4029,7 +4097,7 @@ class TestMuJoCoConversion(unittest.TestCase):
             builder.add_world(template_builder, xform=world_transform)
 
         model = builder.finalize()
-        self.assertEqual(model.num_worlds, 2, "Model should have 2 worlds")
+        self.assertEqual(model.world_count, 2, "Model should have 2 worlds")
 
         # Test that separate_worlds=False raises ValueError
         with self.assertRaises(ValueError) as context:
@@ -4037,7 +4105,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         self.assertIn("separate_worlds=False", str(context.exception))
         self.assertIn("single-world", str(context.exception))
-        self.assertIn("num_worlds=2", str(context.exception))
+        self.assertIn("world_count=2", str(context.exception))
 
         # Test that separate_worlds=True works fine
         solver = SolverMuJoCo(model, separate_worlds=True)
@@ -4637,6 +4705,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
+        builder.default_shape_cfg.mu = 0.5
 
         # Create fixed-base (mocap) body at root (at origin)
         # This body will have a FIXED joint to the world, making it a mocap body in MuJoCo
@@ -5015,26 +5084,20 @@ class TestMuJoCoAttributes(unittest.TestCase):
         # 6 DOFs from floating base (all 0.0) + 1 DOF from revolute joint (5.0)
         assert damping_values[-1] == 5.0, f"Expected last DOF damping to be 5.0, got {damping_values}"
 
-    def test_ref_fk_matches_mujoco(self):
-        """Test that Newton's state matches MuJoCo's FK for joints with ref attribute.
+    def test_ref_coordinate_conversion(self):
+        """Verify ref offset in coordinate conversion.
 
-        When ref is used, Newton relies on MuJoCo's FK (via update_newton_state with eval_fk=False)
-        because ref is a MuJoCo-specific feature handled via qpos0.
+        With a hinge joint at ref=90 degrees, setting joint_q=0 in Newton
+        should produce qpos=pi/2 in MuJoCo after update_mjc_data.
         """
-        import mujoco_warp
-
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="test_ref_fk">
+<mujoco model="test_ref">
     <worldbody>
         <body name="base">
             <geom type="box" size="0.1 0.1 0.1"/>
-            <body name="child1" pos="0 0 1">
+            <body name="child" pos="0 0 1">
                 <joint name="hinge" type="hinge" axis="0 1 0" ref="90"/>
                 <geom type="box" size="0.1 0.1 0.1"/>
-                <body name="child2" pos="0 0 1">
-                    <joint name="slide" type="slide" axis="0 0 1" ref="0.5"/>
-                    <geom type="box" size="0.1 0.1 0.1"/>
-                </body>
             </body>
         </body>
     </worldbody>
@@ -5045,49 +5108,17 @@ class TestMuJoCoAttributes(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model)
 
-        # Verify that _has_ref is True for this model
-        assert solver._has_ref, "Solver should detect that ref is used"
-
-        # Set qpos=0 in MuJoCo and run FK
+        # joint_q=0 should map to qpos=ref (pi/2)
         state = model.state()
-        state.joint_q.zero_()
         solver.update_mjc_data(solver.mjw_data, model, state)
-        mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-
-        # Use update_newton_state with eval_fk=False to get body transforms from MuJoCo
-        solver.update_newton_state(model, state, solver.mjw_data, eval_fk=False)
-
-        # Compare Newton's body_q (now from MuJoCo) with MuJoCo's xpos/xquat
-        newton_body_q = state.body_q.numpy()
-        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
-
-        for body_name in ["child1", "child2"]:
-            newton_body_idx = model.body_key.index(body_name)
-            mjc_body_idx = np.where(mjc_body_to_newton[0] == newton_body_idx)[0][0]
-
-            # Get Newton body position and quaternion (populated from MuJoCo via update_newton_state)
-            newton_pos = newton_body_q[newton_body_idx, 0:3]
-            newton_quat = newton_body_q[newton_body_idx, 3:7]  # [x, y, z, w]
-
-            # Get MuJoCo Warp body position and quaternion
-            mj_pos = solver.mjw_data.xpos.numpy()[0, mjc_body_idx]
-            mj_quat_wxyz = solver.mjw_data.xquat.numpy()[0, mjc_body_idx]  # MuJoCo uses [w, x, y, z]
-            mj_quat = np.array([mj_quat_wxyz[1], mj_quat_wxyz[2], mj_quat_wxyz[3], mj_quat_wxyz[0]])
-
-            # Compare positions
-            assert np.allclose(newton_pos, mj_pos, atol=0.01), (
-                f"Position mismatch for {body_name}: Newton={newton_pos}, MuJoCo={mj_pos}"
-            )
-
-            # Compare quaternions (sign-invariant since q and -q represent the same rotation)
-            quat_dist = min(np.linalg.norm(newton_quat - mj_quat), np.linalg.norm(newton_quat + mj_quat))
-            assert quat_dist < 0.01, f"Quaternion mismatch for {body_name}: Newton={newton_quat}, MuJoCo={mj_quat}"
+        qpos = solver.mjw_data.qpos.numpy()
+        np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5, err_msg="joint_q=0 should map to qpos=ref")
 
 
 class TestMuJoCoOptions(unittest.TestCase):
     """Tests for MuJoCo solver options (impratio, etc.) with WORLD frequency."""
 
-    def _create_multiworld_model(self, num_worlds=3):
+    def _create_multiworld_model(self, world_count=3):
         """Helper to create a multi-world model with MuJoCo custom attributes registered."""
         template_builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(template_builder)
@@ -5098,7 +5129,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         template_builder.add_articulation([joint])
 
         builder = newton.ModelBuilder()
-        builder.replicate(template_builder, num_worlds)
+        builder.replicate(template_builder, world_count)
         return builder.finalize()
 
     def test_impratio_multiworld_conversion(self):
@@ -5109,8 +5140,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         3. Different per-world values are stored correctly in the Newton model.
         4. Solver expands per-world values to MuJoCo Warp.
         """
-        num_worlds = 3
-        model = self._create_multiworld_model(num_worlds)
+        world_count = 3
+        model = self._create_multiworld_model(world_count)
 
         # Verify the custom attribute is registered and exists on the model
         self.assertTrue(hasattr(model, "mujoco"))
@@ -5118,7 +5149,7 @@ class TestMuJoCoOptions(unittest.TestCase):
 
         # Verify the array has correct shape (one value per world)
         impratio = model.mujoco.impratio.numpy()
-        self.assertEqual(len(impratio), num_worlds, "impratio array should have one entry per world")
+        self.assertEqual(len(impratio), world_count, "impratio array should have one entry per world")
 
         # Set different impratio values per world
         initial_impratio = np.array([1.5, 2.5, 3.5], dtype=np.float32)
@@ -5126,7 +5157,7 @@ class TestMuJoCoOptions(unittest.TestCase):
 
         # Verify all per-world values are stored correctly in Newton model
         updated_impratio = model.mujoco.impratio.numpy()
-        for world_idx in range(num_worlds):
+        for world_idx in range(world_count):
             self.assertAlmostEqual(
                 updated_impratio[world_idx],
                 initial_impratio[world_idx],
@@ -5141,12 +5172,12 @@ class TestMuJoCoOptions(unittest.TestCase):
         mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
         self.assertEqual(
             len(mjw_impratio_invsqrt),
-            num_worlds,
-            f"MuJoCo Warp opt.impratio_invsqrt should have {num_worlds} values (one per world)",
+            world_count,
+            f"MuJoCo Warp opt.impratio_invsqrt should have {world_count} values (one per world)",
         )
 
         # Verify each world has the correct impratio_invsqrt value (1/sqrt(impratio))
-        for world_idx in range(num_worlds):
+        for world_idx in range(world_count):
             expected_invsqrt = 1.0 / np.sqrt(initial_impratio[world_idx])
             self.assertAlmostEqual(
                 mjw_impratio_invsqrt[world_idx],
@@ -5160,8 +5191,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that zero or negative impratio values are guarded against
         to prevent NaN/Inf in opt_impratio_invsqrt computation.
         """
-        num_worlds = 3
-        model = self._create_multiworld_model(num_worlds)
+        world_count = 3
+        model = self._create_multiworld_model(world_count)
 
         # Set impratio with invalid values: 0, negative, and positive
         initial_impratio = np.array([0.0, -1.0, 2.0], dtype=np.float32)
@@ -5172,7 +5203,7 @@ class TestMuJoCoOptions(unittest.TestCase):
 
         # Verify MuJoCo Warp model has valid impratio_invsqrt values
         mjw_impratio_invsqrt = solver.mjw_model.opt.impratio_invsqrt.numpy()
-        self.assertEqual(len(mjw_impratio_invsqrt), num_worlds)
+        self.assertEqual(len(mjw_impratio_invsqrt), world_count)
 
         # World 0 (impratio=0): should keep MuJoCo default (not update)
         self.assertFalse(
@@ -5208,8 +5239,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that passing scalar options (impratio, tolerance, ls_tolerance, ccd_tolerance, density, viscosity)
         to the SolverMuJoCo constructor overrides any per-world values from custom attributes.
         """
-        num_worlds = 2
-        model = self._create_multiworld_model(num_worlds)
+        world_count = 2
+        model = self._create_multiworld_model(world_count)
 
         # Set custom attribute values per world
         model.mujoco.impratio.assign(np.array([1.5, 1.5], dtype=np.float32))
@@ -5242,16 +5273,16 @@ class TestMuJoCoOptions(unittest.TestCase):
         mjw_density = solver.mjw_model.opt.density.numpy()
         mjw_viscosity = solver.mjw_model.opt.viscosity.numpy()
 
-        self.assertEqual(len(mjw_impratio_invsqrt), num_worlds)
-        self.assertEqual(len(mjw_tolerance), num_worlds)
-        self.assertEqual(len(mjw_ls_tolerance), num_worlds)
-        self.assertEqual(len(mjw_ccd_tolerance), num_worlds)
-        self.assertEqual(len(mjw_density), num_worlds)
-        self.assertEqual(len(mjw_viscosity), num_worlds)
+        self.assertEqual(len(mjw_impratio_invsqrt), world_count)
+        self.assertEqual(len(mjw_tolerance), world_count)
+        self.assertEqual(len(mjw_ls_tolerance), world_count)
+        self.assertEqual(len(mjw_ccd_tolerance), world_count)
+        self.assertEqual(len(mjw_density), world_count)
+        self.assertEqual(len(mjw_viscosity), world_count)
 
         # All worlds should have the same constructor-provided values
         expected_impratio_invsqrt = 1.0 / np.sqrt(3.0)
-        for world_idx in range(num_worlds):
+        for world_idx in range(world_count):
             self.assertAlmostEqual(
                 mjw_impratio_invsqrt[world_idx],
                 expected_impratio_invsqrt,
@@ -5280,14 +5311,14 @@ class TestMuJoCoOptions(unittest.TestCase):
         3. Different per-world vector values are stored correctly.
         4. Solver expands per-world vectors to MuJoCo Warp.
         """
-        num_worlds = 3
-        model = self._create_multiworld_model(num_worlds)
+        world_count = 3
+        model = self._create_multiworld_model(world_count)
 
         # Verify arrays have correct shape
         wind = model.mujoco.wind.numpy()
         magnetic = model.mujoco.magnetic.numpy()
-        self.assertEqual(len(wind), num_worlds, "wind array should have one entry per world")
-        self.assertEqual(len(magnetic), num_worlds, "magnetic array should have one entry per world")
+        self.assertEqual(len(wind), world_count, "wind array should have one entry per world")
+        self.assertEqual(len(magnetic), world_count, "magnetic array should have one entry per world")
 
         # Set different vector values per world
         initial_wind = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
@@ -5298,7 +5329,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         # Verify values stored correctly
         updated_wind = model.mujoco.wind.numpy()
         updated_magnetic = model.mujoco.magnetic.numpy()
-        for world_idx in range(num_worlds):
+        for world_idx in range(world_count):
             self.assertTrue(
                 np.allclose(updated_wind[world_idx], initial_wind[world_idx]),
                 msg=f"Newton model wind[{world_idx}] should be {initial_wind[world_idx]}",
@@ -5314,11 +5345,11 @@ class TestMuJoCoOptions(unittest.TestCase):
         # Verify MuJoCo Warp has per-world vector values
         mjw_wind = solver.mjw_model.opt.wind.numpy()
         mjw_magnetic = solver.mjw_model.opt.magnetic.numpy()
-        self.assertEqual(len(mjw_wind), num_worlds, f"MuJoCo Warp opt.wind should have {num_worlds} values")
-        self.assertEqual(len(mjw_magnetic), num_worlds, f"MuJoCo Warp opt.magnetic should have {num_worlds} values")
+        self.assertEqual(len(mjw_wind), world_count, f"MuJoCo Warp opt.wind should have {world_count} values")
+        self.assertEqual(len(mjw_magnetic), world_count, f"MuJoCo Warp opt.magnetic should have {world_count} values")
 
         # Verify each world has correct values
-        for world_idx in range(num_worlds):
+        for world_idx in range(world_count):
             self.assertTrue(
                 np.allclose(mjw_wind[world_idx], initial_wind[world_idx]),
                 msg=f"MuJoCo Warp wind[{world_idx}] should be {initial_wind[world_idx]}",
@@ -5333,8 +5364,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that ONCE frequency numeric options (ccd_iterations, sdf_iterations, sdf_initpoints)
         are shared across all worlds (not per-world arrays).
         """
-        num_worlds = 3
-        model = self._create_multiworld_model(num_worlds)
+        world_count = 3
+        model = self._create_multiworld_model(world_count)
 
         # ONCE frequency: single value, not per-world array
         ccd_iterations = model.mujoco.ccd_iterations.numpy()
@@ -5362,7 +5393,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         Verify that constructor parameters override custom attribute values
         for ONCE frequency numeric options.
         """
-        model = self._create_multiworld_model(num_worlds=2)
+        model = self._create_multiworld_model(world_count=2)
 
         # Set custom attribute values
         model.mujoco.ccd_iterations.assign(np.array([25], dtype=np.int32))
@@ -5388,7 +5419,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         """
         Verify that jacobian option is read from custom attribute when not provided to constructor.
         """
-        model = self._create_multiworld_model(num_worlds=2)
+        model = self._create_multiworld_model(world_count=2)
 
         # Set jacobian to sparse (1)
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
@@ -5405,7 +5436,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         """
         Verify that jacobian constructor parameter overrides custom attribute value.
         """
-        model = self._create_multiworld_model(num_worlds=2)
+        model = self._create_multiworld_model(world_count=2)
 
         # Set jacobian custom attribute to sparse (1)
         model.mujoco.jacobian.assign(np.array([1], dtype=np.int32))
@@ -5430,7 +5461,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         """
         import mujoco
 
-        model = self._create_multiworld_model(num_worlds=2)
+        model = self._create_multiworld_model(world_count=2)
 
         # Set custom attributes to non-default values
         # Newton defaults: solver=2 (Newton), integrator=3 (implicitfast), cone=0 (pyramidal), jacobian=2 (auto)
@@ -5508,7 +5539,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         2. Custom attribute (if exists)
         3. Default value
         """
-        model = self._create_multiworld_model(num_worlds=2)
+        model = self._create_multiworld_model(world_count=2)
 
         # Set custom attributes to non-default values
         # MuJoCo defaults: iterations=100, ls_iterations=50
@@ -5547,7 +5578,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         """
         Verify that constructor parameters override custom attributes for iterations.
         """
-        model = self._create_multiworld_model(num_worlds=2)
+        model = self._create_multiworld_model(world_count=2)
 
         # Set custom attributes
         model.mujoco.iterations.assign(np.array([150], dtype=np.int32))
@@ -5580,12 +5611,12 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.45), wp.quat_identity()),
         )
-        num_worlds = 4
+        world_count = 4
         world_builder = newton.ModelBuilder()
         # force the ModelBuilder to correct zero mass/inertia values
         world_builder.bound_inertia = 0.01
         world_builder.bound_mass = 0.01
-        world_builder.replicate(builder, num_worlds=num_worlds)
+        world_builder.replicate(builder, world_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(solver.mj_model.nv, 2)
@@ -5598,7 +5629,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # but we converted the loop joints to equality constraints, so there is a mapping from MuJoCo to Newton joints
         assert np.allclose(
             solver.mjc_eq_to_newton_jnt.numpy(),
-            [[loop_joint + i * builder.joint_count, loop_joint + i * builder.joint_count] for i in range(num_worlds)],
+            [[loop_joint + i * builder.joint_count, loop_joint + i * builder.joint_count] for i in range(world_count)],
         )
 
     def test_mixed_loop_joints_and_equality_constraints(self):
@@ -5625,30 +5656,30 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         )
         # add one equality constraint after the loop joint
         builder.add_equality_constraint_connect(body1=b0, body2=b2, anchor=wp.vec3(0.0, 0.0, 1.0))
-        num_worlds = 4
+        world_count = 4
         world_builder = newton.ModelBuilder()
         # force the ModelBuilder to correct zero mass/inertia values
         world_builder.bound_inertia = 0.01
         world_builder.bound_mass = 0.01
-        world_builder.replicate(builder, num_worlds=num_worlds)
+        world_builder.replicate(builder, world_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
-        self.assertEqual(model.joint_count, 4 * num_worlds)
-        self.assertEqual(model.equality_constraint_count, 2 * num_worlds)
+        self.assertEqual(model.joint_count, 4 * world_count)
+        self.assertEqual(model.equality_constraint_count, 2 * world_count)
         self.assertEqual(solver.mj_model.nv, 3)
         # 2 equality constraints per loop joint
         self.assertEqual(solver.mj_model.neq, 4)
         eq_type = int(mujoco.mjtEq.mjEQ_CONNECT)
         assert np.allclose(solver.mj_model.eq_type, [eq_type] * 4)
         # the two equality constraints we explicitly created are defined first in MuJoCo
-        expected_eq_to_newton_eq = np.full((num_worlds, 4), -1, dtype=np.int32)
-        for i in range(num_worlds):
+        expected_eq_to_newton_eq = np.full((world_count, 4), -1, dtype=np.int32)
+        for i in range(world_count):
             expected_eq_to_newton_eq[i, 0] = i * 2
             expected_eq_to_newton_eq[i, 1] = i * 2 + 1
         assert np.allclose(solver.mjc_eq_to_newton_eq.numpy(), expected_eq_to_newton_eq)
         # after those two explicit equality constraints come the 2 equality constraints per loop joint
-        expected_eq_to_newton_jnt = np.full((num_worlds, 4), -1, dtype=np.int32)
-        for i in range(num_worlds):
+        expected_eq_to_newton_jnt = np.full((world_count, 4), -1, dtype=np.int32)
+        for i in range(world_count):
             # joint 3 is the loop joint, we have 4 joints per world
             expected_eq_to_newton_jnt[i, 2] = i * 4 + loop_joint
             expected_eq_to_newton_jnt[i, 3] = i * 4 + loop_joint
@@ -5666,7 +5697,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
 
         Tests: pair_solref, pair_solreffriction, pair_solimp, pair_margin, pair_gap, pair_friction
         """
-        num_worlds = 3
+        world_count = 3
         pairs_per_world = 2
 
         # Create a simple model with geoms that we can create pairs between
@@ -5698,16 +5729,16 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(builder)
 
         # Replicate template across worlds
-        for i in range(num_worlds):
+        for i in range(world_count):
             world_transform = wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity())
             builder.add_world(template_builder, xform=world_transform)
 
         # Add contact pairs for each world
         # Each world gets pairs_per_world pairs
-        total_pairs = num_worlds * pairs_per_world
+        total_pairs = world_count * pairs_per_world
         shapes_per_world = template_builder.shape_count
 
-        for w in range(num_worlds):
+        for w in range(world_count):
             world_shape_offset = w * shapes_per_world + 1  # +1 for ground plane
 
             # Pair 1: shape1 <-> shape2
@@ -5772,7 +5803,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         expected_friction_all = model.mujoco.pair_friction.numpy()
 
         # Check values for each world and pair
-        for w in range(num_worlds):
+        for w in range(world_count):
             newton_pair_base = w * pairs_per_world
             for p in range(pairs_per_world):
                 newton_pair = newton_pair_base + p
@@ -5850,7 +5881,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         mjw_pair_gap_updated = solver.mjw_model.pair_gap.numpy()
         mjw_pair_friction_updated = solver.mjw_model.pair_friction.numpy()
 
-        for w in range(num_worlds):
+        for w in range(world_count):
             for p in range(pairs_per_world):
                 newton_pair = w * pairs_per_world + p
 
@@ -5896,6 +5927,798 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             np.allclose(mjw_pair_solref_updated[0, 0], mjw_pair_solref[0, 0]),
             "pair_solref should have changed after update!",
         )
+
+
+class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
+    """Tests for mimic constraint support in SolverMuJoCo."""
+
+    def _make_two_revolute_model(self, coef0=0.0, coef1=1.0, enabled=True):
+        """Create a model with two revolute joints and a mimic constraint.
+
+        Args:
+            coef0: Offset coefficient for the mimic constraint (joint0 = coef0 + coef1 * joint1).
+            coef1: Scale coefficient for the mimic constraint.
+            enabled: Whether the mimic constraint is active.
+
+        Returns:
+            Finalized Newton Model with two revolute joints linked by a mimic constraint.
+        """
+        builder = newton.ModelBuilder()
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1, j2])
+        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=coef0, coef1=coef1, enabled=enabled)
+        return builder.finalize()
+
+    def test_mimic_constraint_conversion(self):
+        """Test that mimic constraints are converted to MuJoCo mjEQ_JOINT constraints."""
+        import mujoco
+
+        model = self._make_two_revolute_model(coef0=0.5, coef1=2.0)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify MuJoCo has 1 equality constraint of type JOINT
+        self.assertEqual(solver.mj_model.neq, 1)
+        self.assertEqual(solver.mj_model.eq_type[0], mujoco.mjtEq.mjEQ_JOINT)
+
+        # Verify polycoef data: [coef0, coef1, 0, 0, 0]
+        eq_data = solver.mjw_model.eq_data.numpy()
+        np.testing.assert_allclose(eq_data[0, 0, :5], [0.5, 2.0, 0.0, 0.0, 0.0], rtol=1e-5)
+
+        # Verify mapping exists
+        self.assertIsNotNone(solver.mjc_eq_to_newton_mimic)
+        mimic_map = solver.mjc_eq_to_newton_mimic.numpy()
+        self.assertEqual(mimic_map[0, 0], 0)
+
+    def test_mimic_constraint_runtime_update(self):
+        """Test that mimic constraint properties can be updated at runtime."""
+        model = self._make_two_revolute_model(coef0=0.5, coef1=2.0)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Modify coefficients via assign
+        model.constraint_mimic_coef0.assign(np.array([1.0], dtype=np.float32))
+        model.constraint_mimic_coef1.assign(np.array([3.0], dtype=np.float32))
+        model.constraint_mimic_enabled.assign(np.array([False], dtype=bool))
+
+        # Trigger update
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        # Verify updated values
+        eq_data = solver.mjw_model.eq_data.numpy()
+        np.testing.assert_allclose(eq_data[0, 0, 0], 1.0, rtol=1e-5)
+        np.testing.assert_allclose(eq_data[0, 0, 1], 3.0, rtol=1e-5)
+        eq_active = solver.mjw_data.eq_active.numpy()
+        self.assertFalse(eq_active[0, 0])
+
+    def test_mimic_no_constraints(self):
+        """Test solver works with zero mimic constraints."""
+        builder = newton.ModelBuilder()
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        self.assertEqual(model.constraint_mimic_count, 0)
+        # No MuJoCo eq constraints created, so mapping should be all -1
+        self.assertTrue(np.all(solver.mjc_eq_to_newton_mimic.numpy() == -1))
+
+    def test_mimic_mixed_with_equality_constraints(self):
+        """Test mimic constraints coexist with regular equality constraints."""
+        import mujoco
+
+        builder = newton.ModelBuilder()
+        b1 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([j1, j2])
+
+        # Add a regular JOINT equality constraint
+        builder.add_equality_constraint_joint(joint1=j1, joint2=j2, polycoef=[0.0, 1.0, 0.0, 0.0, 0.0])
+        # Add a mimic constraint
+        builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # 1 regular eq + 1 mimic = 2 MuJoCo eq constraints
+        self.assertEqual(solver.mj_model.neq, 2)
+        self.assertEqual(solver.mj_model.eq_type[0], mujoco.mjtEq.mjEQ_JOINT)
+        self.assertEqual(solver.mj_model.eq_type[1], mujoco.mjtEq.mjEQ_JOINT)
+
+    def test_mimic_constraint_simulation(self):
+        """Test that mimic constraint enforces joint tracking during simulation."""
+        # Use coef1=2.0 so the relationship is non-trivial: j2 = 2.0 * j1
+        model = self._make_two_revolute_model(coef0=0.0, coef1=2.0)
+
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        # Derive DOF indices from mimic constraint metadata
+        mimic_joint1 = model.constraint_mimic_joint1.numpy()[0]  # leader
+        mimic_joint0 = model.constraint_mimic_joint0.numpy()[0]  # follower
+        joint_qd_start = model.joint_qd_start.numpy()
+        leader_dof = joint_qd_start[mimic_joint1]
+        follower_dof = joint_qd_start[mimic_joint0]
+
+        # Set initial velocity on leader joint to create motion
+        qd = state_in.joint_qd.numpy()
+        qd[leader_dof] = 1.0
+        state_in.joint_qd.assign(qd)
+
+        solver = SolverMuJoCo(model, iterations=50, disable_contacts=True)
+
+        dt = 0.01
+        for _ in range(200):
+            solver.step(state_in, state_out, control, contacts, dt)
+            state_in, state_out = state_out, state_in
+
+        # After simulation, follower (j2) should approximately equal 2.0 * leader (j1)
+        q = state_in.joint_q.numpy()
+        leader_q = float(q[leader_dof])
+        follower_q = float(q[follower_dof])
+        self.assertNotAlmostEqual(leader_q, 0.0, places=1, msg="Leader joint should have moved from initial position")
+        np.testing.assert_allclose(
+            follower_q, 2.0 * leader_q, atol=0.1, err_msg="Mimic follower should track 2x leader"
+        )
+
+    def test_mimic_constraint_multi_world_randomized(self):
+        """Test mimic constraints with per-world randomized coefficients."""
+        template_builder = newton.ModelBuilder()
+        b1 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        b2 = template_builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=wp.mat33(np.eye(3)))
+        j1 = template_builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = template_builder.add_joint_revolute(-1, b2, axis=(0, 0, 1))
+        template_builder.add_shape_box(body=b1, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1)
+        template_builder.add_articulation([j1, j2])
+        template_builder.add_constraint_mimic(joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
+
+        world_count = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template_builder, world_count)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+
+        # Verify initial state
+        self.assertEqual(model.constraint_mimic_count, world_count)
+        self.assertEqual(solver.mj_model.neq, 1)
+
+        # Randomize coefficients per world
+        rng = np.random.default_rng(42)
+        new_coef0 = rng.uniform(-1.0, 1.0, size=world_count).astype(np.float32)
+        new_coef1 = rng.uniform(0.5, 3.0, size=world_count).astype(np.float32)
+        model.constraint_mimic_coef0.assign(new_coef0)
+        model.constraint_mimic_coef1.assign(new_coef1)
+
+        solver.notify_model_changed(SolverNotifyFlags.CONSTRAINT_PROPERTIES)
+
+        # Verify each world got its own coefficients
+        eq_data = solver.mjw_model.eq_data.numpy()
+        for w in range(world_count):
+            np.testing.assert_allclose(
+                eq_data[w, 0, 0], new_coef0[w], rtol=1e-5, err_msg=f"coef0 mismatch in world {w}"
+            )
+            np.testing.assert_allclose(
+                eq_data[w, 0, 1], new_coef1[w], rtol=1e-5, err_msg=f"coef1 mismatch in world {w}"
+            )
+
+
+class TestMuJoCoSolverFreeJointBodyPos(unittest.TestCase):
+    """Verify free joint bodies preserve their initial position in qpos0."""
+
+    def test_free_joint_body_pos(self):
+        """Verify free joint qpos0 contains the MJCF body position.
+
+        A free joint body placed at pos="0 0 1.5" should produce
+        ``solver.mj_model.qpos0`` whose first three elements match
+        the body's initial z-offset ``[0, 0, 1.5]``.
+        """
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1.5">
+                    <freejoint name="root"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # qpos0 should have the body's initial z position
+        qpos0 = np.array(solver.mj_model.qpos0)
+        np.testing.assert_allclose(
+            qpos0[:3],
+            [0.0, 0.0, 1.5],
+            atol=1e-6,
+            err_msg="Free joint qpos0 position should match body pos from MJCF",
+        )
+
+
+class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
+    def test_zero_mass_body(self):
+        """SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames).
+
+        Zero-mass bodies keep their zero mass. MuJoCo handles these natively
+        when they have fixed joints.
+        """
+        mjcf = """
+        <mujoco>
+            <worldbody>
+                <body name="robot" pos="0 0 1">
+                    <freejoint name="root"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
+                </body>
+                <body name="sensor_frame" pos="0 0 0"/>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        self.assertIsNotNone(solver.mj_model)
+
+
+class TestMuJoCoSolverQpos0(unittest.TestCase):
+    """Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correctness."""
+
+    # -- Group A: qpos0 initial values per joint type --
+
+    def test_free_joint_qpos0(self):
+        """Verify free joint qpos0 contains body position and identity quaternion.
+
+        A free joint body at pos="0 0 1.5" should produce qpos0 with
+        position [0, 0, 1.5] and identity quaternion [1, 0, 0, 0] (wxyz).
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="0 0 1.5">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, :3], [0, 0, 1.5], atol=1e-6)
+        np.testing.assert_allclose(qpos0[0, 3:7], [1, 0, 0, 0], atol=1e-6)  # wxyz identity
+
+    def test_hinge_with_ref_qpos0(self):
+        """Verify hinge joint qpos0 equals ref in radians.
+
+        A hinge with ref=90 degrees should produce qpos0 approximately
+        equal to pi/2 radians.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], np.pi / 2, atol=1e-5)
+
+    def test_slide_with_ref_qpos0(self):
+        """Verify slide joint qpos0 equals ref value.
+
+        A slide joint with ref=0.1 should produce qpos0 equal to 0.1.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" ref="0.1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.1, atol=1e-6)
+
+    def test_ball_joint_qpos0(self):
+        """Verify ball joint qpos0 is an identity quaternion.
+
+        A ball joint should produce qpos0 equal to [1, 0, 0, 0] (wxyz).
+        """
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        parent = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body=parent, hx=0.1, hy=0.1, hz=0.1)
+        j0 = builder.add_joint_fixed(-1, parent)
+        child = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body=child, hx=0.1, hy=0.1, hz=0.1)
+        j1 = builder.add_joint_ball(parent, child)
+        builder.add_articulation([j0, j1])
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, :4], [1, 0, 0, 0], atol=1e-6)
+
+    def test_hinge_no_ref_qpos0(self):
+        """Verify hinge joint without ref has qpos0 of zero."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.0, atol=1e-6)
+
+    def test_mixed_model_qpos0(self):
+        """Verify qpos0 for a model with free, hinge, and slide joints.
+
+        All joint types should produce correct qpos0 values simultaneously:
+        free joint from body_q, hinge from ref, slide from ref.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="floating" pos="0 0 2">
+                <joint name="free_jnt" type="free"/>
+                <geom type="sphere" size="0.1"/>
+                <body name="hinge_body" pos="0 0 0.5">
+                    <joint name="hinge_jnt" type="hinge" axis="0 1 0" ref="45"/>
+                    <geom type="box" size="0.05 0.05 0.05" mass="0.1"/>
+                    <body name="slide_body" pos="0 0 0.5">
+                        <joint name="slide_jnt" type="slide" axis="0 0 1" ref="0.2"/>
+                        <geom type="box" size="0.05 0.05 0.05" mass="0.1"/>
+                    </body>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()[0]
+        # Free joint: 7 coords (pos + quat wxyz)
+        np.testing.assert_allclose(qpos0[:3], [0, 0, 2], atol=1e-5)
+        np.testing.assert_allclose(qpos0[3:7], [1, 0, 0, 0], atol=1e-5)
+        # Hinge with ref=45deg
+        np.testing.assert_allclose(qpos0[7], np.deg2rad(45), atol=1e-5)
+        # Slide with ref=0.2
+        np.testing.assert_allclose(qpos0[8], 0.2, atol=1e-6)
+
+    # -- Group B: qpos_spring values --
+
+    def test_hinge_springref_qpos_spring(self):
+        """Verify hinge qpos_spring equals springref in radians.
+
+        A hinge with springref=30 degrees should produce qpos_spring
+        approximately equal to pi/6 radians.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" springref="30"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos_spring = solver.mjw_model.qpos_spring.numpy()
+        np.testing.assert_allclose(qpos_spring[0, 0], np.deg2rad(30), atol=1e-5)
+
+    def test_free_joint_qpos_spring_matches_qpos0(self):
+        """Verify free joint qpos_spring equals qpos0."""
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="1 2 3">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        qpos_spring = solver.mjw_model.qpos_spring.numpy()
+        np.testing.assert_allclose(qpos_spring, qpos0, atol=1e-6)
+
+    def test_slide_springref_qpos_spring(self):
+        """Verify slide qpos_spring equals springref value."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" springref="0.25"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos_spring = solver.mjw_model.qpos_spring.numpy()
+        np.testing.assert_allclose(qpos_spring[0, 0], 0.25, atol=1e-6)
+
+    # -- Group C: Coordinate conversion with ref offset --
+
+    def test_hinge_ref_newton_to_mujoco(self):
+        """Verify Newton-to-MuJoCo conversion adds ref offset.
+
+        With ref=90 degrees, joint_q=0 should map to qpos=pi/2.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        # joint_q defaults to 0 for hinge
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5)
+
+    def test_hinge_ref_mujoco_to_newton(self):
+        """Verify MuJoCo-to-Newton conversion subtracts ref offset.
+
+        With ref=90 degrees, qpos=pi/2+0.1 should map to joint_q=0.1.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        # Set qpos = ref + 0.1
+        qpos = solver.mjw_data.qpos.numpy()
+        qpos[0, 0] = np.pi / 2 + 0.1
+        solver.mjw_data.qpos.assign(qpos)
+        state = model.state()
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver.update_newton_state(model, state, solver.mjw_data)
+        joint_q = state.joint_q.numpy()
+        np.testing.assert_allclose(joint_q[0], 0.1, atol=1e-5)
+
+    def test_slide_ref_roundtrip(self):
+        """Verify slide joint_q survives Newton-MuJoCo-Newton roundtrip with ref.
+
+        Sets joint_q=0.3 with ref=0.5, converts to MuJoCo (expecting qpos=0.8),
+        then back to Newton (expecting joint_q=0.3).
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" ref="0.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+
+        # Set a known joint_q value
+        test_q = 0.3
+        q = state.joint_q.numpy()
+        q[0] = test_q
+        state.joint_q.assign(q)
+
+        # Newton → MuJoCo
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        np.testing.assert_allclose(qpos[0, 0], test_q + 0.5, atol=1e-5)
+
+        # MuJoCo → Newton
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        state2 = model.state()
+        solver.update_newton_state(model, state2, solver.mjw_data)
+        np.testing.assert_allclose(state2.joint_q.numpy()[0], test_q, atol=1e-5)
+
+    def test_free_joint_position_roundtrip(self):
+        """Verify free joint position survives Newton-MuJoCo-Newton roundtrip.
+
+        Free joints have no ref offset, so joint_q should be preserved
+        exactly through the coordinate conversion cycle.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="1 2 3">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        original_q = state.joint_q.numpy().copy()
+
+        # Newton → MuJoCo → Newton
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver.update_newton_state(model, state, solver.mjw_data)
+        roundtrip_q = state.joint_q.numpy()
+
+        np.testing.assert_allclose(roundtrip_q[:3], original_q[:3], atol=1e-5)
+        # Quaternion comparison (sign-invariant)
+        q_orig = original_q[3:7]
+        q_rt = roundtrip_q[3:7]
+        quat_dist = min(np.linalg.norm(q_orig - q_rt), np.linalg.norm(q_orig + q_rt))
+        self.assertLess(quat_dist, 1e-5)
+
+    # -- Group D: FK correctness --
+
+    def _compare_body_positions(self, model, solver, state, body_names, atol=0.01):
+        """Compare Newton and MuJoCo body positions after FK.
+
+        Runs update_mjc_data, kinematics, and update_newton_state, then
+        asserts that Newton body positions match MuJoCo xpos for each
+        named body.
+        """
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+        solver.update_newton_state(model, state, solver.mjw_data)
+
+        newton_body_q = state.body_q.numpy()
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+        mj_xpos = solver.mjw_data.xpos.numpy()
+
+        for name in body_names:
+            newton_idx = model.body_key.index(name)
+            mjc_idx = np.where(mjc_body_to_newton[0] == newton_idx)[0][0]
+            newton_pos = newton_body_q[newton_idx, :3]
+            mj_pos = mj_xpos[0, mjc_idx]
+            np.testing.assert_allclose(newton_pos, mj_pos, atol=atol, err_msg=f"Position mismatch for {name}")
+
+    def test_ref_fk_matches_mujoco(self):
+        """Verify Newton FK matches MuJoCo FK for joints with ref.
+
+        At joint_q=0 (Newton) / qpos=ref (MuJoCo), both should produce
+        the same body positions corresponding to the MJCF configuration.
+        """
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child1" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="90"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="child2" pos="0 0 1">
+                        <joint type="slide" axis="0 0 1" ref="0.5"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        self._compare_body_positions(model, solver, state, ["child1", "child2"])
+
+    def test_ref_fk_after_stepping(self):
+        """Verify Newton and MuJoCo body positions match after stepping with ref."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="45"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state_in = model.state()
+        state_out = model.state()
+        control = model.control()
+        contacts = model.contacts()
+        for _ in range(10):
+            solver.step(state_in, state_out, control, contacts, 0.01)
+            state_in, state_out = state_out, state_in
+        self._compare_body_positions(model, solver, state_in, ["child"])
+
+    def test_multi_joint_ref_fk(self):
+        """Verify FK matches MuJoCo for a multi-joint chain with mixed ref values."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="b1" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="30"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="b2" pos="0 0 1">
+                        <joint type="hinge" axis="1 0 0" ref="60"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                        <body name="b3" pos="0 0 1">
+                            <joint type="slide" axis="0 0 1" ref="0.3"/>
+                            <geom type="box" size="0.1 0.1 0.1"/>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        self._compare_body_positions(model, solver, state, ["b1", "b2", "b3"])
+
+    # -- Group E: Runtime randomization --
+
+    def test_multiworld_free_joint_qpos0_differs(self):
+        """Verify per-world qpos0 differs after changing body_q per world."""
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="0 0 1">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        template = newton.ModelBuilder()
+        template.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Set different body_q for each world
+        body_q = model.body_q.numpy()
+        body_q[0, :3] = [0, 0, 1.0]  # world 0
+        body_q[1, :3] = [0, 0, 2.0]  # world 1
+        model.body_q.assign(body_q)
+
+        solver.notify_model_changed(SolverNotifyFlags.ALL)
+
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 2], 1.0, atol=1e-5)
+        np.testing.assert_allclose(qpos0[1, 2], 2.0, atol=1e-5)
+
+    def test_multiworld_hinge_ref_qpos0_differs(self):
+        """Verify per-world qpos0 differs after setting different dof_ref per world."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        template = newton.ModelBuilder()
+        template.add_mjcf(mjcf)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Set different dof_ref per world
+        dof_ref = model.mujoco.dof_ref.numpy()
+        dof_ref[0] = 0.5  # world 0
+        dof_ref[1] = 1.0  # world 1
+        model.mujoco.dof_ref.assign(dof_ref)
+
+        solver.notify_model_changed(SolverNotifyFlags.ALL)
+
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.5, atol=1e-5)
+        np.testing.assert_allclose(qpos0[1, 0], 1.0, atol=1e-5)
+
+    def test_dof_ref_runtime_change_updates_qpos0(self):
+        """Verify qpos0 updates after runtime dof_ref change via notify_model_changed."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" ref="0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Initially ref=0, so qpos0=0
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.0, atol=1e-6)
+
+        # Change ref at runtime
+        dof_ref = model.mujoco.dof_ref.numpy()
+        dof_ref[0] = 0.7
+        model.mujoco.dof_ref.assign(dof_ref)
+        solver.notify_model_changed(SolverNotifyFlags.JOINT_DOF_PROPERTIES)
+
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        np.testing.assert_allclose(qpos0[0, 0], 0.7, atol=1e-5)
+
+    # -- Group F: Edge cases --
+
+    def test_ref_zero_no_offset(self):
+        """Verify no offset is applied when ref defaults to zero."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state = model.state()
+        # Set a known joint_q
+        q = state.joint_q.numpy()
+        q[0] = 0.5
+        state.joint_q.assign(q)
+        solver.update_mjc_data(solver.mjw_data, model, state)
+        qpos = solver.mjw_data.qpos.numpy()
+        np.testing.assert_allclose(qpos[0, 0], 0.5, atol=1e-6, err_msg="With ref=0, qpos should equal joint_q")
+
+    def test_free_joint_non_identity_orientation_qpos0(self):
+        """Verify free joint qpos0 quaternion for non-identity initial orientation."""
+        mjcf = """<mujoco><worldbody>
+            <body name="b" pos="0 0 1" quat="0.707 0 0.707 0">
+                <joint type="free"/>
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        qpos0 = solver.mjw_model.qpos0.numpy()
+        # Position
+        np.testing.assert_allclose(qpos0[0, :3], [0, 0, 1], atol=1e-3)
+        # Quaternion in wxyz - should be approximately [0.707, 0, 0.707, 0]
+        q = qpos0[0, 3:7]
+        expected = np.array([0.707, 0, 0.707, 0])
+        expected = expected / np.linalg.norm(expected)
+        quat_dist = min(np.linalg.norm(q - expected), np.linalg.norm(q + expected))
+        self.assertLess(quat_dist, 0.01)
 
 
 if __name__ == "__main__":

@@ -72,44 +72,46 @@ class State:
         """
 
         self.particle_q: wp.array | None = None
-        """3D positions of particles, shape (particle_count,), dtype :class:`vec3`."""
+        """3D positions of particles [m], shape (particle_count,), dtype :class:`vec3`."""
 
         self.particle_qd: wp.array | None = None
-        """3D velocities of particles, shape (particle_count,), dtype :class:`vec3`."""
+        """3D velocities of particles [m/s], shape (particle_count,), dtype :class:`vec3`."""
 
         self.particle_f: wp.array | None = None
-        """3D forces on particles, shape (particle_count,), dtype :class:`vec3`."""
+        """3D forces on particles [N], shape (particle_count,), dtype :class:`vec3`."""
 
         self.body_q: wp.array | None = None
-        """Rigid body transforms (7-DOF), shape (body_count,), dtype :class:`transform`."""
+        """Rigid body transforms (7-DOF) [m, unitless quaternion], shape (body_count,), dtype :class:`transform`."""
 
         self.body_qd: wp.array | None = None
-        """Rigid body velocities (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear velocity relative to the body's center of mass in world frame; last three: angular velocity in world frame.
+        """Rigid body velocities (spatial) [m/s, rad/s], shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: linear velocity [m/s] relative to the body's center of mass in world frame;
+        last three: angular velocity [rad/s] in world frame.
         See :ref:`Twist conventions in Newton <Twist conventions>` for more information."""
 
         self.body_q_prev: wp.array | None = None
-        """Previous rigid body transforms for finite-difference velocity computation."""
+        """Previous rigid body transforms [m, unitless quaternion] for finite-difference velocity computation."""
 
         self.body_qdd: wp.array | None = None
-        """Rigid body accelerations (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear acceleration relative to the body's center of mass in world frame; last three: angular acceleration in world frame.
+        """Rigid body accelerations (spatial) [m/s², rad/s²], shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: linear acceleration [m/s²] relative to the body's center of mass in world frame;
+        last three: angular acceleration [rad/s²] in world frame.
 
         This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
         """
 
         self.body_f: wp.array | None = None
-        """Rigid body forces (spatial), shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear force in world frame applied at the body's center of mass (COM).
-        Last three: torque (moment) in world frame.
+        """Rigid body forces (spatial) [N, N·m], shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: linear force [N] in world frame applied at the body's center of mass (COM).
+        Last three: torque (moment) [N·m] in world frame.
 
         .. note::
             :attr:`body_f` represents an external wrench in world frame with the body's center of mass (COM) as reference point.
         """
 
         self.body_parent_f: wp.array | None = None
-        """Parent interaction forces, shape (body_count,), dtype :class:`spatial_vector`.
-        First three entries: linear force; last three: torque.
+        """Parent interaction forces [N, N·m], shape (body_count,), dtype :class:`spatial_vector`.
+        First three entries: linear force [N]; last three: torque [N·m].
 
         This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
 
@@ -118,10 +120,10 @@ class State:
         """
 
         self.joint_q: wp.array | None = None
-        """Generalized joint position coordinates, shape (joint_coord_count,), dtype float."""
+        """Generalized joint position coordinates [m or rad, depending on joint type], shape (joint_coord_count,), dtype float."""
 
         self.joint_qd: wp.array | None = None
-        """Generalized joint velocity coordinates, shape (joint_dof_count,), dtype float."""
+        """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float."""
 
     def clear_forces(self) -> None:
         """

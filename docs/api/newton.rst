@@ -34,18 +34,17 @@ newton
 
    ActuatorMode
    Axis
-   BroadPhaseMode
    CollisionPipeline
    Contacts
    Control
    EqType
    GeoType
+   Heightfield
    JointType
    Mesh
    Model
    ModelBuilder
    ParticleFlags
-   SAPSortType
    SDF
    ShapeFlags
    State
@@ -57,6 +56,8 @@ newton
    :signatures: long
 
    AxisType
+   BroadPhaseInstance
+   BroadPhaseMode
    eval_fk
    eval_ik
    eval_jacobian
