@@ -18,7 +18,7 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from ..core.types import MAXVAL
+from ..core.types import MAXVAL, nparray
 from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
 from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
 from .types import GeoType, Mesh
@@ -50,6 +50,195 @@ class SDFData:
 
     # Whether shape_scale was baked into the SDF
     scale_baked: wp.bool
+
+
+class SDF:
+    """Opaque SDF container owning kernel payload and runtime references."""
+
+    def __init__(
+        self,
+        *,
+        data: SDFData,
+        sparse_volume: wp.Volume | None = None,
+        coarse_volume: wp.Volume | None = None,
+        block_coords: nparray | Sequence[wp.vec3us] | None = None,
+        _internal: bool = False,
+    ):
+        if not _internal:
+            raise RuntimeError(
+                "SDF objects are created via mesh.build_sdf(), SDF.create_from_mesh(), or SDF.create_from_data()."
+            )
+        self.data = data
+        self.sparse_volume = sparse_volume
+        self.coarse_volume = coarse_volume
+        self.block_coords = block_coords
+
+    def to_kernel_data(self) -> SDFData:
+        """Return kernel-facing SDF payload."""
+        return self.data
+
+    def is_empty(self) -> bool:
+        """Return True when this SDF has no sparse/coarse payload."""
+        return int(self.data.sparse_sdf_ptr) == 0 and int(self.data.coarse_sdf_ptr) == 0
+
+    def validate(self) -> None:
+        """Validate consistency of kernel pointers and owned volumes."""
+        if int(self.data.sparse_sdf_ptr) == 0 and self.sparse_volume is not None:
+            raise ValueError("SDFData sparse pointer is empty but sparse_volume is set.")
+        if int(self.data.coarse_sdf_ptr) == 0 and self.coarse_volume is not None:
+            raise ValueError("SDFData coarse pointer is empty but coarse_volume is set.")
+
+    def __copy__(self) -> "SDF":
+        """Return self; SDF runtime handles are immutable and shared."""
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> "SDF":
+        """Keep deep-copy stable by reusing this instance.
+
+        `wp.Volume` instances inside SDF are ctypes-backed and not picklable.
+        Treating SDF as an immutable runtime handle keeps builder deepcopy usable.
+        """
+        memo[id(self)] = self
+        return self
+
+    @staticmethod
+    def create_from_points(
+        points: nparray | Sequence[Sequence[float]],
+        indices: nparray | Sequence[int],
+        *,
+        narrow_band_range: tuple[float, float] = (-0.1, 0.1),
+        target_voxel_size: float | None = None,
+        max_resolution: int | None = None,
+        margin: float = 0.05,
+        thickness: float = 0.0,
+        scale: tuple[float, float, float] | None = None,
+    ) -> "SDF":
+        """Create an SDF from triangle mesh points and indices.
+
+        Args:
+            points: Vertex positions [m], shape ``(N, 3)``.
+            indices: Triangle vertex indices [index], flattened or shape ``(M, 3)``.
+            narrow_band_range: Signed narrow-band distance range [m] as ``(inner, outer)``.
+            target_voxel_size: Target sparse-grid voxel size [m]. If provided, takes
+                precedence over ``max_resolution``.
+            max_resolution: Maximum sparse-grid dimension [voxel]. Used when
+                ``target_voxel_size`` is not provided.
+            margin: Extra AABB padding [m] added before discretization.
+            thickness: Thickness offset [m] to subtract from SDF values.
+            scale: Scale factors ``(sx, sy, sz)`` to bake into the SDF.
+
+        Returns:
+            A validated :class:`SDF` runtime handle with sparse/coarse volumes.
+        """
+        mesh = Mesh(points, indices, compute_inertia=False)
+        return SDF.create_from_mesh(
+            mesh,
+            narrow_band_range=narrow_band_range,
+            target_voxel_size=target_voxel_size,
+            max_resolution=max_resolution,
+            margin=margin,
+            thickness=thickness,
+            scale=scale,
+        )
+
+    @staticmethod
+    def create_from_mesh(
+        mesh: Mesh,
+        *,
+        narrow_band_range: tuple[float, float] = (-0.1, 0.1),
+        target_voxel_size: float | None = None,
+        max_resolution: int | None = None,
+        margin: float = 0.05,
+        thickness: float = 0.0,
+        scale: tuple[float, float, float] | None = None,
+    ) -> "SDF":
+        """Create an SDF from a mesh in local mesh coordinates.
+
+        Args:
+            mesh: Source mesh geometry.
+            narrow_band_range: Signed narrow-band distance range [m] as
+                ``(inner, outer)``.
+            target_voxel_size: Target sparse-grid voxel size [m]. If provided,
+                takes precedence over ``max_resolution``.
+            max_resolution: Maximum sparse-grid dimension [voxel]. Used when
+                ``target_voxel_size`` is not provided.
+            margin: Extra AABB padding [m] added before discretization.
+            thickness: Thickness offset [m] to subtract from SDF values. When
+                non-zero, the SDF surface is effectively shrunk inward by this
+                amount. Useful for modeling compliant layers in hydroelastic
+                collision. Defaults to ``0.0`` (no offset, thickness applied
+                at runtime).
+            scale: Scale factors ``(sx, sy, sz)`` [unitless] to bake into the
+                SDF. When provided, mesh vertices are scaled before SDF
+                generation and ``scale_baked`` is set to ``True`` in the
+                resulting SDF. Required for hydroelastic collision with
+                non-unit shape scale. Defaults to ``None`` (no scale baking;
+                scale applied at runtime).
+
+        Returns:
+            A validated :class:`SDF` runtime handle with sparse/coarse volumes.
+        """
+        effective_max_resolution = 64 if max_resolution is None and target_voxel_size is None else max_resolution
+        bake_scale = scale is not None
+        effective_scale = scale if scale is not None else (1.0, 1.0, 1.0)
+        sdf_data, sparse_volume, coarse_volume, block_coords = _compute_sdf_from_shape_impl(
+            shape_type=GeoType.MESH,
+            shape_geo=mesh,
+            shape_scale=effective_scale,
+            shape_thickness=thickness,
+            narrow_band_distance=narrow_band_range,
+            margin=margin,
+            target_voxel_size=target_voxel_size,
+            max_resolution=effective_max_resolution if effective_max_resolution is not None else 64,
+            bake_scale=bake_scale,
+        )
+        sdf = SDF(
+            data=sdf_data,
+            sparse_volume=sparse_volume,
+            coarse_volume=coarse_volume,
+            block_coords=block_coords,
+            _internal=True,
+        )
+        sdf.validate()
+        return sdf
+
+    @staticmethod
+    def create_from_data(
+        *,
+        sparse_volume: wp.Volume | None = None,
+        coarse_volume: wp.Volume | None = None,
+        block_coords: nparray | Sequence[wp.vec3us] | None = None,
+        center: Sequence[float] | None = None,
+        half_extents: Sequence[float] | None = None,
+        background_value: float = MAXVAL,
+        scale_baked: bool = False,
+    ) -> "SDF":
+        """Create an SDF from precomputed runtime resources."""
+        sdf_data = create_empty_sdf_data()
+        if sparse_volume is not None:
+            sdf_data.sparse_sdf_ptr = sparse_volume.id
+            sparse_voxel_size = np.asarray(sparse_volume.get_voxel_size(), dtype=np.float32)
+            sdf_data.sparse_voxel_size = wp.vec3(sparse_voxel_size)
+            sdf_data.sparse_voxel_radius = 0.5 * float(np.linalg.norm(sparse_voxel_size))
+        if coarse_volume is not None:
+            sdf_data.coarse_sdf_ptr = coarse_volume.id
+            coarse_voxel_size = np.asarray(coarse_volume.get_voxel_size(), dtype=np.float32)
+            sdf_data.coarse_voxel_size = wp.vec3(coarse_voxel_size)
+
+        sdf_data.center = wp.vec3(center) if center is not None else wp.vec3(0.0, 0.0, 0.0)
+        sdf_data.half_extents = wp.vec3(half_extents) if half_extents is not None else wp.vec3(0.0, 0.0, 0.0)
+        sdf_data.background_value = background_value
+        sdf_data.scale_baked = scale_baked
+
+        sdf = SDF(
+            data=sdf_data,
+            sparse_volume=sparse_volume,
+            coarse_volume=coarse_volume,
+            block_coords=block_coords,
+            _internal=True,
+        )
+        sdf.validate()
+        return sdf
 
 
 # Default background value for unallocated voxels in sparse SDF.
@@ -266,9 +455,9 @@ def get_primitive_extents(shape_type: int, shape_scale: Sequence[float]) -> tupl
     return min_ext, max_ext
 
 
-def compute_sdf(
-    mesh_src: Mesh,
+def _compute_sdf_from_shape_impl(
     shape_type: int,
+    shape_geo: Mesh | None = None,
     shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
     shape_thickness: float = 0.0,
     narrow_band_distance: Sequence[float] = (-0.1, 0.1),
@@ -278,15 +467,15 @@ def compute_sdf(
     bake_scale: bool = False,
     verbose: bool = False,
 ) -> tuple[SDFData, wp.Volume | None, wp.Volume | None, Sequence[wp.vec3us]]:
-    """Compute sparse and coarse SDF volumes for a mesh.
+    """Compute sparse and coarse SDF volumes for a shape.
 
     The SDF is computed in the mesh's unscaled local space. Scale is intentionally
     NOT a parameter - the collision system handles scaling at runtime, ensuring
     the SDF and mesh BVH stay consistent and allowing dynamic scale changes.
 
     Args:
-        mesh_src: Mesh source with vertices and indices.
         shape_type: Type of the shape.
+        shape_geo: Optional source geometry. Required for mesh shapes.
         shape_scale: Scale factors for the mesh. Applied before SDF generation if bake_scale is True.
         shape_thickness: Thickness offset to subtract from SDF values.
         narrow_band_distance: Tuple of (inner, outer) distances for narrow band.
@@ -307,7 +496,7 @@ def compute_sdf(
         RuntimeError: If CUDA is not available.
     """
     if not wp.is_cuda_available():
-        raise RuntimeError("compute_sdf requires CUDA but no CUDA device is available")
+        raise RuntimeError("compute_sdf_from_shape requires CUDA but no CUDA device is available")
 
     if shape_type == GeoType.PLANE or shape_type == GeoType.HFIELD:
         # SDF collisions are not supported for Plane or HField shapes, falling back to mesh collisions
@@ -326,9 +515,11 @@ def compute_sdf(
     offset = margin + shape_thickness
 
     if shape_type == GeoType.MESH:
-        verts = mesh_src.vertices * np.array(effective_scale)[None, :]
+        if shape_geo is None:
+            raise ValueError("shape_geo must be provided for GeoType.MESH.")
+        verts = shape_geo.vertices * np.array(effective_scale)[None, :]
         pos = wp.array(verts, dtype=wp.vec3)
-        indices = wp.array(mesh_src.indices, dtype=wp.int32)
+        indices = wp.array(shape_geo.indices, dtype=wp.int32)
 
         mesh = wp.Mesh(points=pos, indices=indices, support_winding_number=True)
         m_id = mesh.id
@@ -480,6 +671,68 @@ def compute_sdf(
     sdf_data.scale_baked = bake_scale
 
     return sdf_data, sparse_volume, coarse_volume, block_coords
+
+
+def compute_sdf_from_shape(
+    shape_type: int,
+    shape_geo: Mesh | None = None,
+    shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
+    shape_thickness: float = 0.0,
+    narrow_band_distance: Sequence[float] = (-0.1, 0.1),
+    margin: float = 0.05,
+    target_voxel_size: float | None = None,
+    max_resolution: int = 64,
+    bake_scale: bool = False,
+    verbose: bool = False,
+) -> tuple[SDFData, wp.Volume | None, wp.Volume | None, Sequence[wp.vec3us]]:
+    """Compute sparse and coarse SDF volumes for a shape.
+
+    Mesh shape dispatches through :meth:`SDF.create_from_mesh` to keep that path canonical.
+
+    Args:
+        shape_type: Geometry type identifier from :class:`GeoType`.
+        shape_geo: Source mesh geometry when ``shape_type`` is ``GeoType.MESH``.
+        shape_scale: Shape scale [unitless].
+        shape_thickness: Shape thickness offset [m] subtracted from sampled SDF.
+        narrow_band_distance: Signed narrow-band distance range [m] as ``(inner, outer)``.
+        margin: Extra AABB padding [m] added before discretization.
+        target_voxel_size: Target sparse-grid voxel size [m]. If provided, takes
+            precedence over ``max_resolution``.
+        max_resolution: Maximum sparse-grid dimension [voxel] when
+            ``target_voxel_size`` is not provided.
+        bake_scale: If ``True``, bake ``shape_scale`` into generated SDF data.
+        verbose: If ``True``, print debug information during SDF construction.
+
+    Returns:
+        Tuple ``(sdf_data, sparse_volume, coarse_volume, block_coords)``.
+    """
+    if shape_type == GeoType.MESH:
+        if shape_geo is None:
+            raise ValueError("shape_geo must be provided for GeoType.MESH.")
+        # Canonical mesh path: use SDF.create_from_mesh for all mesh SDF generation.
+        sdf = SDF.create_from_mesh(
+            shape_geo,
+            narrow_band_range=tuple(narrow_band_distance),
+            target_voxel_size=target_voxel_size,
+            max_resolution=max_resolution,
+            margin=margin,
+            thickness=shape_thickness,
+            scale=tuple(shape_scale) if bake_scale else None,
+        )
+        return sdf.to_kernel_data(), sdf.sparse_volume, sdf.coarse_volume, (sdf.block_coords or [])
+
+    return _compute_sdf_from_shape_impl(
+        shape_type=shape_type,
+        shape_geo=shape_geo,
+        shape_scale=shape_scale,
+        shape_thickness=shape_thickness,
+        narrow_band_distance=narrow_band_distance,
+        margin=margin,
+        target_voxel_size=target_voxel_size,
+        max_resolution=max_resolution,
+        bake_scale=bake_scale,
+        verbose=verbose,
+    )
 
 
 def compute_isomesh(volume: wp.Volume) -> Mesh | None:

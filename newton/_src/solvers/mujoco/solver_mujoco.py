@@ -3253,15 +3253,14 @@ class SolverMuJoCo(SolverBase):
             if parent == -1 and joint_type[j] == JointType.FIXED:
                 fixed_base = True
 
-            # Compute body transform relative to parent.
-            # For free joints, use body_q directly since the joint parent/child
-            # xforms are identity and the initial position lives in body_q.
+            # Compute body transform for the MjSpec body pos/quat.
+            # For free joints, the parent/child xforms are identity and the
+            # initial position lives in body_q (see add_joint_free docstring).
             child_xform = wp.transform(*joint_child_xform[j])
             if joint_type[j] == JointType.FREE:
                 bq = body_q[child]
                 tf = wp.transform(bq[:3], bq[3:])
             else:
-                # this assumes that the joint position is 0
                 tf = wp.transform(*joint_parent_xform[j])
                 tf = tf * wp.transform_inverse(child_xform)
 
@@ -4416,7 +4415,7 @@ class SolverMuJoCo(SolverBase):
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         dof_springref = getattr(mujoco_attrs, "dof_springref", None) if mujoco_attrs is not None else None
         joints_per_world = self.model.joint_count // nworld
-        bodies_per_world = self.model.body_count // self.model.world_count
+        bodies_per_world = self.model.body_count // nworld
         wp.launch(
             sync_qpos0_kernel,
             dim=(nworld, joints_per_world),

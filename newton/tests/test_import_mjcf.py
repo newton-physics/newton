@@ -29,7 +29,7 @@ from newton._src.sim.builder import ShapeFlags
 from newton.solvers import SolverMuJoCo
 
 
-class TestImportMjcf(unittest.TestCase):
+class TestImportMjcfBasic(unittest.TestCase):
     def test_humanoid_mjcf(self):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 123.0
@@ -610,6 +610,8 @@ class TestImportMjcf(unittest.TestCase):
         # note we need to swap quaternion order wxyz -> xyzw
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+
+class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
         # Create MJCF content with cylinder geometry
@@ -1829,6 +1831,8 @@ class TestImportMjcf(unittest.TestCase):
             msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
         )
 
+
+class TestImportMjcfSolverParams(unittest.TestCase):
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
@@ -2209,15 +2213,15 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_mu_torsional[2], 0.0, places=5)
         self.assertAlmostEqual(builder.shape_material_mu_rolling[2], 0.0, places=5)
 
-        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.25, 0.0005)
+        # 1-element: friction="1.0" → others use ShapeConfig defaults (0.005, 0.0001)
         self.assertAlmostEqual(builder.shape_material_mu[3], 1.0, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_torsional[3], 0.25, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_rolling[3], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_torsional[3], 0.005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[3], 0.0001, places=5)
 
-        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0005)
+        # 2-element: friction="0.6 0.15" → torsional: 0.15, rolling uses default (0.0001)
         self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
         self.assertAlmostEqual(builder.shape_material_mu_torsional[4], 0.15, places=5)
-        self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0005, places=5)
+        self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0001, places=5)
 
     def test_mjcf_geom_solref_parsing(self):
         """Test MJCF geom solref parsing for contact stiffness/damping.
@@ -2902,6 +2906,8 @@ class TestImportMjcf(unittest.TestCase):
         else:
             self.fail("Model should have mujoco.condim attribute")
 
+
+class TestImportMjcfActuatorsFrames(unittest.TestCase):
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -3741,6 +3747,8 @@ class TestImportMjcf(unittest.TestCase):
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
         np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
 
+
+class TestImportMjcfComposition(unittest.TestCase):
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -6023,6 +6031,97 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
             )
         self.assertIn("cannot specify", str(ctx.exception))
         self.assertIn("parent_xform", str(ctx.exception))
+
+
+class TestJointFrictionloss(unittest.TestCase):
+    """Verify MJCF joint frictionloss is parsed into Newton's joint_friction."""
+
+    def test_hinge_frictionloss(self):
+        """Verify frictionloss on a hinge joint is parsed correctly."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" frictionloss="5.0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 5.0, atol=1e-6)
+
+    def test_slide_frictionloss(self):
+        """Verify frictionloss on a slide joint is parsed correctly."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="slide" axis="0 0 1" frictionloss="2.5"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 2.5, atol=1e-6)
+
+    def test_frictionloss_default_zero(self):
+        """Verify frictionloss defaults to 0 when not specified."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 0.0, atol=1e-6)
+
+    def test_frictionloss_propagates_to_mujoco(self):
+        """Verify frictionloss propagates to dof_frictionloss in the MuJoCo solver."""
+        mjcf = """<mujoco><worldbody>
+            <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint type="hinge" axis="0 1 0" frictionloss="7.7"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody></mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        dof_frictionloss = solver.mjw_model.dof_frictionloss.numpy()
+        np.testing.assert_allclose(dof_frictionloss[0, 0], 7.7, atol=1e-5)
+
+    def test_frictionloss_from_default_class(self):
+        """Verify frictionloss is inherited from a default class."""
+        mjcf = """<mujoco>
+            <default>
+                <joint frictionloss="3.3"/>
+            </default>
+            <worldbody>
+                <body name="base"><geom type="box" size="0.1 0.1 0.1"/>
+                    <body name="child" pos="0 0 1">
+                        <joint type="hinge" axis="0 1 0"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        np.testing.assert_allclose(model.joint_friction.numpy()[-1], 3.3, atol=1e-5)
 
 
 class TestZeroMassBodies(unittest.TestCase):
