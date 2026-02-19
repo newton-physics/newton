@@ -29,7 +29,7 @@ from newton._src.sim.builder import ShapeFlags
 from newton.solvers import SolverMuJoCo
 
 
-class TestImportMjcf(unittest.TestCase):
+class TestImportMjcfBasic(unittest.TestCase):
     def test_humanoid_mjcf(self):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 123.0
@@ -610,6 +610,8 @@ class TestImportMjcf(unittest.TestCase):
         # note we need to swap quaternion order wxyz -> xyzw
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+
+class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
         # Create MJCF content with cylinder geometry
@@ -1829,6 +1831,8 @@ class TestImportMjcf(unittest.TestCase):
             msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
         )
 
+
+class TestImportMjcfSolverParams(unittest.TestCase):
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
@@ -2902,6 +2906,8 @@ class TestImportMjcf(unittest.TestCase):
         else:
             self.fail("Model should have mujoco.condim attribute")
 
+
+class TestImportMjcfActuatorsFrames(unittest.TestCase):
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -3741,6 +3747,8 @@ class TestImportMjcf(unittest.TestCase):
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
         np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
 
+
+class TestImportMjcfComposition(unittest.TestCase):
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>

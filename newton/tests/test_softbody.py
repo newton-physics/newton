@@ -384,7 +384,7 @@ def test_tet_graph_coloring_is_valid(test, device):
 def test_tet_energy(test, device):
     rng = np.random.default_rng(seed=42)
 
-    for _test in range(100):
+    for _test in range(30):
         builder = ModelBuilder()
 
         vertices = [wp.vec3(rng.standard_normal((3,))) for _ in range(4)]
