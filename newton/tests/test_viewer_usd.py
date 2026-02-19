@@ -60,6 +60,21 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.vertex)
         np.testing.assert_allclose(display_color, colors.numpy(), atol=1e-6)
 
+    def test_reuses_existing_layer_for_same_output_path(self):
+        temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
+        temp_file.close()
+        self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
+
+        viewer1 = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        viewer2 = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        self.addCleanup(viewer1.close)
+        self.addCleanup(lambda: setattr(viewer1, "output_path", ""))
+        self.addCleanup(viewer2.close)
+        self.addCleanup(lambda: setattr(viewer2, "output_path", ""))
+
+        self.assertIsNotNone(viewer2.stage)
+        self.assertTrue(os.path.exists(temp_file.name))
+
     def test_log_points_treats_wp_float_triplet_as_single_constant_color(self):
         viewer = self._make_viewer()
 

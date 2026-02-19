@@ -101,13 +101,20 @@ class ViewerUSD(ViewerBase):
 
         super().__init__()
 
-        self.output_path = output_path
+        self.output_path = os.path.abspath(output_path)
         self.fps = fps
         self.up_axis = up_axis
         self.num_frames = num_frames
 
-        # Create USD stage
-        self.stage = Usd.Stage.CreateNew(output_path)
+        # Create USD stage. If this output path is already registered in the
+        # current process, reuse and clear the existing layer instead of
+        # calling CreateNew() again (which raises for duplicate identifiers).
+        existing_layer = Sdf.Layer.Find(self.output_path)
+        if existing_layer is not None:
+            existing_layer.Clear()
+            self.stage = Usd.Stage.Open(existing_layer)
+        else:
+            self.stage = Usd.Stage.CreateNew(self.output_path)
         self.stage.SetTimeCodesPerSecond(fps)  # number of timeCodes per second for data storage
         self.stage.SetFramesPerSecond(fps)  # display frame rate (timeline FPS in DCC tools)
         self.stage.SetStartTimeCode(0)
