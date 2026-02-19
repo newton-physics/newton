@@ -339,7 +339,7 @@ def test_tet_adjacency_single_tet(test, device):
 
     solver = SolverVBD(model)
 
-    adjacency = solver.compute_particle_force_element_adjacency()
+    adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(4, tet_indices)
     np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)
@@ -352,7 +352,7 @@ def test_tet_adjacency_complex_pyramid(test, device):
 
     solver = SolverVBD(model)
 
-    adjacency = solver.compute_particle_force_element_adjacency()
+    adjacency = solver._compute_particle_force_element_adjacency()
 
     exp_offsets, exp_flat = _expected_tet_adjacency(len(PYRAMID_PARTICLES), PYRAMID_TET_INDICES)
     np.testing.assert_array_equal(adjacency.v_adj_tets_offsets.numpy(), exp_offsets)

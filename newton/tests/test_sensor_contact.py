@@ -77,7 +77,7 @@ class TestSensorContact(unittest.TestCase):
         entity_B = (2,)
 
         model = MockModel()
-        model.body_key = ["A", "B"]
+        model.body_label = ["A", "B"]
         model.body_shapes = [entity_A, entity_B]
 
         contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
@@ -181,10 +181,10 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
 
-        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, key="base")
-        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), key="a")
+        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, label="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), label="a")
         builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
-        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 1.15), wp.quat_identity()), key="b")
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 1.15), wp.quat_identity()), label="b")
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
 
         model = builder.finalize()
@@ -244,12 +244,12 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
 
-        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, key="base")
-        body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), key="a")
+        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, label="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), label="a")
         builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
-        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.6), wp.quat_identity()), key="b")
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.6), wp.quat_identity()), label="b")
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
-        body_c = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0, 0.8), wp.quat_identity()), key="c")
+        body_c = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0, 0.8), wp.quat_identity()), label="c")
         builder.add_shape_box(body_c, hx=0.1, hy=0.1, hz=0.25)
 
         model = builder.finalize()

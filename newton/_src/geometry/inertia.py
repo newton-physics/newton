@@ -572,7 +572,7 @@ def verify_and_correct_inertia(
     balance_inertia: bool = True,
     bound_mass: float | None = None,
     bound_inertia: float | None = None,
-    body_key: str | None = None,
+    body_label: str | None = None,
 ) -> tuple[float, wp.mat33, bool]:
     """Verify and correct inertia values similar to MuJoCo's balanceinertia compiler setting.
 
@@ -589,7 +589,7 @@ def verify_and_correct_inertia(
         balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia)
         bound_mass: If specified, clamp mass to be at least this value
         bound_inertia: If specified, clamp inertia diagonal elements to be at least this value
-        body_key: Optional key/name of the body for more informative warnings
+        body_label: Optional label/name of the body for more informative warnings
 
     Returns:
         A tuple of (corrected_mass, corrected_inertia, was_corrected) where was_corrected
@@ -601,7 +601,7 @@ def verify_and_correct_inertia(
     corrected_inertia = inertia_array.copy()
 
     # Format body identifier for warnings
-    body_id = f" for body '{body_key}'" if body_key else ""
+    body_id = f" for body '{body_label}'" if body_label else ""
 
     # Check and correct mass
     if mass < 0:

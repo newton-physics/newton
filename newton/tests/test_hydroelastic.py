@@ -109,6 +109,7 @@ def build_stacked_cubes_scene(
     builder = newton.ModelBuilder()
     if shape_type == ShapeType.PRIMITIVE:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
             mu=0.5,
             sdf_max_resolution=32,
             is_hydroelastic=True,
@@ -117,6 +118,7 @@ def build_stacked_cubes_scene(
         )
     else:
         builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
             mu=0.5,
             is_hydroelastic=True,
             contact_margin=contact_margin,
@@ -130,7 +132,7 @@ def build_stacked_cubes_scene(
         initial_positions.append(wp.vec3(0.0, 0.0, z_pos))
         body = builder.add_body(
             xform=wp.transform(initial_positions[-1], wp.quat_identity()),
-            key=f"{shape_type.value}_cube_{i}",
+            label=f"{shape_type.value}_cube_{i}",
         )
 
         if shape_type == ShapeType.PRIMITIVE:
@@ -291,6 +293,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         I_m_upper = wp.mat33(inertia_upper, 0.0, 0.0, 0.0, inertia_upper, 0.0, 0.0, 0.0, inertia_upper)
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.1, 0.1),
@@ -305,7 +308,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         lower_pos = wp.vec3(x_pos, 0.0, box_half_lower)
         body_lower = builder.add_body(
             xform=wp.transform(p=lower_pos, q=wp.quat_identity()),
-            key=f"lower_{i}",
+            label=f"lower_{i}",
             mass=mass_lower,
             inertia=I_m_lower,
         )
@@ -321,7 +324,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         upper_pos = wp.vec3(x_pos, 0.0, upper_z)
         body_upper = builder.add_body(
             xform=wp.transform(p=upper_pos, q=wp.quat_identity()),
-            key=f"upper_{i}",
+            label=f"upper_{i}",
             mass=mass_upper,
             inertia=I_m_upper,
         )

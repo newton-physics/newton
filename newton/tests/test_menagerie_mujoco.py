@@ -1993,6 +1993,17 @@ class TestMenagerieBase(unittest.TestCase):
         # Must happen AFTER all model comparisons
         if self.backfill_model:
             backfill_model_from_native(newton_solver.mjw_model, native_mjw_model, self.backfill_fields)
+            # Re-run kinematics and RNE (without collision) so data fields
+            # (qfrc_bias, qM, etc.) reflect backfilled model. The initial forward
+            # ran before backfill and produced stale values.
+            from mujoco_warp._src import smooth as mjw_smooth
+
+            mjw_smooth.kinematics(newton_solver.mjw_model, newton_solver.mjw_data)
+            mjw_smooth.com_pos(newton_solver.mjw_model, newton_solver.mjw_data)
+            mjw_smooth.crb(newton_solver.mjw_model, newton_solver.mjw_data)
+            mjw_smooth.factor_m(newton_solver.mjw_model, newton_solver.mjw_data)
+            mjw_smooth.com_vel(newton_solver.mjw_model, newton_solver.mjw_data)
+            mjw_smooth.rne(newton_solver.mjw_model, newton_solver.mjw_data)
 
         # Initialize control strategy with the ctrl arrays it will fill
         self.control_strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)  # type: ignore[union-attr]
@@ -2800,10 +2811,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
 
     robot_folder = "apptronik_apollo"
     backfill_model = True
-    # TODO: Enable split pipeline once float32 gravity accumulation diff is resolved.
-    # Float32 reduction order for gravity over 37 bodies produces ~6e-5 qfrc_bias diff
-    # which gets amplified by M^{-1} into ~26 efc.aref diff, causing solver divergence.
-    num_steps = 0  # Model comparison only; dynamics needs float32 accumulation fix
+    use_split_pipeline = True
     discard_visual = False
     parse_visuals = True
     # Skip geom data fields in dynamics comparison (geom ordering differs with parse_visuals)
