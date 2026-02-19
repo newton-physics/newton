@@ -977,6 +977,7 @@ Last articulation stiffness: 200.0
 <span class="k">assert</span> <span class="nb">hasattr</span><span class="p">(</span><span class="n">model_mujoco</span><span class="o">.</span><span class="n">mujoco</span><span class="p">,</span> <span class="s2">&quot;condim&quot;</span><span class="p">)</span>
 </pre></div>
 </div>
+<p>MuJoCo boolean values in custom attribute transformers are parsed with <code class="docutils literal notranslate"><span class="pre">parse_bool</span></code>.</p>
 </section>
 <section id="authoring-custom-attributes">
 <h2>Authoring Custom Attributes<a class="headerlink" href="#authoring-custom-attributes" title="Link to this heading">#</a></h2>
@@ -1210,33 +1211,58 @@ Namespace A shape bool: True
 </section>
 <section id="custom-frequencies">
 <h1>Custom Frequencies<a class="headerlink" href="#custom-frequencies" title="Link to this heading">#</a></h1>
-<p>While enum frequencies (<code class="docutils literal notranslate"><span class="pre">BODY</span></code>, <code class="docutils literal notranslate"><span class="pre">SHAPE</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the <code class="docutils literal notranslate"><span class="pre">frequency</span></code> parameter.</p>
+<p>While enum frequencies (<code class="docutils literal notranslate"><span class="pre">BODY</span></code>, <code class="docutils literal notranslate"><span class="pre">SHAPE</span></code>, <code class="docutils literal notranslate"><span class="pre">JOINT</span></code>, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomAttribute.frequency" title="newton.ModelBuilder.CustomAttribute.frequency"><code class="xref py py-attr docutils literal notranslate"><span class="pre">frequency</span></code></a> parameter.</p>
 <p><strong>Example use case:</strong> MuJoCo’s <code class="docutils literal notranslate"><span class="pre">&lt;contact&gt;&lt;pair&gt;</span></code> elements define contact pairs between geometries. These pairs have their own count independent of bodies or shapes, and their indices must be remapped when merging worlds.</p>
-<section id="declaring-custom-frequencies">
-<h2>Declaring Custom Frequencies<a class="headerlink" href="#declaring-custom-frequencies" title="Link to this heading">#</a></h2>
-<p>Pass a string instead of an enum for the <code class="docutils literal notranslate"><span class="pre">frequency</span></code> parameter:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+<section id="registering-custom-frequencies">
+<h2>Registering Custom Frequencies<a class="headerlink" href="#registering-custom-frequencies" title="Link to this heading">#</a></h2>
+<p>Custom frequencies must be <strong>registered before use</strong> via <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_frequency" title="newton.ModelBuilder.add_custom_frequency"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_custom_frequency()</span></code></a> using a <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomFrequency" title="newton.ModelBuilder.CustomFrequency"><code class="xref py py-class docutils literal notranslate"><span class="pre">CustomFrequency</span></code></a> object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Register a custom frequency</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_frequency</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomFrequency</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;item&quot;</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>The frequency key follows the same namespace rules as attribute keys: if a namespace is provided, it is prepended to the name (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:pair&quot;</span></code>). When declaring a custom attribute, the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomAttribute.frequency" title="newton.ModelBuilder.CustomAttribute.frequency"><code class="xref py py-attr docutils literal notranslate"><span class="pre">frequency</span></code></a> string must match this full key.</p>
+</section>
+<section id="declaring-custom-frequency-attributes">
+<h2>Declaring Custom Frequency Attributes<a class="headerlink" href="#declaring-custom-frequency-attributes" title="Link to this heading">#</a></h2>
+<p>Once a custom frequency is registered, pass a string instead of an enum for the <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomAttribute.frequency" title="newton.ModelBuilder.CustomAttribute.frequency"><code class="xref py py-attr docutils literal notranslate"><span class="pre">frequency</span></code></a> parameter when adding attributes:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># First register the custom frequency</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_frequency</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomFrequency</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair&quot;</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">)</span>
+<span class="p">)</span>
+
+<span class="c1"># Then add attributes using that frequency</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
     <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
         <span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair_geom1&quot;</span><span class="p">,</span>
-        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;pair&quot;</span><span class="p">,</span>  <span class="c1"># Custom frequency (string)</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;mujoco:pair&quot;</span><span class="p">,</span>  <span class="c1"># Custom frequency (string)</span>
         <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
         <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">,</span>
     <span class="p">)</span>
 <span class="p">)</span>
-<span class="c1"># → Frequency resolves to &quot;mujoco:pair&quot; via namespace</span>
 </pre></div>
 </div>
-<p>When a namespace is provided, it is automatically prepended to the frequency string, matching how attribute keys work.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Attempting to add an attribute with an unregistered custom frequency will raise a <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>.</p>
+</div>
 </section>
 <section id="adding-values">
 <h2>Adding Values<a class="headerlink" href="#adding-values" title="Link to this heading">#</a></h2>
 <p>Custom frequency values are appended using <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_values" title="newton.ModelBuilder.add_custom_values"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_custom_values()</span></code></a>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Declare attributes sharing a frequency</span>
-<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
-    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_id&quot;</span><span class="p">,</span> <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;item&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Register and declare attributes sharing a frequency</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_frequency</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomFrequency</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item&quot;</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
 <span class="p">)</span>
 <span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
-    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_value&quot;</span><span class="p">,</span> <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;item&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_id&quot;</span><span class="p">,</span> <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;myns:item&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
+<span class="p">)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_value&quot;</span><span class="p">,</span> <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;myns:item&quot;</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">)</span>
 <span class="p">)</span>
 
 <span class="c1"># Append values together</span>
@@ -1256,13 +1282,164 @@ Namespace A shape bool: True
 </div>
 <p><strong>Validation:</strong> All attributes sharing a custom frequency must have the same count at <code class="docutils literal notranslate"><span class="pre">finalize()</span></code> time. This catches synchronization bugs early.</p>
 </section>
+<section id="usd-parsing-support">
+<h2>USD Parsing Support<a class="headerlink" href="#usd-parsing-support" title="Link to this heading">#</a></h2>
+<p>Custom frequencies can support automatic USD parsing:</p>
+<p>In this section, a <em>row</em> means one appended set of values for a custom frequency
+(that is, one index entry across all attributes in that frequency, equivalent to
+one call to <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_custom_values" title="newton.ModelBuilder.add_custom_values"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_custom_values()</span></code></a>).</p>
+<ul class="simple">
+<li><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_prim_filter</span></code> selects which prims should emit rows.</p></li>
+<li><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_entry_expander</span></code> (optional) expands one prim into multiple rows.</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">is_actuator_prim</span><span class="p">(</span><span class="n">prim</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True for prims with type name ``MjcActuator``.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">prim</span><span class="o">.</span><span class="n">GetTypeName</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;MjcActuator&quot;</span>
+
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_frequency</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomFrequency</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;actuator&quot;</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">,</span>
+        <span class="n">usd_prim_filter</span><span class="o">=</span><span class="n">is_actuator_prim</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>For one-to-many mappings (one prim -&gt; many rows):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">is_tendon_prim</span><span class="p">(</span><span class="n">prim</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">prim</span><span class="o">.</span><span class="n">GetTypeName</span><span class="p">()</span> <span class="o">==</span> <span class="s2">&quot;MjcTendon&quot;</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">expand_joint_rows</span><span class="p">(</span><span class="n">prim</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+    <span class="k">return</span> <span class="p">[</span>
+        <span class="p">{</span><span class="s2">&quot;mujoco:tendon_joint&quot;</span><span class="p">:</span> <span class="mi">4</span><span class="p">,</span> <span class="s2">&quot;mujoco:tendon_coef&quot;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">},</span>
+        <span class="p">{</span><span class="s2">&quot;mujoco:tendon_joint&quot;</span><span class="p">:</span> <span class="mi">8</span><span class="p">,</span> <span class="s2">&quot;mujoco:tendon_coef&quot;</span><span class="p">:</span> <span class="mf">0.5</span><span class="p">},</span>
+    <span class="p">]</span>
+
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_frequency</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomFrequency</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;tendon_joint&quot;</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">,</span>
+        <span class="n">usd_prim_filter</span><span class="o">=</span><span class="n">is_tendon_prim</span><span class="p">,</span>
+        <span class="n">usd_entry_expander</span><span class="o">=</span><span class="n">expand_joint_rows</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>When <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_usd()</span></code></a> runs:</p>
+<ol class="arabic simple">
+<li><p>Parses standard entities (bodies, shapes, joints, etc.).</p></li>
+<li><p>Collects custom frequencies that define <code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_prim_filter</span></code>.</p></li>
+<li><p>Traverses prims once (including instance proxies via <code class="docutils literal notranslate"><span class="pre">Usd.TraverseInstanceProxies()</span></code>).</p></li>
+<li><p>For each prim, evaluate matching frequencies in registration order:</p>
+<ul class="simple">
+<li><p>If <code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_entry_expander</span></code> is set, one row is appended per emitted dictionary,
+and default per-attribute USD extraction for that frequency is skipped for that prim.</p></li>
+<li><p>Otherwise, one row is appended from the frequency’s declared attributes.</p></li>
+</ul>
+</li>
+</ol>
+<p>Callback inputs:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">usd_prim_filter(prim,</span> <span class="pre">context)</span></code> and <code class="docutils literal notranslate"><span class="pre">usd_entry_expander(prim,</span> <span class="pre">context)</span></code> receive
+the same context shape.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">context</span></code> is a small dictionary:</p>
+<ul>
+<li><p><code class="docutils literal notranslate"><span class="pre">prim</span></code>: current USD prim (same object as the <code class="docutils literal notranslate"><span class="pre">prim</span></code> argument)</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">builder</span></code>: current <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a> instance</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">result</span></code>: dictionary returned by <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_usd()</span></code></a></p></li>
+</ul>
+</li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Important behavior:</p>
+<ul class="simple">
+<li><p>Frequency callbacks are evaluated in deterministic registration order for each visited prim.</p></li>
+<li><p>If a frequency defines <code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_entry_expander</span></code>, then for every matched
+prim in that frequency, the expander output is the only source of row values.</p></li>
+<li><p>In that expander code path, the normal <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomAttribute" title="newton.ModelBuilder.CustomAttribute"><code class="xref py py-class docutils literal notranslate"><span class="pre">CustomAttribute</span></code></a> USD parsing path is skipped
+for that frequency/prim. In other words,
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_attribute_name</span></code> and
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_value_transformer</span></code> are not evaluated for those rows.</p></li>
+<li><p>Example: if frequency <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:tendon_joint&quot;</span></code> has an expander and attribute
+<code class="docutils literal notranslate"><span class="pre">CustomAttribute(name=&quot;tendon_coef&quot;,</span> <span class="pre">frequency=&quot;mujoco:tendon_joint&quot;,</span> <span class="pre">...)</span></code>, then <code class="docutils literal notranslate"><span class="pre">tendon_coef</span></code> is populated
+only from keys returned by the expander rows. If a row omits <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:tendon_coef&quot;</span></code>, the value is treated as
+<code class="docutils literal notranslate"><span class="pre">None</span></code> and the attribute default is applied at finalize time.</p></li>
+</ul>
+</div>
+<p>This mechanism lets solvers such as MuJoCo define USD-native schemas and parse them automatically
+during model import.</p>
+<section id="deriving-values-from-prim-data-wildcard-attribute">
+<h3>Deriving Values from Prim Data (Wildcard Attribute)<a class="headerlink" href="#deriving-values-from-prim-data-wildcard-attribute" title="Link to this heading">#</a></h3>
+<p>By default, each custom attribute reads its value from a specific USD attribute on the prim (e.g., <code class="docutils literal notranslate"><span class="pre">newton:myns:my_attr</span></code>). Sometimes, however, you want to <strong>compute</strong> an attribute value from arbitrary prim data rather than reading a single named attribute. This is what setting <code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_attribute_name</span></code> to <code class="docutils literal notranslate"><span class="pre">&quot;*&quot;</span></code> is for.</p>
+<p>When <code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_attribute_name</span></code> is set to <code class="docutils literal notranslate"><span class="pre">&quot;*&quot;</span></code>, the attribute’s <code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_value_transformer</span></code> is called for <strong>every prim</strong> matching the attribute’s frequency — regardless of which USD attributes exist on that prim. The transformer receives <code class="docutils literal notranslate"><span class="pre">None</span></code> as the value (since there is no specific attribute to read) and a context dictionary containing the prim and the attribute definition.</p>
+<p>A <code class="xref py py-attr docutils literal notranslate"><span class="pre">usd_value_transformer</span></code> <strong>must</strong> be provided when using <code class="docutils literal notranslate"><span class="pre">&quot;*&quot;</span></code>; omitting it raises a <a class="reference external" href="https://docs.python.org/3/library/exceptions.html#ValueError" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">ValueError</span></code></a>.</p>
+<p><strong>Example:</strong> Suppose your USD stage contains “sensor” prims, each with an arbitrary <code class="docutils literal notranslate"><span class="pre">sensor:position</span></code> attribute. You want to store the distance from the origin as a custom attribute, computed at parse time:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+
+<span class="c1"># 1. Register the custom frequency with a filter that selects sensor prims</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">is_sensor</span><span class="p">(</span><span class="n">prim</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">prim</span><span class="o">.</span><span class="n">GetName</span><span class="p">()</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="s2">&quot;Sensor&quot;</span><span class="p">)</span>
+
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_frequency</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomFrequency</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;sensor&quot;</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">,</span>
+        <span class="n">usd_prim_filter</span><span class="o">=</span><span class="n">is_sensor</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+
+<span class="c1"># 2. Define a transformer that computes the distance from prim data</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">compute_distance</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+    <span class="n">pos</span> <span class="o">=</span> <span class="n">context</span><span class="p">[</span><span class="s2">&quot;prim&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">GetAttribute</span><span class="p">(</span><span class="s2">&quot;sensor:position&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">Get</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">pos</span><span class="p">)))</span>
+
+<span class="c1"># 3. Register the attribute with usd_attribute_name=&quot;*&quot;</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
+    <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
+        <span class="n">name</span><span class="o">=</span><span class="s2">&quot;distance&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;myns:sensor&quot;</span><span class="p">,</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;myns&quot;</span><span class="p">,</span>
+        <span class="n">usd_attribute_name</span><span class="o">=</span><span class="s2">&quot;*&quot;</span><span class="p">,</span>
+        <span class="n">usd_value_transformer</span><span class="o">=</span><span class="n">compute_distance</span><span class="p">,</span>
+    <span class="p">)</span>
+<span class="p">)</span>
+
+<span class="c1"># 4. Parse the USD stage (assuming `stage` is an existing Usd.Stage)</span>
+<span class="n">builder</span><span class="o">.</span><span class="n">add_usd</span><span class="p">(</span><span class="n">stage</span><span class="p">)</span>
+<span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+
+<span class="c1"># Access the computed values</span>
+<span class="n">distances</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">myns</span><span class="o">.</span><span class="n">distance</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The transformer context dictionary contains:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">&quot;prim&quot;</span></code>: The current USD prim.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">&quot;attr&quot;</span></code>: The <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.CustomAttribute" title="newton.ModelBuilder.CustomAttribute"><code class="xref py py-class docutils literal notranslate"><span class="pre">CustomAttribute</span></code></a> being evaluated.</p></li>
+<li><p>When called from <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder.add_usd" title="newton.ModelBuilder.add_usd"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_usd()</span></code></a> custom-frequency parsing,
+context also includes <code class="docutils literal notranslate"><span class="pre">&quot;result&quot;</span></code> (the <code class="docutils literal notranslate"><span class="pre">add_usd</span></code> return dictionary) and
+<code class="docutils literal notranslate"><span class="pre">&quot;builder&quot;</span></code> (the current <a class="reference internal" href="../api/_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a>).</p></li>
+</ul>
+<p>This pattern is useful when:</p>
+<ul class="simple">
+<li><p>The value you need doesn’t exist as a single USD attribute (it must be derived from multiple attributes, prim metadata, or relationships).</p></li>
+<li><p>You want to run the same computation for every prim of a given frequency without requiring an authored attribute on each prim.</p></li>
+<li><p>You need to look up related entities (for example, resolving a prim relationship
+to a body index through <code class="docutils literal notranslate"><span class="pre">context[&quot;result&quot;][&quot;path_body_map&quot;]</span></code>).</p></li>
+</ul>
+</section>
+</section>
 <section id="multi-world-merging">
 <h2>Multi-World Merging<a class="headerlink" href="#multi-world-merging" title="Link to this heading">#</a></h2>
-<p>When using <code class="docutils literal notranslate"><span class="pre">add_world()</span></code> to create multi-world simulations, the <code class="docutils literal notranslate"><span class="pre">references</span></code> field specifies how attribute values should be transformed:</p>
+<p>When using <code class="docutils literal notranslate"><span class="pre">add_world()</span></code> to create multi-world simulations, the <code class="xref py py-attr docutils literal notranslate"><span class="pre">references</span></code> field specifies how attribute values should be transformed:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
     <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
         <span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair_world&quot;</span><span class="p">,</span>
-        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;pair&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;mujoco:pair&quot;</span><span class="p">,</span>
         <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
         <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">,</span>
         <span class="n">references</span><span class="o">=</span><span class="s2">&quot;world&quot;</span><span class="p">,</span>  <span class="c1"># Replaced with current_world during merge</span>
@@ -1271,7 +1448,7 @@ Namespace A shape bool: True
 <span class="n">builder</span><span class="o">.</span><span class="n">add_custom_attribute</span><span class="p">(</span>
     <span class="n">ModelBuilder</span><span class="o">.</span><span class="n">CustomAttribute</span><span class="p">(</span>
         <span class="n">name</span><span class="o">=</span><span class="s2">&quot;pair_geom1&quot;</span><span class="p">,</span>
-        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;pair&quot;</span><span class="p">,</span>
+        <span class="n">frequency</span><span class="o">=</span><span class="s2">&quot;mujoco:pair&quot;</span><span class="p">,</span>
         <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
         <span class="n">namespace</span><span class="o">=</span><span class="s2">&quot;mujoco&quot;</span><span class="p">,</span>
         <span class="n">references</span><span class="o">=</span><span class="s2">&quot;shape&quot;</span><span class="p">,</span>  <span class="c1"># Offset by shape count during merge</span>
@@ -1298,7 +1475,7 @@ Namespace A shape bool: True
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>When querying, use the <strong>resolved</strong> frequency key with namespace prefix (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:pair&quot;</span></code>), not the raw string used in the declaration (<code class="docutils literal notranslate"><span class="pre">&quot;pair&quot;</span></code>). This matches how attribute keys work: <code class="docutils literal notranslate"><span class="pre">model.get_attribute_frequency(&quot;mujoco:condim&quot;)</span></code> for a namespaced attribute.</p>
+<p>When querying, use the full frequency key with namespace prefix (e.g., <code class="docutils literal notranslate"><span class="pre">&quot;mujoco:pair&quot;</span></code>). This matches how attribute keys work: <code class="docutils literal notranslate"><span class="pre">model.get_attribute_frequency(&quot;mujoco:condim&quot;)</span></code> for a namespaced attribute.</p>
 </div>
 </section>
 <section id="articulationview-limitations">
@@ -1341,8 +1518,13 @@ Namespace A shape bool: True
 </ul>
 </li>
 <li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-frequencies">Custom Frequencies</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#declaring-custom-frequencies">Declaring Custom Frequencies</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#registering-custom-frequencies">Registering Custom Frequencies</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#declaring-custom-frequency-attributes">Declaring Custom Frequency Attributes</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-values">Adding Values</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#usd-parsing-support">USD Parsing Support</a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deriving-values-from-prim-data-wildcard-attribute">Deriving Values from Prim Data (Wildcard Attribute)</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-world-merging">Multi-World Merging</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#querying-counts">Querying Counts</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#articulationview-limitations">ArticulationView Limitations</a></li>
