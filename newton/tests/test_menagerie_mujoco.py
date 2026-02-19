@@ -152,6 +152,7 @@ def create_newton_model_from_mjcf(
     robot_builder.add_mjcf(
         str(mjcf_path),
         parse_visuals=parse_visuals,
+        include_mesh_materials=not parse_visuals,  # skip materials for mesh deduplication
         ensure_nonstatic_links=False,
         ctrl_direct=True,
     )
@@ -2790,12 +2791,10 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "body_geomadr",  # geom ordering differs (compare_geom_fields_unordered handles content)
         "body_geomnum",
         "geom_",  # geom ordering differs; content checked by compare_geom_fields_unordered
-        "mesh_",  # Newton doesn't pass meshes to MuJoCo spec
-        "nmesh",
+        "mesh_",  # Newton re-triangulates meshes (different vertices/faces/normals)
+        "nmesh",  # mesh element counts differ due to re-triangulation
         "pair_geom",  # geom indices differ due to ordering
         "nxn_",  # broadphase pairs differ due to geom ordering
-        "nmaxpolygon",  # mesh-related (Newton doesn't pass meshes)
-        "nmaxmeshdeg",
         "body_tree",  # tuple comparison; content equivalent but objects differ
         "qLD_updates",
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)

@@ -3093,6 +3093,8 @@ class SolverMuJoCo(SolverBase):
         )
 
         selected_shapes_set = set(selected_shapes)
+        # Cache for mesh deduplication: (mesh_id, size_tuple) -> mesh_name_in_spec
+        mesh_spec_cache: dict[tuple[int, tuple], str] = {}
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
@@ -3153,18 +3155,22 @@ class SolverMuJoCo(SolverBase):
                 tf = wp.transform(*shape_transform[shape])
                 if stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
-                    # use mesh-specific maxhullvert or fall back to the default
-                    maxhullvert = getattr(mesh_src, "maxhullvert", mesh_maxhullvert)
-                    # apply scaling
                     size = shape_size[shape]
-                    vertices = mesh_src.vertices * size
-                    spec.add_mesh(
-                        name=name,
-                        uservert=vertices.flatten(),
-                        userface=mesh_src.indices.flatten(),
-                        maxhullvert=maxhullvert,
-                    )
-                    geom_params["meshname"] = name
+                    # Deduplicate meshes: reuse spec mesh if same geometry + scale
+                    cache_key = (id(mesh_src), tuple(size))
+                    if cache_key in mesh_spec_cache:
+                        geom_params["meshname"] = mesh_spec_cache[cache_key]
+                    else:
+                        maxhullvert = getattr(mesh_src, "maxhullvert", mesh_maxhullvert)
+                        vertices = mesh_src.vertices * size
+                        spec.add_mesh(
+                            name=name,
+                            uservert=vertices.flatten(),
+                            userface=mesh_src.indices.flatten(),
+                            maxhullvert=maxhullvert,
+                        )
+                        mesh_spec_cache[cache_key] = name
+                        geom_params["meshname"] = name
                 geom_params["pos"] = tf.p
                 geom_params["quat"] = quat_to_mjc(tf.q)
                 size = shape_size[shape]
