@@ -525,6 +525,12 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Timestep: not registered as custom attribute (conflicts with step() parameter).
     # Extracted from native model at runtime instead.
     "opt.timestep",
+    # Mesh arrays: Newton orders meshes by geom (not MJCF asset order) and trimesh
+    # deduplicates vertices on load. Total face count (nmeshface) still matches.
+    "mesh_",
+    "nmeshvert",
+    "nmeshnormal",
+    "nmeshpoly",
 }
 
 
@@ -2791,13 +2797,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "body_geomadr",  # geom ordering differs (compare_geom_fields_unordered handles content)
         "body_geomnum",
         "geom_",  # geom ordering differs; content checked by compare_geom_fields_unordered
-        # Mesh arrays: mesh ordering differs (Newton orders by geom, native by MJCF asset order)
-        # and trimesh deduplicates vertices on load. Total face count (nmeshface) matches,
-        # confirming identical triangle topology — only ordering and vertex merging differ.
-        "mesh_",
-        "nmeshvert",  # vertex/normal/polygon counts differ from trimesh vertex dedup
-        "nmeshnormal",
-        "nmeshpoly",
         "pair_geom",  # geom indices differ due to ordering
         "nxn_",  # broadphase pairs differ due to geom ordering
         "body_tree",  # tuple comparison; content equivalent but objects differ
