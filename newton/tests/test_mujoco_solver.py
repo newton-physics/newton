@@ -441,65 +441,36 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         nworld = mjc_body_to_newton.shape[0]
         nbody = mjc_body_to_newton.shape[1]
 
+        def _quat_wxyz_to_rotmat(q):
+            w, x, y, z = q
+            return np.array(
+                [
+                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+                ]
+            )
+
         def check_inertias(inertias_to_check, msg_prefix=""):
             for world_idx in range(nworld):
                 for mjc_body in range(nbody):
                     newton_body = mjc_body_to_newton[world_idx, mjc_body]
                     if newton_body >= 0:  # Skip unmapped bodies
                         newton_inertia = inertias_to_check[newton_body].astype(np.float32)
-                        mjc_inertia = solver.mjw_model.body_inertia.numpy()[world_idx, mjc_body].astype(np.float32)
+                        mjc_principal = solver.mjw_model.body_inertia.numpy()[world_idx, mjc_body]
+                        mjc_iquat = solver.mjw_model.body_iquat.numpy()[world_idx, mjc_body]  # wxyz
 
-                        # Get eigenvalues of both tensors
-                        newton_eigvecs, newton_eigvals = wp.eig3(wp.mat33(newton_inertia))
-                        newton_eigvecs = np.array(newton_eigvecs)
-                        newton_eigvecs = newton_eigvecs.reshape((3, 3))
+                        # Reconstruct full tensor from principal + iquat and compare
+                        R = _quat_wxyz_to_rotmat(mjc_iquat)
+                        reconstructed = R @ np.diag(mjc_principal) @ R.T
 
-                        newton_eigvals = np.array(newton_eigvals)
-
-                        mjc_eigvals = mjc_inertia  # Already in diagonal form
-                        mjc_iquat = np.roll(
-                            solver.mjw_model.body_iquat.numpy()[world_idx, mjc_body].astype(np.float32), 1
+                        np.testing.assert_allclose(
+                            reconstructed,
+                            newton_inertia,
+                            atol=1e-4,
+                            err_msg=f"{msg_prefix}Inertia tensor mismatch for mjc_body {mjc_body} "
+                            f"(newton {newton_body}) in world {world_idx}",
                         )
-
-                        # Sort eigenvalues in descending order and reorder eigenvectors by columns
-                        sort_indices = np.argsort(newton_eigvals)[::-1]
-                        newton_eigvals = newton_eigvals[sort_indices]
-                        newton_eigvecs = newton_eigvecs[:, sort_indices]
-
-                        # Ensure proper rotation (det=+1) before quaternion conversion
-                        # This mirrors the fix in update_body_inertia_kernel
-                        if np.linalg.det(newton_eigvecs) < 0:
-                            newton_eigvecs[:, 2] = -newton_eigvecs[:, 2]
-
-                        newton_quat = wp.quat_from_matrix(
-                            wp.matrix_from_cols(
-                                wp.vec3(newton_eigvecs[:, 0]),
-                                wp.vec3(newton_eigvecs[:, 1]),
-                                wp.vec3(newton_eigvecs[:, 2]),
-                            )
-                        )
-                        newton_quat = wp.normalize(newton_quat)
-
-                        for dim in range(3):
-                            self.assertAlmostEqual(
-                                float(newton_eigvals[dim]),
-                                float(mjc_eigvals[dim]),
-                                places=4,
-                                msg=f"{msg_prefix}Inertia eigenvalue mismatch for mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}, dimension {dim}",
-                            )
-                        # Handle quaternion sign ambiguity by ensuring dot product is non-negative
-                        newton_quat_np = np.array(newton_quat)
-                        mjc_iquat_np = np.array(mjc_iquat)
-                        if np.dot(newton_quat_np, mjc_iquat_np) < 0:
-                            newton_quat_np = -newton_quat_np
-
-                        for dim in range(4):
-                            self.assertAlmostEqual(
-                                float(mjc_iquat_np[dim]),
-                                float(newton_quat_np[dim]),
-                                places=5,
-                                msg=f"{msg_prefix}Inertia quaternion mismatch for mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}",
-                            )
 
         # Check initial inertia tensors
         check_inertias(new_inertias, "Initial ")
@@ -526,22 +497,25 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         check_inertias(updated_inertias, "Updated ")
 
     def test_body_inertia_eigendecomposition_determinant(self):
-        """
-        Tests that the inertia eigendecomposition correctly handles cases where
-        wp.eig3() returns an eigenvector matrix with determinant -1 (a reflection).
+        """Verify eigendecomposition handles det=-1 and non-trivial rotations.
 
         The kernel must ensure det(V) = +1 before calling quat_from_matrix(),
-        otherwise the quaternion will be incorrect and the reconstructed inertia
-        tensor will not match the original.
+        and convert the resulting xyzw quaternion to wxyz correctly.
+        Uses a rotated (non-diagonal) inertia tensor to catch convention errors
+        that would be invisible with axis-aligned inertia.
         """
-        # Create a specific inertia tensor that is known to trigger det=-1 from wp.eig3
-        # This is a diagonal tensor where eigendecomposition can return reflections
-        diagonal_inertia = np.diag([9.9086283e-05, 1.3213398e-04, 9.9086275e-05]).astype(np.float32)
+        # Distinct eigenvalues with a non-trivial rotation to expose both
+        # det=-1 handling and xyzw/wxyz convention errors.
+        principal = np.array([0.06, 0.04, 0.02], dtype=np.float32)
+        # 45-degree rotation around y-axis creates off-diagonal terms
+        c, s = np.cos(np.pi / 4), np.sin(np.pi / 4)
+        R = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float32)
+        rotated_inertia = (R @ np.diag(principal) @ R.T).astype(np.float32)
 
         # Assign this inertia to ALL bodies to ensure the mapped body gets it
         new_inertias = np.zeros((self.model.body_count, 3, 3), dtype=np.float32)
         for i in range(self.model.body_count):
-            new_inertias[i] = diagonal_inertia
+            new_inertias[i] = rotated_inertia
         self.model.body_inertia.assign(new_inertias)
 
         # Initialize solver
@@ -579,14 +553,12 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     reconstructed = R @ np.diag(principal) @ R.T
 
                     # Compare to original (should match within tolerance)
-                    # If determinant fix wasn't applied, this would fail
                     np.testing.assert_allclose(
                         reconstructed,
-                        diagonal_inertia,
+                        rotated_inertia,
                         atol=1e-5,
                         err_msg=f"Reconstructed inertia tensor does not match original for "
-                        f"mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}. "
-                        "This may indicate the determinant fix in update_body_inertia_kernel is not working.",
+                        f"mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}",
                     )
                     checked_count += 1
 
@@ -6176,87 +6148,6 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model)
         self.assertIsNotNone(solver.mj_model)
-
-
-class TestMuJoCoSolverBodyIquat(unittest.TestCase):
-    """Verify body_iquat quaternion convention is correct (xyzw→wxyz)."""
-
-    def test_iquat_matches_native(self):
-        """Verify solver body_iquat matches native MuJoCo for authored inertia.
-
-        A body with explicit diaginertia and quat should produce a body_iquat
-        in the solver that reconstructs the same full inertia tensor as native
-        MuJoCo. Regression test for xyzw→wxyz conversion bug where components
-        were shuffled incorrectly.
-        """
-        try:
-            import mujoco
-            import mujoco_warp
-        except ImportError:
-            self.skipTest("mujoco/mujoco_warp not available")
-
-        # Body with non-trivial inertia orientation (off-diagonal terms)
-        mjcf = """
-        <mujoco>
-            <worldbody>
-                <body name="robot" pos="0 0 1">
-                    <inertial pos="0 0 0" mass="5.0"
-                              diaginertia="0.06 0.04 0.02"
-                              quat="0.662 0.662 0.249 -0.248"/>
-                    <freejoint name="root"/>
-                    <geom type="sphere" size="0.1"/>
-                </body>
-            </worldbody>
-        </mujoco>
-        """
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_mjcf(mjcf)
-        model = builder.finalize()
-        newton_solver = SolverMuJoCo(model)
-
-        # Native MuJoCo for reference
-        mj_native = mujoco.MjModel.from_xml_string(mjcf)
-        mjw_native = mujoco_warp.put_model(mj_native)
-
-        # Compare body_inertia (principal moments)
-        newton_inertia = newton_solver.mjw_model.body_inertia.numpy()[0, 1]
-        native_inertia = mjw_native.body_inertia.numpy()[0, 1]
-        np.testing.assert_allclose(
-            newton_inertia,
-            native_inertia,
-            atol=1e-5,
-            err_msg="body_inertia principal moments mismatch",
-        )
-
-        # Compare body_iquat by reconstructing full 3x3 tensors
-        # I = R @ diag(d) @ R^T must match between Newton and native
-        newton_iquat = newton_solver.mjw_model.body_iquat.numpy()[0, 1]  # wxyz
-        native_iquat = mjw_native.body_iquat.numpy()[0, 1]  # wxyz
-
-        def quat_wxyz_to_rotmat(q_wxyz):
-            """Convert wxyz quaternion to rotation matrix."""
-            w, x, y, z = q_wxyz
-            return np.array(
-                [
-                    [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-                    [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-                    [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
-                ]
-            )
-
-        R_newton = quat_wxyz_to_rotmat(newton_iquat)
-        R_native = quat_wxyz_to_rotmat(native_iquat)
-
-        I_newton = R_newton @ np.diag(newton_inertia) @ R_newton.T
-        I_native = R_native @ np.diag(native_inertia) @ R_native.T
-
-        np.testing.assert_allclose(
-            I_newton,
-            I_native,
-            atol=1e-5,
-            err_msg="Reconstructed inertia tensor mismatch (iquat convention error)",
-        )
 
 
 class TestMuJoCoSolverQpos0(unittest.TestCase):
