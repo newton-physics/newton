@@ -433,17 +433,26 @@ def sdf_cylinder_grad(
             grad_z_up = wp.vec3(0.0, 0.0, 1.0)
         return _sdf_vector_from_z_up(grad_z_up, up_axis)
 
-    dx = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0)) - radius
+    v = wp.vec3(point_z_up[0], point_z_up[1], 0.0)
+    v_len = wp.length(v)
+    radial = wp.vec3(0.0, 0.0, 1.0)
+    if v_len > eps:
+        radial = v / v_len
+    axial = wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
+    dx = v_len - radius
     dy = wp.abs(point_z_up[2]) - half_height
     grad_z_up = wp.vec3()
-    if dx > dy:
-        v = wp.vec3(point_z_up[0], point_z_up[1], 0.0)
-        v_len = wp.length(v)
-        grad_z_up = wp.vec3(0.0, 0.0, 1.0)
-        if v_len > eps:
-            grad_z_up = v / v_len
+    if dx > 0.0 and dy > 0.0:
+        g = radial * dx + axial * dy
+        g_len = wp.length(g)
+        if g_len > eps:
+            grad_z_up = g / g_len
+        else:
+            grad_z_up = radial
+    elif dx > dy:
+        grad_z_up = radial
     else:
-        grad_z_up = wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
+        grad_z_up = axial
     return _sdf_vector_from_z_up(grad_z_up, up_axis)
 
 
@@ -574,7 +583,10 @@ def sdf_plane(point: wp.vec3, width: float, length: float):
 
     Returns:
         Distance [m]. For finite extents (``width > 0`` and ``length > 0``), this
-        is the unsigned distance to the quad sheet; otherwise it reduces to the
+        is a Chebyshev (L∞) distance approximation to the quad sheet (not exact
+        Euclidean distance). The exact Euclidean distance would be
+        ``sqrt(max(|x|-width, 0)^2 + max(|y|-length, 0)^2 + z^2)``.
+        Otherwise, for ``width <= 0`` or ``length <= 0``, it reduces to the
         signed distance of the infinite plane (``point.z``).
     """
     # SDF for a quad in the xy plane
