@@ -211,6 +211,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_stiffness: wp.array(dtype=wp.float32),
     rigid_contact_damping: wp.array(dtype=wp.float32),
     rigid_contact_friction_scale: wp.array(dtype=wp.float32),
+    shape_thickness: wp.array(dtype=float),
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
     # Mujoco warp contacts
@@ -276,10 +277,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
     bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
 
-    thickness = rigid_contact_thickness0[tid] + rigid_contact_thickness1[tid]
+    # rigid_contact_thickness = radius_eff + shape_thickness per shape.
+    # Subtract only radius_eff so dist is the surface-to-surface distance.
+    # shape_thickness is handled by geom_margin (MuJoCo's includemargin threshold).
+    radius_eff = (rigid_contact_thickness0[tid] - shape_thickness[shape_a]) + (
+        rigid_contact_thickness1[tid] - shape_thickness[shape_b]
+    )
 
     n = -rigid_contact_normal[tid]
-    dist = wp.dot(n, bx_b - bx_a) - thickness
+    dist = wp.dot(n, bx_b - bx_a) - radius_eff
 
     # Contact position: use midpoint between contact points (as in XPBD kernel)
     pos = 0.5 * (bx_a + bx_b)
@@ -1593,6 +1599,7 @@ def update_geom_properties_kernel(
     shape_geom_solimp: wp.array(dtype=vec5),
     shape_geom_solmix: wp.array(dtype=float),
     shape_geom_gap: wp.array(dtype=float),
+    shape_thickness: wp.array(dtype=float),
     # outputs
     geom_friction: wp.array2d(dtype=wp.vec3f),
     geom_solref: wp.array2d(dtype=wp.vec2f),
@@ -1602,6 +1609,7 @@ def update_geom_properties_kernel(
     geom_solimp: wp.array2d(dtype=vec5),
     geom_solmix: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
+    geom_margin: wp.array2d(dtype=float),
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
@@ -1611,6 +1619,9 @@ def update_geom_properties_kernel(
     Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
     this internally based on the geometry, and Newton's shape_collision_radius
     is not compatible with MuJoCo's bounding sphere calculation.
+
+    Note: geom_margin is always updated from shape_thickness (unconditionally,
+    unlike the optional shape_geom_gap/solimp/solmix fields).
     """
     world, geom_idx = wp.tid()
 
@@ -1640,6 +1651,9 @@ def update_geom_properties_kernel(
     # update geom_gap from custom attribute
     if shape_geom_gap:
         geom_gap[world, geom_idx] = shape_geom_gap[shape_idx]
+
+    # update geom_margin from shape thickness
+    geom_margin[world, geom_idx] = shape_thickness[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]
