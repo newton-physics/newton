@@ -48,14 +48,14 @@ SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     mu=0.01,
     ke=1e7,  # Contact stiffness for MuJoCo solver
     kd=1e4,  # Contact damping
-    sdf_max_resolution=512,
-    sdf_narrow_band_range=(-0.005, 0.005),
     contact_margin=0.005,
     density=8000.0,
     mu_torsional=0.0,
     mu_rolling=0.0,
     is_hydroelastic=False,
 )
+MESH_SDF_MAX_RESOLUTION = 512
+MESH_SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
 
 
 def add_mesh_object(
@@ -63,7 +63,7 @@ def add_mesh_object(
     mesh_file: str,
     transform: wp.transform,
     shape_cfg: newton.ModelBuilder.ShapeConfig | None = None,
-    key: str | None = None,
+    label: str | None = None,
     center_origin: bool = True,
     scale: float = 1.0,
 ) -> int:
@@ -81,12 +81,19 @@ def add_mesh_object(
         transform = wp.transform(transform.p + center_world, transform.q)
 
     mesh = newton.Mesh(vertices, indices)
+    mesh.build_sdf(
+        max_resolution=MESH_SDF_MAX_RESOLUTION,
+        narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
+        margin=shape_cfg.contact_margin if shape_cfg and shape_cfg.contact_margin is not None else 0.05,
+    )
 
-    if key == "gear_base":
+    if label == "gear_base":
         body = -1
-        builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), xform=transform, cfg=shape_cfg, key=key)
+        builder.add_shape_mesh(
+            body, mesh=mesh, scale=(scale, scale, scale), xform=transform, cfg=shape_cfg, label=label
+        )
     else:
-        body = builder.add_body(key=key, xform=transform)
+        body = builder.add_body(label=label, xform=transform)
         builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), cfg=shape_cfg)
     return body
 
@@ -120,9 +127,9 @@ class Example:
         self.grid_x = int(np.ceil(np.sqrt(num_per_world)))
         self.grid_y = int(np.ceil(num_per_world / self.grid_x))
 
-        # Maximum number of rigid contacts to allocate (limits memory usage)
-        # None = auto-calculate (can be very large), or set explicit limit (e.g., 1_000_000)
-        self.rigid_contact_max = 100000
+        # Maximum number of rigid contacts to allocate (limits memory usage).
+        # Use a per-world budget so default world_count=100 scales appropriately.
+        self.rigid_contact_max = 500 * self.world_count
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
         self.broad_phase = "sap"
@@ -143,18 +150,19 @@ class Example:
             plane=(0.0, 0.0, 1.0, -self.ground_plane_offset),
             width=0.0,
             length=0.0,
-            key="ground_plane",
+            label="ground_plane",
         )
         main_scene.replicate(world_builder, world_count=self.world_count)
 
         self.model = main_scene.finalize()
 
-        # Override rigid_contact_max BEFORE creating collision pipeline to limit memory allocation
+        # Keep model and pipeline contact capacities aligned.
         self.model.rigid_contact_max = self.rigid_contact_max
 
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
             reduce_contacts=True,
+            rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase,
         )
 
@@ -166,7 +174,7 @@ class Example:
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
             )
         elif self.solver_type == "mujoco":
-            num_per_world = self.rigid_contact_max // self.world_count
+            num_per_world = self.collision_pipeline.rigid_contact_max // self.world_count
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_contacts=False,
@@ -192,8 +200,8 @@ class Example:
             joint_child = self.model.joint_child.numpy()
             joint_qd_start = self.model.joint_qd_start.numpy()
             joint_f = self.control.joint_f.numpy()
-            for body_idx, key in enumerate(self.model.body_key):
-                if key == "gear_large":
+            for body_idx, lbl in enumerate(self.model.body_label):
+                if lbl.endswith("/gear_large") or lbl == "gear_large":
                     for j in range(self.model.joint_count):
                         if joint_child[j] == body_idx:
                             qd_start = int(joint_qd_start[j])
@@ -253,7 +261,7 @@ class Example:
                     bolt_file,
                     bolt_xform,
                     SHAPE_CFG,
-                    key=f"bolt_{i}_{j}",
+                    label=f"bolt_{i}_{j}",
                     center_origin=True,
                     scale=self.scene_scale,
                 )
@@ -268,7 +276,7 @@ class Example:
                     nut_file,
                     nut_xform,
                     SHAPE_CFG,
-                    key=f"nut_{i}_{j}",
+                    label=f"nut_{i}_{j}",
                     center_origin=True,
                     scale=self.scene_scale,
                 )
@@ -293,7 +301,7 @@ class Example:
                 gear_file,
                 gear_xform,
                 SHAPE_CFG,
-                key=gear_key,
+                label=gear_key,
                 center_origin=True,
                 scale=self.scene_scale,
             )
@@ -352,10 +360,10 @@ class Example:
                 bolt_key = f"bolt_{i}_{j}"
                 nut_key = f"nut_{i}_{j}"
 
-                if bolt_key in self.model.body_key:
-                    self.bolt_body_indices.append(self.model.body_key.index(bolt_key))
-                if nut_key in self.model.body_key:
-                    self.nut_body_indices.append(self.model.body_key.index(nut_key))
+                if bolt_key in self.model.body_label:
+                    self.bolt_body_indices.append(self.model.body_label.index(bolt_key))
+                if nut_key in self.model.body_label:
+                    self.nut_body_indices.append(self.model.body_label.index(nut_key))
 
         # Store initial transforms
         body_q = self.state_0.body_q.numpy()

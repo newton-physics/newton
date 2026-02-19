@@ -181,7 +181,8 @@ class _NewtonOverheadBenchmark:
                     trace = tracer.add_trace(trace, tracer.trace())
 
         step_time = trace["step"][0]
-        mujoco_warp_step_time = trace["step"][1]["mujoco_warp_step"][0]
+        step_trace = trace["step"][1]
+        mujoco_warp_step_time = step_trace["_mujoco_warp_step"][0]
         overhead = 100.0 * (step_time - mujoco_warp_step_time) / step_time
         return overhead
 

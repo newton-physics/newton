@@ -94,13 +94,13 @@ def test_body_state(
         )
         failures_np = failures.numpy()
         if np.any(failures_np):
-            body_key = np.array(model.body_key)[indices]
+            body_label = np.array(model.body_label)[indices]
             body_q = body_q.numpy()[indices]
             body_qd = body_qd.numpy()[indices]
             failed_indices = np.where(failures_np)[0]
             failed_details = []
             for index in failed_indices:
-                detail = body_key[index]
+                detail = body_label[index]
                 extras = []
                 if show_body_q:
                     extras.append(f"q={body_q[index]}")
@@ -318,6 +318,13 @@ def create_parser():
         help="Whether to run the example in test mode.",
     )
     parser.add_argument(
+        "--broad-phase",
+        type=str,
+        default="explicit",
+        choices=["nxn", "sap", "explicit"],
+        help="Broad phase for collision detection.",
+    )
+    parser.add_argument(
         "--use-mujoco-contacts",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -389,6 +396,25 @@ def init(parser=None):
         raise ValueError(f"Invalid viewer: {args.viewer}")
 
     return viewer, args
+
+
+def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs):
+    """Create a collision pipeline, optionally using --broad-phase from args.
+
+    Args:
+        model: The Newton model to create the pipeline for.
+        args: Parsed arguments from create_parser() (optional).
+        broad_phase: Override broad phase ("nxn", "sap", "explicit"). Default from args or "explicit".
+        **kwargs: Additional keyword arguments passed to CollisionPipeline.
+
+    Returns:
+        CollisionPipeline instance.
+    """
+
+    if broad_phase is None:
+        broad_phase = (getattr(args, "broad_phase", None) if args else None) or "explicit"
+
+    return newton.CollisionPipeline(model, broad_phase=broad_phase, **kwargs)
 
 
 def main():

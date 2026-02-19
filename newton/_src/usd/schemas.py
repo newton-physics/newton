@@ -68,7 +68,7 @@ class SchemaResolverNewton(SchemaResolver):
             "max_hull_vertices": SchemaAttribute("newton:maxHullVertices", -1),
             # Collisions (margin = inflation, gap = contact processing distance; aligned with schema defaults)
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
-            "gap": SchemaAttribute("newton:contactGap", 0.0),
+            "gap": SchemaAttribute("newton:contactGap", float("-inf")),
         },
         PrimType.BODY: {},
         PrimType.ARTICULATION: {

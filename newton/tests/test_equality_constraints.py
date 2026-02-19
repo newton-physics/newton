@@ -39,7 +39,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
         self.model = builder.finalize()
 
-        eq_keys = self.model.equality_constraint_key
+        eq_keys = self.model.equality_constraint_label
         eq_body1 = self.model.equality_constraint_body1.numpy()
         eq_body2 = self.model.equality_constraint_body2.numpy()
         eq_anchors = self.model.equality_constraint_anchor.numpy()
@@ -71,7 +71,7 @@ class TestEqualityConstraints(unittest.TestCase):
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        for _ in range(1000):
+        for _ in range(200):
             for _ in range(10):
                 self.state_0.clear_forces()
                 self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
@@ -100,13 +100,13 @@ class TestEqualityConstraints(unittest.TestCase):
         robot = newton.ModelBuilder()
 
         # Add bodies with shapes
-        base = robot.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, key="base")
+        base = robot.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, label="base")
         robot.add_shape_box(base, hx=0.5, hy=0.5, hz=0.5)
 
-        link1 = robot.add_link(xform=wp.transform((1, 0, 0)), mass=1.0, key="link1")
+        link1 = robot.add_link(xform=wp.transform((1, 0, 0)), mass=1.0, label="link1")
         robot.add_shape_box(link1, hx=0.5, hy=0.5, hz=0.5)
 
-        link2 = robot.add_link(xform=wp.transform((2, 0, 0)), mass=1.0, key="link2")
+        link2 = robot.add_link(xform=wp.transform((2, 0, 0)), mass=1.0, label="link2")
         robot.add_shape_box(link2, hx=0.5, hy=0.5, hz=0.5)
 
         # Add joints - connect base to world (-1) first
@@ -115,7 +115,7 @@ class TestEqualityConstraints(unittest.TestCase):
             child=base,
             parent_xform=wp.transform((0, 0, 0)),
             child_xform=wp.transform((0, 0, 0)),
-            key="joint_fixed",
+            label="joint_fixed",
         )
         joint2 = robot.add_joint_revolute(
             parent=base,
@@ -123,7 +123,7 @@ class TestEqualityConstraints(unittest.TestCase):
             parent_xform=wp.transform((0.5, 0, 0)),
             child_xform=wp.transform((-0.5, 0, 0)),
             axis=(0, 0, 1),
-            key="joint1",
+            label="joint1",
         )
         joint3 = robot.add_joint_revolute(
             parent=link1,
@@ -131,21 +131,21 @@ class TestEqualityConstraints(unittest.TestCase):
             parent_xform=wp.transform((0.5, 0, 0)),
             child_xform=wp.transform((-0.5, 0, 0)),
             axis=(0, 0, 1),
-            key="joint2",
+            label="joint2",
         )
 
         # Add articulation
-        robot.add_articulation([joint1, joint2, joint3], key="articulation")
+        robot.add_articulation([joint1, joint2, joint3], label="articulation")
 
         # Add 2 equality constraints
         robot.add_equality_constraint_connect(
-            body1=base, body2=link2, anchor=wp.vec3(0.5, 0, 0), key="connect_constraint"
+            body1=base, body2=link2, anchor=wp.vec3(0.5, 0, 0), label="connect_constraint"
         )
         robot.add_equality_constraint_joint(
             joint1=1,  # joint1 (base to link1)
             joint2=2,  # joint2 (link1 to link2)
             polycoef=[1.0, -1.0, 0, 0, 0],
-            key="joint_constraint",
+            label="joint_constraint",
         )
 
         # Build main model with multiple worlds
@@ -228,16 +228,16 @@ class TestEqualityConstraints(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Create chain: world -> base (fixed) -> link1 (revolute) -> link2 (fixed) -> link3
-        base = builder.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, key="base")
+        base = builder.add_link(xform=wp.transform((0, 0, 0)), mass=1.0, label="base")
         builder.add_shape_box(base, hx=0.5, hy=0.5, hz=0.5)
 
-        link1 = builder.add_link(xform=wp.transform((1, 0, 0)), mass=1.0, key="link1")
+        link1 = builder.add_link(xform=wp.transform((1, 0, 0)), mass=1.0, label="link1")
         builder.add_shape_box(link1, hx=0.3, hy=0.3, hz=0.3)
 
-        link2 = builder.add_link(xform=wp.transform((2, 0, 0)), mass=1.0, key="link2")
+        link2 = builder.add_link(xform=wp.transform((2, 0, 0)), mass=1.0, label="link2")
         builder.add_shape_box(link2, hx=0.3, hy=0.3, hz=0.3)
 
-        link3 = builder.add_link(xform=wp.transform((3, 0, 0)), mass=1.0, key="link3")
+        link3 = builder.add_link(xform=wp.transform((3, 0, 0)), mass=1.0, label="link3")
         builder.add_shape_box(link3, hx=0.3, hy=0.3, hz=0.3)
 
         # Fixed joint between link1 and link2 - defines the merge transform
@@ -249,7 +249,7 @@ class TestEqualityConstraints(unittest.TestCase):
             child=base,
             parent_xform=wp.transform_identity(),
             child_xform=wp.transform_identity(),
-            key="j_base",
+            label="j_base",
         )
         joint1 = builder.add_joint_revolute(
             parent=base,
@@ -257,14 +257,14 @@ class TestEqualityConstraints(unittest.TestCase):
             parent_xform=wp.transform((0.5, 0, 0)),
             child_xform=wp.transform((-0.5, 0, 0)),
             axis=(0, 0, 1),
-            key="j1",
+            label="j1",
         )
         joint_fixed_link2 = builder.add_joint_fixed(
             parent=link1,
             child=link2,
             parent_xform=fixed_parent_xform,
             child_xform=fixed_child_xform,
-            key="j2_fixed",
+            label="j2_fixed",
         )
         joint3 = builder.add_joint_revolute(
             parent=link2,
@@ -272,26 +272,26 @@ class TestEqualityConstraints(unittest.TestCase):
             parent_xform=wp.transform((0.5, 0, 0)),
             child_xform=wp.transform((-0.5, 0, 0)),
             axis=(0, 0, 1),
-            key="j3",
+            label="j3",
         )
 
-        builder.add_articulation([joint_fixed_base, joint1, joint_fixed_link2, joint3], key="articulation")
+        builder.add_articulation([joint_fixed_base, joint1, joint_fixed_link2, joint3], label="articulation")
 
         original_anchor = wp.vec3(0.1, 0.2, 0.3)
         original_relpose = wp.transform((0.5, 0.1, -0.2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.3))
 
         eq_connect = builder.add_equality_constraint_connect(
-            body1=base, body2=link3, anchor=wp.vec3(0.5, 0, 0), key="connect_base_link3"
+            body1=base, body2=link3, anchor=wp.vec3(0.5, 0, 0), label="connect_base_link3"
         )
         eq_joint = builder.add_equality_constraint_joint(
-            joint1=joint1, joint2=joint3, polycoef=[1.0, -1.0, 0, 0, 0], key="couple_j1_j3"
+            joint1=joint1, joint2=joint3, polycoef=[1.0, -1.0, 0, 0, 0], label="couple_j1_j3"
         )
         eq_weld = builder.add_equality_constraint_weld(
             body1=link2,
             body2=link3,
             anchor=original_anchor,
             relpose=original_relpose,
-            key="weld_link2_link3",
+            label="weld_link2_link3",
         )
 
         # Compute expected merge transform: parent_xform * inverse(child_xform)

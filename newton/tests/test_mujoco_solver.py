@@ -441,65 +441,36 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         nworld = mjc_body_to_newton.shape[0]
         nbody = mjc_body_to_newton.shape[1]
 
+        def _quat_wxyz_to_rotmat(q):
+            w, x, y, z = q
+            return np.array(
+                [
+                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+                ]
+            )
+
         def check_inertias(inertias_to_check, msg_prefix=""):
             for world_idx in range(nworld):
                 for mjc_body in range(nbody):
                     newton_body = mjc_body_to_newton[world_idx, mjc_body]
                     if newton_body >= 0:  # Skip unmapped bodies
                         newton_inertia = inertias_to_check[newton_body].astype(np.float32)
-                        mjc_inertia = solver.mjw_model.body_inertia.numpy()[world_idx, mjc_body].astype(np.float32)
+                        mjc_principal = solver.mjw_model.body_inertia.numpy()[world_idx, mjc_body]
+                        mjc_iquat = solver.mjw_model.body_iquat.numpy()[world_idx, mjc_body]  # wxyz
 
-                        # Get eigenvalues of both tensors
-                        newton_eigvecs, newton_eigvals = wp.eig3(wp.mat33(newton_inertia))
-                        newton_eigvecs = np.array(newton_eigvecs)
-                        newton_eigvecs = newton_eigvecs.reshape((3, 3))
+                        # Reconstruct full tensor from principal + iquat and compare
+                        R = _quat_wxyz_to_rotmat(mjc_iquat)
+                        reconstructed = R @ np.diag(mjc_principal) @ R.T
 
-                        newton_eigvals = np.array(newton_eigvals)
-
-                        mjc_eigvals = mjc_inertia  # Already in diagonal form
-                        mjc_iquat = np.roll(
-                            solver.mjw_model.body_iquat.numpy()[world_idx, mjc_body].astype(np.float32), 1
+                        np.testing.assert_allclose(
+                            reconstructed,
+                            newton_inertia,
+                            atol=1e-4,
+                            err_msg=f"{msg_prefix}Inertia tensor mismatch for mjc_body {mjc_body} "
+                            f"(newton {newton_body}) in world {world_idx}",
                         )
-
-                        # Sort eigenvalues in descending order and reorder eigenvectors by columns
-                        sort_indices = np.argsort(newton_eigvals)[::-1]
-                        newton_eigvals = newton_eigvals[sort_indices]
-                        newton_eigvecs = newton_eigvecs[:, sort_indices]
-
-                        # Ensure proper rotation (det=+1) before quaternion conversion
-                        # This mirrors the fix in update_body_inertia_kernel
-                        if np.linalg.det(newton_eigvecs) < 0:
-                            newton_eigvecs[:, 2] = -newton_eigvecs[:, 2]
-
-                        newton_quat = wp.quat_from_matrix(
-                            wp.matrix_from_cols(
-                                wp.vec3(newton_eigvecs[:, 0]),
-                                wp.vec3(newton_eigvecs[:, 1]),
-                                wp.vec3(newton_eigvecs[:, 2]),
-                            )
-                        )
-                        newton_quat = wp.normalize(newton_quat)
-
-                        for dim in range(3):
-                            self.assertAlmostEqual(
-                                float(newton_eigvals[dim]),
-                                float(mjc_eigvals[dim]),
-                                places=4,
-                                msg=f"{msg_prefix}Inertia eigenvalue mismatch for mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}, dimension {dim}",
-                            )
-                        # Handle quaternion sign ambiguity by ensuring dot product is non-negative
-                        newton_quat_np = np.array(newton_quat)
-                        mjc_iquat_np = np.array(mjc_iquat)
-                        if np.dot(newton_quat_np, mjc_iquat_np) < 0:
-                            newton_quat_np = -newton_quat_np
-
-                        for dim in range(4):
-                            self.assertAlmostEqual(
-                                float(mjc_iquat_np[dim]),
-                                float(newton_quat_np[dim]),
-                                places=5,
-                                msg=f"{msg_prefix}Inertia quaternion mismatch for mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}",
-                            )
 
         # Check initial inertia tensors
         check_inertias(new_inertias, "Initial ")
@@ -526,22 +497,25 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
         check_inertias(updated_inertias, "Updated ")
 
     def test_body_inertia_eigendecomposition_determinant(self):
-        """
-        Tests that the inertia eigendecomposition correctly handles cases where
-        wp.eig3() returns an eigenvector matrix with determinant -1 (a reflection).
+        """Verify eigendecomposition handles det=-1 and non-trivial rotations.
 
         The kernel must ensure det(V) = +1 before calling quat_from_matrix(),
-        otherwise the quaternion will be incorrect and the reconstructed inertia
-        tensor will not match the original.
+        and convert the resulting xyzw quaternion to wxyz correctly.
+        Uses a rotated (non-diagonal) inertia tensor to catch convention errors
+        that would be invisible with axis-aligned inertia.
         """
-        # Create a specific inertia tensor that is known to trigger det=-1 from wp.eig3
-        # This is a diagonal tensor where eigendecomposition can return reflections
-        diagonal_inertia = np.diag([9.9086283e-05, 1.3213398e-04, 9.9086275e-05]).astype(np.float32)
+        # Distinct eigenvalues with a non-trivial rotation to expose both
+        # det=-1 handling and xyzw/wxyz convention errors.
+        principal = np.array([0.06, 0.04, 0.02], dtype=np.float32)
+        # 45-degree rotation around y-axis creates off-diagonal terms
+        c, s = np.cos(np.pi / 4), np.sin(np.pi / 4)
+        R = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float32)
+        rotated_inertia = (R @ np.diag(principal) @ R.T).astype(np.float32)
 
         # Assign this inertia to ALL bodies to ensure the mapped body gets it
         new_inertias = np.zeros((self.model.body_count, 3, 3), dtype=np.float32)
         for i in range(self.model.body_count):
-            new_inertias[i] = diagonal_inertia
+            new_inertias[i] = rotated_inertia
         self.model.body_inertia.assign(new_inertias)
 
         # Initialize solver
@@ -579,14 +553,12 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     reconstructed = R @ np.diag(principal) @ R.T
 
                     # Compare to original (should match within tolerance)
-                    # If determinant fix wasn't applied, this would fail
                     np.testing.assert_allclose(
                         reconstructed,
-                        diagonal_inertia,
+                        rotated_inertia,
                         atol=1e-5,
                         err_msg=f"Reconstructed inertia tensor does not match original for "
-                        f"mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}. "
-                        "This may indicate the determinant fix in update_body_inertia_kernel is not working.",
+                        f"mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}",
                     )
                     checked_count += 1
 
@@ -2694,6 +2666,74 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     msg=f"Updated geom_gap mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
+    def test_geom_margin_from_thickness(self):
+        """Test shape_thickness to geom_margin conversion and runtime updates.
+
+        Verifies that shape_thickness [m] values are correctly propagated to
+        geom_margin [m] during solver initialization and after runtime updates
+        via notify_model_changed across multiple worlds.
+        """
+        num_worlds = 2
+        template_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(template_builder)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, thickness=0.005)
+
+        body1 = template_builder.add_link(mass=0.1)
+        template_builder.add_shape_box(body=body1, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        joint1 = template_builder.add_joint_free(child=body1)
+
+        body2 = template_builder.add_link(mass=0.1)
+        shape_cfg2 = newton.ModelBuilder.ShapeConfig(density=1000.0, thickness=0.01)
+        template_builder.add_shape_sphere(body=body2, radius=0.1, cfg=shape_cfg2)
+        joint2 = template_builder.add_joint_revolute(parent=body1, child=body2, axis=(0.0, 0.0, 1.0))
+        template_builder.add_articulation([joint1, joint2])
+
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(template_builder, num_worlds)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        to_newton = solver.mjc_geom_to_newton_shape.numpy()
+        num_geoms = solver.mj_model.ngeom
+
+        # Verify initial conversion: geom_margin should match shape_thickness
+        shape_thickness = model.shape_thickness.numpy()
+        geom_margin = solver.mjw_model.geom_margin.numpy()
+        tested_count = 0
+        for world_idx in range(model.world_count):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+                tested_count += 1
+                self.assertAlmostEqual(
+                    float(geom_margin[world_idx, geom_idx]),
+                    float(shape_thickness[shape_idx]),
+                    places=5,
+                    msg=f"Initial geom_margin mismatch for shape {shape_idx} in world {world_idx}",
+                )
+        self.assertGreater(tested_count, 0)
+
+        # Update thickness values at runtime
+        new_thickness = np.array([0.02 + i * 0.005 for i in range(model.shape_count)], dtype=np.float32)
+        model.shape_thickness.assign(wp.array(new_thickness, dtype=wp.float32, device=model.device))
+        solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
+
+        # Verify runtime update
+        updated_margin = solver.mjw_model.geom_margin.numpy()
+        for world_idx in range(model.world_count):
+            for geom_idx in range(num_geoms):
+                shape_idx = to_newton[world_idx, geom_idx]
+                if shape_idx < 0:
+                    continue
+                self.assertAlmostEqual(
+                    float(updated_margin[world_idx, geom_idx]),
+                    float(new_thickness[shape_idx]),
+                    places=5,
+                    msg=f"Updated geom_margin mismatch for shape {shape_idx} in world {world_idx}",
+                )
+
     def test_geom_solmix_conversion_and_update(self):
         """Test per-shape geom_solmix conversion to MuJoCo and dynamic updates across multiple worlds."""
 
@@ -4124,14 +4164,8 @@ class TestMuJoCoConversion(unittest.TestCase):
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
             return
 
-        # Run forward kinematics using mujoco_warp (skip if not available)
-        try:
-            import mujoco_warp
-
-            mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        except ImportError as e:
-            self.skipTest(f"mujoco_warp not installed. Skipping test: {e}")
-            return
+        # Run forward kinematics using mujoco_warp
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
 
         # Extract computed positions and orientations from MuJoCo data
         parent_pos = solver.mjw_data.xpos.numpy()[0, 1]
@@ -4414,7 +4448,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create shapes for world 1 at normal scale
         env1 = newton.ModelBuilder()
-        body1 = env1.add_body(key="body1", mass=1.0)  # Add mass to make it dynamic
+        body1 = env1.add_body(label="body1", mass=1.0)  # Add mass to make it dynamic
 
         # Add two spheres - one at origin, one offset
         env1.add_shape_sphere(
@@ -4433,7 +4467,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create shapes for world 2 at 0.5x scale
         env2 = newton.ModelBuilder()
-        body2 = env2.add_body(key="body2", mass=1.0)  # Add mass to make it dynamic
+        body2 = env2.add_body(label="body2", mass=1.0)  # Add mass to make it dynamic
 
         # Add two spheres with manually scaled properties
         env2.add_shape_sphere(
@@ -4563,7 +4597,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create shapes for world 0
         env1 = newton.ModelBuilder()
-        body1 = env1.add_body(key="mesh_body1", mass=1.0)
+        body1 = env1.add_body(label="mesh_body1", mass=1.0)
 
         # Add mesh shape at specific position
         env1.add_shape_mesh(
@@ -4577,7 +4611,7 @@ class TestMuJoCoConversion(unittest.TestCase):
 
         # Create shapes for world 1
         env2 = newton.ModelBuilder()
-        body2 = env2.add_body(key="mesh_body2", mass=1.0)
+        body2 = env2.add_body(label="mesh_body2", mass=1.0)
 
         # Add mesh shape at different position
         env2.add_shape_mesh(
@@ -5020,7 +5054,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
         """Verify ref offset in coordinate conversion.
 
         With a hinge joint at ref=90 degrees, setting joint_q=0 in Newton
-        should produce qpos=pi/2 in MuJoCo after update_mjc_data.
+        should produce qpos=pi/2 in MuJoCo after _update_mjc_data.
         """
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_ref">
@@ -5042,9 +5076,44 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         # joint_q=0 should map to qpos=ref (pi/2)
         state = model.state()
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5, err_msg="joint_q=0 should map to qpos=ref")
+
+        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+
+        # Use _update_newton_state to get body transforms from MuJoCo
+        solver._update_newton_state(model, state, solver.mjw_data)
+
+        # Compare Newton's body_q (now from MuJoCo) with MuJoCo's xpos/xquat
+        newton_body_q = state.body_q.numpy()
+        mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
+
+        for body_name in ["child"]:
+            newton_body_idx = next(
+                (i for i, lbl in enumerate(model.body_label) if lbl.endswith(f"/{body_name}")),
+                None,
+            )
+            self.assertIsNotNone(newton_body_idx, f"Expected a body with '{body_name}' in its label")
+            mjc_body_idx = np.where(mjc_body_to_newton[0] == newton_body_idx)[0][0]
+
+            # Get Newton body position and quaternion (populated from MuJoCo via update_newton_state)
+            newton_pos = newton_body_q[newton_body_idx, 0:3]
+            newton_quat = newton_body_q[newton_body_idx, 3:7]  # [x, y, z, w]
+
+            # Get MuJoCo Warp body position and quaternion
+            mj_pos = solver.mjw_data.xpos.numpy()[0, mjc_body_idx]
+            mj_quat_wxyz = solver.mjw_data.xquat.numpy()[0, mjc_body_idx]  # MuJoCo uses [w, x, y, z]
+            mj_quat = np.array([mj_quat_wxyz[1], mj_quat_wxyz[2], mj_quat_wxyz[3], mj_quat_wxyz[0]])
+
+            # Compare positions
+            assert np.allclose(newton_pos, mj_pos, atol=0.01), (
+                f"Position mismatch for {body_name}: Newton={newton_pos}, MuJoCo={mj_pos}"
+            )
+
+            # Compare quaternions (sign-invariant since q and -q represent the same rotation)
+            quat_dist = min(np.linalg.norm(newton_quat - mj_quat), np.linalg.norm(newton_quat + mj_quat))
+            assert quat_dist < 0.01, f"Quaternion mismatch for {body_name}: Newton={newton_quat}, MuJoCo={mj_quat}"
 
 
 class TestMuJoCoOptions(unittest.TestCase):
@@ -6087,8 +6156,8 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
     def test_zero_mass_body(self):
         """SolverMuJoCo accepts models with zero-mass bodies (e.g. sensor frames).
 
-        With ensure_nonstatic_links=False (the default), zero-mass bodies keep
-        their zero mass. MuJoCo handles these natively when they have fixed joints.
+        Zero-mass bodies keep their zero mass. MuJoCo handles these natively
+        when they have fixed joints.
         """
         mjcf = """
         <mujoco>
@@ -6322,7 +6391,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         solver = SolverMuJoCo(model)
         state = model.state()
         # joint_q defaults to 0 for hinge
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], np.pi / 2, atol=1e-5)
 
@@ -6349,7 +6418,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         solver.mjw_data.qpos.assign(qpos)
         state = model.state()
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver.update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data)
         joint_q = state.joint_q.numpy()
         np.testing.assert_allclose(joint_q[0], 0.1, atol=1e-5)
 
@@ -6380,14 +6449,14 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         state.joint_q.assign(q)
 
         # Newton → MuJoCo
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], test_q + 0.5, atol=1e-5)
 
         # MuJoCo → Newton
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
         state2 = model.state()
-        solver.update_newton_state(model, state2, solver.mjw_data)
+        solver._update_newton_state(model, state2, solver.mjw_data)
         np.testing.assert_allclose(state2.joint_q.numpy()[0], test_q, atol=1e-5)
 
     def test_free_joint_position_roundtrip(self):
@@ -6410,9 +6479,9 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         original_q = state.joint_q.numpy().copy()
 
         # Newton → MuJoCo → Newton
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver.update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data)
         roundtrip_q = state.joint_q.numpy()
 
         np.testing.assert_allclose(roundtrip_q[:3], original_q[:3], atol=1e-5)
@@ -6427,20 +6496,24 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
     def _compare_body_positions(self, model, solver, state, body_names, atol=0.01):
         """Compare Newton and MuJoCo body positions after FK.
 
-        Runs update_mjc_data, kinematics, and update_newton_state, then
+        Runs _update_mjc_data, kinematics, and _update_newton_state, then
         asserts that Newton body positions match MuJoCo xpos for each
         named body.
         """
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-        solver.update_newton_state(model, state, solver.mjw_data)
+        solver._update_newton_state(model, state, solver.mjw_data)
 
         newton_body_q = state.body_q.numpy()
         mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
         mj_xpos = solver.mjw_data.xpos.numpy()
 
         for name in body_names:
-            newton_idx = model.body_key.index(name)
+            newton_idx = next(
+                (i for i, lbl in enumerate(model.body_label) if lbl.endswith(f"/{name}")),
+                None,
+            )
+            assert newton_idx is not None, f"Body '{name}' not found in model.body_label"
             mjc_idx = np.where(mjc_body_to_newton[0] == newton_idx)[0][0]
             newton_pos = newton_body_q[newton_idx, :3]
             mj_pos = mj_xpos[0, mjc_idx]
@@ -6626,7 +6699,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         q = state.joint_q.numpy()
         q[0] = 0.5
         state.joint_q.assign(q)
-        solver.update_mjc_data(solver.mjw_data, model, state)
+        solver._update_mjc_data(solver.mjw_data, model, state)
         qpos = solver.mjw_data.qpos.numpy()
         np.testing.assert_allclose(qpos[0, 0], 0.5, atol=1e-6, err_msg="With ref=0, qpos should equal joint_q")
 
