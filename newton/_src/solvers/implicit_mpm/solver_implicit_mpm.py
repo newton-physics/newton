@@ -583,7 +583,7 @@ def mass_form(
     return p(s) * q(s) * inv_cell_volume
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def _compute_eigenvalues(
     offsets: wp.array(dtype=int),
     columns: wp.array(dtype=int),
@@ -642,7 +642,7 @@ def _compute_eigenvalues(
             eigenvectors[row, k, j] = ev[k, j]
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def rotate_matrix_rows(
     eigenvectors: wp.array3d(dtype=float),
     mat_offsets: wp.array(dtype=int),
@@ -688,7 +688,7 @@ def _as_2d_array(array, shape, dtype):
 
 
 def make_rotate_vectors(nodes_per_element: int):
-    @fem.cache.dynamic_kernel(suffix=nodes_per_element)
+    @fem.cache.dynamic_kernel(suffix=nodes_per_element, kernel_options={"enable_mathdx_gemm": False})
     def rotate_vectors(
         eigenvectors: wp.array3d(dtype=float),
         strain_rhs: wp.array2d(dtype=float),
@@ -804,7 +804,7 @@ def make_inverse_rotate_vectors_v2(nodes_per_element: int):
     return inverse_rotate_vectors
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def inverse_scale_vector(
     eigenvalues: wp.array(dtype=float),
     vector: wp.array(dtype=Any),
@@ -832,7 +832,7 @@ def inverse_scale_sym_tensor(
     vector[node] = wp.where(scale == 0.0, vec6(0.0), vector[node] / scale)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def rotate_matrix_columns(
     eigenvectors: wp.array3d(dtype=float),
     mat_offsets: wp.array(dtype=int),
@@ -1570,7 +1570,7 @@ def mark_active_cells(
         active_cells[s_grid.element_index] = 1
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def scatter_field_dof_values(
     space_node_indices: wp.array(dtype=int),
     src: wp.array(dtype=Any),

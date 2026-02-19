@@ -1327,7 +1327,7 @@ def evaluate_strain_residual(
 _TILED_SUM_BLOCK_DIM = 512
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def _tiled_sum_kernel(
     data: wp.array2d(dtype=float),
     partial_sums: wp.array2d(dtype=float),
