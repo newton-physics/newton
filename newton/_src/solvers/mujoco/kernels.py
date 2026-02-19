@@ -1144,11 +1144,11 @@ def update_body_inertia_kernel(
     # Ensure proper rotation matrix (det=+1) for valid quaternion conversion
     V = _ensure_proper_rotation(V)
 
-    # Convert to quaternion (wp returns xyzw, MuJoCo uses wxyz)
+    # Convert to quaternion (Warp uses xyzw, mujoco_warp stores wxyz)
     q = wp.normalize(wp.quat_from_matrix(V))
 
-    # Convert from xyzw to wxyz format
-    q = wp.quat(q[1], q[2], q[3], q[0])
+    # Convert from xyzw [x,y,z,w] to wxyz [w,x,y,z]
+    q = wp.quat(q[3], q[0], q[1], q[2])
 
     # Store results
     body_inertia_out[world, mjc_body] = eigenvalues

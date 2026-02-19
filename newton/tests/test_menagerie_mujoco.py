@@ -2789,20 +2789,19 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
         "body_geomadr",  # geom ordering differs (compare_geom_fields_unordered handles content)
         "body_geomnum",
-        "body_invweight0",  # differs due to inertia re-diagonalization
-        "dof_invweight0",
         "geom_",  # geom ordering differs; content checked by compare_geom_fields_unordered
         "mesh_",  # Newton doesn't pass meshes to MuJoCo spec
         "nmesh",
         "pair_geom",  # geom indices differ due to ordering
         "nxn_",  # broadphase pairs differ due to geom ordering
-        "stat",  # meaninertia differs due to inertia re-diagonalization
         "nmaxpolygon",  # mesh-related (Newton doesn't pass meshes)
         "nmaxmeshdeg",
         "body_tree",  # tuple comparison; content equivalent but objects differ
         "qLD_updates",
-        "compare_inertia",  # zero-mass bodies cause large inertia reconstruction diffs
-        "actuator_acc0",  # derived from mass matrix + actuator moment; differs due to inertia
+        "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
+        "dof_invweight0",
+        "actuator_acc0",  # derived from mass matrix; small residual diff (~1.5e-4)
+        "stat",  # meaninertia computed from invweight0
     }
 
 
