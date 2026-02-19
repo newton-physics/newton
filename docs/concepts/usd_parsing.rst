@@ -96,6 +96,26 @@ The table below demonstrates PhysX attribute remapping with both direct mapping 
    * - ``physxScene:timeStepsPerSecond``
      - ``time_step``
      - ``1.0 / timeStepsPerSecond``
+   * - ``physxArticulation:enabledSelfCollisions``
+     - ``self_collision_enabled`` (per articulation)
+     - Direct mapping
+
+**Newton articulation remapping:**
+
+On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``), the following is resolved:
+
+.. list-table:: Newton Articulation Remapping
+   :header-rows: 1
+   :widths: 30 30 40
+
+   * - **Newton Attribute**
+     - **Resolved key**
+     - **Transformation**
+   * - ``newton:selfCollisionEnabled``
+     - ``self_collision_enabled``
+     - Direct mapping
+
+The parser resolves ``self_collision_enabled`` from either ``newton:selfCollisionEnabled`` or ``physxArticulation:enabledSelfCollisions`` (in resolver priority order). The ``enable_self_collisions`` argument to :meth:`newton.ModelBuilder.add_usd` is used as the default when neither attribute is authored.
 
 **MuJoCo Attribute Remapping Examples:**
 
