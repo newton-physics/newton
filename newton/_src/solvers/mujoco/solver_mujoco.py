@@ -1864,8 +1864,9 @@ class SolverMuJoCo(SolverBase):
         pair_friction = get_numpy("pair_friction")
 
         for i in range(pair_count):
-            # Only include pairs from the template world
-            if int(pair_world[i]) != template_world:
+            # Only include pairs from the template world or global pairs (world < 0)
+            pw = int(pair_world[i])
+            if pw != template_world and pw >= 0:
                 continue
 
             # Map Newton shape indices to MuJoCo geom names
