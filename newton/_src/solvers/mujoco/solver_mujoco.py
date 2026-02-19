@@ -2414,17 +2414,23 @@ class SolverMuJoCo(SolverBase):
         if state.qfrc_actuator is not None:
             if is_mjwarp:
                 mjw_qfrc = mj_data.qfrc_actuator
+                mjw_qpos = mj_data.qpos
             else:
                 mjw_qfrc = wp.array([mj_data.qfrc_actuator], dtype=wp.float32, device=model.device)
+                mjw_qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
             wp.launch(
                 convert_qfrc_actuator_from_mj_kernel,
                 dim=(nworld, joints_per_world),
                 inputs=[
                     mjw_qfrc,
+                    mjw_qpos,
                     joints_per_world,
                     model.joint_type,
+                    model.joint_q_start,
                     model.joint_qd_start,
                     model.joint_dof_dim,
+                    model.joint_child,
+                    model.body_com,
                 ],
                 outputs=[state.qfrc_actuator],
                 device=model.device,

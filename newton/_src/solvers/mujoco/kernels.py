@@ -1840,29 +1840,73 @@ def convert_rigid_forces_from_mj_kernel(
 @wp.kernel
 def convert_qfrc_actuator_from_mj_kernel(
     mjw_qfrc_actuator: wp.array2d(dtype=wp.float32),
+    qpos: wp.array2d(dtype=wp.float32),
     joints_per_world: int,
     joint_type: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=wp.int32),
     joint_qd_start: wp.array(dtype=wp.int32),
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    joint_child: wp.array(dtype=wp.int32),
+    body_com: wp.array(dtype=wp.vec3),
     # output
     qfrc_actuator: wp.array(dtype=wp.float32),
 ):
-    """Copy MuJoCo qfrc_actuator [nworld, nv] into Newton flat DOF array.
+    """Convert MuJoCo qfrc_actuator [nworld, nv] into Newton flat DOF array.
 
     Uses the same joint-based DOF mapping as the coordinate conversion
-    kernels.  Free and ball joints are copied directly (actuator forces
-    on those DOFs are typically zero).
+    kernels.  For free joints the wrench is transformed from MuJoCo's
+    (origin, body-frame) convention to Newton's (CoM, world-frame)
+    convention (dual of the velocity transform).  Ball and other joints
+    are copied directly.
     """
     worldid, jntid = wp.tid()
 
+    q_i = joint_q_start[jntid]
     qd_i = joint_qd_start[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
 
     type = joint_type[jntid]
 
     if type == JointType.FREE:
-        for i in range(6):
-            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
+        # MuJoCo qfrc_actuator for free joint:
+        #   [f_x, f_y, f_z] = linear force at body origin (world frame)
+        #   [τ_x, τ_y, τ_z] = torque in body frame
+        # Newton convention (dual of velocity transform):
+        #   f_lin_newton = f_lin_mujoco            (unchanged)
+        #   tau_newton    = R * tau_body - r_com x f_lin
+
+        f_lin = wp.vec3(
+            mjw_qfrc_actuator[worldid, qd_i + 0],
+            mjw_qfrc_actuator[worldid, qd_i + 1],
+            mjw_qfrc_actuator[worldid, qd_i + 2],
+        )
+        tau_body = wp.vec3(
+            mjw_qfrc_actuator[worldid, qd_i + 3],
+            mjw_qfrc_actuator[worldid, qd_i + 4],
+            mjw_qfrc_actuator[worldid, qd_i + 5],
+        )
+
+        # Body rotation (MuJoCo quaternion wxyz)
+        rot = wp.quat(
+            qpos[worldid, q_i + 4],
+            qpos[worldid, q_i + 5],
+            qpos[worldid, q_i + 6],
+            qpos[worldid, q_i + 3],
+        )
+
+        # CoM offset in world frame
+        child = joint_child[jntid]
+        com_world = wp.quat_rotate(rot, body_com[child])
+
+        # Rotate torque body → world and shift reference origin → CoM
+        tau_world = wp.quat_rotate(rot, tau_body) - wp.cross(com_world, f_lin)
+
+        qfrc_actuator[wqd_i + 0] = f_lin[0]
+        qfrc_actuator[wqd_i + 1] = f_lin[1]
+        qfrc_actuator[wqd_i + 2] = f_lin[2]
+        qfrc_actuator[wqd_i + 3] = tau_world[0]
+        qfrc_actuator[wqd_i + 4] = tau_world[1]
+        qfrc_actuator[wqd_i + 5] = tau_world[2]
     elif type == JointType.BALL:
         for i in range(3):
             qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
