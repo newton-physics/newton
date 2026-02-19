@@ -6353,11 +6353,6 @@ class TestContypeConaffinityZero(unittest.TestCase):
 
     def test_solver_contype_zero_for_group_zero(self):
         """Solver sets contype=conaffinity=0 on MuJoCo geoms with collision_group=0."""
-        try:
-            import mujoco  # noqa: F401
-        except ImportError:
-            self.skipTest("mujoco not available")
-
         mjcf = """<mujoco>
             <default>
                 <geom contype="0" conaffinity="0"/>
@@ -6384,11 +6379,6 @@ class TestContypeConaffinityZero(unittest.TestCase):
 
     def test_no_automatic_contacts_with_group_zero(self):
         """Overlapping geoms with collision_group=0 produce no automatic contacts."""
-        try:
-            import mujoco
-        except ImportError:
-            self.skipTest("mujoco not available")
-
         # Two overlapping collision geoms with contype=conaffinity=0
         mjcf = """<mujoco>
             <default>
@@ -6414,9 +6404,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model)
 
-        import mujoco
-
-        mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
         # Spheres overlap but contype=conaffinity=0 should prevent automatic contacts
         self.assertEqual(solver.mj_data.ncon, 0, "No automatic contacts for contype=conaffinity=0")
 
