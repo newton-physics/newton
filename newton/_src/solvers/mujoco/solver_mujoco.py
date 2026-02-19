@@ -355,7 +355,7 @@ class SolverMuJoCo(SolverBase):
 
             joint_path = str(path_targets[path_idx_int])
             try:
-                joint_idx = builder.joint_key.index(joint_path)
+                joint_idx = builder.joint_label.index(joint_path)
             except ValueError:
                 warnings.warn(
                     f"MjcTendon {prim.GetPath()} references unknown joint path {joint_path}. Skipping.",
@@ -1066,7 +1066,7 @@ class SolverMuJoCo(SolverBase):
 
             Used as a ``usd_value_transformer`` for custom attributes whose value
             should simply be the scene path of the prim they are defined on (e.g.
-            tendon keys).
+            tendon labels).
 
             Args:
                 _: The attribute name (unused).
@@ -1088,9 +1088,9 @@ class SolverMuJoCo(SolverBase):
                 raise ValueError(f"MjcActuator {prim.GetPath()} has unsupported number of targets: {len(target_paths)}")
             return str(target_paths[0])
 
-        def get_registered_string_values(attribute_key: str) -> list[str]:
-            """Return registered string values for a custom attribute key."""
-            attr = builder.custom_attributes.get(attribute_key)
+        def get_registered_string_values(attribute_name: str) -> list[str]:
+            """Return registered string values for a custom attribute."""
+            attr = builder.custom_attributes.get(attribute_name)
             if attr is None or attr.values is None:
                 return []
             if isinstance(attr.values, dict):
@@ -1109,13 +1109,13 @@ class SolverMuJoCo(SolverBase):
             prim traversal order.
             """
             target_path = resolve_actuator_target_path(prim)
-            joint_dof_names = get_registered_string_values("mujoco:joint_dof_key")
+            joint_dof_names = get_registered_string_values("mujoco:joint_dof_label")
             try:
                 return int(SolverMuJoCo.TrnType.JOINT), joint_dof_names.index(target_path), target_path
             except ValueError:
                 pass
 
-            tendon_names = get_registered_string_values("mujoco:tendon_key")
+            tendon_names = get_registered_string_values("mujoco:tendon_label")
             try:
                 return int(SolverMuJoCo.TrnType.TENDON), tendon_names.index(target_path), target_path
             except ValueError:
@@ -1123,7 +1123,7 @@ class SolverMuJoCo(SolverBase):
 
             return -1, -1, target_path
 
-        def resolve_joint_dof_key(_: str, context: dict[str, Any]):
+        def resolve_joint_dof_label(_: str, context: dict[str, Any]):
             """For each DOF, return the prim path(s) of the DOF(s).
 
             The returned list length must match the joint's DOF count:
@@ -1177,21 +1177,21 @@ class SolverMuJoCo(SolverBase):
         # First we get a list of all joint DOF names from USD
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="joint_dof_key",
+                name="joint_dof_label",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
                 dtype=str,
                 default="",
                 namespace="mujoco",
                 usd_attribute_name="*",
-                usd_value_transformer=resolve_joint_dof_key,
+                usd_value_transformer=resolve_joint_dof_label,
             )
         )
 
         # Then we resolve each USD actuator transmission target from its mjc:target path.
         # If target resolution is not possible yet (for example tendon target parsed later),
         # we preserve sentinel values and resolve deterministically in _init_actuators
-        # using actuator_target_key.
+        # using actuator_target_label.
         def resolve_actuator_transmission_index(_: str, context: dict[str, Any]) -> wp.vec2i:
             """Resolve the transmission target index for a USD actuator prim.
 
@@ -1222,8 +1222,8 @@ class SolverMuJoCo(SolverBase):
                 return int(SolverMuJoCo.TrnType.JOINT)
             return trntype
 
-        def resolve_actuator_target_key(_: str, context: dict[str, Any]) -> str:
-            """Resolve target path key for a USD actuator prim."""
+        def resolve_actuator_target_label(_: str, context: dict[str, Any]) -> str:
+            """Resolve target path label for a USD actuator prim."""
             return resolve_actuator_target_path(context["prim"])
 
         builder.add_custom_attribute(
@@ -1241,14 +1241,14 @@ class SolverMuJoCo(SolverBase):
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
-                name="actuator_target_key",
+                name="actuator_target_label",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
                 dtype=str,
                 default="",
                 namespace="mujoco",
                 usd_attribute_name="*",
-                usd_value_transformer=resolve_actuator_target_key,
+                usd_value_transformer=resolve_actuator_target_label,
             )
         )
 
@@ -2059,7 +2059,7 @@ class SolverMuJoCo(SolverBase):
         tendon_armature_np = tendon_armature.numpy() if tendon_armature is not None else None
         tendon_springlength = getattr(mujoco_attrs, "tendon_springlength", None)
         tendon_springlength_np = tendon_springlength.numpy() if tendon_springlength is not None else None
-        tendon_key_arr = getattr(mujoco_attrs, "tendon_key", None)
+        tendon_label_arr = getattr(mujoco_attrs, "tendon_label", None)
         tendon_joint_adr = mujoco_attrs.tendon_joint_adr.numpy()
         tendon_joint_num = mujoco_attrs.tendon_joint_num.numpy()
 
@@ -2136,8 +2136,8 @@ class SolverMuJoCo(SolverBase):
 
             # Prefer authored tendon names from MJCF/USD; fall back to a generic name.
             tendon_name_base = ""
-            if isinstance(tendon_key_arr, list) and i < len(tendon_key_arr):
-                tendon_name_base = str(tendon_key_arr[i]).strip()
+            if isinstance(tendon_label_arr, list) and i < len(tendon_label_arr):
+                tendon_name_base = str(tendon_label_arr[i]).strip()
             if tendon_name_base == "":
                 tendon_name_base = f"tendon_{i}"
 
@@ -2257,19 +2257,19 @@ class SolverMuJoCo(SolverBase):
         trntype_arr = mujoco_attrs.actuator_trntype.numpy() if hasattr(mujoco_attrs, "actuator_trntype") else None
         ctrl_source_arr = mujoco_attrs.ctrl_source.numpy() if hasattr(mujoco_attrs, "ctrl_source") else None
         actuator_world_arr = mujoco_attrs.actuator_world.numpy() if hasattr(mujoco_attrs, "actuator_world") else None
-        actuator_target_key_arr = getattr(mujoco_attrs, "actuator_target_key", None)
-        joint_dof_key_arr = getattr(mujoco_attrs, "joint_dof_key", None)
-        tendon_key_arr = getattr(mujoco_attrs, "tendon_key", None)
+        actuator_target_label_arr = getattr(mujoco_attrs, "actuator_target_label", None)
+        joint_dof_label_arr = getattr(mujoco_attrs, "joint_dof_label", None)
+        tendon_label_arr = getattr(mujoco_attrs, "tendon_label", None)
 
-        def resolve_target_from_key(target_key: str) -> tuple[int, int]:
-            if isinstance(joint_dof_key_arr, list):
+        def resolve_target_from_label(target_label: str) -> tuple[int, int]:
+            if isinstance(joint_dof_label_arr, list):
                 try:
-                    return int(SolverMuJoCo.TrnType.JOINT), joint_dof_key_arr.index(target_key)
+                    return int(SolverMuJoCo.TrnType.JOINT), joint_dof_label_arr.index(target_label)
                 except ValueError:
                     pass
-            if isinstance(tendon_key_arr, list):
+            if isinstance(tendon_label_arr, list):
                 try:
-                    return int(SolverMuJoCo.TrnType.TENDON), tendon_key_arr.index(target_key)
+                    return int(SolverMuJoCo.TrnType.TENDON), tendon_label_arr.index(target_label)
                 except ValueError:
                     pass
             return -1, -1
@@ -2317,9 +2317,9 @@ class SolverMuJoCo(SolverBase):
 
             # Determine target type from trntype enum (JOINT, TENDON, SITE, BODY, ...).
             trntype = int(trntype_arr[mujoco_act_idx]) if trntype_arr is not None else 0
-            target_key = ""
-            if isinstance(actuator_target_key_arr, list) and mujoco_act_idx < len(actuator_target_key_arr):
-                target_key = actuator_target_key_arr[mujoco_act_idx]
+            target_label = ""
+            if isinstance(actuator_target_label_arr, list) and mujoco_act_idx < len(actuator_target_label_arr):
+                target_label = actuator_target_label_arr[mujoco_act_idx]
 
             # Backward compatibility for older USD parsing that wrote tendon index to trnid[1].
             if trntype == int(SolverMuJoCo.TrnType.TENDON):
@@ -2329,15 +2329,15 @@ class SolverMuJoCo(SolverBase):
                     target_idx = target_idx_alt
 
             # Deferred target resolution: when USD parsing ran before tendon rows were available,
-            # keep actuator_target_key and resolve the final (type, index) here.
-            if target_idx < 0 and target_key:
-                resolved_type, resolved_idx = resolve_target_from_key(target_key)
+            # keep actuator_target_label and resolve the final (type, index) here.
+            if target_idx < 0 and target_label:
+                resolved_type, resolved_idx = resolve_target_from_label(target_label)
                 if resolved_idx >= 0:
                     trntype = resolved_type
                     target_idx = resolved_idx
             if target_idx < 0:
                 warnings.warn(
-                    f"MuJoCo actuator {mujoco_act_idx} has unresolved target '{target_key}'. Skipping actuator.",
+                    f"MuJoCo actuator {mujoco_act_idx} has unresolved target '{target_label}'. Skipping actuator.",
                     stacklevel=2,
                 )
                 continue

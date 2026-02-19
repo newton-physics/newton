@@ -5235,7 +5235,7 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         self.assertEqual(model.custom_frequency_counts["mujoco:actuator"], 1)
         self.assertEqual(model.custom_frequency_counts["mujoco:tendon"], 1)
-        self.assertEqual(model.mujoco.actuator_target_key[0], "/World/z_fixed_tendon")
+        self.assertEqual(model.mujoco.actuator_target_label[0], "/World/z_fixed_tendon")
 
         solver = SolverMuJoCo(model, separate_worlds=False)
         self.assertEqual(int(solver.mj_model.nu), 1)
@@ -5292,9 +5292,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
 
         self.assertEqual(model.custom_frequency_counts["mujoco:actuator"], 2)
 
-        target_keys = list(model.mujoco.actuator_target_key)
-        joint_act_idx = target_keys.index("/World/joint")
-        tendon_act_idx = target_keys.index("/World/fixed_tendon")
+        target_labels = list(model.mujoco.actuator_target_label)
+        joint_act_idx = target_labels.index("/World/joint")
+        tendon_act_idx = target_labels.index("/World/fixed_tendon")
 
         ctrlrange = model.mujoco.actuator_ctrlrange.numpy()
         forcerange = model.mujoco.actuator_forcerange.numpy()
@@ -6235,8 +6235,8 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_joint_dof_key_resolution_all_joint_types(self):
-        """Test that mujoco:joint_dof_key resolves correctly for fixed, revolute, spherical, and D6 joints."""
+    def test_joint_dof_label_resolution_all_joint_types(self):
+        """Test that mujoco:joint_dof_label resolves correctly for fixed, revolute, spherical, and D6 joints."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -6326,7 +6326,7 @@ def Xform "R" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         # fixed=0 + fixed=0 + revolute=1 + spherical=3 + D6(transX,rotX,rotY)=3 → 7 DOFs
         self.assertEqual(builder.joint_dof_count, 7)
 
-        dof_names = set(builder.custom_attributes["mujoco:joint_dof_key"].values.values())
+        dof_names = set(builder.custom_attributes["mujoco:joint_dof_label"].values.values())
         self.assertEqual(len(dof_names), 7)
         for expected in [
             "/R/Rev",
@@ -6345,8 +6345,8 @@ def Xform "R" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
         body = builder2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         body2 = builder2.add_link(mass=1.0, com=wp.vec3(0, 0, 0), inertia=wp.mat33(np.eye(3)))
         builder2.add_joint_fixed(parent=-1, child=body)
-        builder2.add_joint_fixed(parent=body, child=body2, custom_attributes={"mujoco:joint_dof_key": "ignored"})
-        self.assertEqual(len(builder2.custom_attributes["mujoco:joint_dof_key"].values), 0)
+        builder2.add_joint_fixed(parent=body, child=body2, custom_attributes={"mujoco:joint_dof_label": "ignored"})
+        self.assertEqual(len(builder2.custom_attributes["mujoco:joint_dof_label"].values), 0)
 
 
 class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
