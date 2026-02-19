@@ -1654,8 +1654,6 @@ class TestModelValidation(unittest.TestCase):
             # If it raises ValueError, it should NOT be about array length mismatch
             self.assertNotIn("Array length mismatch", str(e))
 
-
-
     def test_control_clear(self):
         """Test that Control.clear() works without errors."""
         builder = newton.ModelBuilder()
