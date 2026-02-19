@@ -5083,8 +5083,8 @@ class TestMuJoCoAttributes(unittest.TestCase):
         self.assertEqual(int(tendon_joint_adr[0]), 0)
         self.assertEqual(int(tendon_joint_num[0]), 2)
 
-        joint1_idx = model.joint_key.index("/World/joint1")
-        joint2_idx = model.joint_key.index("/World/joint2")
+        joint1_idx = model.joint_label.index("/World/joint1")
+        joint2_idx = model.joint_label.index("/World/joint2")
         self.assertEqual(int(tendon_joint[0]), joint2_idx)
         self.assertEqual(int(tendon_joint[1]), joint1_idx)
         self.assertAlmostEqual(float(tendon_coef[0]), 0.25, places=6)
@@ -5183,9 +5183,9 @@ class TestMuJoCoAttributes(unittest.TestCase):
         self.assertEqual(int(tendon_joint_adr[1]), 2)
         self.assertEqual(int(tendon_joint_num[1]), 3)
 
-        joint1_idx = model.joint_key.index("/World/joint1")
-        joint2_idx = model.joint_key.index("/World/joint2")
-        joint3_idx = model.joint_key.index("/World/joint3")
+        joint1_idx = model.joint_label.index("/World/joint1")
+        joint2_idx = model.joint_label.index("/World/joint2")
+        joint3_idx = model.joint_label.index("/World/joint3")
 
         expected_joint = np.array([joint2_idx, joint1_idx, joint3_idx, joint1_idx, joint2_idx], dtype=np.int32)
         expected_coef = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype=np.float32)
