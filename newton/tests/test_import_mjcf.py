@@ -6557,3 +6557,80 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 2)
+
+    def test_include_before_compiler_with_nested_includes(self):
+        """Compiler lookup must use THIS file's compiler, not a nested include's stripped compiler.
+
+        When a file lists <include> before <compiler>, expanding the nested
+        include strips ITS compiler's meshdir.  A naive find("compiler") would
+        return that stripped compiler instead of the current file's own.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # arm.xml: has its own meshdir and a mesh
+            arm_meshes = os.path.join(tmpdir, "arm_meshes")
+            os.makedirs(arm_meshes)
+            self._create_cube_stl(os.path.join(arm_meshes, "arm.stl"))
+            arm_xml = """\
+<mujoco>
+    <compiler meshdir="arm_meshes"/>
+    <asset>
+        <mesh name="arm_mesh" file="arm.stl"/>
+    </asset>
+    <worldbody>
+        <body name="arm">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="mesh" mesh="arm_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            with open(os.path.join(tmpdir, "arm.xml"), "w") as f:
+                f.write(arm_xml)
+
+            # robot.xml: <include> BEFORE <compiler> — the order that triggers the bug
+            robot_meshes = os.path.join(tmpdir, "robot_meshes")
+            os.makedirs(robot_meshes)
+            self._create_cube_stl(os.path.join(robot_meshes, "body.stl"))
+            robot_xml = """\
+<mujoco>
+    <include file="arm.xml"/>
+    <compiler meshdir="robot_meshes"/>
+    <asset>
+        <mesh name="body_mesh" file="body.stl"/>
+    </asset>
+    <worldbody>
+        <body name="robot_body">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="mesh" mesh="body_mesh"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            with open(os.path.join(tmpdir, "robot.xml"), "w") as f:
+                f.write(robot_xml)
+
+            # main.xml includes robot.xml
+            main_xml = """\
+<mujoco model="test">
+    <include file="robot.xml"/>
+</mujoco>"""
+            main_path = os.path.join(tmpdir, "main.xml")
+            with open(main_path, "w") as f:
+                f.write(main_xml)
+
+            # Verify expanded paths at the XML level
+            root, _ = _load_and_expand_mjcf(main_path)
+            body_mesh = root.find(".//mesh[@name='body_mesh']")
+            self.assertIsNotNone(body_mesh)
+            body_path = body_mesh.get("file")
+            expected = os.path.join(tmpdir, "robot_meshes", "body.stl")
+            self.assertEqual(body_path, expected, f"body.stl should resolve via robot_meshes, got {body_path}")
+
+            arm_mesh = root.find(".//mesh[@name='arm_mesh']")
+            self.assertIsNotNone(arm_mesh)
+            arm_path = arm_mesh.get("file")
+            expected_arm = os.path.join(tmpdir, "arm_meshes", "arm.stl")
+            self.assertEqual(arm_path, expected_arm, f"arm.stl should resolve via arm_meshes, got {arm_path}")
+
+            # Full import should succeed
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.body_count, 2)
