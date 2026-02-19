@@ -832,7 +832,7 @@
 <span class="c1"># Add a site at body origin</span>
 <span class="n">imu_site</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span>
     <span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span>
-    <span class="n">key</span><span class="o">=</span><span class="s2">&quot;imu&quot;</span>
+    <span class="n">label</span><span class="o">=</span><span class="s2">&quot;imu&quot;</span>
 <span class="p">)</span>
 
 <span class="c1"># Add a site with offset and rotation</span>
@@ -845,7 +845,7 @@
     <span class="nb">type</span><span class="o">=</span><span class="n">newton</span><span class="o">.</span><span class="n">GeoType</span><span class="o">.</span><span class="n">BOX</span><span class="p">,</span>
     <span class="n">scale</span><span class="o">=</span><span class="p">(</span><span class="mf">0.05</span><span class="p">,</span> <span class="mf">0.05</span><span class="p">,</span> <span class="mf">0.02</span><span class="p">),</span>
     <span class="n">visible</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-    <span class="n">key</span><span class="o">=</span><span class="s2">&quot;camera&quot;</span>
+    <span class="n">label</span><span class="o">=</span><span class="s2">&quot;camera&quot;</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -856,7 +856,7 @@
 <span class="n">world_origin</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span>
     <span class="n">body</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span>
     <span class="n">xform</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">transform</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">quat_identity</span><span class="p">()),</span>
-    <span class="n">key</span><span class="o">=</span><span class="s2">&quot;world_origin&quot;</span>
+    <span class="n">label</span><span class="o">=</span><span class="s2">&quot;world_origin&quot;</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -871,14 +871,14 @@
     <span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span>
     <span class="n">radius</span><span class="o">=</span><span class="mf">0.05</span><span class="p">,</span>
     <span class="n">as_site</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-    <span class="n">key</span><span class="o">=</span><span class="s2">&quot;sphere_marker&quot;</span>
+    <span class="n">label</span><span class="o">=</span><span class="s2">&quot;sphere_marker&quot;</span>
 <span class="p">)</span>
 
 <span class="n">box_site</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_shape_box</span><span class="p">(</span>
     <span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span>
     <span class="n">hx</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hy</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span> <span class="n">hz</span><span class="o">=</span><span class="mf">0.1</span><span class="p">,</span>
     <span class="n">as_site</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-    <span class="n">key</span><span class="o">=</span><span class="s2">&quot;box_marker&quot;</span>
+    <span class="n">label</span><span class="o">=</span><span class="s2">&quot;box_marker&quot;</span>
 <span class="p">)</span>
 
 <span class="c1"># Useful for conditional creation</span>
@@ -887,7 +887,7 @@
     <span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span>
     <span class="n">radius</span><span class="o">=</span><span class="mf">0.05</span><span class="p">,</span>
     <span class="n">as_site</span><span class="o">=</span><span class="n">is_sensor_point</span><span class="p">,</span>  <span class="c1"># Conditionally a site</span>
-    <span class="n">key</span><span class="o">=</span><span class="s2">&quot;measurement_point&quot;</span>
+    <span class="n">label</span><span class="o">=</span><span class="s2">&quot;measurement_point&quot;</span>
 <span class="p">)</span>
 </pre></div>
 </div>
@@ -965,7 +965,7 @@
 <span class="c1"># Create a simple model with a site</span>
 <span class="n">builder</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span>
 <span class="n">body</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_body</span><span class="p">(</span><span class="n">mass</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">inertia</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)))</span>
-<span class="n">site</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="s2">&quot;sensor&quot;</span><span class="p">)</span>
+<span class="n">site</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">add_site</span><span class="p">(</span><span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">&quot;sensor&quot;</span><span class="p">)</span>
 <span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 
 <span class="c1"># Create MuJoCo solver (sites are exported by default)</span>

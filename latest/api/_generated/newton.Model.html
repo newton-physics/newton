@@ -1239,9 +1239,9 @@ If None, uses the model’s <a class="reference internal" href="#newton.Model.re
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.articulation_key">
-<span class="sig-name descname"><span class="pre">articulation_key</span></span><a class="headerlink" href="#newton.Model.articulation_key" title="Link to this definition">#</a></dt>
-<dd><p>Articulation keys, shape [articulation_count], str.</p>
+<dt class="sig sig-object py" id="newton.Model.articulation_label">
+<span class="sig-name descname"><span class="pre">articulation_label</span></span><a class="headerlink" href="#newton.Model.articulation_label" title="Link to this definition">#</a></dt>
+<dd><p>Articulation labels, shape [articulation_count], str.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1328,9 +1328,9 @@ or custom frequencies for custom entity types (e.g., <code class="docutils liter
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.body_key">
-<span class="sig-name descname"><span class="pre">body_key</span></span><a class="headerlink" href="#newton.Model.body_key" title="Link to this definition">#</a></dt>
-<dd><p>Rigid body keys, shape [body_count], str.</p>
+<dt class="sig sig-object py" id="newton.Model.body_label">
+<span class="sig-name descname"><span class="pre">body_label</span></span><a class="headerlink" href="#newton.Model.body_label" title="Link to this definition">#</a></dt>
+<dd><p>Rigid body labels, shape [body_count], str.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1415,9 +1415,9 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.constraint_mimic_key">
-<span class="sig-name descname"><span class="pre">constraint_mimic_key</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_key" title="Link to this definition">#</a></dt>
-<dd><p>Constraint name/key, shape [constraint_mimic_count], str.</p>
+<dt class="sig sig-object py" id="newton.Model.constraint_mimic_label">
+<span class="sig-name descname"><span class="pre">constraint_mimic_label</span></span><a class="headerlink" href="#newton.Model.constraint_mimic_label" title="Link to this definition">#</a></dt>
+<dd><p>Constraint name/label, shape [constraint_mimic_count], str.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1518,9 +1518,9 @@ Components: [0] stiffness [N·m/rad], [1] damping [N·s].</p>
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.equality_constraint_key">
-<span class="sig-name descname"><span class="pre">equality_constraint_key</span></span><a class="headerlink" href="#newton.Model.equality_constraint_key" title="Link to this definition">#</a></dt>
-<dd><p>Constraint name/key, shape [equality_constraint_count], str.</p>
+<dt class="sig sig-object py" id="newton.Model.equality_constraint_label">
+<span class="sig-name descname"><span class="pre">equality_constraint_label</span></span><a class="headerlink" href="#newton.Model.equality_constraint_label" title="Link to this definition">#</a></dt>
+<dd><p>Constraint name/label, shape [equality_constraint_count], str.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1728,9 +1728,9 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.joint_key">
-<span class="sig-name descname"><span class="pre">joint_key</span></span><a class="headerlink" href="#newton.Model.joint_key" title="Link to this definition">#</a></dt>
-<dd><p>Joint keys, shape [joint_count], str.</p>
+<dt class="sig sig-object py" id="newton.Model.joint_label">
+<span class="sig-name descname"><span class="pre">joint_label</span></span><a class="headerlink" href="#newton.Model.joint_label" title="Link to this definition">#</a></dt>
+<dd><p>Joint labels, shape [joint_count], str.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2171,9 +2171,9 @@ margin calculations). Used for voxel-based contact reduction.</p>
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.shape_key">
-<span class="sig-name descname"><span class="pre">shape_key</span></span><a class="headerlink" href="#newton.Model.shape_key" title="Link to this definition">#</a></dt>
-<dd><p>List of keys for each shape.</p>
+<dt class="sig sig-object py" id="newton.Model.shape_label">
+<span class="sig-name descname"><span class="pre">shape_label</span></span><a class="headerlink" href="#newton.Model.shape_label" title="Link to this definition">#</a></dt>
+<dd><p>List of labels for each shape.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2529,7 +2529,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.set_gravity"><code class="docutils literal notranslate"><span class="pre">Model.set_gravity()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.state"><code class="docutils literal notranslate"><span class="pre">Model.state()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_count"><code class="docutils literal notranslate"><span class="pre">Model.articulation_count</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_key"><code class="docutils literal notranslate"><span class="pre">Model.articulation_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_label"><code class="docutils literal notranslate"><span class="pre">Model.articulation_label</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_start"><code class="docutils literal notranslate"><span class="pre">Model.articulation_start</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_world"><code class="docutils literal notranslate"><span class="pre">Model.articulation_world</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_world_start"><code class="docutils literal notranslate"><span class="pre">Model.articulation_world_start</span></code></a></li>
@@ -2542,7 +2542,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_inertia"><code class="docutils literal notranslate"><span class="pre">Model.body_inertia</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_inv_inertia"><code class="docutils literal notranslate"><span class="pre">Model.body_inv_inertia</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_inv_mass"><code class="docutils literal notranslate"><span class="pre">Model.body_inv_mass</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_key"><code class="docutils literal notranslate"><span class="pre">Model.body_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_label"><code class="docutils literal notranslate"><span class="pre">Model.body_label</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_mass"><code class="docutils literal notranslate"><span class="pre">Model.body_mass</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_q"><code class="docutils literal notranslate"><span class="pre">Model.body_q</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.body_qd"><code class="docutils literal notranslate"><span class="pre">Model.body_qd</span></code></a></li>
@@ -2555,7 +2555,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_enabled"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_enabled</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_joint0"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_joint0</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_joint1"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_joint1</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_key"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_label"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_label</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.constraint_mimic_world"><code class="docutils literal notranslate"><span class="pre">Model.constraint_mimic_world</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.custom_frequency_counts"><code class="docutils literal notranslate"><span class="pre">Model.custom_frequency_counts</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.device"><code class="docutils literal notranslate"><span class="pre">Model.device</span></code></a></li>
@@ -2572,7 +2572,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_enabled"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_enabled</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_joint1"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_joint1</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_joint2"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_joint2</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_key"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_label"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_label</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_polycoef"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_polycoef</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_relpose"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_relpose</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.equality_constraint_torquescale"><code class="docutils literal notranslate"><span class="pre">Model.equality_constraint_torquescale</span></code></a></li>
@@ -2601,7 +2601,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_enabled"><code class="docutils literal notranslate"><span class="pre">Model.joint_enabled</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_f"><code class="docutils literal notranslate"><span class="pre">Model.joint_f</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_friction"><code class="docutils literal notranslate"><span class="pre">Model.joint_friction</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_key"><code class="docutils literal notranslate"><span class="pre">Model.joint_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_label"><code class="docutils literal notranslate"><span class="pre">Model.joint_label</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_limit_kd"><code class="docutils literal notranslate"><span class="pre">Model.joint_limit_kd</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_limit_ke"><code class="docutils literal notranslate"><span class="pre">Model.joint_limit_ke</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_limit_lower"><code class="docutils literal notranslate"><span class="pre">Model.joint_limit_lower</span></code></a></li>
@@ -2670,7 +2670,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_flags"><code class="docutils literal notranslate"><span class="pre">Model.shape_flags</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_heightfield_data"><code class="docutils literal notranslate"><span class="pre">Model.shape_heightfield_data</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_is_solid"><code class="docutils literal notranslate"><span class="pre">Model.shape_is_solid</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_key"><code class="docutils literal notranslate"><span class="pre">Model.shape_key</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_label"><code class="docutils literal notranslate"><span class="pre">Model.shape_label</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_ka"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_ka</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_kd"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_kd</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.shape_material_ke"><code class="docutils literal notranslate"><span class="pre">Model.shape_material_ke</span></code></a></li>
