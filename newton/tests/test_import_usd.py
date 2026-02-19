@@ -1532,7 +1532,7 @@ def Xform "Articulation" (
         joint1.CreateAxisAttr().Set("Z")
         joint1.CreateBody0Rel().SetTargets([body1_path])
         joint1_prim = joint1.GetPrim()
-        joint1_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.01])
+        joint1_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.01)
 
         # Create second body with joint
         body2_path = "/body2"
@@ -1547,7 +1547,7 @@ def Xform "Articulation" (
         joint2.CreateBody0Rel().SetTargets([body1_path])
         joint2.CreateBody1Rel().SetTargets([body2_path])
         joint2_prim = joint2.GetPrim()
-        joint2_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.FloatArray, True).Set([0.02])
+        joint2_prim.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Double).Set(0.02)
 
         # Create third body with joint (no margin, should default to 0.0)
         body3_path = "/body3"
@@ -4433,7 +4433,7 @@ def Xform "Articulation" (
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_margin_parsing(self):
         """Test that margin (inflation) and gap are parsed correctly from USD."""
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+        from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
@@ -4453,14 +4453,14 @@ def Xform "Articulation" (
         collider1_prim = collider1.GetPrim()
         collider1_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider1_prim)
-        collider1_prim.CreateAttribute("newton:contactMargin", Sdf.ValueTypeNames.Float).Set(0.05)
+        collider1_prim.GetAttribute("newton:contactMargin").Set(0.05)
 
         # Collider2: newton:contactGap (gap) -> contact_margin
         collider2 = UsdGeom.Sphere.Define(stage, "/Articulation/Body/Collider2")
         collider2_prim = collider2.GetPrim()
         collider2_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider2_prim)
-        collider2_prim.CreateAttribute("newton:contactGap", Sdf.ValueTypeNames.Float).Set(0.02)
+        collider2_prim.GetAttribute("newton:contactGap").Set(0.02)
 
         # Collider3: no authoring (should use defaults)
         collider3 = UsdGeom.Capsule.Define(stage, "/Articulation/Body/Collider3")
