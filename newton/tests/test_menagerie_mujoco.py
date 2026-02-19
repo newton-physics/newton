@@ -521,11 +521,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Range: Compared via compare_jnt_range() which only checks limited joints
     # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
     "jnt_range",
-    # Option fields: Newton doesn't parse <option> attributes from MJCF.
-    # Timestep is extracted from native model at runtime; iterations are set via solver args.
+    # Timestep: not registered as custom attribute (conflicts with step() parameter).
+    # Extracted from native model at runtime instead.
     "opt.timestep",
-    "opt.iterations",
-    "opt.ls_iterations",
 }
 
 

@@ -346,12 +346,15 @@ def parse_mjcf(
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
+    # Use findall for <option> to handle multiple elements after include expansion
+    # (later values override earlier ones, matching MuJoCo's merge behavior).
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
             [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
         if builder_custom_attr_option:
-            for elem in (compiler, root.find("option")):
+            option_elems = [compiler, *root.findall("option")]
+            for elem in option_elems:
                 if elem is not None:
                     parsed = parse_custom_attributes(elem.attrib, builder_custom_attr_option, "mjcf")
                     for key, value in parsed.items():
