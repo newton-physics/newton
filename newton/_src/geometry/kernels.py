@@ -552,8 +552,11 @@ def sdf_cone_grad(point: wp.vec3, radius: float, half_height: float, up_axis: in
     Returns:
         Unit-length outward gradient direction in local frame.
     """
-    # Gradient for cone with apex at +half_height and base at -half_height
     point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if half_height <= 0.0:
+        return _sdf_vector_from_z_up(wp.vec3(0.0, 0.0, wp.sign(point_z_up[2])), up_axis)
+
+    # Gradient for cone with apex at +half_height and base at -half_height
     r = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0))
     dx = r - radius * (half_height - point_z_up[2]) / (2.0 * half_height)
     dy = wp.abs(point_z_up[2]) - half_height

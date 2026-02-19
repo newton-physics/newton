@@ -148,8 +148,14 @@ def _assert_gradient_matches_fd(
 
     dot_alignment = dot_alignment_wp.numpy()
     analytic_norm = analytic_norm_wp.numpy()
-    np.testing.assert_array_less(np.full_like(dot_alignment, dot_tol), dot_alignment)
-    np.testing.assert_allclose(analytic_norm, np.ones_like(analytic_norm), atol=1.0e-5, rtol=0.0)
+    test.assertTrue(
+        np.all(dot_alignment > dot_tol),
+        msg=f"Gradient alignment below tolerance {dot_tol}: min={dot_alignment.min():.6f}",
+    )
+    test.assertTrue(
+        np.allclose(analytic_norm, np.ones_like(analytic_norm), atol=1.0e-5, rtol=0.0),
+        msg=f"Analytic gradient norm deviates from 1: min={analytic_norm.min():.6f}, max={analytic_norm.max():.6f}",
+    )
 
 
 def test_sdf_sphere_grad_matches_finite_difference(test, device):

@@ -191,15 +191,15 @@ def collision_cost(
     d = 1e6
 
     if geo_type == newton.GeoType.SPHERE:
-        d = sdf_sphere(geo_scale[0], x_local)
+        d = sdf_sphere(x_local, geo_scale[0])
     elif geo_type == newton.GeoType.BOX:
-        d = sdf_box(geo_scale[0], geo_scale[1], geo_scale[2], x_local)
+        d = sdf_box(x_local, geo_scale[0], geo_scale[1], geo_scale[2])
     elif geo_type == newton.GeoType.CAPSULE:
-        d = sdf_capsule(geo_scale[0], geo_scale[1], x_local, int(newton.Axis.Z))
+        d = sdf_capsule(x_local, geo_scale[0], geo_scale[1], int(newton.Axis.Z))
     elif geo_type == newton.GeoType.CYLINDER:
-        d = sdf_cylinder(geo_scale[0], geo_scale[1], x_local, int(newton.Axis.Z))
+        d = sdf_cylinder(x_local, geo_scale[0], geo_scale[1], int(newton.Axis.Z))
     elif geo_type == newton.GeoType.CONE:
-        d = sdf_cone(geo_scale[0], geo_scale[1], x_local, int(newton.Axis.Z))
+        d = sdf_cone(x_local, geo_scale[0], geo_scale[1], int(newton.Axis.Z))
     elif geo_type == newton.GeoType.MESH:
         mesh = shape_source_ptr[shape_index]
         min_scale = wp.min(geo_scale)
@@ -207,7 +207,7 @@ def collision_cost(
         d = sdf_mesh(mesh, wp.cw_div(x_local, geo_scale), max_dist)
         d *= min_scale  # TODO fix this, mesh scaling needs to be handled properly
     elif geo_type == newton.GeoType.PLANE:
-        d = sdf_plane(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_plane(x_local, geo_scale[0] * 0.5, geo_scale[1] * 0.5)
 
     d = wp.max(d, 0.0)
     if d < margin:
