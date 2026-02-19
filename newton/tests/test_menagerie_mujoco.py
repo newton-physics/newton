@@ -153,7 +153,6 @@ def create_newton_model_from_mjcf(
         str(mjcf_path),
         parse_visuals=parse_visuals,
         include_mesh_materials=not parse_visuals,  # skip materials for mesh deduplication
-        ensure_nonstatic_links=False,
         ctrl_direct=True,
     )
 
