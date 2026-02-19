@@ -77,7 +77,7 @@ class TestSensorContact(unittest.TestCase):
         entity_B = (2,)
 
         model = MockModel()
-        model.body_key = ["A", "B"]
+        model.body_label = ["A", "B"]
         model.body_shapes = [entity_A, entity_B]
 
         contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
@@ -181,10 +181,10 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
 
-        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, key="base")
-        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), key="a")
+        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, label="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), label="a")
         builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
-        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 1.15), wp.quat_identity()), key="b")
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 1.15), wp.quat_identity()), label="b")
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
 
         model = builder.finalize()
@@ -205,8 +205,29 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
-        for _ in range(240 * 2):
-            solver.step(state_in, state_out, control, None, 1.0 / 240.0)
+        sim_dt = 1.0 / 240.0
+        num_steps = 240 * 2
+
+        device = model.device
+        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+        if use_cuda_graph:
+            # warmup (2 steps to allocate both buffers)
+            solver.step(state_in, state_out, control, None, sim_dt)
+            solver.step(state_out, state_in, control, None, sim_dt)
+            with wp.ScopedCapture(device) as capture:
+                solver.step(state_in, state_out, control, None, sim_dt)
+                solver.step(state_out, state_in, control, None, sim_dt)
+            graph = capture.graph
+
+        remaining = num_steps - (4 if use_cuda_graph else 0)
+        for _ in range(remaining // 2 if use_cuda_graph else remaining):
+            if use_cuda_graph:
+                wp.capture_launch(graph)
+            else:
+                solver.step(state_in, state_out, control, None, sim_dt)
+                state_in, state_out = state_out, state_in
+        if use_cuda_graph and remaining % 2 == 1:
+            solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
         sensor.eval(contacts)
@@ -223,12 +244,12 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
 
-        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, key="base")
-        body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), key="a")
+        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, label="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), label="a")
         builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
-        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.6), wp.quat_identity()), key="b")
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.6), wp.quat_identity()), label="b")
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
-        body_c = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0, 0.8), wp.quat_identity()), key="c")
+        body_c = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0, 0.8), wp.quat_identity()), label="c")
         builder.add_shape_box(body_c, hx=0.1, hy=0.1, hz=0.25)
 
         model = builder.finalize()
@@ -250,8 +271,29 @@ class TestSensorContactMuJoCo(unittest.TestCase):
 
         # Simulate 2s
         state_in, state_out, control = model.state(), model.state(), model.control()
-        for _ in range(240 * 2):
-            solver.step(state_in, state_out, control, None, 1.0 / 240.0)
+        sim_dt = 1.0 / 240.0
+        num_steps = 240 * 2
+
+        device = model.device
+        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+        if use_cuda_graph:
+            # warmup (2 steps to allocate both buffers)
+            solver.step(state_in, state_out, control, None, sim_dt)
+            solver.step(state_out, state_in, control, None, sim_dt)
+            with wp.ScopedCapture(device) as capture:
+                solver.step(state_in, state_out, control, None, sim_dt)
+                solver.step(state_out, state_in, control, None, sim_dt)
+            graph = capture.graph
+
+        remaining = num_steps - (4 if use_cuda_graph else 0)
+        for _ in range(remaining // 2 if use_cuda_graph else remaining):
+            if use_cuda_graph:
+                wp.capture_launch(graph)
+            else:
+                solver.step(state_in, state_out, control, None, sim_dt)
+                state_in, state_out = state_out, state_in
+        if use_cuda_graph and remaining % 2 == 1:
+            solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
         sensor_abc.eval(contacts)

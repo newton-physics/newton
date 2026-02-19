@@ -682,12 +682,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     writer_func: Any,
     contact_reduction_funcs: ContactReductionFunctions | None = None,
 ):
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def mesh_sdf_collision_kernel(
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
         shape_source: wp.array(dtype=wp.uint64),
-        shape_sdf_data: wp.array(dtype=SDFData),
+        sdf_table: wp.array(dtype=SDFData),
+        shape_sdf_index: wp.array(dtype=wp.int32),
         shape_contact_margin: wp.array(dtype=float),
         _shape_collision_aabb_lower: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
         _shape_collision_aabb_upper: wp.array(dtype=wp.vec3),  # Unused but kept for API compatibility
@@ -708,7 +709,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
             geom_data: Array of vec4 containing scale (xyz) and thickness (w) for each shape
             geom_transform: Array of world-space transforms for each shape
             geom_source: Array of source pointers (mesh IDs) for each shape
-            shape_sdf_data: Array of SDFData structs for mesh shapes
+            sdf_table: Compact SDFData array
+            shape_sdf_index: Per-shape SDF table index (-1 means fallback to BVH)
             geom_cutoff: Array of cutoff distances for each shape
             shape_pairs_mesh_mesh: Array of mesh-mesh pairs to process
             shape_pairs_mesh_mesh_count: Number of mesh-mesh pairs
@@ -743,10 +745,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     continue
 
                 # Check SDF availability
-                sdf_ptr = shape_sdf_data[sdf_shape].sparse_sdf_ptr
-                use_bvh_for_sdf = sdf_ptr == wp.uint64(0)
-                if sdf_ptr == wp.uint64(0) and not use_bvh_for_sdf:
-                    continue
+                sdf_idx = shape_sdf_index[sdf_shape]
+                use_bvh_for_sdf = sdf_idx < 0
+                sdf_ptr = wp.uint64(0)
+                if not use_bvh_for_sdf:
+                    sdf_ptr = sdf_table[sdf_idx].sparse_sdf_ptr
+                    use_bvh_for_sdf = sdf_ptr == wp.uint64(0)
 
                 # Load shape data
                 scale_data_tri = shape_data[tri_shape]
@@ -761,22 +765,22 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 sdf_data = SDFData()
                 sdf_scale = wp.vec3(1.0, 1.0, 1.0)
                 if not use_bvh_for_sdf:
-                    sdf_data = shape_sdf_data[sdf_shape]
+                    sdf_data = sdf_table[sdf_idx]
                     if not sdf_data.scale_baked:
                         sdf_scale = mesh_scale_sdf
 
                 # Transform from triangle mesh space to SDF mesh space
                 X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws), X_tri_ws)
 
-                # Triangle mesh thickness (SDF mesh thickness is already baked into SDF)
+                # Shape thickness is a runtime collision property.
                 triangle_mesh_thickness = scale_data_tri[3]
+                sdf_mesh_thickness = scale_data_sdf[3]
 
                 # Precompute inverse scale for efficient point transforms
                 inv_sdf_scale = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), sdf_scale)
                 min_sdf_scale = wp.min(wp.min(sdf_scale[0], sdf_scale[1]), sdf_scale[2])
 
-                # (SDF mesh's thickness is already baked into the SDF)
-                contact_threshold = margin + triangle_mesh_thickness
+                contact_threshold = margin + triangle_mesh_thickness + sdf_mesh_thickness
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
 
                 # Initialize shared memory buffer for triangle selection
@@ -862,15 +866,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                             contact_data.contact_distance = dist
                             contact_data.radius_eff_a = 0.0
                             contact_data.radius_eff_b = 0.0
-                            # SDF mesh's thickness is already baked into the SDF, so set it to 0
-                            # Mode 0: pair[0] triangles vs pair[1]'s SDF -> pair[1] thickness in SDF
-                            # Mode 1: pair[1] triangles vs pair[0]'s SDF -> pair[0] thickness in SDF
-                            if mode == 0:
-                                contact_data.thickness_a = triangle_mesh_thickness
-                                contact_data.thickness_b = 0.0
-                            else:
-                                contact_data.thickness_a = 0.0
-                                contact_data.thickness_b = triangle_mesh_thickness
+                            contact_data.thickness_a = shape_data[pair[0]][3]
+                            contact_data.thickness_b = shape_data[pair[1]][3]
                             contact_data.shape_a = pair[0]
                             contact_data.shape_b = pair[1]
                             contact_data.margin = margin
@@ -896,12 +893,13 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     get_smem_slots_plus_1 = contact_reduction_funcs.get_smem_slots_plus_1
     get_smem_slots_contacts = contact_reduction_funcs.get_smem_slots_contacts
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def mesh_sdf_collision_reduce_kernel(
         shape_data: wp.array(dtype=wp.vec4),
         shape_transform: wp.array(dtype=wp.transform),
         shape_source: wp.array(dtype=wp.uint64),
-        shape_sdf_data: wp.array(dtype=SDFData),
+        sdf_table: wp.array(dtype=SDFData),
+        shape_sdf_index: wp.array(dtype=wp.int32),
         shape_contact_margin: wp.array(dtype=float),
         shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
         shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
@@ -959,10 +957,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     continue
 
                 # Check SDF availability
-                sdf_ptr = shape_sdf_data[sdf_shape].sparse_sdf_ptr
-                use_bvh_for_sdf = sdf_ptr == wp.uint64(0)
-                if sdf_ptr == wp.uint64(0) and not use_bvh_for_sdf:
-                    continue
+                sdf_idx = shape_sdf_index[sdf_shape]
+                use_bvh_for_sdf = sdf_idx < 0
+                sdf_ptr = wp.uint64(0)
+                if not use_bvh_for_sdf:
+                    sdf_ptr = sdf_table[sdf_idx].sparse_sdf_ptr
+                    use_bvh_for_sdf = sdf_ptr == wp.uint64(0)
 
                 # Load shape data
                 scale_data_tri = shape_data[tri_shape]
@@ -983,15 +983,16 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 sdf_data = SDFData()
                 sdf_scale = wp.vec3(1.0, 1.0, 1.0)
                 if not use_bvh_for_sdf:
-                    sdf_data = shape_sdf_data[sdf_shape]
+                    sdf_data = sdf_table[sdf_idx]
                     if not sdf_data.scale_baked:
                         sdf_scale = mesh_scale_sdf
 
                 # Transform from triangle mesh space to SDF mesh space
                 X_mesh_to_sdf = wp.transform_multiply(wp.transform_inverse(X_sdf_ws), X_tri_ws)
 
-                # Triangle mesh thickness (SDF mesh thickness is already baked into SDF)
+                # Shape thickness is a runtime collision property.
                 triangle_mesh_thickness = scale_data_tri[3]
+                sdf_mesh_thickness = scale_data_sdf[3]
 
                 # Compute midpoint for centering contacts (order doesn't matter for sum)
                 midpoint = (wp.transform_get_translation(X_tri_ws) + wp.transform_get_translation(X_sdf_ws)) * 0.5
@@ -1000,8 +1001,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 inv_sdf_scale = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), sdf_scale)
                 min_sdf_scale = wp.min(wp.min(sdf_scale[0], sdf_scale[1]), sdf_scale[2])
 
-                # (SDF mesh's thickness is already baked into the SDF)
-                contact_threshold = margin + triangle_mesh_thickness
+                contact_threshold = margin + triangle_mesh_thickness + sdf_mesh_thickness
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
 
                 # Initialize shared memory buffer for triangle selection (late allocation to reduce register pressure)
@@ -1147,15 +1147,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 contact_data.contact_distance = contact.depth
                 contact_data.radius_eff_a = 0.0
                 contact_data.radius_eff_b = 0.0
-                # SDF mesh's thickness is already baked into the SDF, so set it to 0
-                # contact.feature >= 0 means mode 0: pair[0] triangles vs pair[1]'s SDF -> pair[1] thickness in SDF
-                # contact.feature < 0 means mode 1: pair[1] triangles vs pair[0]'s SDF -> pair[0] thickness in SDF
-                if contact.feature >= 0:
-                    contact_data.thickness_a = shape_data[pair[0]][3]
-                    contact_data.thickness_b = 0.0
-                else:
-                    contact_data.thickness_a = 0.0
-                    contact_data.thickness_b = shape_data[pair[1]][3]
+                contact_data.thickness_a = shape_data[pair[0]][3]
+                contact_data.thickness_b = shape_data[pair[1]][3]
                 contact_data.shape_a = pair[0]
                 contact_data.shape_b = pair[1]
                 contact_data.margin = margin

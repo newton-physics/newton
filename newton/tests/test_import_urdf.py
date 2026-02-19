@@ -204,39 +204,39 @@ JOINT_TREE_URDF = """
 """
 
 
-class TestImportUrdf(unittest.TestCase):
-    @staticmethod
-    def parse_urdf(urdf: str, builder: newton.ModelBuilder, res_dir: dict[str, str] | None = None, **kwargs):
-        """Parse the specified URDF file from a directory of files.
-        urdf: URDF file to parse
-        res_dir: dict[str, str]: (filename, content): extra resources files to include in the directory"""
+def parse_urdf(urdf: str, builder: newton.ModelBuilder, res_dir: dict[str, str] | None = None, **kwargs):
+    """Parse the specified URDF file from a directory of files.
+    urdf: URDF file to parse
+    res_dir: dict[str, str]: (filename, content): extra resources files to include in the directory"""
 
-        # Default to up_axis="Y" if not specified in kwargs
-        if "up_axis" not in kwargs:
-            kwargs["up_axis"] = "Y"
+    # Default to up_axis="Y" if not specified in kwargs
+    if "up_axis" not in kwargs:
+        kwargs["up_axis"] = "Y"
 
-        if not res_dir:
-            builder.add_urdf(urdf, **kwargs)
-            return
+    if not res_dir:
+        builder.add_urdf(urdf, **kwargs)
+        return
 
-        urdf_filename = "robot.urdf"
-        # Create a temporary directory to store files
-        res_dir = res_dir or {}
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Write all files to the temporary directory
-            for filename, content in {urdf_filename: urdf, **res_dir}.items():
-                file_path = Path(temp_dir) / filename
-                with open(file_path, "w") as f:
-                    f.write(content)
+    urdf_filename = "robot.urdf"
+    # Create a temporary directory to store files
+    res_dir = res_dir or {}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Write all files to the temporary directory
+        for filename, content in {urdf_filename: urdf, **res_dir}.items():
+            file_path = Path(temp_dir) / filename
+            with open(file_path, "w") as f:
+                f.write(content)
 
-            # Parse the URDF file
-            urdf_path = Path(temp_dir) / urdf_filename
-            builder.add_urdf(str(urdf_path), **kwargs)
+        # Parse the URDF file
+        urdf_path = Path(temp_dir) / urdf_filename
+        builder.add_urdf(str(urdf_path), **kwargs)
 
+
+class TestImportUrdfBasic(unittest.TestCase):
     def test_sphere_urdf(self):
         # load a urdf containing a sphere with r=0.5 and pos=(1.0,2.0,3.0)
         builder = newton.ModelBuilder()
-        self.parse_urdf(SPHERE_URDF, builder)
+        parse_urdf(SPHERE_URDF, builder)
 
         assert builder.shape_count == 1
         assert builder.shape_type[0] == newton.GeoType.SPHERE
@@ -249,14 +249,14 @@ class TestImportUrdf(unittest.TestCase):
             with self.subTest(mesh_src=mesh_src):
                 builder = newton.ModelBuilder()
                 if mesh_src == "file":
-                    self.parse_urdf(MESH_URDF.format(filename="cube.obj"), builder, {"cube.obj": MESH_OBJ})
+                    parse_urdf(MESH_URDF.format(filename="cube.obj"), builder, {"cube.obj": MESH_OBJ})
                 else:
 
-                    def mock_mesh_download(dst, url: str):
+                    def mock_mesh_download(dst, _url: str):
                         dst.write(MESH_OBJ.encode("utf-8"))
 
                     with patch("newton._src.utils.import_urdf._download_file", side_effect=mock_mesh_download):
-                        self.parse_urdf(MESH_URDF.format(filename="http://example.com/cube.obj"), builder)
+                        parse_urdf(MESH_URDF.format(filename="http://example.com/cube.obj"), builder)
 
                 assert builder.shape_count == 1
                 assert builder.shape_type[0] == newton.GeoType.MESH
@@ -267,7 +267,7 @@ class TestImportUrdf(unittest.TestCase):
 
     def test_inertial_params_urdf(self):
         builder = newton.ModelBuilder()
-        self.parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
+        parse_urdf(INERTIAL_URDF, builder, ignore_inertial_definitions=False)
 
         assert builder.shape_type[0] == newton.GeoType.CAPSULE
         assert builder.shape_scale[0][0] == 0.5
@@ -280,51 +280,6 @@ class TestImportUrdf(unittest.TestCase):
         assert_np_equal(builder.body_mass[0], np.array([1.0]))
         assert_np_equal(builder.body_inertia[0], np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]))
         assert_np_equal(builder.body_com[0], np.array([0.0, 0.0, 0.0]))
-
-    def test_self_collision_filtering_parameterized(self):
-        for self_collisions in [False, True]:
-            with self.subTest(enable_self_collisions=self_collisions):
-                builder = newton.ModelBuilder()
-                self.parse_urdf(SELF_COLLISION_URDF, builder, enable_self_collisions=self_collisions)
-
-                assert builder.shape_count == 2
-
-                # Check if collision filtering is applied correctly based on self_collisions setting
-                filter_pair = (0, 1)
-                if self_collisions:
-                    self.assertNotIn(filter_pair, builder.shape_collision_filter_pairs)
-                else:
-                    self.assertIn(filter_pair, builder.shape_collision_filter_pairs)
-
-    def test_revolute_joint_urdf(self):
-        # Test a simple revolute joint with axis and limits
-        builder = newton.ModelBuilder()
-        self.parse_urdf(JOINT_URDF, builder)
-
-        # Check joint was created with correct properties
-        assert builder.joint_count == 2  # base joint + revolute
-        assert builder.joint_type[-1] == newton.JointType.REVOLUTE
-
-        assert_np_equal(builder.joint_limit_lower[-1], np.array([-1.23]))
-        assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
-        assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
-
-    def test_cartpole_urdf(self):
-        builder = newton.ModelBuilder()
-        builder.default_shape_cfg.ke = 123.0
-        builder.default_shape_cfg.kd = 456.0
-        builder.default_shape_cfg.mu = 789.0
-        builder.default_joint_cfg.armature = 42.0
-        urdf_filename = newton.examples.get_asset("cartpole.urdf")
-        builder.add_urdf(
-            urdf_filename,
-            floating=False,
-        )
-        self.assertTrue(all(np.array(builder.shape_material_ke) == 123.0))
-        self.assertTrue(all(np.array(builder.shape_material_kd) == 456.0))
-        self.assertTrue(all(np.array(builder.shape_material_mu) == 789.0))
-        self.assertTrue(all(np.array(builder.joint_armature) == 42.0))
-        assert builder.body_count == 4
 
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
@@ -377,101 +332,194 @@ class TestImportUrdf(unittest.TestCase):
         self.assertAlmostEqual(shape_scale[0], 0.5)  # radius
         self.assertAlmostEqual(shape_scale[1], 1.0)  # half_height (length/2)
 
+    def test_self_collision_filtering_parameterized(self):
+        for self_collisions in [False, True]:
+            with self.subTest(enable_self_collisions=self_collisions):
+                builder = newton.ModelBuilder()
+                parse_urdf(SELF_COLLISION_URDF, builder, enable_self_collisions=self_collisions)
+
+                assert builder.shape_count == 2
+
+                # Check if collision filtering is applied correctly based on self_collisions setting
+                filter_pair = (0, 1)
+                if self_collisions:
+                    self.assertNotIn(filter_pair, builder.shape_collision_filter_pairs)
+                else:
+                    self.assertIn(filter_pair, builder.shape_collision_filter_pairs)
+
+    def test_revolute_joint_urdf(self):
+        # Test a simple revolute joint with axis and limits
+        builder = newton.ModelBuilder()
+        parse_urdf(JOINT_URDF, builder)
+
+        # Check joint was created with correct properties
+        assert builder.joint_count == 2  # base joint + revolute
+        assert builder.joint_type[-1] == newton.JointType.REVOLUTE
+
+        assert_np_equal(builder.joint_limit_lower[-1], np.array([-1.23]))
+        assert_np_equal(builder.joint_limit_upper[-1], np.array([3.45]))
+        assert_np_equal(builder.joint_axis[-1], np.array([0.0, 0.0, 1.0]))
+
+    def test_cartpole_urdf(self):
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.ke = 123.0
+        builder.default_shape_cfg.kd = 456.0
+        builder.default_shape_cfg.mu = 789.0
+        builder.default_joint_cfg.armature = 42.0
+        urdf_filename = newton.examples.get_asset("cartpole.urdf")
+        builder.add_urdf(
+            urdf_filename,
+            floating=False,
+        )
+        self.assertTrue(all(np.array(builder.shape_material_ke) == 123.0))
+        self.assertTrue(all(np.array(builder.shape_material_kd) == 456.0))
+        self.assertTrue(all(np.array(builder.shape_material_mu) == 789.0))
+        self.assertTrue(all(np.array(builder.joint_armature) == 42.0))
+        assert builder.body_count == 4
+
     def test_joint_ordering_original(self):
         builder = newton.ModelBuilder()
-        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering=None)
+        parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering=None)
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "grandchild_link_1b",
-            "base_link",
-            "child_link_1",
-            "grandchild_link_2b",
-            "grandchild_link_1a",
-            "grandchild_link_2a",
-            "child_link_2",
+        assert builder.body_label == [
+            "joint_tree_test/grandchild_link_1b",
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/child_link_2",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_1a", "joint_1b", "joint_2b", "joint_2a"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+        ]
 
     def test_joint_ordering_dfs(self):
         builder = newton.ModelBuilder()
-        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering="dfs")
+        parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering="dfs")
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "grandchild_link_1b",
-            "base_link",
-            "child_link_1",
-            "grandchild_link_2b",
-            "grandchild_link_1a",
-            "grandchild_link_2a",
-            "child_link_2",
+        assert builder.body_label == [
+            "joint_tree_test/grandchild_link_1b",
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/child_link_2",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_2b", "joint_2a", "joint_1", "joint_1a", "joint_1b"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+        ]
 
     def test_joint_ordering_bfs(self):
         builder = newton.ModelBuilder()
-        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering="bfs")
+        parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering="bfs")
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "grandchild_link_1b",
-            "base_link",
-            "child_link_1",
-            "grandchild_link_2b",
-            "grandchild_link_1a",
-            "grandchild_link_2a",
-            "child_link_2",
+        assert builder.body_label == [
+            "joint_tree_test/grandchild_link_1b",
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/child_link_2",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_2b", "joint_2a", "joint_1a", "joint_1b"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+        ]
 
     def test_joint_body_ordering_original(self):
         builder = newton.ModelBuilder()
-        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering=None)
+        parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering=None)
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "base_link",
-            "child_link_2",
-            "child_link_1",
-            "grandchild_link_1a",
-            "grandchild_link_1b",
-            "grandchild_link_2b",
-            "grandchild_link_2a",
+        assert builder.body_label == [
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_2",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_1b",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_2a",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_1a", "joint_1b", "joint_2b", "joint_2a"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+        ]
 
     def test_joint_body_ordering_dfs(self):
         builder = newton.ModelBuilder()
-        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering="dfs")
+        parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering="dfs")
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "base_link",
-            "child_link_2",
-            "grandchild_link_2b",
-            "grandchild_link_2a",
-            "child_link_1",
-            "grandchild_link_1a",
-            "grandchild_link_1b",
+        assert builder.body_label == [
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_2",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_1b",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_2b", "joint_2a", "joint_1", "joint_1a", "joint_1b"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+        ]
 
     def test_joint_body_ordering_bfs(self):
         builder = newton.ModelBuilder()
-        self.parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering="bfs")
+        parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering="bfs")
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "base_link",
-            "child_link_2",
-            "child_link_1",
-            "grandchild_link_2b",
-            "grandchild_link_2a",
-            "grandchild_link_1a",
-            "grandchild_link_1b",
+        assert builder.body_label == [
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_2",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_1b",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_2b", "joint_2a", "joint_1a", "joint_1b"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+        ]
 
     def test_xform_with_floating_false(self):
         """Test that xform parameter is respected when floating=False"""
@@ -500,7 +548,7 @@ class TestImportUrdf(unittest.TestCase):
         # Parse with floating=False and the xform
         # Use up_axis="Z" to match builder default and avoid axis transformation
         builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, floating=False, xform=xform, up_axis="Z")
+        parse_urdf(urdf_content, builder, floating=False, xform=xform, up_axis="Z")
         model = builder.finalize()
 
         # Verify the model has a fixed joint
@@ -562,6 +610,8 @@ class TestImportUrdf(unittest.TestCase):
             f"Expected: {expected_quat}\nActual: {body_quat}",
         )
 
+
+class TestImportUrdfBaseJoints(unittest.TestCase):
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
         urdf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -578,14 +628,14 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, floating=True, up_axis="Z")
+        parse_urdf(urdf_content, builder, floating=True, up_axis="Z")
         model = builder.finalize()
 
         # Verify the model has a free joint
         self.assertEqual(model.joint_count, 1)
         joint_type = model.joint_type.numpy()[0]
         self.assertEqual(joint_type, newton.JointType.FREE)
-        self.assertEqual(builder.joint_key[0], "floating_base")
+        self.assertEqual(builder.joint_label[0], "test_floating/floating_base")
 
     def test_floating_false_creates_fixed_joint(self):
         """Test that floating=False creates a fixed joint for the root body."""
@@ -603,7 +653,7 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(urdf_content, builder, floating=False, up_axis="Z")
+        parse_urdf(urdf_content, builder, floating=False, up_axis="Z")
         model = builder.finalize()
 
         # Verify the model has a fixed joint
@@ -627,7 +677,7 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(
+        parse_urdf(
             urdf_content,
             builder,
             base_joint={
@@ -646,7 +696,7 @@ class TestImportUrdf(unittest.TestCase):
         self.assertEqual(model.joint_count, 1)
         joint_type = model.joint_type.numpy()[0]
         self.assertEqual(joint_type, newton.JointType.D6)
-        self.assertEqual(builder.joint_key[0], "base_joint")
+        self.assertEqual(builder.joint_label[0], "test_base_joint_dict/base_joint")
 
     def test_base_joint_dict_creates_custom_joint(self):
         """Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with custom axis."""
@@ -664,7 +714,7 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(
+        parse_urdf(
             urdf_content,
             builder,
             base_joint={
@@ -679,7 +729,7 @@ class TestImportUrdf(unittest.TestCase):
         self.assertEqual(model.joint_count, 1)
         joint_type = model.joint_type.numpy()[0]
         self.assertEqual(joint_type, newton.JointType.REVOLUTE)
-        self.assertEqual(builder.joint_key[0], "base_joint")
+        self.assertEqual(builder.joint_label[0], "test_base_joint_dict/base_joint")
 
     def test_floating_and_base_joint_mutually_exclusive(self):
         """Test that specifying both base_joint and floating raises an error."""
@@ -699,7 +749,7 @@ class TestImportUrdf(unittest.TestCase):
         # Specifying both parameters should raise ValueError
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as cm:
-            self.parse_urdf(
+            parse_urdf(
                 urdf_content,
                 builder,
                 floating=True,
@@ -732,7 +782,7 @@ class TestImportUrdf(unittest.TestCase):
         builder = newton.ModelBuilder()
         # Test with 'parent' key in base_joint dict
         with self.assertRaises(ValueError) as cm:
-            self.parse_urdf(
+            parse_urdf(
                 urdf_content,
                 builder,
                 base_joint={"joint_type": newton.JointType.REVOLUTE, "parent": 0},
@@ -744,7 +794,7 @@ class TestImportUrdf(unittest.TestCase):
         # Test with 'child' key
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as cm:
-            self.parse_urdf(
+            parse_urdf(
                 urdf_content,
                 builder,
                 base_joint={"joint_type": newton.JointType.REVOLUTE, "child": 0},
@@ -756,7 +806,7 @@ class TestImportUrdf(unittest.TestCase):
         # Test with 'parent_xform' key
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as cm:
-            self.parse_urdf(
+            parse_urdf(
                 urdf_content,
                 builder,
                 base_joint={"joint_type": newton.JointType.REVOLUTE, "parent_xform": wp.transform_identity()},
@@ -811,7 +861,7 @@ class TestImportUrdf(unittest.TestCase):
 
         # Use base_joint to create a D6 joint
         builder = newton.ModelBuilder()
-        self.parse_urdf(
+        parse_urdf(
             urdf_content,
             builder,
             xform=import_xform,
@@ -831,7 +881,7 @@ class TestImportUrdf(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        body_idx = model.body_key.index("floating_body")
+        body_idx = model.body_label.index("test_base_joint_xform/floating_body")
         body_q = state.body_q.numpy()[body_idx]
 
         # Expected position: import_pos (URDF body is at origin, inertial offset doesn't affect body pos)
@@ -852,6 +902,8 @@ class TestImportUrdf(unittest.TestCase):
         )
         self.assertTrue(quat_match, f"Body orientation should include import xform. Got {actual_quat}")
 
+
+class TestImportUrdfComposition(unittest.TestCase):
     def test_parent_body_attaches_to_existing_body(self):
         """Test that parent_body attaches the URDF root to an existing body."""
         # First URDF: a simple robot arm
@@ -899,17 +951,17 @@ class TestImportUrdf(unittest.TestCase):
 """
         # First, load the robot
         builder = newton.ModelBuilder()
-        self.parse_urdf(robot_urdf, builder, floating=False, up_axis="Z")
+        parse_urdf(robot_urdf, builder, floating=False, up_axis="Z")
 
         # Get the end effector body index
-        ee_body_idx = builder.body_key.index("end_effector")
+        ee_body_idx = builder.body_label.index("robot_arm/end_effector")
 
         # Remember the body count before adding gripper
         robot_body_count = builder.body_count
         robot_joint_count = builder.joint_count
 
         # Now load the gripper attached to the end effector
-        self.parse_urdf(gripper_urdf, builder, parent_body=ee_body_idx, up_axis="Z")
+        parse_urdf(gripper_urdf, builder, parent_body=ee_body_idx, up_axis="Z")
 
         model = builder.finalize()
 
@@ -943,11 +995,11 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(robot_urdf, builder, floating=False, up_axis="Z")
+        parse_urdf(robot_urdf, builder, floating=False, up_axis="Z")
         robot_body_idx = 0
 
         # Attach gripper with a D6 joint (rotation around Z)
-        self.parse_urdf(
+        parse_urdf(
             gripper_urdf,
             builder,
             parent_body=robot_body_idx,
@@ -996,12 +1048,12 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(robot_urdf, builder, floating=False)
+        parse_urdf(robot_urdf, builder, floating=False)
 
-        ee_body_idx = builder.body_key.index("end_effector")
+        ee_body_idx = builder.body_label.index("robot/end_effector")
         initial_joint_count = builder.joint_count
 
-        self.parse_urdf(gripper_urdf, builder, parent_body=ee_body_idx)
+        parse_urdf(gripper_urdf, builder, parent_body=ee_body_idx)
 
         # Verify a new joint was created connecting to the parent
         self.assertEqual(builder.joint_count, initial_joint_count + 1)
@@ -1043,16 +1095,16 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(robot_urdf, builder, floating=False)
-        robot1_link_idx = builder.body_key.index("link1")
+        parse_urdf(robot_urdf, builder, floating=False)
+        robot1_link_idx = builder.body_label.index("robot/link1")
 
         # Add more robots to make robot1_link_idx not part of the most recent articulation
-        self.parse_urdf(robot_urdf, builder, floating=False)
-        self.parse_urdf(robot_urdf, builder, floating=False)
+        parse_urdf(robot_urdf, builder, floating=False)
+        parse_urdf(robot_urdf, builder, floating=False)
 
         # Attempting to attach to a non-sequential articulation should raise ValueError
         with self.assertRaises(ValueError) as cm:
-            self.parse_urdf(gripper_urdf, builder, parent_body=robot1_link_idx, floating=False)
+            parse_urdf(gripper_urdf, builder, parent_body=robot1_link_idx, floating=False)
         self.assertIn("most recent", str(cm.exception))
 
     def test_floating_false_with_parent_body_succeeds(self):
@@ -1086,15 +1138,15 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(robot_urdf, builder, floating=False)
-        link_idx = builder.body_key.index("link1")
+        parse_urdf(robot_urdf, builder, floating=False)
+        link_idx = builder.body_label.index("robot/link1")
 
         # Explicitly using floating=False with parent_body should succeed
-        self.parse_urdf(gripper_urdf, builder, parent_body=link_idx, floating=False)
+        parse_urdf(gripper_urdf, builder, parent_body=link_idx, floating=False)
         model = builder.finalize()
 
         # Verify it worked - gripper should be attached
-        self.assertIn("gripper_base", builder.body_key)
+        self.assertIn("gripper/gripper_base", builder.body_label)
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
 
     def test_floating_true_with_parent_body_raises_error(self):
@@ -1118,12 +1170,12 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(robot_urdf, builder, floating=False)
-        base_idx = builder.body_key.index("base_link")
+        parse_urdf(robot_urdf, builder, floating=False)
+        base_idx = builder.body_label.index("robot/base_link")
 
         # floating=True with parent_body should raise ValueError
         with self.assertRaises(ValueError) as cm:
-            self.parse_urdf(gripper_urdf, builder, parent_body=base_idx, floating=True)
+            parse_urdf(gripper_urdf, builder, parent_body=base_idx, floating=True)
         self.assertIn("FREE joint", str(cm.exception))
         self.assertIn("parent", str(cm.exception))
 
@@ -1151,7 +1203,7 @@ class TestImportUrdf(unittest.TestCase):
 
         # Attempting to attach to standalone body should raise ValueError
         with self.assertRaises(ValueError) as cm:
-            self.parse_urdf(urdf_content, builder, parent_body=standalone_body, floating=False)
+            parse_urdf(urdf_content, builder, parent_body=standalone_body, floating=False)
 
         self.assertIn("not part of any articulation", str(cm.exception))
 
@@ -1203,15 +1255,15 @@ class TestImportUrdf(unittest.TestCase):
         builder = newton.ModelBuilder()
 
         # Level 1: Add arm
-        self.parse_urdf(arm_urdf, builder, floating=False)
-        ee_idx = builder.body_key.index("end_effector")
+        parse_urdf(arm_urdf, builder, floating=False)
+        ee_idx = builder.body_label.index("arm/end_effector")
 
         # Level 2: Attach gripper to end effector
-        self.parse_urdf(gripper_urdf, builder, parent_body=ee_idx, floating=False)
-        finger_idx = builder.body_key.index("gripper_finger")
+        parse_urdf(gripper_urdf, builder, parent_body=ee_idx, floating=False)
+        finger_idx = builder.body_label.index("gripper/gripper_finger")
 
         # Level 3: Attach sensor to gripper finger
-        self.parse_urdf(sensor_urdf, builder, parent_body=finger_idx, floating=False)
+        parse_urdf(sensor_urdf, builder, parent_body=finger_idx, floating=False)
 
         model = builder.finalize()
 
@@ -1248,14 +1300,14 @@ class TestImportUrdf(unittest.TestCase):
 </robot>
 """
         builder = newton.ModelBuilder()
-        self.parse_urdf(
+        parse_urdf(
             robot_urdf, builder, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False, up_axis="Z"
         )
 
-        ee_body_idx = builder.body_key.index("end_effector")
+        ee_body_idx = builder.body_label.index("robot/end_effector")
 
         # xform is in world coordinates, offset by +0.1 in Z (vertical up)
-        self.parse_urdf(
+        parse_urdf(
             gripper_urdf,
             builder,
             parent_body=ee_body_idx,
@@ -1263,7 +1315,7 @@ class TestImportUrdf(unittest.TestCase):
             up_axis="Z",
         )
 
-        gripper_body_idx = builder.body_key.index("gripper_base")
+        gripper_body_idx = builder.body_label.index("gripper/gripper_base")
 
         # Finalize and compute forward kinematics to get world-space positions
         model = builder.finalize()
@@ -1300,7 +1352,7 @@ class TestImportUrdf(unittest.TestCase):
 
         # Add 5 independent robots
         for i in range(5):
-            self.parse_urdf(
+            parse_urdf(
                 robot_urdf,
                 builder,
                 xform=wp.transform(wp.vec3(float(i * 2), 0.0, 0.0), wp.quat_identity()),
@@ -1331,7 +1383,7 @@ class TestImportUrdf(unittest.TestCase):
 
         # Test with 'parent' key
         with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(
+            parse_urdf(
                 urdf_content, builder, base_joint={"joint_type": newton.JointType.REVOLUTE, "parent": 5}, up_axis="Z"
             )
         self.assertIn("cannot specify", str(ctx.exception))
@@ -1340,7 +1392,7 @@ class TestImportUrdf(unittest.TestCase):
         # Test with 'child' key
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(
+            parse_urdf(
                 urdf_content, builder, base_joint={"joint_type": newton.JointType.REVOLUTE, "child": 3}, up_axis="Z"
             )
         self.assertIn("cannot specify", str(ctx.exception))
@@ -1349,7 +1401,7 @@ class TestImportUrdf(unittest.TestCase):
         # Test with 'parent_xform' key
         builder = newton.ModelBuilder()
         with self.assertRaises(ValueError) as ctx:
-            self.parse_urdf(
+            parse_urdf(
                 urdf_content,
                 builder,
                 base_joint={"joint_type": newton.JointType.REVOLUTE, "parent_xform": wp.transform_identity()},
@@ -1518,8 +1570,8 @@ class TestMimicConstraints(unittest.TestCase):
         enabled = model.constraint_mimic_enabled.numpy()[0]
 
         # Find joint indices by name
-        leader_idx = model.joint_key.index("leader_joint")
-        follower_idx = model.joint_key.index("follower_joint")
+        leader_idx = model.joint_label.index("mimic_test/leader_joint")
+        follower_idx = model.joint_label.index("mimic_test/follower_joint")
 
         self.assertEqual(joint0, follower_idx)  # follower joint (joint0)
         self.assertEqual(joint1, leader_idx)  # leader joint (joint1)
@@ -1561,11 +1613,11 @@ class TestMimicConstraints(unittest.TestCase):
         """Regression test: skipped joints must not be included in name->index mapping."""
 
         class _SkippingLinkBuilder(newton.ModelBuilder):
-            def add_link(self, *args, key=None, **kwargs):
+            def add_link(self, *args, label=None, **kwargs):
                 # Simulate a link filtered out by importer-side selection logic.
-                if key == "skipped_link":
+                if label is not None and label.endswith("/skipped_link"):
                     return -1
-                return super().add_link(*args, key=key, **kwargs)
+                return super().add_link(*args, label=label, **kwargs)
 
         urdf = """
         <robot name="mimic_skipped_child">
@@ -1591,7 +1643,7 @@ class TestMimicConstraints(unittest.TestCase):
 
         builder = _SkippingLinkBuilder()
         with self.assertWarnsRegex(UserWarning, "was not created, skipping mimic constraint"):
-            builder.add_urdf(urdf, joint_ordering=None, ensure_nonstatic_links=False)
+            builder.add_urdf(urdf, joint_ordering=None)
 
         # No mimic constraint should be created because the follower joint was skipped.
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
