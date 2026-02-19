@@ -15,6 +15,7 @@
 
 import io
 import os
+import struct
 import sys
 import tempfile
 import unittest
@@ -6265,6 +6266,109 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
             self.assertEqual(int(iters[0]), 4)
             # ls_iterations=10 from scene
             self.assertEqual(int(ls_iters[0]), 10)
+
+
+class TestMeshDeduplication(unittest.TestCase):
+    """Verify mesh deduplication with include_mesh_materials=False."""
+
+    @staticmethod
+    def _create_cube_stl(path):
+        """Write a minimal binary STL cube."""
+        vertices = [
+            ((-1, -1, -1), (-1, -1, 1), (-1, 1, 1)),
+            ((-1, -1, -1), (-1, 1, 1), (-1, 1, -1)),
+            ((1, -1, -1), (1, 1, 1), (1, -1, 1)),
+            ((1, -1, -1), (1, 1, -1), (1, 1, 1)),
+            ((-1, -1, -1), (1, -1, 1), (-1, -1, 1)),
+            ((-1, -1, -1), (1, -1, -1), (1, -1, 1)),
+            ((-1, 1, -1), (-1, 1, 1), (1, 1, 1)),
+            ((-1, 1, -1), (1, 1, 1), (1, 1, -1)),
+            ((-1, -1, -1), (-1, 1, -1), (1, 1, -1)),
+            ((-1, -1, -1), (1, 1, -1), (1, -1, -1)),
+            ((-1, -1, 1), (1, -1, 1), (1, 1, 1)),
+            ((-1, -1, 1), (1, 1, 1), (-1, 1, 1)),
+        ]
+        with open(path, "wb") as f:
+            f.write(b"\0" * 80)
+            f.write(struct.pack("<I", len(vertices)))
+            for tri in vertices:
+                f.write(struct.pack("<fff", 0, 0, 0))
+                for v in tri:
+                    f.write(struct.pack("<fff", *v))
+                f.write(struct.pack("<H", 0))
+
+    def test_shared_mesh_without_materials(self):
+        """Two geoms referencing the same mesh share one Mesh object when materials excluded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_cube_stl(os.path.join(tmpdir, "cube.stl"))
+
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+        <material name="red" rgba="1 0 0 1"/>
+        <material name="blue" rgba="0 0 1 1"/>
+    </asset>
+    <worldbody>
+        <body name="a">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="mesh" mesh="cube" material="red"/>
+        </body>
+        <body name="b" pos="1 0 0">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="mesh" mesh="cube" material="blue"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            # With materials: separate Mesh objects (different colors baked in)
+            b1 = newton.ModelBuilder()
+            b1.add_mjcf(mjcf, include_mesh_materials=True)
+            src_a = b1.shape_source[0]
+            src_b = b1.shape_source[1]
+            self.assertIsNot(src_a, src_b, "With materials, meshes should be separate objects")
+
+            # Without materials: shared Mesh object
+            b2 = newton.ModelBuilder()
+            b2.add_mjcf(mjcf, include_mesh_materials=False)
+            src_a = b2.shape_source[0]
+            src_b = b2.shape_source[1]
+            self.assertIs(src_a, src_b, "Without materials, meshes should be the same object")
+
+    def test_solver_deduplicates_shared_meshes(self):
+        """Solver creates one MuJoCo mesh asset for shapes sharing a Mesh object."""
+        try:
+            import mujoco  # noqa: F401
+        except ImportError:
+            self.skipTest("mujoco not available")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._create_cube_stl(os.path.join(tmpdir, "cube.stl"))
+
+            mjcf = f"""\
+<mujoco>
+    <compiler meshdir="{tmpdir}"/>
+    <asset><mesh name="cube" file="cube.stl"/></asset>
+    <worldbody>
+        <body name="a">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="mesh" mesh="cube"/>
+        </body>
+        <body name="b" pos="1 0 0">
+            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            <geom type="mesh" mesh="cube"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            builder.add_mjcf(mjcf, include_mesh_materials=False)
+            model = builder.finalize()
+            solver = SolverMuJoCo(model)
+
+            # Two geoms but only one mesh asset in the MuJoCo model
+            self.assertEqual(solver.mj_model.ngeom, 2)
+            self.assertEqual(solver.mj_model.nmesh, 1)
 
 
 class TestJointFrictionloss(unittest.TestCase):

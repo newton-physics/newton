@@ -1860,6 +1860,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         ctrl_direct: bool = False,
         path_resolver: Callable[[str | None, str], str] | None = None,
+        include_mesh_materials: bool = True,
     ):
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -1998,6 +1999,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             ctrl_direct=ctrl_direct,
             path_resolver=path_resolver,
+            include_mesh_materials=include_mesh_materials,
         )
 
     # endregion

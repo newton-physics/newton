@@ -162,6 +162,7 @@ def parse_mjcf(
     mesh_maxhullvert: int | None = None,
     ctrl_direct: bool = False,
     path_resolver: Callable[[str | None, str], str] | None = None,
+    include_mesh_materials: bool = True,
 ):
     """
     Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
@@ -265,6 +266,7 @@ def parse_mjcf(
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+        include_mesh_materials (bool): If True (default), mesh color and texture from MJCF materials are baked into the Mesh objects. If False, meshes are loaded as geometry only (no color/texture overrides), enabling mesh deduplication when multiple geoms reference the same mesh asset.
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -349,6 +351,7 @@ def parse_mjcf(
                             builder.custom_attributes[key].values[0] = value
 
     mesh_assets = {}
+    mesh_geometry_cache: dict[str, list[Mesh]] = {}  # MJCF asset name -> loaded Mesh objects
     texture_assets = {}
     material_assets = {}
     hfield_assets = {}
@@ -671,13 +674,20 @@ def parse_mjcf(
                 # get maxhullvert value from mesh assets
                 maxhullvert = mesh_assets[geom_attrib["mesh"]].get("maxhullvert", mesh_maxhullvert)
 
-                m_meshes = load_meshes_from_file(
-                    stl_file,
-                    scale=scaling,
-                    maxhullvert=maxhullvert,
-                    override_color=material_color,
-                    override_texture=texture,
-                )
+                # When materials are excluded, cache geometry by MJCF asset name
+                # so multiple geoms referencing the same mesh share one Mesh object.
+                if not include_mesh_materials and mesh_attrib in mesh_geometry_cache:
+                    m_meshes = mesh_geometry_cache[mesh_attrib]
+                else:
+                    m_meshes = load_meshes_from_file(
+                        stl_file,
+                        scale=scaling,
+                        maxhullvert=maxhullvert,
+                        override_color=material_color if include_mesh_materials else None,
+                        override_texture=texture if include_mesh_materials else None,
+                    )
+                    if not include_mesh_materials:
+                        mesh_geometry_cache[mesh_attrib] = m_meshes
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
