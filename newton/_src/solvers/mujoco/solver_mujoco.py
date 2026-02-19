@@ -4528,6 +4528,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_dof_dim,
                 self.model.joint_child,
                 self.model.body_q,
+                self.joint_mjc_dof_start,
                 dof_ref,
                 dof_springref,
             ],

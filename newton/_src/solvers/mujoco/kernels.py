@@ -583,6 +583,7 @@ def sync_qpos0_kernel(
     joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
     joint_child: wp.array(dtype=wp.int32),
     body_q: wp.array(dtype=wp.transform),
+    joint_mjc_dof_start: wp.array(dtype=wp.int32),
     dof_ref: wp.array(dtype=wp.float32),
     dof_springref: wp.array(dtype=wp.float32),
     # outputs
@@ -600,6 +601,10 @@ def sync_qpos0_kernel(
     type = joint_type[jntid]
     q_i = joint_q_start[jntid]
     wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+
+    # Mocap-only joints have no MuJoCo qpos/qvel entries.
+    if joint_mjc_dof_start[jntid] < 0:
+        return
 
     if type == JointType.FREE:
         child = joint_child[jntid]
