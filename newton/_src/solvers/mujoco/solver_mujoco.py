@@ -2753,10 +2753,12 @@ class SolverMuJoCo(SolverBase):
 
         def quat_to_mjc(q):
             # convert from xyzw to wxyz
+            # For Warp kernel equivalent, see quat_xyzw_to_wxyz() in kernels.py
             return [q[3], q[0], q[1], q[2]]
 
         def quat_from_mjc(q):
             # convert from wxyz to xyzw
+            # For Warp kernel equivalent, see quat_wxyz_to_xyzw() in kernels.py
             return [q[1], q[2], q[3], q[0]]
 
         def fill_arr_from_dict(arr: nparray, d: dict[int, Any]):
