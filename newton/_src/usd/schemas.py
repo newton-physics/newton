@@ -71,6 +71,9 @@ class SchemaResolverNewton(SchemaResolver):
             "gap": SchemaAttribute("newton:contactGap", 0.0),
         },
         PrimType.BODY: {},
+        PrimType.ARTICULATION: {
+            "self_collision_enabled": SchemaAttribute("newton:selfCollisionEnabled", True),
+        },
         PrimType.MATERIAL: {
             "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
             "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
@@ -160,6 +163,9 @@ class SchemaResolverPhysx(SchemaResolver):
             # Rigid body damping
             "rigid_body_linear_damping": SchemaAttribute("physxRigidBody:linearDamping", 0.0),
             "rigid_body_angular_damping": SchemaAttribute("physxRigidBody:angularDamping", 0.05),
+        },
+        PrimType.ARTICULATION: {
+            "self_collision_enabled": SchemaAttribute("physxArticulation:enabledSelfCollisions", True),
         },
     }
 

@@ -1365,6 +1365,66 @@ class TestSchemaResolver(unittest.TestCase):
         gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
         self.assertAlmostEqual(gap, 0.01)
 
+    def test_self_collision_enabled(self):
+        """
+        Test self_collision_enabled on articulation root: Newton vs PhysX priority.
+        """
+        stage = Usd.Stage.CreateInMemory()
+        articulation_prim = UsdGeom.Xform.Define(stage, "/articulation").GetPrim()
+        UsdPhysics.ArticulationRootAPI.Apply(articulation_prim)
+
+        resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+
+        # No attributes: schema default True from first resolver (PhysX)
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, True)
+
+        # Newton only (False): PhysX first so PhysX default True is used
+        articulation_prim.CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, False)
+
+        # PhysX only (False): PhysX attribute overrides
+        articulation_prim.RemoveProperty("newton:selfCollisionEnabled")
+        articulation_prim.CreateAttribute("physxArticulation:enabledSelfCollisions", Sdf.ValueTypeNames.Bool).Set(False)
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, False)
+
+        # Both set: Newton True, PhysX False; PhysX first -> False
+        articulation_prim.CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, False)
+
+        # Newton first: same prim, Newton wins -> True
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, True)
+
     def test_max_hull_vertices(self):
         """
         Test max_hull_vertices priority.

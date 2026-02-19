@@ -149,7 +149,7 @@ def parse_usd(
         verbose (bool): If True, print additional information about the parsed USD file. Default is False.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
+        enable_self_collisions (bool): Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -1560,11 +1560,14 @@ def parse_usd(
                 )
 
             articulation_bodies[articulation_id] = art_bodies
-            # determine if self-collisions are enabled
-            articulation_has_self_collision[articulation_id] = usd.get_attribute(
-                articulation_prim,
-                "physxArticulation:enabledSelfCollisions",
-                default=enable_self_collisions,
+            articulation_has_self_collision[articulation_id] = bool(
+                R.get_value(
+                    articulation_prim,
+                    prim_type=PrimType.ARTICULATION,
+                    key="self_collision_enabled",
+                    default=enable_self_collisions,
+                    verbose=verbose,
+                )
             )
             articulation_id += 1
     no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
