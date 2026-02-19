@@ -29,6 +29,7 @@ from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+from .kernels import PickingState
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind
@@ -372,7 +373,7 @@ class ViewerGL(ViewerBase):
                 )
                 batch.scales = out_scales
 
-        self.picking = Picking(model, pick_stiffness=10000.0, pick_damping=1000.0, world_offsets=self.world_offsets)
+        self.picking = Picking(model, world_offsets=self.world_offsets)
         self.wind = Wind(model)
 
         # Build packed arrays for batched GPU rendering of shape instances
@@ -823,8 +824,9 @@ class ViewerGL(ViewerBase):
 
         # Get the pick target and current picked point on geometry (in physics space)
         pick_state = self.picking.pick_state.numpy()
-        pick_target = np.array([pick_state[8], pick_state[9], pick_state[10]], dtype=np.float32)
-        picked_point = np.array([pick_state[11], pick_state[12], pick_state[13]], dtype=np.float32)
+
+        pick_target = pick_state[0]["picking_target_world"]
+        picked_point = pick_state[0]["picked_point_world"]
 
         # Apply world offset to convert from physics space to visual space
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:

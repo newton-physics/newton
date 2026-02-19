@@ -19,7 +19,7 @@ import warp as wp
 import newton
 
 from ..geometry import raycast
-from .kernels import apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel
+from .kernels import apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel, PickingState
 
 
 class Picking:
@@ -65,18 +65,11 @@ class Picking:
             self.pick_body = wp.array([-1], dtype=int, pinned=True)
         else:
             self.pick_body = wp.array([-1], dtype=int, device="cpu")
-        # pick_state array format (stored in a warp array for graph capture support):
-        # [0:3] - pick point in local space (vec3)
-        # [3:6] - pick target point in world space (vec3)
-        # [6] - pick spring stiffness
-        # [7] - pick spring damping
-        # [8:11] - original mouse cursor target in world space (vec3)
-        # [11:14] - current world space picked point on geometry (vec3)
-        pick_state_np = np.zeros(14, dtype=np.float32)
-        if model:
-            pick_state_np[6] = pick_stiffness
-            pick_state_np[7] = pick_damping
-        self.pick_state = wp.array(pick_state_np, dtype=float, device=model.device if model else "cpu")
+
+        pick_state_np = np.empty(1, dtype=PickingState.numpy_dtype())
+        pick_state_np[0]["pick_stiffness"] = pick_stiffness
+        pick_state_np[0]["pick_damping"] = pick_damping
+        self.pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
 
         self.pick_dist = 0.0
         self.picking_active = False
