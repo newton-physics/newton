@@ -6066,6 +6066,99 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertIn("parent_xform", str(ctx.exception))
 
 
+class TestActuatorShortcutTypeDefaults(unittest.TestCase):
+    """Verify actuator shortcut types set implicit biastype/gaintype correctly.
+
+    MuJoCo shortcut elements (position, velocity, motor, general) implicitly
+    set biastype and gaintype without writing them to the XML. Newton must
+    mirror these defaults so the CTRL_DIRECT path creates faithful actuators.
+    """
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="base">
+                <geom type="box" size="0.1 0.1 0.1"/>
+                <body name="child" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+                <body name="child2" pos="0 1 0">
+                    <joint name="j2" type="hinge" axis="0 0 1"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+                <body name="child3" pos="1 0 0">
+                    <joint name="j3" type="hinge" axis="1 0 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+                <body name="child4" pos="0 0 2">
+                    <joint name="j4" type="hinge" axis="0 1 0"/>
+                    <geom type="box" size="0.1 0.1 0.1"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="pos_act" joint="j1" kp="100"/>
+            <velocity name="vel_act" joint="j2" kv="10"/>
+            <motor name="motor_act" joint="j3"/>
+            <general name="gen_act" joint="j4"
+                     gainprm="50" biasprm="0 -50 -5"
+                     gaintype="fixed" biastype="affine"/>
+        </actuator>
+    </mujoco>
+    """
+
+    # Actuator indices match MJCF declaration order
+    POS_IDX = 0
+    VEL_IDX = 1
+    MOTOR_IDX = 2
+    GEN_IDX = 3
+
+    @classmethod
+    def setUpClass(cls):
+        cls.builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(cls.builder)
+        cls.builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        cls.model = cls.builder.finalize()
+
+    def test_position_biastype_affine(self):
+        """Verify position actuator gets biastype=affine (1)."""
+        biastype = self.model.mujoco.actuator_biastype.numpy()[self.POS_IDX]
+        self.assertEqual(biastype, 1, "position shortcut should set biastype=affine (1)")
+
+    def test_velocity_biastype_affine(self):
+        """Verify velocity actuator gets biastype=affine (1)."""
+        biastype = self.model.mujoco.actuator_biastype.numpy()[self.VEL_IDX]
+        self.assertEqual(biastype, 1, "velocity shortcut should set biastype=affine (1)")
+
+    def test_motor_biastype_none(self):
+        """Verify motor actuator keeps biastype=none (0)."""
+        biastype = self.model.mujoco.actuator_biastype.numpy()[self.MOTOR_IDX]
+        self.assertEqual(biastype, 0, "motor shortcut should keep biastype=none (0)")
+
+    def test_general_biastype_from_xml(self):
+        """Verify general actuator reads biastype from XML."""
+        biastype = self.model.mujoco.actuator_biastype.numpy()[self.GEN_IDX]
+        self.assertEqual(biastype, 1, "general actuator should read biastype=affine from XML")
+
+    def test_position_gaintype_fixed(self):
+        """Verify position actuator gets gaintype=fixed (0)."""
+        gaintype = self.model.mujoco.actuator_gaintype.numpy()[self.POS_IDX]
+        self.assertEqual(gaintype, 0, "position shortcut should have gaintype=fixed (0)")
+
+    def test_mujoco_compiled_biastype_matches(self):
+        """Verify compiled MuJoCo model has correct biastype after spec creation.
+
+        Tests the full round-trip: MJCF parsing -> Newton model -> MuJoCo
+        spec creation -> compiled model. The compiled actuator_biastype should
+        match what native MuJoCo produces.
+        """
+        solver = SolverMuJoCo(self.model)
+        compiled = solver.mj_model.actuator_biastype
+        # position=affine(1), velocity=affine(1), motor=none(0), general=affine(1)
+        np.testing.assert_array_equal(compiled, [1, 1, 0, 1])
+
+
 class TestMjcfIncludeOptionMerge(unittest.TestCase):
     """Tests for <option> attribute merging across multiple elements after include expansion."""
 

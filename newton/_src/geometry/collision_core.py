@@ -607,6 +607,9 @@ def create_find_contacts(writer_func: Any):
             thickness_b: Thickness of shape B
             writer_data: Data structure for contact writer
         """
+        if writer_data.contact_count[0] >= writer_data.contact_max:
+            return
+
         # Convert infinite planes to cube proxies for GJK/MPR compatibility
         # Use the OTHER object's radius to properly size the cube
         # Only convert if it's an infinite plane (finite planes can be handled normally)
