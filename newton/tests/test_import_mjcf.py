@@ -6408,6 +6408,46 @@ class TestContypeConaffinityZero(unittest.TestCase):
         # Spheres overlap but contype=conaffinity=0 should prevent automatic contacts
         self.assertEqual(solver.mj_data.ncon, 0, "No automatic contacts for contype=conaffinity=0")
 
+    @unittest.expectedFailure  # Depends on PR #1705 (fix global pair export)
+    def test_explicit_pair_generates_contacts_with_group_zero(self):
+        """Explicit <pair> contacts work between collision_group=0 geoms.
+
+        Models like Apollo use contype=conaffinity=0 on all geoms and rely on
+        explicit <pair> elements for contacts. This test verifies that group-0
+        geoms still participate in <pair> contacts.
+
+        Note: Requires PR #1705 (fix global pairs not exported to MuJoCo spec)
+        to pass. Remove @expectedFailure once that PR is merged.
+        """
+        # Apollo pattern: all geoms contype=conaffinity=0, contacts via explicit pair only
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="collision"><geom group="3"/></default>
+            </default>
+            <worldbody>
+                <geom name="floor_geom" type="plane" size="5 5 0.1" class="collision"/>
+                <body name="ball" pos="0 0 0.05">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="ball_geom" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor_geom" geom2="ball_geom" condim="3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Verify the pair was exported and generates contacts
+        self.assertEqual(solver.mj_model.npair, 1, "Explicit pair should be in MuJoCo spec")
+        solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        self.assertGreater(solver.mj_data.ncon, 0, "Explicit <pair> should generate contacts")
+
 
 class TestJointFrictionloss(unittest.TestCase):
     """Verify MJCF joint frictionloss is parsed into Newton's joint_friction."""
