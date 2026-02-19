@@ -462,13 +462,9 @@ def convert_mj_coords_to_warp_kernel(
         joint_q[wq_i + 2] = rot[2]
         joint_q[wq_i + 3] = rot[3]
 
-        # MuJoCo ball joint qvel: angular velocity in body (child) frame
-        # Newton joint_qd: angular velocity in world frame
-        w_body = wp.vec3(qvel[worldid, qd_i], qvel[worldid, qd_i + 1], qvel[worldid, qd_i + 2])
-        w_world = wp.quat_rotate(rot, w_body)
-        joint_qd[wqd_i + 0] = w_world[0]
-        joint_qd[wqd_i + 1] = w_world[1]
-        joint_qd[wqd_i + 2] = w_world[2]
+        for i in range(3):
+            # convert velocity components
+            joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
@@ -558,19 +554,9 @@ def convert_warp_coords_to_mj_kernel(
         qpos[worldid, q_i + 2] = joint_q[wq_i + 1]
         qpos[worldid, q_i + 3] = joint_q[wq_i + 2]
 
-        # Newton joint_qd: angular velocity in world frame
-        # MuJoCo ball joint qvel: angular velocity in body (child) frame
-        rot = wp.quat(
-            joint_q[wq_i],
-            joint_q[wq_i + 1],
-            joint_q[wq_i + 2],
-            joint_q[wq_i + 3],
-        )
-        w_world = wp.vec3(joint_qd[wqd_i], joint_qd[wqd_i + 1], joint_qd[wqd_i + 2])
-        w_body = wp.quat_rotate_inv(rot, w_world)
-        qvel[worldid, qd_i + 0] = w_body[0]
-        qvel[worldid, qd_i + 1] = w_body[1]
-        qvel[worldid, qd_i + 2] = w_body[2]
+        for i in range(3):
+            # convert velocity components
+            joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
@@ -1998,11 +1984,10 @@ def convert_qfrc_actuator_from_mj_kernel(
     """Convert MuJoCo qfrc_actuator [nworld, nv] into Newton flat DOF array.
 
     Uses the same joint-based DOF mapping as the coordinate conversion
-    kernels.  For free and ball joints the forces/torques are transformed
-    from MuJoCo's body-frame convention to Newton's world-frame convention
-    (dual of the velocity transform).  For free joints the wrench is
-    additionally shifted from body origin to CoM.  Other joints are
-    copied directly.
+    kernels.  For free joints the wrench is transformed from MuJoCo's
+    (origin, body-frame) convention to Newton's (CoM, world-frame)
+    convention (dual of the velocity transform).  Ball and other joints
+    are copied directly.
     """
     worldid, jntid = wp.tid()
 
@@ -2043,7 +2028,7 @@ def convert_qfrc_actuator_from_mj_kernel(
         child = joint_child[jntid]
         com_world = wp.quat_rotate(rot, body_com[child])
 
-        # Rotate torque body → world and shift reference origin → CoM
+        # Rotate torque body -> world and shift reference origin -> CoM
         tau_world = wp.quat_rotate(rot, tau_body) - wp.cross(com_world, f_lin)
 
         qfrc_actuator[wqd_i + 0] = f_lin[0]
@@ -2053,23 +2038,8 @@ def convert_qfrc_actuator_from_mj_kernel(
         qfrc_actuator[wqd_i + 4] = tau_world[1]
         qfrc_actuator[wqd_i + 5] = tau_world[2]
     elif type == JointType.BALL:
-        # MuJoCo ball joint qfrc: torque in body (child) frame
-        # Newton: torque in world frame (dual of velocity transform)
-        rot = wp.quat(
-            qpos[worldid, q_i + 1],
-            qpos[worldid, q_i + 2],
-            qpos[worldid, q_i + 3],
-            qpos[worldid, q_i],
-        )
-        tau_body = wp.vec3(
-            mjw_qfrc_actuator[worldid, qd_i],
-            mjw_qfrc_actuator[worldid, qd_i + 1],
-            mjw_qfrc_actuator[worldid, qd_i + 2],
-        )
-        tau_world = wp.quat_rotate(rot, tau_body)
-        qfrc_actuator[wqd_i + 0] = tau_world[0]
-        qfrc_actuator[wqd_i + 1] = tau_world[1]
-        qfrc_actuator[wqd_i + 2] = tau_world[2]
+        for i in range(3):
+            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):
