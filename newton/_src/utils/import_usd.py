@@ -1889,12 +1889,20 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
-                margin_val = R.get_value(prim, prim_type=PrimType.SHAPE, key="margin", verbose=verbose)
-                if margin_val == float("-inf"):
-                    margin_val = builder.default_shape_cfg.thickness
-                gap_val = R.get_value(prim, prim_type=PrimType.SHAPE, key="gap", verbose=verbose)
-                if gap_val == float("-inf"):
-                    gap_val = builder.default_shape_cfg.contact_margin
+                margin_val = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="margin",
+                    default=builder.default_shape_cfg.thickness,
+                    verbose=verbose,
+                )
+                gap_val = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="gap",
+                    default=builder.default_shape_cfg.contact_margin,
+                    verbose=verbose,
+                )
 
                 shape_params = {
                     "body": body_id,
