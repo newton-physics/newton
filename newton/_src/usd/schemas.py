@@ -66,9 +66,9 @@ class SchemaResolverNewton(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("newton:maxHullVertices", -1),
-            # Collisions (margin = inflation, gap = contact processing distance; aligned with MuJoCo)
-            "margin": SchemaAttribute("newton:contactMargin", float("-inf")),
-            "gap": SchemaAttribute("newton:contactGap", float("-inf")),
+            # Collisions (margin = inflation, gap = contact processing distance; aligned with schema defaults)
+            "margin": SchemaAttribute("newton:contactMargin", 0.0),
+            "gap": SchemaAttribute("newton:contactGap", 0.0),
         },
         PrimType.BODY: {},
         PrimType.MATERIAL: {
@@ -148,10 +148,9 @@ class SchemaResolverPhysx(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
-            # Collisions (margin = inflation/restOffset, gap = contactOffset)
+            # Collisions (margin = inflation/restOffset, gap = contactOffset; PhysX uses -inf for simulation-determined)
             "margin": SchemaAttribute("physxCollision:restOffset", float("-inf")),
             "gap": SchemaAttribute("physxCollision:contactOffset", float("-inf")),
-            "contact_margin": SchemaAttribute("physxCollision:contactOffset", float("-inf")),
         },
         PrimType.MATERIAL: {
             "stiffness": SchemaAttribute("physxMaterial:compliantContactStiffness", 0.0),
@@ -257,9 +256,9 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
-            # Collisions (margin = inflation, gap = gap; MuJoCo uses same names)
-            "margin": SchemaAttribute("mjc:margin", float("-inf")),
-            "gap": SchemaAttribute("mjc:gap", float("-inf")),
+            # Collisions (margin = inflation, gap = gap;)
+            "margin": SchemaAttribute("mjc:margin", 0.0),
+            "gap": SchemaAttribute("mjc:gap", 0.0),
         },
         PrimType.MATERIAL: {
             # Materials

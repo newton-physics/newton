@@ -84,6 +84,7 @@ def get_attributes_in_namespace(prim: Usd.Prim, namespace: str) -> dict[str, Any
     for prop in prim.GetAuthoredPropertiesInNamespace(namespace):
         if not prop.IsValid():
             continue
+        # Relationships have GetTargets; only collect attributes so we don't include e.g. newton:mimicJoint.
         if hasattr(prop, "GetTargets"):
             continue
         if hasattr(prop, "HasAuthoredValue") and prop.HasAuthoredValue():

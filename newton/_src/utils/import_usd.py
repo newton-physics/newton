@@ -1642,45 +1642,6 @@ def parse_usd(
         warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
         warnings.warn(warn_str, stacklevel=2)
 
-    # Mimic constraints are structural (add_constraint_mimic creates a constraint entity linking two
-    # joints), not per-joint custom data, so they are handled here rather than via the custom attribute framework.
-    for joint_path, joint_idx in path_joint_map.items():
-        joint_prim = stage.GetPrimAtPath(joint_path)
-        if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):
-            continue
-        mimic_rel = joint_prim.GetRelationship("newton:mimicJoint")
-        if not mimic_rel or not mimic_rel.HasAuthoredTargets():
-            if verbose:
-                print(f"NewtonMimicAPI on {joint_path} has no newton:mimicJoint target; skipping")
-            continue
-        targets = mimic_rel.GetTargets()
-        if not targets:
-            continue
-        leader_path = targets[0]
-        if not leader_path.IsAbsolutePath():
-            leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
-        leader_path_str = str(leader_path)
-        if leader_path_str not in path_joint_map:
-            warnings.warn(
-                f"NewtonMimicAPI on {joint_path}: leader {leader_path_str} not in path_joint_map; skipping mimic constraint.",
-                stacklevel=2,
-            )
-            continue
-        mimic_enabled = usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True)
-        if not mimic_enabled:
-            continue
-        coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0", default=0.0)
-        coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1", default=1.0)
-        leader_idx = path_joint_map[leader_path_str]
-        builder.add_constraint_mimic(
-            joint0=joint_idx,
-            joint1=leader_idx,
-            coef0=coef0,
-            coef1=coef1,
-            enabled=True,
-            key=joint_path,
-        )
-
     def _build_mass_info_from_authored_properties(
         prim: Usd.Prim,
         local_pos,
@@ -1896,6 +1857,8 @@ def parse_usd(
                     default=builder.default_shape_cfg.thickness,
                     verbose=verbose,
                 )
+                if margin_val == float("-inf"):
+                    margin_val = builder.default_shape_cfg.thickness
                 gap_val = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
@@ -1903,6 +1866,9 @@ def parse_usd(
                     default=builder.default_shape_cfg.contact_margin,
                     verbose=verbose,
                 )
+                # Per schema docs: if gap is -inf (unset), use margin so contact_margin >= thickness.
+                if gap_val == float("-inf"):
+                    gap_val = margin_val
 
                 shape_params = {
                     "body": body_id,
@@ -2286,6 +2252,46 @@ def parse_usd(
 
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {key: idx for idx, key in enumerate(builder.joint_key)}
+
+    # Mimic constraints (run after collapse so joint indices in path_joint_map are final).
+    for joint_path, joint_idx in path_joint_map.items():
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):
+            continue
+        mimic_enabled = usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True)
+        if not mimic_enabled:
+            continue
+        mimic_rel = joint_prim.GetRelationship("newton:mimicJoint")
+        if not mimic_rel or not mimic_rel.HasAuthoredTargets():
+            if verbose:
+                print(f"NewtonMimicAPI on {joint_path} has no newton:mimicJoint target; skipping")
+            continue
+        targets = mimic_rel.GetTargets()
+        if not targets:
+            if verbose:
+                print(f"NewtonMimicAPI on {joint_path}: newton:mimicJoint has no targets; skipping")
+            continue
+        leader_path = targets[0]
+        if not leader_path.IsAbsolutePath():
+            leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
+        leader_path_str = str(leader_path)
+        if leader_path_str not in path_joint_map:
+            warnings.warn(
+                f"NewtonMimicAPI on {joint_path}: leader {leader_path_str} not in path_joint_map; skipping mimic constraint.",
+                stacklevel=2,
+            )
+            continue
+        coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0", default=0.0)
+        coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1", default=1.0)
+        leader_idx = path_joint_map[leader_path_str]
+        builder.add_constraint_mimic(
+            joint0=joint_idx,
+            joint1=leader_idx,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=True,
+            key=joint_path,
+        )
 
     return {
         "fps": stage.GetFramesPerSecond(),

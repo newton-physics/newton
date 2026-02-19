@@ -1300,40 +1300,31 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(collider.HasAPI("NewtonCollisionAPI"))
         self.assertTrue(collider.HasAPI("PhysicsCollisionAPI"))
         self.assertTrue(UsdPhysics.CollisionAPI(collider).GetCollisionEnabledAttr().Get())
-        # redundant, but required to make UsdPhysics.LoadUsdPhysicsFromRange() work correctly
         UsdPhysics.CollisionAPI.Apply(collider)
 
-        # Create resolver
         resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
 
-        # there is no authored value in the asset, so margin (Newton) and contact_margin (PhysX) should be -inf
-        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
-        self.assertEqual(margin, float("-inf"))
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertEqual(contact_margin, float("-inf"))
-
-        # an explicit newton:contactMargin should be read via "margin" (inflation)
+        # Explicit newton:contactMargin -> "margin"
         collider.GetAttribute("newton:contactMargin").Set(0.2)
         margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
         self.assertAlmostEqual(margin, 0.2)
 
-        # contact_margin key is for PhysX; an explicit physx value
-        collider.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.3)
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertAlmostEqual(contact_margin, 0.3)
+        # PhysX restOffset overrides margin when PhysX is first
+        collider.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.15)
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.15)
 
-        # reversed resolver priority: Newton first, so "margin" still from Newton
+        # Newton first: margin from Newton again
         resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
         margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
         self.assertAlmostEqual(margin, 0.2)
 
-        # With Mjc first, mjc:margin (geom margin = inflation) is used for "margin"
+        # Mjc first: mjc:margin (geom margin) used for "margin"
         resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
         collider.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.4)
         margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
         self.assertAlmostEqual(margin, 0.4)
 
-        # mjc:margin is available instead via custom solver attributes
         builder = ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(
@@ -1343,6 +1334,36 @@ class TestSchemaResolver(unittest.TestCase):
         )
         schema_attrs = result.get("schema_attrs", {})
         self.assertAlmostEqual(schema_attrs["mjc"]["/xform/collider"]["mjc:margin"], 0.4)
+
+    def test_contact_gap(self):
+        """
+        Test gap (contact processing distance) priority: Newton, PhysX contactOffset, Mjc.
+        """
+        stage = Usd.Stage.CreateInMemory()
+        xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(xform)
+        collider = UsdGeom.Cube.Define(stage, "/xform/collider").GetPrim()
+        collider.ApplyAPI("NewtonCollisionAPI")
+        UsdPhysics.CollisionAPI.Apply(collider)
+
+        resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+
+        collider.CreateAttribute("newton:contactGap", Sdf.ValueTypeNames.Float).Set(0.02)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.02)
+
+        collider.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.03)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.03)
+
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.02)
+
+        resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        collider.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Float).Set(0.01)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.01)
 
     def test_max_hull_vertices(self):
         """
