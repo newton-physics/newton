@@ -144,8 +144,8 @@ def compute_ellipsoid_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[
 
 @wp.kernel(enable_backward=False)
 def compute_shape_bvh_bounds(
-    num_shapes_enabled: wp.int32,
-    num_worlds: wp.int32,
+    shape_count_enabled: wp.int32,
+    world_count: wp.int32,
     shape_world_index: wp.array(dtype=wp.int32),
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
@@ -158,17 +158,17 @@ def compute_shape_bvh_bounds(
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_index_local = tid % num_shapes_enabled
-    if bvh_index_local >= num_shapes_enabled:
+    bvh_index_local = tid % shape_count_enabled
+    if bvh_index_local >= shape_count_enabled:
         return
 
     shape_index = shape_enabled[bvh_index_local]
 
     world_index = shape_world_index[shape_index]
     if world_index < 0:
-        world_index = num_worlds + world_index
+        world_index = world_count + world_index
 
-    if world_index >= num_worlds:
+    if world_index >= world_count:
         return
 
     transform = shape_transforms[shape_index]
@@ -205,7 +205,7 @@ def compute_shape_bvh_bounds(
 @wp.kernel(enable_backward=False)
 def compute_particle_bvh_bounds(
     num_particles: wp.int32,
-    num_worlds: wp.int32,
+    world_count: wp.int32,
     particle_world_index: wp.array(dtype=wp.int32),
     particle_position: wp.array(dtype=wp.vec3f),
     particle_radius: wp.array(dtype=wp.float32),
@@ -222,9 +222,9 @@ def compute_particle_bvh_bounds(
 
     world_index = particle_world_index[particle_index]
     if world_index < 0:
-        world_index = num_worlds + world_index
+        world_index = world_count + world_index
 
-    if world_index >= num_worlds:
+    if world_index >= world_count:
         return
 
     lower, upper = compute_sphere_bounds(particle_position[particle_index], particle_radius[particle_index])

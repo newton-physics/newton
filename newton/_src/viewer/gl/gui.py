@@ -19,11 +19,11 @@ from __future__ import annotations
 class UI:
     def __init__(self, window):
         try:
-            from imgui_bundle import (  # noqa: PLC0415
+            from imgui_bundle import (
                 imgui,
                 imguizmo,
             )
-            from imgui_bundle.python_backends import pyglet_backend  # noqa: PLC0415
+            from imgui_bundle.python_backends import pyglet_backend
 
             self.imgui = imgui
             self.giz = imguizmo.im_guizmo

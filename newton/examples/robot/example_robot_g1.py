@@ -19,7 +19,7 @@
 # Shows how to set up a simulation of a G1 robot articulation
 # from a USD stage using newton.ModelBuilder.add_usd().
 #
-# Command: python -m newton.examples robot_g1 --num-worlds 16
+# Command: python -m newton.examples robot_g1 --world-count 16
 #
 ###########################################################################
 
@@ -32,14 +32,14 @@ from newton import ActuatorMode
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=4, args=None):
+    def __init__(self, viewer, world_count=4, args=None):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 6
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         self.viewer = viewer
 
@@ -71,7 +71,7 @@ class Example:
         g1.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
-        builder.replicate(g1, self.num_worlds)
+        builder.replicate(g1, self.world_count)
 
         builder.default_shape_cfg.ke = 1.0e3
         builder.default_shape_cfg.kd = 1.0e2
@@ -99,9 +99,7 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -115,7 +113,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+        self.model.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
@@ -159,10 +157,10 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=4, help="Total number of simulated worlds.")
+    parser.add_argument("--world-count", type=int, default=4, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, args.num_worlds, args)
+    example = Example(viewer, args.world_count, args)
 
     newton.examples.run(example, args)

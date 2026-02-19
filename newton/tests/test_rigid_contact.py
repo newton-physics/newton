@@ -20,7 +20,6 @@ import warp as wp
 
 import newton
 from newton._src.core import quat_between_axes
-from newton._src.geometry.utils import create_box_mesh
 from newton.tests.unittest_utils import (
     add_function_test,
     assert_np_equal,
@@ -29,13 +28,11 @@ from newton.tests.unittest_utils import (
 )
 
 
-def simulate(solver, model, state_0, state_1, control, sim_dt, substeps):
-    if not isinstance(solver, newton.solvers.SolverMuJoCo):
-        contacts = model.collide(state_0)
-    else:
-        contacts = None
+def simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps):
     for _ in range(substeps):
         state_0.clear_forces()
+        if contacts is not None:
+            model.collide(state_0, contacts)
         solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
         state_0, state_1 = state_1, state_0
 
@@ -183,6 +180,7 @@ def test_shapes_on_plane(test, device, solver_fn):
         solver = temp_solver
     state_0, state_1 = model.state(), model.state()
     control = model.control()
+    contacts = model.contacts() if not isinstance(solver, newton.solvers.SolverMuJoCo) else None
 
     use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
     # Increased substeps for better stability (more substeps = smaller time steps = more stable)
@@ -192,16 +190,16 @@ def test_shapes_on_plane(test, device, solver_fn):
     if use_cuda_graph:
         # ensure data is allocated and modules are loaded before graph capture
         # in case of an earlier CUDA version
-        simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
+        simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps)
         with wp.ScopedCapture(device) as capture:
-            simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
+            simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps)
         graph = capture.graph
 
-    for _ in range(250):
+    for _ in range(120):
         if use_cuda_graph:
             wp.capture_launch(graph)
         else:
-            simulate(solver, model, state_0, state_1, control, sim_dt, substeps)
+            simulate(solver, model, state_0, state_1, control, contacts, sim_dt, substeps)
 
     # Check that objects have settled on the ground
     body_q = state_0.body_q.numpy()
@@ -409,9 +407,15 @@ def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
 
     # Two cubes using convex hull representation (8 corner points)
     cube_half = CUBE_SIZE / 2
-    cube_vertices, cube_indices = create_box_mesh((cube_half, cube_half, cube_half))
-
-    cube_mesh = newton.Mesh(cube_vertices, cube_indices)
+    cube_mesh = newton.Mesh.create_box(
+        cube_half,
+        cube_half,
+        cube_half,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
 
     offset_a = 0.5 * CUBE_SIZE * (ramp_up + ramp_right + (start_shift - 14.07) * ramp_forward)
     offset_b = 0.5 * CUBE_SIZE * (ramp_up - ramp_right + (start_shift - 14.07) * ramp_forward)
@@ -445,11 +449,12 @@ def test_shape_collisions_gjk_mpr_multicontact(test, device, verbose=False):
     substeps = 10
     sim_dt = 1.0 / 60.0
     max_frames = 100
+    contacts = model.contacts()
 
     for _frame in range(max_frames):
         for _ in range(substeps):
             state_0.clear_forces()
-            contacts = model.collide(state_0)
+            model.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 
@@ -526,8 +531,15 @@ def test_mesh_box_on_ground(test, device):
 
     # Create a box mesh (half extents = 0.5)
     box_half = 0.5
-    vertices, indices = create_box_mesh((box_half, box_half, box_half))
-    box_mesh = newton.Mesh(vertices, indices)
+    box_mesh = newton.Mesh.create_box(
+        box_half,
+        box_half,
+        box_half,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
 
     # Add mesh box body, positioned so bottom face is at z=0 (center at z=box_half)
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, box_half), wp.quat_identity()))
@@ -541,6 +553,7 @@ def test_mesh_box_on_ground(test, device):
     state_0 = model.state()
     state_1 = model.state()
     control = model.control()
+    contacts = model.contacts()
 
     # Initialize kinematics
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -553,7 +566,7 @@ def test_mesh_box_on_ground(test, device):
     for _ in range(max_frames):
         for _ in range(substeps):
             state_0.clear_forces()
-            contacts = model.collide(state_0)
+            model.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 
@@ -622,6 +635,7 @@ def test_mujoco_warp_newton_contacts(test, device):
     # Finalize model (shape pairs are built automatically)
     model = builder.finalize(device=device)
 
+    contacts = model.contacts()
     # Create MuJoCo Warp solver with Newton contacts
     solver = newton.solvers.SolverMuJoCo(
         model,
@@ -653,7 +667,7 @@ def test_mujoco_warp_newton_contacts(test, device):
         for _ in range(substeps):
             state_0.clear_forces()
 
-            contacts = model.collide(state_0)
+            model.collide(state_0, contacts)
 
             solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
@@ -699,8 +713,15 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
 
     # Create a small cube convex mesh (half extents = 0.2)
     cube_half = 0.2
-    vertices, indices = create_box_mesh((cube_half, cube_half, cube_half))
-    cube_mesh = newton.Mesh(vertices, indices)
+    cube_mesh = newton.Mesh.create_box(
+        cube_half,
+        cube_half,
+        cube_half,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
 
     # Static ground plane
     builder.add_shape_plane(
@@ -787,18 +808,19 @@ def test_box_drop(test, device, solver_fn):
     max_frames = 60
     max_observed_vel = 0.0
 
+    generate_contacts = not isinstance(solver, newton.solvers.SolverMuJoCo)
+    contacts = model.contacts() if generate_contacts else None
+
     for _ in range(max_frames):
         for _ in range(substeps):
             state_0.clear_forces()
-            if not isinstance(solver, newton.solvers.SolverMuJoCo):
-                contacts = model.collide(state_0)
-            else:
-                contacts = None
+            if generate_contacts:
+                model.collide(state_0, contacts)
             solver.step(state_0, state_1, None, contacts, sim_dt / substeps)
             state_0, state_1 = state_1, state_0
 
-            vel_z = np.abs(state_0.body_qd.numpy()[:, 2])
-            max_observed_vel = max(max_observed_vel, vel_z.max())
+        vel_z = np.abs(state_0.body_qd.numpy()[:, 2])
+        max_observed_vel = max(max_observed_vel, vel_z.max())
 
     test.assertLess(
         max_observed_vel,

@@ -25,8 +25,8 @@ import warp as wp
 from ..core.types import Vec3, nparray
 from .inertia import compute_mesh_inertia
 from .types import (
-    SDF,
     GeoType,
+    Heightfield,
     Mesh,
 )
 
@@ -82,7 +82,7 @@ def compute_obb_candidates(
     transforms[angle_idx, axis_idx] = wp.transform(world_center, wp.quat_inverse(quat))
 
 
-def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> float:
+def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | Heightfield | None) -> float:
     """
     Calculates the radius of a sphere that encloses the shape, used for broadphase collision detection.
     """
@@ -104,6 +104,16 @@ def compute_shape_radius(geo_type: int, scale: Vec3, src: Mesh | SDF | None) -> 
             return np.linalg.norm(scale)
         else:
             return 1.0e6
+    elif geo_type == GeoType.HFIELD:
+        # Heightfield bounding sphere — hx/hy are already half-extents
+        if src is not None:
+            half_x = src.hx * scale[0]
+            half_y = src.hy * scale[1]
+            # Vertical range: from min_z to max_z, centered at midpoint
+            half_z = (src.max_z - src.min_z) / 2.0 * scale[2]
+            return np.sqrt(half_x**2 + half_y**2 + half_z**2)
+        else:
+            return np.linalg.norm(scale)
     else:
         return 10.0
 
@@ -293,24 +303,24 @@ def load_mesh(filename: str, method: str | None = None):
 
     def load_mesh_with_method(method):
         if method == "meshio":
-            import meshio  # noqa: PLC0415
+            import meshio
 
             m = meshio.read(filename)
             mesh_points = np.array(m.points)
             mesh_indices = np.array(m.cells[0].data, dtype=np.int32)
         elif method == "openmesh":
-            import openmesh  # noqa: PLC0415
+            import openmesh
 
             m = openmesh.read_trimesh(filename)
             mesh_points = np.array(m.points())
             mesh_indices = np.array(m.face_vertex_indices(), dtype=np.int32)
         elif method == "pcu":
-            import point_cloud_utils as pcu  # noqa: PLC0415
+            import point_cloud_utils as pcu
 
             mesh_points, mesh_indices = pcu.load_mesh_vf(filename)
             mesh_indices = mesh_indices.flatten()
         else:
-            import trimesh  # noqa: PLC0415
+            import trimesh
 
             m = trimesh.load(filename)
             if hasattr(m, "geometry"):
@@ -354,7 +364,7 @@ def visualize_meshes(
 ):
     """Render meshes in a grid with matplotlib."""
 
-    import matplotlib.pyplot as plt  # noqa: PLC0415
+    import matplotlib.pyplot as plt
 
     if titles is None:
         titles = []
@@ -442,7 +452,7 @@ def remesh_ftetwild(vertices, faces, optimize=False, edge_length_fac=0.05, verbo
         if the remeshing fails.
     """
 
-    from pytetwild import tetrahedralize  # noqa: PLC0415
+    from pytetwild import tetrahedralize
 
     def tet_fn(v, f):
         return tetrahedralize(v, f, optimize=optimize, edge_length_fac=edge_length_fac)
@@ -498,7 +508,7 @@ def remesh_alphashape(vertices, alpha: float = 3.0):
     Returns:
         A tuple (vertices, faces) containing the remeshed mesh.
     """
-    import alphashape  # noqa: PLC0415
+    import alphashape
 
     with silence_stdio():
         alpha_shape = alphashape.alphashape(vertices, alpha)
@@ -519,7 +529,7 @@ def remesh_quadratic(vertices, faces, target_reduction=0.5, target_count=None, *
     Returns:
         A tuple (vertices, faces) containing the remeshed mesh.
     """
-    from fast_simplification import simplify  # noqa: PLC0415
+    from fast_simplification import simplify
 
     return simplify(vertices, faces, target_reduction=target_reduction, target_count=target_count, **kwargs)
 
@@ -539,7 +549,7 @@ def remesh_convex_hull(vertices, maxhullvert: int = 0):
         - faces: A numpy array of shape (K, 3) containing the vertex indices of the triangular faces of the convex hull.
     """
 
-    from scipy.spatial import ConvexHull  # noqa: PLC0415
+    from scipy.spatial import ConvexHull
 
     qhull_options = "Qt"
     if maxhullvert > 0:
@@ -650,169 +660,6 @@ def remesh_mesh(
     else:
         return mesh.copy(vertices=vertices, indices=indices, recompute_inertia=recompute_inertia)
     return mesh
-
-
-def create_box_mesh(half_extents: Vec3, duplicate_vertices: bool = False) -> tuple[nparray, nparray]:
-    """Create a box mesh with the given half extents.
-
-    Args:
-        half_extents: Half extents of the box along each axis (x, y, z).
-        duplicate_vertices: If True, duplicate vertices for each face to enable proper flat shading.
-            Each face will have its own 4 vertices (24 total), allowing distinct normals per face.
-            If False (default), use 8 shared corner vertices for a more compact representation.
-
-    Returns:
-        A tuple of (vertices, indices) numpy arrays.
-    """
-    x_extent, y_extent, z_extent = half_extents
-
-    if duplicate_vertices:
-        # 24 vertices (4 per face) for proper flat shading
-        vertices = np.array(
-            [
-                # Bottom face (z = -z_extent) - vertices 0-3
-                [-x_extent, -y_extent, -z_extent],
-                [x_extent, -y_extent, -z_extent],
-                [x_extent, y_extent, -z_extent],
-                [-x_extent, y_extent, -z_extent],
-                # Top face (z = z_extent) - vertices 4-7
-                [-x_extent, -y_extent, z_extent],
-                [x_extent, -y_extent, z_extent],
-                [x_extent, y_extent, z_extent],
-                [-x_extent, y_extent, z_extent],
-                # Front face (y = -y_extent) - vertices 8-11
-                [-x_extent, -y_extent, -z_extent],
-                [x_extent, -y_extent, -z_extent],
-                [x_extent, -y_extent, z_extent],
-                [-x_extent, -y_extent, z_extent],
-                # Back face (y = y_extent) - vertices 12-15
-                [x_extent, y_extent, -z_extent],
-                [-x_extent, y_extent, -z_extent],
-                [-x_extent, y_extent, z_extent],
-                [x_extent, y_extent, z_extent],
-                # Left face (x = -x_extent) - vertices 16-19
-                [-x_extent, -y_extent, -z_extent],
-                [-x_extent, -y_extent, z_extent],
-                [-x_extent, y_extent, z_extent],
-                [-x_extent, y_extent, -z_extent],
-                # Right face (x = x_extent) - vertices 20-23
-                [x_extent, -y_extent, -z_extent],
-                [x_extent, y_extent, -z_extent],
-                [x_extent, y_extent, z_extent],
-                [x_extent, -y_extent, z_extent],
-            ],
-            dtype=np.float32,
-        )
-        indices = np.array(
-            [
-                # Bottom face
-                0,
-                2,
-                1,
-                0,
-                3,
-                2,
-                # Top face
-                4,
-                5,
-                6,
-                4,
-                6,
-                7,
-                # Front face
-                8,
-                9,
-                10,
-                8,
-                10,
-                11,
-                # Back face
-                12,
-                13,
-                14,
-                12,
-                14,
-                15,
-                # Left face
-                16,
-                17,
-                18,
-                16,
-                18,
-                19,
-                # Right face
-                20,
-                21,
-                22,
-                20,
-                22,
-                23,
-            ],
-            dtype=np.int32,
-        )
-    else:
-        # 8 shared corner vertices (original compact representation)
-        vertices = np.array(
-            [
-                [-x_extent, -y_extent, -z_extent],
-                [x_extent, -y_extent, -z_extent],
-                [x_extent, y_extent, -z_extent],
-                [-x_extent, y_extent, -z_extent],
-                [-x_extent, -y_extent, z_extent],
-                [x_extent, -y_extent, z_extent],
-                [x_extent, y_extent, z_extent],
-                [-x_extent, y_extent, z_extent],
-            ],
-            dtype=np.float32,
-        )
-        indices = np.array(
-            [
-                # Bottom face (z = -z_extent)
-                0,
-                2,
-                1,
-                0,
-                3,
-                2,
-                # Top face (z = z_extent)
-                4,
-                5,
-                6,
-                4,
-                6,
-                7,
-                # Front face (y = -y_extent)
-                0,
-                1,
-                5,
-                0,
-                5,
-                4,
-                # Back face (y = y_extent)
-                2,
-                3,
-                7,
-                2,
-                7,
-                6,
-                # Left face (x = -x_extent)
-                0,
-                4,
-                7,
-                0,
-                7,
-                3,
-                # Right face (x = x_extent)
-                1,
-                2,
-                6,
-                1,
-                6,
-                5,
-            ],
-            dtype=np.int32,
-        )
-    return vertices, indices
 
 
 def transform_points(points: nparray, transform: wp.transform, scale: Vec3 | None = None) -> nparray:

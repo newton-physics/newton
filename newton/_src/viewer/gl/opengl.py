@@ -21,7 +21,7 @@ import sys
 import numpy as np
 import warp as wp
 
-from newton.utils import create_sphere_mesh
+from newton import Mesh
 
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
@@ -33,7 +33,7 @@ from .shaders import (
     ShadowShader,
 )
 
-ENABLE_CUDA_INTEROP = True
+ENABLE_CUDA_INTEROP = False
 ENABLE_GL_CHECKS = False
 
 wp.set_module_options({"enable_backward": False})
@@ -43,7 +43,7 @@ def check_gl_error():
     if not ENABLE_GL_CHECKS:
         return
 
-    from pyglet import gl  # noqa: PLC0415
+    from pyglet import gl
 
     error = gl.glGetError()
     if error != gl.GL_NO_ERROR:
@@ -239,7 +239,7 @@ class MeshGL:
 
         # albedo
         gl.glVertexAttrib3f(7, 0.7, 0.5, 0.3)
-        # material, roughness, metallic, checker, texture_enable
+        # material = (roughness, metallic, checker, texture_enable)
         gl.glVertexAttrib4f(8, 0.5, 0.0, 0.0, 0.0)
 
         gl.glBindVertexArray(0)
@@ -827,6 +827,32 @@ class MeshInstancerGL:
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
 
+    def update_from_pinned(self, host_transforms_np, count, colors=None, materials=None):
+        """Upload pre-computed mat44 transforms from pinned host memory to GL.
+
+        Args:
+            host_transforms_np: Numpy array slice of mat44 transforms.
+            count: Number of active instances.
+            colors: Optional wp.array of per-instance colors.
+            materials: Optional wp.array of per-instance materials.
+        """
+        gl = RendererGL.gl
+        if count > self.num_instances:
+            raise ValueError(f"Active instance count ({count}) exceeds allocated capacity ({self.num_instances}).")
+        self.active_instances = count
+        if count > 0:
+            nbytes = count * self.transform_byte_size
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
+            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, nbytes, host_transforms_np.ctypes.data)
+        if colors is not None:
+            host_colors = colors.numpy()
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_color_buffer)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_colors.nbytes, host_colors.ctypes.data, gl.GL_STATIC_DRAW)
+        if materials is not None:
+            host_materials = materials.numpy()
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_material_buffer)
+            gl.glBufferData(gl.GL_ARRAY_BUFFER, host_materials.nbytes, host_materials.ctypes.data, gl.GL_STATIC_DRAW)
+
     def render(self):
         gl = RendererGL.gl
 
@@ -857,7 +883,7 @@ class RendererGL:
     @classmethod
     def initialize_gl(cls):
         if cls.gl is None:  # Only import if not already imported
-            from pyglet import gl  # noqa: PLC0415
+            from pyglet import gl
 
             cls.gl = gl
 
@@ -873,14 +899,14 @@ class RendererGL:
         self.sky_lower = (40.0 / 255.0, 44.0 / 255.0, 55.0 / 255.0)
 
         try:
-            import pyglet  # noqa: PLC0415
+            import pyglet
 
             # disable error checking for performance
             pyglet.options["debug_gl"] = False
 
             # try imports
-            from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: F401, PLC0415
-            from pyglet.math import Vec3 as PyVec3  # noqa: F401, PLC0415
+            from pyglet.graphics.shader import Shader, ShaderProgram  # noqa: F401
+            from pyglet.math import Vec3 as PyVec3  # noqa: F401
 
             RendererGL.initialize_gl()
             gl = RendererGL.gl
@@ -974,7 +1000,7 @@ class RendererGL:
         if not headless:
             # set up our own event handling so we can synchronously render frames
             # by calling update() in a loop
-            from pyglet.window import Window  # noqa: PLC0415
+            from pyglet.window import Window
 
             Window._enable_event_queue = False
 
@@ -1005,7 +1031,7 @@ class RendererGL:
         self._make_current()
 
         if not self.headless:
-            import pyglet  # noqa: PLC0415
+            import pyglet
 
             pyglet.clock.tick()
 
@@ -1164,7 +1190,7 @@ class RendererGL:
 
     def _setup_window_callbacks(self):
         """Set up the basic window event handlers."""
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         self.window.push_handlers(on_draw=self._on_draw)
         self.window.push_handlers(on_resize=self._on_window_resize)
@@ -1311,7 +1337,15 @@ class RendererGL:
         gl.glGenVertexArrays(1, self._sky_vao)
         gl.glBindVertexArray(self._sky_vao)
 
-        vertices, indices = create_sphere_mesh(1.0, 32, 32, reverse_winding=True)
+        sky_mesh = Mesh.create_sphere(
+            1.0,
+            num_latitudes=32,
+            num_longitudes=32,
+            reverse_winding=True,
+            compute_inertia=False,
+        )
+        vertices = np.hstack([sky_mesh.vertices, sky_mesh.normals, sky_mesh.uvs]).astype(np.float32, copy=False)
+        indices = sky_mesh.indices.astype(np.uint32, copy=False)
         self._sky_tri_count = len(indices)
 
         self._sky_vbo = gl.GLuint()
@@ -1566,7 +1600,7 @@ class RendererGL:
 
     def _render_shadow_map(self, objects):
         gl = RendererGL.gl
-        from pyglet.math import Mat4, Vec3  # noqa: PLC0415
+        from pyglet.math import Mat4, Vec3
 
         self._make_current()
 
@@ -1690,7 +1724,7 @@ class RendererGL:
             pass
 
     def _set_icon(self):
-        import pyglet  # noqa: PLC0415
+        import pyglet
 
         def load_icon(filename):
             filename = os.path.join(os.path.dirname(__file__), filename)
