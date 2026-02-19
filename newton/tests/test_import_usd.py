@@ -292,8 +292,8 @@ def Xform "Root" (
         # All three bodies and both revolute joints must survive collapse
         self.assertEqual(builder.body_count, 3)
         self.assertEqual(builder.joint_count, 2)
-        self.assertIn("/World/RevJoint1", builder.joint_key)
-        self.assertIn("/World/RevJoint2", builder.joint_key)
+        self.assertIn("/World/RevJoint1", builder.joint_label)
+        self.assertIn("/World/RevJoint2", builder.joint_label)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
