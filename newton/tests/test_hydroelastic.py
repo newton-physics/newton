@@ -132,7 +132,7 @@ def build_stacked_cubes_scene(
         initial_positions.append(wp.vec3(0.0, 0.0, z_pos))
         body = builder.add_body(
             xform=wp.transform(initial_positions[-1], wp.quat_identity()),
-            key=f"{shape_type.value}_cube_{i}",
+            label=f"{shape_type.value}_cube_{i}",
         )
 
         if shape_type == ShapeType.PRIMITIVE:
@@ -308,7 +308,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         lower_pos = wp.vec3(x_pos, 0.0, box_half_lower)
         body_lower = builder.add_body(
             xform=wp.transform(p=lower_pos, q=wp.quat_identity()),
-            key=f"lower_{i}",
+            label=f"lower_{i}",
             mass=mass_lower,
             inertia=I_m_lower,
         )
@@ -324,7 +324,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         upper_pos = wp.vec3(x_pos, 0.0, upper_z)
         body_upper = builder.add_body(
             xform=wp.transform(p=upper_pos, q=wp.quat_identity()),
-            key=f"upper_{i}",
+            label=f"upper_{i}",
             mass=mass_upper,
             inertia=I_m_upper,
         )

@@ -171,7 +171,7 @@ When entities don't explicitly specify custom attribute values, the default valu
 
 Before loading assets, register solver-specific attributes:
 
-.. testcode::
+.. code-block:: python
 
    from newton.solvers import SolverMuJoCo
 
@@ -187,6 +187,8 @@ Before loading assets, register solver-specific attributes:
    model_mujoco = builder_mujoco.finalize()
    assert hasattr(model_mujoco, "mujoco")
    assert hasattr(model_mujoco.mujoco, "condim")
+
+MuJoCo boolean values in custom attribute transformers are parsed with ``parse_bool``.
 
 Authoring Custom Attributes
 ----------------------------
@@ -437,28 +439,51 @@ The custom attribute system enforces several constraints to ensure correctness:
 Custom Frequencies
 ==================
 
-While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the ``frequency`` parameter.
+While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cases, some data structures have counts independent of built-in entity types. Custom frequencies address this by allowing a string instead of an enum for the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` parameter.
 
 **Example use case:** MuJoCo's ``<contact><pair>`` elements define contact pairs between geometries. These pairs have their own count independent of bodies or shapes, and their indices must be remapped when merging worlds.
 
-Declaring Custom Frequencies
-----------------------------
+Registering Custom Frequencies
+------------------------------
 
-Pass a string instead of an enum for the ``frequency`` parameter:
+Custom frequencies must be **registered before use** via :meth:`~newton.ModelBuilder.add_custom_frequency` using a :class:`~newton.ModelBuilder.CustomFrequency` object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.
 
 .. code-block:: python
 
+   # Register a custom frequency
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(
+           name="item",
+           namespace="myns",
+       )
+   )
+
+The frequency key follows the same namespace rules as attribute keys: if a namespace is provided, it is prepended to the name (e.g., ``"mujoco:pair"``). When declaring a custom attribute, the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` string must match this full key.
+
+Declaring Custom Frequency Attributes
+-------------------------------------
+
+Once a custom frequency is registered, pass a string instead of an enum for the :attr:`~newton.ModelBuilder.CustomAttribute.frequency` parameter when adding attributes:
+
+.. code-block:: python
+
+   # First register the custom frequency
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(name="pair", namespace="mujoco")
+   )
+   
+   # Then add attributes using that frequency
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="pair_geom1",
-           frequency="pair",  # Custom frequency (string)
+           frequency="mujoco:pair",  # Custom frequency (string)
            dtype=wp.int32,
            namespace="mujoco",
        )
    )
-   # → Frequency resolves to "mujoco:pair" via namespace
 
-When a namespace is provided, it is automatically prepended to the frequency string, matching how attribute keys work.
+.. note::
+   Attempting to add an attribute with an unregistered custom frequency will raise a ``ValueError``.
 
 Adding Values
 -------------
@@ -467,12 +492,15 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 
 .. code-block:: python
 
-   # Declare attributes sharing a frequency
-   builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(name="item_id", frequency="item", dtype=wp.int32, namespace="myns")
+   # Register and declare attributes sharing a frequency
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(name="item", namespace="myns")
    )
    builder.add_custom_attribute(
-       ModelBuilder.CustomAttribute(name="item_value", frequency="item", dtype=wp.float32, namespace="myns")
+       ModelBuilder.CustomAttribute(name="item_id", frequency="myns:item", dtype=wp.int32, namespace="myns")
+   )
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(name="item_value", frequency="myns:item", dtype=wp.float32, namespace="myns")
    )
    
    # Append values together
@@ -491,17 +519,172 @@ Custom frequency values are appended using :meth:`~newton.ModelBuilder.add_custo
 
 **Validation:** All attributes sharing a custom frequency must have the same count at ``finalize()`` time. This catches synchronization bugs early.
 
+USD Parsing Support
+-------------------
+
+Custom frequencies can support automatic USD parsing:
+
+In this section, a *row* means one appended set of values for a custom frequency
+(that is, one index entry across all attributes in that frequency, equivalent to
+one call to :meth:`~newton.ModelBuilder.add_custom_values`).
+
+* :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter` selects which prims should emit rows.
+* :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander` (optional) expands one prim into multiple rows.
+
+.. code-block:: python
+
+   def is_actuator_prim(prim, context):
+       """Return True for prims with type name ``MjcActuator``."""
+       return prim.GetTypeName() == "MjcActuator"
+
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(
+           name="actuator",
+           namespace="mujoco",
+           usd_prim_filter=is_actuator_prim,
+       )
+   )
+
+For one-to-many mappings (one prim -> many rows):
+
+.. code-block:: python
+
+   def is_tendon_prim(prim, context):
+       return prim.GetTypeName() == "MjcTendon"
+
+   def expand_joint_rows(prim, context):
+       return [
+           {"mujoco:tendon_joint": 4, "mujoco:tendon_coef": 0.5},
+           {"mujoco:tendon_joint": 8, "mujoco:tendon_coef": 0.5},
+       ]
+
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(
+           name="tendon_joint",
+           namespace="mujoco",
+           usd_prim_filter=is_tendon_prim,
+           usd_entry_expander=expand_joint_rows,
+       )
+   )
+
+When :meth:`~newton.ModelBuilder.add_usd` runs:
+
+1. Parses standard entities (bodies, shapes, joints, etc.).
+2. Collects custom frequencies that define :attr:`~newton.ModelBuilder.CustomFrequency.usd_prim_filter`.
+3. Traverses prims once (including instance proxies via ``Usd.TraverseInstanceProxies()``).
+4. For each prim, evaluate matching frequencies in registration order:
+   
+   - If :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander` is set, one row is appended per emitted dictionary,
+     and default per-attribute USD extraction for that frequency is skipped for that prim.
+   - Otherwise, one row is appended from the frequency's declared attributes.
+
+Callback inputs:
+
+* ``usd_prim_filter(prim, context)`` and ``usd_entry_expander(prim, context)`` receive
+  the same context shape.
+* ``context`` is a small dictionary:
+  
+  - ``prim``: current USD prim (same object as the ``prim`` argument)
+  - ``builder``: current :class:`~newton.ModelBuilder` instance
+  - ``result``: dictionary returned by :meth:`~newton.ModelBuilder.add_usd`
+
+.. note::
+   Important behavior:
+
+   - Frequency callbacks are evaluated in deterministic registration order for each visited prim.
+   - If a frequency defines :attr:`~newton.ModelBuilder.CustomFrequency.usd_entry_expander`, then for every matched
+     prim in that frequency, the expander output is the only source of row values.
+   - In that expander code path, the normal :class:`~newton.ModelBuilder.CustomAttribute` USD parsing path is skipped
+     for that frequency/prim. In other words,
+     :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` and
+     :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` are not evaluated for those rows.
+   - Example: if frequency ``"mujoco:tendon_joint"`` has an expander and attribute
+     ``CustomAttribute(name="tendon_coef", frequency="mujoco:tendon_joint", ...)``, then ``tendon_coef`` is populated
+     only from keys returned by the expander rows. If a row omits ``"mujoco:tendon_coef"``, the value is treated as
+     ``None`` and the attribute default is applied at finalize time.
+
+This mechanism lets solvers such as MuJoCo define USD-native schemas and parse them automatically
+during model import.
+
+Deriving Values from Prim Data (Wildcard Attribute)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+By default, each custom attribute reads its value from a specific USD attribute on the prim (e.g., ``newton:myns:my_attr``). Sometimes, however, you want to **compute** an attribute value from arbitrary prim data rather than reading a single named attribute. This is what setting :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` to ``"*"`` is for.
+
+When :attr:`~newton.ModelBuilder.CustomAttribute.usd_attribute_name` is set to ``"*"``, the attribute's :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` is called for **every prim** matching the attribute's frequency — regardless of which USD attributes exist on that prim. The transformer receives ``None`` as the value (since there is no specific attribute to read) and a context dictionary containing the prim and the attribute definition.
+
+A :attr:`~newton.ModelBuilder.CustomAttribute.usd_value_transformer` **must** be provided when using ``"*"``; omitting it raises a :class:`ValueError`.
+
+**Example:** Suppose your USD stage contains "sensor" prims, each with an arbitrary ``sensor:position`` attribute. You want to store the distance from the origin as a custom attribute, computed at parse time:
+
+.. code-block:: python
+
+   import warp as wp
+   import numpy as np
+
+   # 1. Register the custom frequency with a filter that selects sensor prims
+   def is_sensor(prim, context):
+       return prim.GetName().startswith("Sensor")
+
+   builder.add_custom_frequency(
+       ModelBuilder.CustomFrequency(
+           name="sensor",
+           namespace="myns",
+           usd_prim_filter=is_sensor,
+       )
+   )
+
+   # 2. Define a transformer that computes the distance from prim data
+   def compute_distance(value, context):
+       pos = context["prim"].GetAttribute("sensor:position").Get()
+       return wp.float32(float(np.linalg.norm(pos)))
+
+   # 3. Register the attribute with usd_attribute_name="*"
+   builder.add_custom_attribute(
+       ModelBuilder.CustomAttribute(
+           name="distance",
+           frequency="myns:sensor",
+           dtype=wp.float32,
+           default=0.0,
+           namespace="myns",
+           usd_attribute_name="*",
+           usd_value_transformer=compute_distance,
+       )
+   )
+
+   # 4. Parse the USD stage (assuming `stage` is an existing Usd.Stage)
+   builder.add_usd(stage)
+   model = builder.finalize()
+
+   # Access the computed values
+   distances = model.myns.distance.numpy()
+
+The transformer context dictionary contains:
+
+* ``"prim"``: The current USD prim.
+* ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` being evaluated.
+* When called from :meth:`~newton.ModelBuilder.add_usd` custom-frequency parsing,
+  context also includes ``"result"`` (the ``add_usd`` return dictionary) and
+  ``"builder"`` (the current :class:`~newton.ModelBuilder`).
+
+This pattern is useful when:
+
+* The value you need doesn't exist as a single USD attribute (it must be derived from multiple attributes, prim metadata, or relationships).
+* You want to run the same computation for every prim of a given frequency without requiring an authored attribute on each prim.
+* You need to look up related entities (for example, resolving a prim relationship
+  to a body index through ``context["result"]["path_body_map"]``).
+
 Multi-World Merging
 -------------------
 
-When using ``add_world()`` to create multi-world simulations, the ``references`` field specifies how attribute values should be transformed:
+When using ``add_world()`` to create multi-world simulations, the :attr:`~newton.ModelBuilder.CustomAttribute.references` field specifies how attribute values should be transformed:
 
 .. code-block:: python
 
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="pair_world",
-           frequency="pair",
+           frequency="mujoco:pair",
            dtype=wp.int32,
            namespace="mujoco",
            references="world",  # Replaced with current_world during merge
@@ -510,7 +693,7 @@ When using ``add_world()`` to create multi-world simulations, the ``references``
    builder.add_custom_attribute(
        ModelBuilder.CustomAttribute(
            name="pair_geom1",
-           frequency="pair",
+           frequency="mujoco:pair",
            dtype=wp.int32,
            namespace="mujoco",
            references="shape",  # Offset by shape count during merge
@@ -537,7 +720,7 @@ Use :meth:`~newton.Model.get_custom_frequency_count` to get the count for a cust
    pair_count = model.custom_frequency_counts.get("mujoco:pair", 0)
 
 .. note::
-   When querying, use the **resolved** frequency key with namespace prefix (e.g., ``"mujoco:pair"``), not the raw string used in the declaration (``"pair"``). This matches how attribute keys work: ``model.get_attribute_frequency("mujoco:condim")`` for a namespaced attribute.
+   When querying, use the full frequency key with namespace prefix (e.g., ``"mujoco:pair"``). This matches how attribute keys work: ``model.get_attribute_frequency("mujoco:condim")`` for a namespaced attribute.
 
 ArticulationView Limitations
 ----------------------------

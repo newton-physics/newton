@@ -158,8 +158,14 @@ class Example:
             "LF_KFE": -0.8,
         }
         # Set initial joint positions (skip first 7 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
-        for key, value in initial_q.items():
-            builder.joint_q[builder.joint_key.index(key) + 6] = value
+        for name, value in initial_q.items():
+            idx = next(
+                (i for i, lbl in enumerate(builder.joint_label) if lbl.endswith(f"/{name}")),
+                None,
+            )
+            if idx is None:
+                raise ValueError(f"Joint '{name}' not found in builder.joint_label")
+            builder.joint_q[idx + 6] = value
 
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
@@ -287,7 +293,8 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        assert self.model.body_key == [
+        body_names = [lbl.split("/")[-1] for lbl in self.model.body_label]
+        assert body_names == [
             "base",
             "LF_HIP",
             "LF_THIGH",
@@ -302,7 +309,8 @@ class Example:
             "RH_THIGH",
             "RH_SHANK",
         ]
-        assert self.model.joint_key == [
+        joint_names = [lbl.split("/")[-1] for lbl in self.model.joint_label]
+        assert joint_names == [
             "floating_base",
             "LF_HAA",
             "LF_HFE",

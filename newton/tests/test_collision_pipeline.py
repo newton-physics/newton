@@ -119,18 +119,18 @@ class CollisionSetup:
 
     def add_shape(self, shape_type: GeoType, body: int, sdf_max_resolution: int | None = None):
         if shape_type == GeoType.BOX:
-            self.builder.add_shape_box(body, key=type_to_str(shape_type))
+            self.builder.add_shape_box(body, label=type_to_str(shape_type))
         elif shape_type == GeoType.SPHERE:
-            self.builder.add_shape_sphere(body, radius=0.5, key=type_to_str(shape_type))
+            self.builder.add_shape_sphere(body, radius=0.5, label=type_to_str(shape_type))
         elif shape_type == GeoType.CAPSULE:
-            self.builder.add_shape_capsule(body, radius=0.25, half_height=0.3, key=type_to_str(shape_type))
+            self.builder.add_shape_capsule(body, radius=0.25, half_height=0.3, label=type_to_str(shape_type))
         elif shape_type == GeoType.CYLINDER:
-            self.builder.add_shape_cylinder(body, radius=0.25, half_height=0.4, key=type_to_str(shape_type))
+            self.builder.add_shape_cylinder(body, radius=0.25, half_height=0.4, label=type_to_str(shape_type))
         elif shape_type == GeoType.CONE:
             # Rotate cone so flat base faces -X (toward the incoming object)
             rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -np.pi / 2.0)
             xform = wp.transform(wp.vec3(), rot)
-            self.builder.add_shape_cone(body, xform=xform, radius=0.25, half_height=0.4, key=type_to_str(shape_type))
+            self.builder.add_shape_cone(body, xform=xform, radius=0.25, half_height=0.4, label=type_to_str(shape_type))
         elif shape_type == GeoType.MESH:
             # Use box mesh (works correctly with collision pipeline)
             mesh = newton.Mesh.create_box(
@@ -144,11 +144,11 @@ class CollisionSetup:
             )
             if sdf_max_resolution is not None:
                 mesh.build_sdf(max_resolution=sdf_max_resolution)
-            self.builder.add_shape_mesh(body, mesh=mesh, key=type_to_str(shape_type))
+            self.builder.add_shape_mesh(body, mesh=mesh, label=type_to_str(shape_type))
         elif shape_type == GeoType.CONVEX_MESH:
             # Use a sphere mesh as it's already convex
             mesh = newton.Mesh.create_sphere(0.5, compute_normals=False, compute_uvs=False, compute_inertia=False)
-            self.builder.add_shape_convex_hull(body, mesh=mesh, key=type_to_str(shape_type))
+            self.builder.add_shape_convex_hull(body, mesh=mesh, label=type_to_str(shape_type))
         else:
             raise NotImplementedError(f"Shape type {shape_type} not implemented")
 
@@ -189,7 +189,7 @@ class CollisionSetup:
         self.viewer.end_frame()
 
     def test(self, test_level: TestLevel, body: int, tolerance: float = 3e-3):
-        body_name = f"body {body} ({self.model.shape_key[body]})"
+        body_name = f"body {body} ({self.model.shape_label[body]})"
         if test_level & TestLevel.VELOCITY_X:
             test_body_state(
                 self.model,

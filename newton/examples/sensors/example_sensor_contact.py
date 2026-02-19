@@ -99,12 +99,12 @@ class Example:
             "/env/Cube": [0.2, 0.4, 0.8],
             "/env/Flap": 3 * [0.8],
         }
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
+        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
 
         self.state_0 = self.model.state()
 
         self.control = self.model.control()
-        hinge_joint_idx = self.model.joint_key.index("/env/Hinge")
+        hinge_joint_idx = self.model.joint_label.index("/env/Hinge")
         self.hinge_joint_q_start = int(self.model.joint_q_start.numpy()[hinge_joint_idx])
 
         self.next_reset = 0.0
@@ -156,9 +156,9 @@ class Example:
             # color newly touched plate
             plate = self.plate_contact_sensor.sensing_objs[i][0]
             obj = self.plate_contact_sensor.counterparts[i][0]
-            obj_key = self.model.shape_key[obj]
+            obj_key = self.model.shape_label[obj]
             self.plates_touched[i] = True
-            print(f"Plate {self.model.shape_key[plate]} was touched by counterpart {obj_key}")
+            print(f"Plate {self.model.shape_label[plate]} was touched by counterpart {obj_key}")
             self.viewer.update_shape_colors({plate: self.shape_colors[obj_key]})
 
         self.flap_contact_sensor.eval(self.contacts)

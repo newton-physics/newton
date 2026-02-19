@@ -382,96 +382,144 @@ class TestImportUrdfBasic(unittest.TestCase):
         parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering=None)
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "grandchild_link_1b",
-            "base_link",
-            "child_link_1",
-            "grandchild_link_2b",
-            "grandchild_link_1a",
-            "grandchild_link_2a",
-            "child_link_2",
+        assert builder.body_label == [
+            "joint_tree_test/grandchild_link_1b",
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/child_link_2",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_1a", "joint_1b", "joint_2b", "joint_2a"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+        ]
 
     def test_joint_ordering_dfs(self):
         builder = newton.ModelBuilder()
         parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering="dfs")
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "grandchild_link_1b",
-            "base_link",
-            "child_link_1",
-            "grandchild_link_2b",
-            "grandchild_link_1a",
-            "grandchild_link_2a",
-            "child_link_2",
+        assert builder.body_label == [
+            "joint_tree_test/grandchild_link_1b",
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/child_link_2",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_2b", "joint_2a", "joint_1", "joint_1a", "joint_1b"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+        ]
 
     def test_joint_ordering_bfs(self):
         builder = newton.ModelBuilder()
         parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=False, joint_ordering="bfs")
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "grandchild_link_1b",
-            "base_link",
-            "child_link_1",
-            "grandchild_link_2b",
-            "grandchild_link_1a",
-            "grandchild_link_2a",
-            "child_link_2",
+        assert builder.body_label == [
+            "joint_tree_test/grandchild_link_1b",
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/child_link_2",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_2b", "joint_2a", "joint_1a", "joint_1b"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+        ]
 
     def test_joint_body_ordering_original(self):
         builder = newton.ModelBuilder()
         parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering=None)
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "base_link",
-            "child_link_2",
-            "child_link_1",
-            "grandchild_link_1a",
-            "grandchild_link_1b",
-            "grandchild_link_2b",
-            "grandchild_link_2a",
+        assert builder.body_label == [
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_2",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_1b",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_2a",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_1a", "joint_1b", "joint_2b", "joint_2a"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+        ]
 
     def test_joint_body_ordering_dfs(self):
         builder = newton.ModelBuilder()
         parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering="dfs")
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "base_link",
-            "child_link_2",
-            "grandchild_link_2b",
-            "grandchild_link_2a",
-            "child_link_1",
-            "grandchild_link_1a",
-            "grandchild_link_1b",
+        assert builder.body_label == [
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_2",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_1b",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_2b", "joint_2a", "joint_1", "joint_1a", "joint_1b"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+        ]
 
     def test_joint_body_ordering_bfs(self):
         builder = newton.ModelBuilder()
         parse_urdf(JOINT_TREE_URDF, builder, bodies_follow_joint_ordering=True, joint_ordering="bfs")
         assert builder.body_count == 7
         assert builder.joint_count == 7
-        assert builder.body_key == [
-            "base_link",
-            "child_link_2",
-            "child_link_1",
-            "grandchild_link_2b",
-            "grandchild_link_2a",
-            "grandchild_link_1a",
-            "grandchild_link_1b",
+        assert builder.body_label == [
+            "joint_tree_test/base_link",
+            "joint_tree_test/child_link_2",
+            "joint_tree_test/child_link_1",
+            "joint_tree_test/grandchild_link_2b",
+            "joint_tree_test/grandchild_link_2a",
+            "joint_tree_test/grandchild_link_1a",
+            "joint_tree_test/grandchild_link_1b",
         ]
-        assert builder.joint_key == ["fixed_base", "joint_2", "joint_1", "joint_2b", "joint_2a", "joint_1a", "joint_1b"]
+        assert builder.joint_label == [
+            "joint_tree_test/fixed_base",
+            "joint_tree_test/joint_2",
+            "joint_tree_test/joint_1",
+            "joint_tree_test/joint_2b",
+            "joint_tree_test/joint_2a",
+            "joint_tree_test/joint_1a",
+            "joint_tree_test/joint_1b",
+        ]
 
     def test_xform_with_floating_false(self):
         """Test that xform parameter is respected when floating=False"""
@@ -587,7 +635,7 @@ class TestImportUrdfBaseJoints(unittest.TestCase):
         self.assertEqual(model.joint_count, 1)
         joint_type = model.joint_type.numpy()[0]
         self.assertEqual(joint_type, newton.JointType.FREE)
-        self.assertEqual(builder.joint_key[0], "floating_base")
+        self.assertEqual(builder.joint_label[0], "test_floating/floating_base")
 
     def test_floating_false_creates_fixed_joint(self):
         """Test that floating=False creates a fixed joint for the root body."""
@@ -648,7 +696,7 @@ class TestImportUrdfBaseJoints(unittest.TestCase):
         self.assertEqual(model.joint_count, 1)
         joint_type = model.joint_type.numpy()[0]
         self.assertEqual(joint_type, newton.JointType.D6)
-        self.assertEqual(builder.joint_key[0], "base_joint")
+        self.assertEqual(builder.joint_label[0], "test_base_joint_dict/base_joint")
 
     def test_base_joint_dict_creates_custom_joint(self):
         """Test that base_joint dict with JointType.REVOLUTE creates a revolute joint with custom axis."""
@@ -681,7 +729,7 @@ class TestImportUrdfBaseJoints(unittest.TestCase):
         self.assertEqual(model.joint_count, 1)
         joint_type = model.joint_type.numpy()[0]
         self.assertEqual(joint_type, newton.JointType.REVOLUTE)
-        self.assertEqual(builder.joint_key[0], "base_joint")
+        self.assertEqual(builder.joint_label[0], "test_base_joint_dict/base_joint")
 
     def test_floating_and_base_joint_mutually_exclusive(self):
         """Test that specifying both base_joint and floating raises an error."""
@@ -833,7 +881,7 @@ class TestImportUrdfBaseJoints(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        body_idx = model.body_key.index("floating_body")
+        body_idx = model.body_label.index("test_base_joint_xform/floating_body")
         body_q = state.body_q.numpy()[body_idx]
 
         # Expected position: import_pos (URDF body is at origin, inertial offset doesn't affect body pos)
@@ -906,7 +954,7 @@ class TestImportUrdfComposition(unittest.TestCase):
         parse_urdf(robot_urdf, builder, floating=False, up_axis="Z")
 
         # Get the end effector body index
-        ee_body_idx = builder.body_key.index("end_effector")
+        ee_body_idx = builder.body_label.index("robot_arm/end_effector")
 
         # Remember the body count before adding gripper
         robot_body_count = builder.body_count
@@ -1002,7 +1050,7 @@ class TestImportUrdfComposition(unittest.TestCase):
         builder = newton.ModelBuilder()
         parse_urdf(robot_urdf, builder, floating=False)
 
-        ee_body_idx = builder.body_key.index("end_effector")
+        ee_body_idx = builder.body_label.index("robot/end_effector")
         initial_joint_count = builder.joint_count
 
         parse_urdf(gripper_urdf, builder, parent_body=ee_body_idx)
@@ -1048,7 +1096,7 @@ class TestImportUrdfComposition(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
         parse_urdf(robot_urdf, builder, floating=False)
-        robot1_link_idx = builder.body_key.index("link1")
+        robot1_link_idx = builder.body_label.index("robot/link1")
 
         # Add more robots to make robot1_link_idx not part of the most recent articulation
         parse_urdf(robot_urdf, builder, floating=False)
@@ -1091,14 +1139,14 @@ class TestImportUrdfComposition(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
         parse_urdf(robot_urdf, builder, floating=False)
-        link_idx = builder.body_key.index("link1")
+        link_idx = builder.body_label.index("robot/link1")
 
         # Explicitly using floating=False with parent_body should succeed
         parse_urdf(gripper_urdf, builder, parent_body=link_idx, floating=False)
         model = builder.finalize()
 
         # Verify it worked - gripper should be attached
-        self.assertIn("gripper_base", builder.body_key)
+        self.assertIn("gripper/gripper_base", builder.body_label)
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
 
     def test_floating_true_with_parent_body_raises_error(self):
@@ -1123,7 +1171,7 @@ class TestImportUrdfComposition(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
         parse_urdf(robot_urdf, builder, floating=False)
-        base_idx = builder.body_key.index("base_link")
+        base_idx = builder.body_label.index("robot/base_link")
 
         # floating=True with parent_body should raise ValueError
         with self.assertRaises(ValueError) as cm:
@@ -1208,11 +1256,11 @@ class TestImportUrdfComposition(unittest.TestCase):
 
         # Level 1: Add arm
         parse_urdf(arm_urdf, builder, floating=False)
-        ee_idx = builder.body_key.index("end_effector")
+        ee_idx = builder.body_label.index("arm/end_effector")
 
         # Level 2: Attach gripper to end effector
         parse_urdf(gripper_urdf, builder, parent_body=ee_idx, floating=False)
-        finger_idx = builder.body_key.index("gripper_finger")
+        finger_idx = builder.body_label.index("gripper/gripper_finger")
 
         # Level 3: Attach sensor to gripper finger
         parse_urdf(sensor_urdf, builder, parent_body=finger_idx, floating=False)
@@ -1256,7 +1304,7 @@ class TestImportUrdfComposition(unittest.TestCase):
             robot_urdf, builder, xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()), floating=False, up_axis="Z"
         )
 
-        ee_body_idx = builder.body_key.index("end_effector")
+        ee_body_idx = builder.body_label.index("robot/end_effector")
 
         # xform is in world coordinates, offset by +0.1 in Z (vertical up)
         parse_urdf(
@@ -1267,7 +1315,7 @@ class TestImportUrdfComposition(unittest.TestCase):
             up_axis="Z",
         )
 
-        gripper_body_idx = builder.body_key.index("gripper_base")
+        gripper_body_idx = builder.body_label.index("gripper/gripper_base")
 
         # Finalize and compute forward kinematics to get world-space positions
         model = builder.finalize()
@@ -1522,8 +1570,8 @@ class TestMimicConstraints(unittest.TestCase):
         enabled = model.constraint_mimic_enabled.numpy()[0]
 
         # Find joint indices by name
-        leader_idx = model.joint_key.index("leader_joint")
-        follower_idx = model.joint_key.index("follower_joint")
+        leader_idx = model.joint_label.index("mimic_test/leader_joint")
+        follower_idx = model.joint_label.index("mimic_test/follower_joint")
 
         self.assertEqual(joint0, follower_idx)  # follower joint (joint0)
         self.assertEqual(joint1, leader_idx)  # leader joint (joint1)
@@ -1565,11 +1613,11 @@ class TestMimicConstraints(unittest.TestCase):
         """Regression test: skipped joints must not be included in name->index mapping."""
 
         class _SkippingLinkBuilder(newton.ModelBuilder):
-            def add_link(self, *args, key=None, **kwargs):
+            def add_link(self, *args, label=None, **kwargs):
                 # Simulate a link filtered out by importer-side selection logic.
-                if key == "skipped_link":
+                if label is not None and label.endswith("/skipped_link"):
                     return -1
-                return super().add_link(*args, key=key, **kwargs)
+                return super().add_link(*args, label=label, **kwargs)
 
         urdf = """
         <robot name="mimic_skipped_child">
