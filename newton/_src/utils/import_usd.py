@@ -1642,6 +1642,45 @@ def parse_usd(
         warn_str += "to avoid raising a ValueError. Note that not all solvers will support such a configuration."
         warnings.warn(warn_str, stacklevel=2)
 
+    # Mimic constraints are structural (add_constraint_mimic creates a constraint entity linking two
+    # joints), not per-joint custom data, so they are handled here rather than via the custom attribute framework.
+    for joint_path, joint_idx in path_joint_map.items():
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):
+            continue
+        mimic_rel = joint_prim.GetRelationship("newton:mimicJoint")
+        if not mimic_rel or not mimic_rel.HasAuthoredTargets():
+            if verbose:
+                print(f"NewtonMimicAPI on {joint_path} has no newton:mimicJoint target; skipping")
+            continue
+        targets = mimic_rel.GetTargets()
+        if not targets:
+            continue
+        leader_path = targets[0]
+        if not leader_path.IsAbsolutePath():
+            leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
+        leader_path_str = str(leader_path)
+        if leader_path_str not in path_joint_map:
+            warnings.warn(
+                f"NewtonMimicAPI on {joint_path}: leader {leader_path_str} not in path_joint_map; skipping mimic constraint.",
+                stacklevel=2,
+            )
+            continue
+        mimic_enabled = usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True)
+        if not mimic_enabled:
+            continue
+        coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0", default=0.0)
+        coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1", default=1.0)
+        leader_idx = path_joint_map[leader_path_str]
+        builder.add_constraint_mimic(
+            joint0=joint_idx,
+            joint1=leader_idx,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=True,
+            key=joint_path,
+        )
+
     def _build_mass_info_from_authored_properties(
         prim: Usd.Prim,
         local_pos,
@@ -1850,9 +1889,12 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
-                contact_margin = R.get_value(prim, prim_type=PrimType.SHAPE, key="contact_margin", verbose=verbose)
-                if contact_margin == float("-inf"):
-                    contact_margin = builder.default_shape_cfg.contact_margin
+                margin_val = R.get_value(prim, prim_type=PrimType.SHAPE, key="margin", verbose=verbose)
+                if margin_val == float("-inf"):
+                    margin_val = builder.default_shape_cfg.thickness
+                gap_val = R.get_value(prim, prim_type=PrimType.SHAPE, key="gap", verbose=verbose)
+                if gap_val == float("-inf"):
+                    gap_val = builder.default_shape_cfg.contact_margin
 
                 shape_params = {
                     "body": body_id,
@@ -1870,10 +1912,8 @@ def parse_usd(
                         ka=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
                         ),
-                        thickness=usd.get_float_with_fallback(
-                            prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.thickness
-                        ),
-                        contact_margin=contact_margin,
+                        thickness=margin_val,
+                        contact_margin=gap_val,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
                         mu_torsional=material.torsionalFriction,

@@ -4432,7 +4432,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_margin_parsing(self):
-        """Test that contact_margin is parsed correctly from USD."""
+        """Test that margin (inflation) and gap are parsed correctly from USD."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -4448,35 +4448,107 @@ def Xform "Articulation" (
         body_prim = body.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
 
-        # Create a collider with newton:contactMargin
+        # Collider1: newton:contactMargin (margin = inflation) -> thickness
         collider1 = UsdGeom.Cube.Define(stage, "/Articulation/Body/Collider1")
         collider1_prim = collider1.GetPrim()
         collider1_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider1_prim)
         collider1_prim.GetAttribute("newton:contactMargin").Set(0.05)
 
-        # Create another collider without contact_margin (should use default)
+        # Collider2: newton:contactGap (gap) -> contact_margin
         collider2 = UsdGeom.Sphere.Define(stage, "/Articulation/Body/Collider2")
         collider2_prim = collider2.GetPrim()
+        collider2_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider2_prim)
+        collider2_prim.GetAttribute("newton:contactGap").Set(0.02)
 
-        # Import the USD
+        # Collider3: no authoring (should use defaults)
+        collider3 = UsdGeom.Capsule.Define(stage, "/Articulation/Body/Collider3")
+        collider3_prim = collider3.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider3_prim)
+
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.contact_margin = 0.01  # set a known default
+        builder.default_shape_cfg.thickness = 1e-5
+        builder.default_shape_cfg.contact_margin = 0.01
         result = builder.add_usd(stage)
         model = builder.finalize()
 
-        # Verify contact_margin was parsed correctly
         shape1_idx = result["path_shape_map"]["/Articulation/Body/Collider1"]
         shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
+        shape3_idx = result["path_shape_map"]["/Articulation/Body/Collider3"]
 
-        # Collider1 should have the authored value
-        margin1 = model.shape_contact_margin.numpy()[shape1_idx]
-        self.assertAlmostEqual(margin1, 0.05, places=4)
+        # Collider1: margin (inflation) -> thickness
+        self.assertAlmostEqual(model.shape_thickness.numpy()[shape1_idx], 0.05, places=4)
+        # Collider2: gap -> contact_margin
+        self.assertAlmostEqual(model.shape_contact_margin.numpy()[shape2_idx], 0.02, places=4)
+        # Collider3: defaults
+        self.assertAlmostEqual(model.shape_thickness.numpy()[shape3_idx], 1e-5, places=6)
+        self.assertAlmostEqual(model.shape_contact_margin.numpy()[shape3_idx], 0.01, places=4)
 
-        # Collider2 should have the default value
-        margin2 = model.shape_contact_margin.numpy()[shape2_idx]
-        self.assertAlmostEqual(margin2, 0.01, places=4)
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_mimic_constraint_parsing(self):
+        """Test that NewtonMimicAPI on a joint is parsed into a mimic constraint."""
+        import newton_usd_schemas  # noqa: F401  # register schemas before stage
+
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/World/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+
+        root = UsdGeom.Xform.Define(stage, "/World/Articulation/Root")
+        UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
+        link1 = UsdGeom.Xform.Define(stage, "/World/Articulation/Link1")
+        UsdPhysics.RigidBodyAPI.Apply(link1.GetPrim())
+        link2 = UsdGeom.Xform.Define(stage, "/World/Articulation/Link2")
+        UsdPhysics.RigidBodyAPI.Apply(link2.GetPrim())
+
+        fixed = UsdPhysics.FixedJoint.Define(stage, "/World/Articulation/RootToWorld")
+        fixed.CreateBody0Rel().SetTargets([root.GetPath()])
+        fixed.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        fixed.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+        joint1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint1")
+        joint1.CreateBody0Rel().SetTargets([root.GetPath()])
+        joint1.CreateBody1Rel().SetTargets([link1.GetPath()])
+        joint1.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint1.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint1.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint1.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint1.CreateAxisAttr().Set("Z")
+
+        joint2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/Articulation/Joint2")
+        joint2.CreateBody0Rel().SetTargets([link1.GetPath()])
+        joint2.CreateBody1Rel().SetTargets([link2.GetPath()])
+        joint2.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint2.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint2.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint2.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint2.CreateAxisAttr().Set("Z")
+        joint2_prim = joint2.GetPrim()
+        joint2_prim.ApplyAPI("NewtonMimicAPI")
+        joint2_prim.GetRelationship("newton:mimicJoint").SetTargets([joint1.GetPrim().GetPath()])
+        joint2_prim.GetAttribute("newton:mimicCoef0").Set(0.5)
+        joint2_prim.GetAttribute("newton:mimicCoef1").Set(2.0)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.constraint_mimic_count, 1)
+        path_joint_map = result["path_joint_map"]
+        joint1_idx = path_joint_map["/World/Articulation/Joint1"]
+        joint2_idx = path_joint_map["/World/Articulation/Joint2"]
+        self.assertEqual(model.constraint_mimic_joint0.numpy()[0], joint2_idx)
+        self.assertEqual(model.constraint_mimic_joint1.numpy()[0], joint1_idx)
+        self.assertAlmostEqual(model.constraint_mimic_coef0.numpy()[0], 0.5, places=5)
+        self.assertAlmostEqual(model.constraint_mimic_coef1.numpy()[0], 2.0, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_enabled_parsing(self):

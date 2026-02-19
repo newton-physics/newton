@@ -66,8 +66,9 @@ class SchemaResolverNewton(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("newton:maxHullVertices", -1),
-            # Collisions
-            "contact_margin": SchemaAttribute("newton:contactMargin", float("-inf")),
+            # Collisions (margin = inflation, gap = contact processing distance; aligned with MuJoCo)
+            "margin": SchemaAttribute("newton:contactMargin", float("-inf")),
+            "gap": SchemaAttribute("newton:contactGap", float("-inf")),
         },
         PrimType.BODY: {},
         PrimType.MATERIAL: {
@@ -147,7 +148,9 @@ class SchemaResolverPhysx(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
-            # Collisions
+            # Collisions (margin = inflation/restOffset, gap = contactOffset)
+            "margin": SchemaAttribute("physxCollision:restOffset", float("-inf")),
+            "gap": SchemaAttribute("physxCollision:contactOffset", float("-inf")),
             "contact_margin": SchemaAttribute("physxCollision:contactOffset", float("-inf")),
         },
         PrimType.MATERIAL: {
@@ -254,6 +257,9 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
+            # Collisions (margin = inflation, gap = gap; MuJoCo uses same names)
+            "margin": SchemaAttribute("mjc:margin", float("-inf")),
+            "gap": SchemaAttribute("mjc:gap", float("-inf")),
         },
         PrimType.MATERIAL: {
             # Materials

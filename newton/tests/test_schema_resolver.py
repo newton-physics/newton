@@ -1306,30 +1306,32 @@ class TestSchemaResolver(unittest.TestCase):
         # Create resolver
         resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
 
-        # there is no authored contact_margin in the asset, so it should be the physx default (-inf)
+        # there is no authored value in the asset, so margin (Newton) and contact_margin (PhysX) should be -inf
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertEqual(margin, float("-inf"))
         contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
         self.assertEqual(contact_margin, float("-inf"))
 
-        # an explicit newton value should be used
+        # an explicit newton:contactMargin should be read via "margin" (inflation)
         collider.GetAttribute("newton:contactMargin").Set(0.2)
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertAlmostEqual(contact_margin, 0.2)
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.2)
 
-        # an explicit physx value should override the newton value
+        # contact_margin key is for PhysX; an explicit physx value
         collider.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.3)
         contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
         self.assertAlmostEqual(contact_margin, 0.3)
 
-        # reversed resolver priority should use the newton value
+        # reversed resolver priority: Newton first, so "margin" still from Newton
         resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertAlmostEqual(contact_margin, 0.2)
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.2)
 
-        # mujoco mjc:margin is not equivalent to newton:contactMargin, so it is ignored
+        # With Mjc first, mjc:margin (geom margin = inflation) is used for "margin"
         resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
         collider.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.4)
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertAlmostEqual(contact_margin, 0.2)
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.4)
 
         # mjc:margin is available instead via custom solver attributes
         builder = ModelBuilder()
