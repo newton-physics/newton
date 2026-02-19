@@ -2796,8 +2796,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     discard_visual = False
     parse_visuals = True
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "body_tree",  # tuple comparison; content equivalent but objects differ
-        "qLD_updates",
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
         "dof_invweight0",
         "actuator_acc0",  # derived from mass matrix; small residual diff (~1.5e-4)
