@@ -4888,7 +4888,6 @@ class SolverMuJoCo(SolverBase):
                 self.model.body_com,
                 self.model.body_mass,
                 gravcomp,
-                self.model.up_axis,
             ],
             outputs=[
                 self.mjw_model.body_ipos,
