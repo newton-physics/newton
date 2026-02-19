@@ -23,6 +23,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.utils.import_mjcf import parse_mjcf
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -371,6 +372,215 @@ def test_qfrc_actuator(
     test.assertIsNone(state_not_requested.qfrc_actuator, "qfrc_actuator should be None when not requested")
 
 
+def test_free_joint_qfrc_actuator_frame(
+    test: TestJointController,
+    device,
+    solver_fn,
+):
+    """Test free joint qfrc_actuator frame conversion with actuators.
+
+    A free-joint body is rotated 90deg around X (body-z -> world-(-y)).
+    Two motor actuators are attached:
+    - "thrust" with gear=[0,0,1,0,0,0]: applies force along MuJoCo DOF[2] (world-z linear).
+    - "yaw"   with gear=[0,0,0,0,0,1]: applies torque on MuJoCo DOF[5] (body-z angular).
+
+    After conversion to Newton world-frame:
+    - thrust ctrl=10 -> qfrc_actuator linear z = 10 (linear DOFs are already world-frame).
+    - yaw ctrl=10    -> torque around body-z = world-(-y), so qfrc_actuator angular y < 0.
+    """
+    # Build via MJCF to get actuators on the free joint
+    mjcf = """
+    <mujoco>
+      <option gravity="0 0 0"/>
+      <worldbody>
+        <body name="drone" pos="0 0 1" quat="0.7071 0.7071 0 0">
+          <freejoint name="root"/>
+          <geom type="box" size="0.1 0.1 0.05" mass="1"/>
+          <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor name="thrust" joint="root" gear="0 0 1 0 0 0"/>
+        <motor name="yaw"   joint="root" gear="0 0 0 0 0 1"/>
+      </actuator>
+    </mujoco>
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=0.0)
+    newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+    parse_mjcf(builder, mjcf, ctrl_direct=True, ignore_inertial_definitions=False)
+    builder.request_state_attributes("qfrc_actuator")
+
+    model = builder.finalize(device=device)
+    model.ground = False
+
+    # Use the MuJoCo solver with ctrl_direct (actuators controlled via control.mujoco.ctrl)
+    solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+
+    state_0 = model.state()
+    state_1 = model.state()
+
+    control = model.control()
+    # Set ctrl: [thrust=10, yaw=10]
+    ctrl_vals = np.zeros(2, dtype=np.float32)
+    ctrl_vals[0] = 10.0  # thrust along MuJoCo z-linear DOF
+    ctrl_vals[1] = 10.0  # yaw torque around MuJoCo body-z angular DOF
+    control.mujoco.ctrl = wp.array(ctrl_vals, dtype=wp.float32, device=device)
+
+    dt = 0.01
+    solver.step(state_0, state_1, control, None, dt=dt)
+
+    qfrc = state_1.qfrc_actuator.numpy()
+
+    # --- Thrust check: linear force along world-z ---
+    # Linear DOFs (0,1,2) = (fx, fy, fz) in world frame
+    # Thrust gear=[0,0,1,...] -> force in world-z (same in MuJoCo and Newton)
+    test.assertAlmostEqual(float(qfrc[0]), 0.0, delta=0.5, msg=f"thrust fx should be ~0, got {qfrc[0]:.2f}")
+    test.assertAlmostEqual(float(qfrc[1]), 0.0, delta=0.5, msg=f"thrust fy should be ~0, got {qfrc[1]:.2f}")
+    test.assertAlmostEqual(float(qfrc[2]), 10.0, delta=0.5, msg=f"thrust fz should be ~10, got {qfrc[2]:.2f}")
+
+    # --- Yaw check: torque from body-z rotated to world frame ---
+    # Body is rotated 90deg around X, so body-z -> world-(-y)
+    # MuJoCo: torque around body-z = 10
+    # Newton world-frame: torque should be around world-(-y), i.e. qfrc[4] < 0
+    angular_qfrc = qfrc[3:6]
+    test.assertGreater(
+        abs(angular_qfrc[1]),
+        abs(angular_qfrc[0]) + abs(angular_qfrc[2]) + 1.0,
+        msg=f"yaw torque should be primarily around world-y, got {angular_qfrc}",
+    )
+    test.assertLess(
+        angular_qfrc[1],
+        0.0,
+        msg=f"yaw torque should be negative-y (body-z -> world-(-y)), got {angular_qfrc}",
+    )
+    test.assertAlmostEqual(
+        float(angular_qfrc[1]), -10.0, delta=1.0, msg=f"yaw torque magnitude should be ~10, got {angular_qfrc[1]:.2f}"
+    )
+
+
+def test_ball_joint_qfrc_actuator_frame(
+    test: TestJointController,
+    device,
+    solver_fn,
+):
+    """Test that ball joint qfrc_actuator is correctly rotated from MuJoCo body-frame to Newton world-frame.
+
+    Two identical ball joints with velocity damping (kd only):
+    - Case A: parent at identity orientation. Angular velocity around world-z.
+        -> qfrc_actuator should oppose the velocity: primarily around world-z.
+    - Case B: parent rotated 90deg around X (body-z -> world-(-y)). Angular velocity around world-(-y).
+        -> qfrc_actuator should oppose the velocity: primarily around world-y.
+    Both should produce the same magnitude of actuator torque.
+    """
+    kd = 100.0
+
+    def build_ball_joint_model(parent_rot):
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=0.0)
+
+        inertia_val = 0.1
+        inertia_mat = wp.mat33((inertia_val, 0.0, 0.0), (0.0, inertia_val, 0.0), (0.0, 0.0, inertia_val))
+
+        parent_body = builder.add_link(armature=0.0, inertia=inertia_mat, mass=1.0)
+        builder.add_shape_box(
+            body=parent_body, hx=0.05, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=0.0)
+        )
+        j_fix = builder.add_joint_fixed(parent=-1, child=parent_body)
+
+        child_body = builder.add_link(armature=0.0, inertia=inertia_mat, mass=1.0)
+        builder.add_shape_box(
+            body=child_body, hx=0.05, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=0.0)
+        )
+
+        # Ball joint with velocity-only damping (kp=0, kd=kd)
+        j_ball = builder.add_joint_ball(
+            parent=parent_body,
+            child=child_body,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), parent_rot),
+            child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+            actuator_mode=newton.ActuatorMode.POSITION_VELOCITY,
+        )
+        builder.add_articulation([j_fix, j_ball])
+        builder.request_state_attributes("qfrc_actuator")
+        return builder
+
+    rot_identity = wp.quat_identity()
+    rot_90x = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi / 2.0)
+
+    # --- Case A: identity orientation, omega around world-z ---
+    builder_a = build_ball_joint_model(rot_identity)
+    model_a = builder_a.finalize(device=device)
+    model_a.ground = False
+    # Set kp=0, kd=kd for velocity-only damping
+    model_a.joint_target_ke.zero_()
+    model_a.joint_target_kd.fill_(kd)
+    solver_a = solver_fn(model_a)
+
+    state_a0 = model_a.state()
+    state_a1 = model_a.state()
+    ball_dof_start_a = model_a.joint_qd_start.numpy()[1]
+    joint_qd_a = state_a0.joint_qd.numpy()
+    joint_qd_a[ball_dof_start_a + 2] = 5.0  # omega_z = 5 (world frame)
+    state_a0.joint_qd.assign(joint_qd_a)
+
+    control_a = model_a.control()
+    control_a.joint_target_vel = wp.zeros_like(model_a.joint_target_vel)
+    solver_a.step(state_a0, state_a1, control_a, None, dt=0.01)
+
+    qfrc_a = state_a1.qfrc_actuator.numpy()
+    qfrc_a_ball = qfrc_a[ball_dof_start_a : ball_dof_start_a + 3]
+
+    # qfrc_actuator should oppose the velocity: primarily negative around world-z
+    test.assertGreater(
+        abs(qfrc_a_ball[2]),
+        abs(qfrc_a_ball[0]) + abs(qfrc_a_ball[1]) + 1.0,
+        msg=f"Case A (identity): qfrc should be primarily around z, got {qfrc_a_ball}",
+    )
+    test.assertLess(qfrc_a_ball[2], 0.0, f"Case A: qfrc_z should be negative (opposing +z velocity), got {qfrc_a_ball}")
+
+    # --- Case B: 90deg X rotation, omega around world-(-y) ---
+    # body-z -> world-(-y), so MuJoCo body-frame z-velocity -> Newton world (-y)
+    builder_b = build_ball_joint_model(rot_90x)
+    model_b = builder_b.finalize(device=device)
+    model_b.ground = False
+    model_b.joint_target_ke.zero_()
+    model_b.joint_target_kd.fill_(kd)
+    solver_b = solver_fn(model_b)
+
+    state_b0 = model_b.state()
+    state_b1 = model_b.state()
+    ball_dof_start_b = model_b.joint_qd_start.numpy()[1]
+    joint_qd_b = state_b0.joint_qd.numpy()
+    joint_qd_b[ball_dof_start_b + 1] = -5.0  # omega_y = -5 (world frame), same as body-z = +5
+    state_b0.joint_qd.assign(joint_qd_b)
+
+    control_b = model_b.control()
+    control_b.joint_target_vel = wp.zeros_like(model_b.joint_target_vel)
+    solver_b.step(state_b0, state_b1, control_b, None, dt=0.01)
+
+    qfrc_b = state_b1.qfrc_actuator.numpy()
+    qfrc_b_ball = qfrc_b[ball_dof_start_b : ball_dof_start_b + 3]
+
+    # qfrc_actuator should oppose the velocity: primarily positive around world-y
+    test.assertGreater(
+        abs(qfrc_b_ball[1]),
+        abs(qfrc_b_ball[0]) + abs(qfrc_b_ball[2]) + 1.0,
+        msg=f"Case B (rotated): qfrc should be primarily around y, got {qfrc_b_ball}",
+    )
+    test.assertGreater(
+        qfrc_b_ball[1], 0.0, f"Case B: qfrc_y should be positive (opposing -y velocity), got {qfrc_b_ball}"
+    )
+
+    # Magnitudes should be similar (same physical setup, just rotated)
+    mag_a = np.linalg.norm(qfrc_a_ball)
+    mag_b = np.linalg.norm(qfrc_b_ball)
+    test.assertAlmostEqual(
+        mag_a,
+        mag_b,
+        delta=mag_a * 0.1,
+        msg=f"Magnitudes should match: case A={mag_a:.2f}, case B={mag_b:.2f}",
+    )
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
@@ -396,6 +606,20 @@ for device in devices:
                 TestJointController,
                 f"test_qfrc_actuator_{solver_name}",
                 test_qfrc_actuator,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
+            add_function_test(
+                TestJointController,
+                f"test_free_joint_qfrc_actuator_frame_{solver_name}",
+                test_free_joint_qfrc_actuator_frame,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
+            add_function_test(
+                TestJointController,
+                f"test_ball_joint_qfrc_actuator_frame_{solver_name}",
+                test_ball_joint_qfrc_actuator_frame,
                 devices=[device],
                 solver_fn=solver_fn,
             )
