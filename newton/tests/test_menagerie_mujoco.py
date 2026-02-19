@@ -2791,8 +2791,13 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "body_geomadr",  # geom ordering differs (compare_geom_fields_unordered handles content)
         "body_geomnum",
         "geom_",  # geom ordering differs; content checked by compare_geom_fields_unordered
-        "mesh_",  # Newton re-triangulates meshes (different vertices/faces/normals)
-        "nmesh",  # mesh element counts differ due to re-triangulation
+        # Mesh arrays: mesh ordering differs (Newton orders by geom, native by MJCF asset order)
+        # and trimesh deduplicates vertices on load. Total face count (nmeshface) matches,
+        # confirming identical triangle topology — only ordering and vertex merging differ.
+        "mesh_",
+        "nmeshvert",  # vertex/normal/polygon counts differ from trimesh vertex dedup
+        "nmeshnormal",
+        "nmeshpoly",
         "pair_geom",  # geom indices differ due to ordering
         "nxn_",  # broadphase pairs differ due to geom ordering
         "body_tree",  # tuple comparison; content equivalent but objects differ
