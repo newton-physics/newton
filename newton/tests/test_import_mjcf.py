@@ -29,7 +29,7 @@ from newton._src.sim.builder import ShapeFlags
 from newton.solvers import SolverMuJoCo
 
 
-class TestImportMjcf(unittest.TestCase):
+class TestImportMjcfBasic(unittest.TestCase):
     def test_humanoid_mjcf(self):
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 123.0
@@ -610,6 +610,8 @@ class TestImportMjcf(unittest.TestCase):
         # note we need to swap quaternion order wxyz -> xyzw
         np.testing.assert_allclose(joint_x_p.q, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+
+class TestImportMjcfGeometry(unittest.TestCase):
     def test_cylinder_shapes_preserved(self):
         """Test that cylinder geometries are properly imported as cylinders, not capsules."""
         # Create MJCF content with cylinder geometry
@@ -1829,6 +1831,8 @@ class TestImportMjcf(unittest.TestCase):
             msg=f"Expected tendon_length0: {expected_tendon_length0}, Measured: {measured_tendon_length0}",
         )
 
+
+class TestImportMjcfSolverParams(unittest.TestCase):
     def test_solimplimit_parsing(self):
         """Test that solimplimit attribute is parsed correctly from MJCF."""
         mjcf = """<?xml version="1.0" ?>
@@ -2218,6 +2222,39 @@ class TestImportMjcf(unittest.TestCase):
         self.assertAlmostEqual(builder.shape_material_mu[4], 0.6, places=5)
         self.assertAlmostEqual(builder.shape_material_mu_torsional[4], 0.15, places=5)
         self.assertAlmostEqual(builder.shape_material_mu_rolling[4], 0.0001, places=5)
+
+    def test_mjcf_geom_margin_parsing(self):
+        """Test MJCF geom margin is parsed to shape thickness.
+
+        Verifies that MJCF geom margin values are mapped to shape thickness and
+        that geoms without an explicit margin use the default thickness.
+        Also checks that the model scale is applied to the margin value.
+        """
+        mjcf_content = """
+        <mujoco>
+            <worldbody>
+                <body name="test_body">
+                    <geom name="geom1" type="box" size="0.1 0.1 0.1" margin="0.003"/>
+                    <geom name="geom2" type="sphere" size="0.1" margin="0.01"/>
+                    <geom name="geom3" type="capsule" size="0.1 0.2"/>
+                </body>
+            </worldbody>
+        </mujoco>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, up_axis="Z")
+
+        self.assertEqual(builder.shape_count, 3)
+        self.assertAlmostEqual(builder.shape_thickness[0], 0.003, places=6)
+        self.assertAlmostEqual(builder.shape_thickness[1], 0.01, places=6)
+        # geom3 has no margin, should use ShapeConfig default (0.0)
+        self.assertAlmostEqual(builder.shape_thickness[2], 0.0, places=8)
+
+        # Verify scale is applied to margin
+        builder_scaled = newton.ModelBuilder()
+        builder_scaled.add_mjcf(mjcf_content, up_axis="Z", scale=2.0)
+        self.assertAlmostEqual(builder_scaled.shape_thickness[0], 0.006, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_thickness[1], 0.02, places=6)
 
     def test_mjcf_geom_solref_parsing(self):
         """Test MJCF geom solref parsing for contact stiffness/damping.
@@ -2902,6 +2939,8 @@ class TestImportMjcf(unittest.TestCase):
         else:
             self.fail("Model should have mujoco.condim attribute")
 
+
+class TestImportMjcfActuatorsFrames(unittest.TestCase):
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -3741,6 +3780,8 @@ class TestImportMjcf(unittest.TestCase):
         # In xyzw format: [0, 0, sin(45°), cos(45°)] = [0, 0, 0.7071, 0.7071]
         np.testing.assert_allclose(joint_X_p[3:7], [0, 0, 0.7071068, 0.7071068], atol=1e-5)
 
+
+class TestImportMjcfComposition(unittest.TestCase):
     def test_floating_true_creates_free_joint(self):
         """Test that floating=True creates a free joint for the root body."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
@@ -6210,15 +6251,14 @@ class TestJointFrictionloss(unittest.TestCase):
 
 
 class TestZeroMassBodies(unittest.TestCase):
-    """Verify that ``ensure_nonstatic_links`` correctly handles zero-mass bodies.
+    """Verify that zero-mass bodies are preserved as-is during import.
 
     Models may contain zero-mass bodies (sensor frames, reference links).
-    These tests ensure the default (False) preserves zero mass and that
-    opting in (True) assigns a small surrogate mass.
+    These should keep their zero mass after import.
     """
 
-    def test_ensure_nonstatic_links_default_false(self):
-        """Verify zero-mass bodies keep zero mass with the default setting."""
+    def test_zero_mass_body_preserved(self):
+        """Verify zero-mass bodies keep zero mass after import."""
         mjcf = """
         <mujoco>
             <worldbody>
@@ -6235,22 +6275,3 @@ class TestZeroMassBodies(unittest.TestCase):
 
         empty_idx = next(i for i in range(builder.body_count) if builder.body_key[i] == "empty_body")
         self.assertEqual(builder.body_mass[empty_idx], 0.0)
-
-    def test_ensure_nonstatic_links_opt_in(self):
-        """Verify zero-mass bodies receive surrogate mass when opted in."""
-        mjcf = """
-        <mujoco>
-            <worldbody>
-                <body name="robot" pos="0 0 1">
-                    <freejoint name="root"/>
-                    <inertial pos="0 0 0" mass="1.0" diaginertia="0.01 0.01 0.01"/>
-                </body>
-                <body name="empty_body" pos="0.5 0 0"/>
-            </worldbody>
-        </mujoco>
-        """
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, ensure_nonstatic_links=True)
-
-        empty_idx = next(i for i in range(builder.body_count) if builder.body_key[i] == "empty_body")
-        self.assertGreater(builder.body_mass[empty_idx], 0.0)

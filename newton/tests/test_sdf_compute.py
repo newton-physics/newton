@@ -263,11 +263,8 @@ class TestComputeSDF(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
         wp.init()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.half_extents = (0.5, 0.5, 0.5)
-        self.mesh = create_box_mesh(self.half_extents)
+        cls.half_extents = (0.5, 0.5, 0.5)
+        cls.mesh = create_box_mesh(cls.half_extents)
 
     def test_sdf_returns_valid_data(self):
         """Test that compute_sdf_from_shape returns valid data."""
@@ -703,11 +700,8 @@ class TestComputeSDFGridSampling(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
         wp.init()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.half_extents = (0.5, 0.5, 0.5)
-        self.mesh = create_box_mesh(self.half_extents)
+        cls.half_extents = (0.5, 0.5, 0.5)
+        cls.mesh = create_box_mesh(cls.half_extents)
 
     def test_grid_sampling_sparse_sdf_near_surface(self):
         """Sample sparse SDF on a grid near the surface and verify values are valid.
@@ -843,14 +837,11 @@ class TestSDFExtrapolation(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
         wp.init()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.half_extents = (0.5, 0.5, 0.5)
-        self.mesh = create_box_mesh(self.half_extents)
+        cls.half_extents = (0.5, 0.5, 0.5)
+        cls.mesh = create_box_mesh(cls.half_extents)
         # Create SDF with known parameters
-        self.sdf_data, self.sparse_volume, self.coarse_volume, _ = compute_sdf_from_shape(
-            shape_geo=self.mesh,
+        cls.sdf_data, cls.sparse_volume, cls.coarse_volume, _ = compute_sdf_from_shape(
+            shape_geo=cls.mesh,
             shape_type=GeoType.MESH,
             shape_thickness=0.0,
             narrow_band_distance=(-0.1, 0.1),
@@ -1085,11 +1076,8 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
     def setUpClass(cls):
         """Set up test fixtures once for all tests."""
         wp.init()
-
-    def setUp(self):
-        """Set up test fixtures."""
-        self.half_extents = (0.5, 0.5, 0.5)
-        self.mesh = create_box_mesh(self.half_extents)
+        cls.half_extents = (0.5, 0.5, 0.5)
+        cls.mesh = create_box_mesh(cls.half_extents)
 
     def test_mesh_cfg_sdf_conflict_raises(self):
         """Mesh shapes should reject cfg.sdf_* and require mesh.build_sdf()."""
@@ -1132,11 +1120,12 @@ class TestMeshSDFCollisionFlag(unittest.TestCase):
         """Mesh SDF built via mesh.build_sdf() should be used by builder."""
         builder = newton.ModelBuilder()
         cfg = newton.ModelBuilder.ShapeConfig()
-        self.mesh.build_sdf(max_resolution=64)
+        mesh = create_box_mesh(self.half_extents)
+        mesh.build_sdf(max_resolution=64)
 
         # Add a mesh shape
         builder.add_body()
-        builder.add_shape_mesh(body=-1, mesh=self.mesh, cfg=cfg)
+        builder.add_shape_mesh(body=-1, mesh=mesh, cfg=cfg)
 
         # Should work on GPU
         model = builder.finalize(device="cuda:0")
