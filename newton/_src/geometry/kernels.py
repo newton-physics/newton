@@ -1122,13 +1122,6 @@ def create_soft_contacts(
             n = wp.normalize(delta) * sign
             v = shape_v
 
-    if geo_type == GeoType.SDF:
-        volume = shape_source_ptr[shape_index]
-        xpred_local = wp.volume_world_to_index(volume, wp.cw_div(x_local, geo_scale))
-        nn = wp.vec3(0.0, 0.0, 0.0)
-        d = wp.volume_sample_grad_f(volume, xpred_local, wp.Volume.LINEAR, nn)
-        n = wp.normalize(nn)
-
     if geo_type == GeoType.PLANE:
         d = sdf_plane(x_local, geo_scale[0] * 0.5, geo_scale[1] * 0.5)
         n = wp.vec3(0.0, 0.0, 1.0)
