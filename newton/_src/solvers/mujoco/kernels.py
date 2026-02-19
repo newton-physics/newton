@@ -1838,6 +1838,41 @@ def convert_rigid_forces_from_mj_kernel(
 
 
 @wp.kernel
+def convert_qfrc_actuator_from_mj_kernel(
+    mjw_qfrc_actuator: wp.array2d(dtype=wp.float32),
+    joints_per_world: int,
+    joint_type: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    # output
+    qfrc_actuator: wp.array(dtype=wp.float32),
+):
+    """Copy MuJoCo qfrc_actuator [nworld, nv] into Newton flat DOF array.
+
+    Uses the same joint-based DOF mapping as the coordinate conversion
+    kernels.  Free and ball joints are copied directly (actuator forces
+    on those DOFs are typically zero).
+    """
+    worldid, jntid = wp.tid()
+
+    qd_i = joint_qd_start[jntid]
+    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+
+    type = joint_type[jntid]
+
+    if type == JointType.FREE:
+        for i in range(6):
+            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
+    elif type == JointType.BALL:
+        for i in range(3):
+            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
+    else:
+        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        for i in range(axis_count):
+            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
+
+
+@wp.kernel
 def update_pair_properties_kernel(
     pairs_per_world: int,
     pair_solref_in: wp.array(dtype=wp.vec2),

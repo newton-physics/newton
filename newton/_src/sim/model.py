@@ -732,6 +732,9 @@ class Model:
         if "body_parent_f" in requested:
             s.body_parent_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
+        if "qfrc_actuator" in requested:
+            s.qfrc_actuator = wp.zeros_like(self.joint_qd, requires_grad=requires_grad)
+
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 

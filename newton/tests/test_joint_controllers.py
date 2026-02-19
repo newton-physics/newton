@@ -277,6 +277,100 @@ def test_effort_limit_clamping(
     )
 
 
+def test_qfrc_actuator(
+    test: TestJointController,
+    device,
+    solver_fn,
+):
+    """Test that qfrc_actuator extended state attribute is populated correctly by MuJoCo solver."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+
+    box_mass = 1.0
+    inertia_value = 0.1
+    box_inertia = wp.mat33((inertia_value, 0.0, 0.0), (0.0, inertia_value, 0.0), (0.0, 0.0, inertia_value))
+    b = builder.add_link(armature=0.0, inertia=box_inertia, mass=box_mass)
+    builder.add_shape_box(body=b, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+
+    kp = 100.0
+    kd = 10.0
+    effort_limit = 5.0
+
+    j = builder.add_joint_revolute(
+        parent=-1,
+        child=b,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        target_pos=0.0,
+        target_vel=0.0,
+        armature=0.0,
+        limit_ke=0.0,
+        limit_kd=0.0,
+        target_ke=kp,
+        target_kd=kd,
+        effort_limit=effort_limit,
+        actuator_mode=newton.ActuatorMode.POSITION_VELOCITY,
+    )
+    builder.add_articulation([j])
+
+    # Request qfrc_actuator extended attribute
+    builder.request_state_attributes("qfrc_actuator")
+
+    model = builder.finalize(device=device)
+    model.ground = False
+    solver = solver_fn(model)
+
+    state_0 = model.state()
+    state_1 = model.state()
+
+    # Verify that qfrc_actuator is allocated
+    test.assertIsNotNone(state_1.qfrc_actuator, "qfrc_actuator should be allocated when requested")
+    test.assertEqual(len(state_1.qfrc_actuator), model.joint_dof_count)
+
+    initial_q = 1.0
+    initial_qd = 0.0
+    state_0.joint_q.assign([initial_q])
+    state_0.joint_qd.assign([initial_qd])
+
+    control = model.control()
+    control.joint_target_pos = wp.array([0.0], dtype=wp.float32, device=device)
+    control.joint_target_vel = wp.array([0.0], dtype=wp.float32, device=device)
+
+    dt = 0.01
+
+    # PD force: F = kp * (target - q) + kd * (target_vel - qd)
+    F_unclamped = -kp * initial_q - kd * initial_qd
+    F_expected = np.clip(F_unclamped, -effort_limit, effort_limit)
+
+    solver.step(state_0, state_1, control, None, dt=dt)
+
+    qfrc = state_1.qfrc_actuator.numpy()
+    test.assertEqual(len(qfrc), 1, "Should have one DOF")
+    test.assertAlmostEqual(
+        float(qfrc[0]),
+        F_expected,
+        delta=0.5,
+        msg=f"qfrc_actuator: expected {F_expected:.4f}, got {float(qfrc[0]):.4f}",
+    )
+
+    # Verify that qfrc_actuator is NOT allocated when not requested
+    builder2 = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
+    b2 = builder2.add_link(armature=0.0, inertia=box_inertia, mass=box_mass)
+    builder2.add_shape_box(body=b2, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+    j2 = builder2.add_joint_revolute(
+        parent=-1,
+        child=b2,
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+        axis=wp.vec3(0.0, 0.0, 1.0),
+        actuator_mode=newton.ActuatorMode.POSITION_VELOCITY,
+    )
+    builder2.add_articulation([j2])
+    model2 = builder2.finalize(device=device)
+    state_not_requested = model2.state()
+    test.assertIsNone(state_not_requested.qfrc_actuator, "qfrc_actuator should be None when not requested")
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
@@ -295,6 +389,13 @@ for device in devices:
                 TestJointController,
                 f"test_effort_limit_clamping_{solver_name}",
                 test_effort_limit_clamping,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
+            add_function_test(
+                TestJointController,
+                f"test_qfrc_actuator_{solver_name}",
+                test_qfrc_actuator,
                 devices=[device],
                 solver_fn=solver_fn,
             )
