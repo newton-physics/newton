@@ -840,14 +840,6 @@
 <div class="nboutput docutils container">
 <div class="prompt empty docutils container">
 </div>
-<div class="output_area stderr docutils container">
-<div class="highlight"><pre>
-Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.
-</pre></div></div>
-</div>
-<div class="nboutput nblast docutils container">
-<div class="prompt empty docutils container">
-</div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
 Warp 1.12.0.dev20260218 initialized:
@@ -857,6 +849,14 @@ Warp 1.12.0.dev20260218 initialized:
      &#34;cpu&#34;      : &#34;x86_64&#34;
    Kernel cache:
      /home/runner/.cache/warp/1.12.0.dev20260218
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+Warp CUDA warning: Could not find or load the NVIDIA CUDA driver. GPU execution will not be available.
 </pre></div></div>
 </div>
 </section>
@@ -968,7 +968,7 @@ Added 4 bodies with collision shapes
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.geometry.inertia c57c45a load on device &#39;cpu&#39; took 2077.49 ms  (compiled)
+Module newton._src.geometry.inertia c57c45a load on device &#39;cpu&#39; took 2468.67 ms  (compiled)
 Added mesh body with 6102 vertices
 </pre></div></div>
 </div>
@@ -1001,7 +1001,7 @@ Added mesh body with 6102 vertices
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module validate_and_correct_inertia_kernel_8fd4dd1e 9a64c1c load on device &#39;cpu&#39; took 1718.33 ms  (compiled)
+Module validate_and_correct_inertia_kernel_8fd4dd1e 9a64c1c load on device &#39;cpu&#39; took 2028.97 ms  (compiled)
 Model finalized for device cpu:
   Bodies: 5
   Shapes: 7
@@ -1215,7 +1215,7 @@ Running on CPU (no CUDA graph)
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.viewer.kernels 54803f7 load on device &#39;cpu&#39; took 2654.49 ms  (compiled)
+Module newton._src.viewer.kernels 54803f7 load on device &#39;cpu&#39; took 3086.88 ms  (compiled)
 </pre></div></div>
 </div>
 </section>
@@ -1258,14 +1258,14 @@ Module newton._src.viewer.kernels 54803f7 load on device &#39;cpu&#39; took 2654
 </div>
 <div class="output_area docutils container">
 <div class="highlight"><pre>
-Module newton._src.sim.collide 6d5013e load on device &#39;cpu&#39; took 2595.94 ms  (compiled)
-Module newton._src.geometry.broad_phase_nxn 4d6c195 load on device &#39;cpu&#39; took 1936.37 ms  (compiled)
-Module newton._src.geometry.narrow_phase 82b6478 load on device &#39;cpu&#39; took 2975.39 ms  (compiled)
-Module newton._src.geometry.narrow_phase 681cd49 load on device &#39;cpu&#39; took 5158.48 ms  (compiled)
-Module newton._src.geometry.narrow_phase 61f0081 load on device &#39;cpu&#39; took 4744.66 ms  (compiled)
-Module newton._src.geometry.narrow_phase 35287a6 load on device &#39;cpu&#39; took 6109.78 ms  (compiled)
-Module newton._src.solvers.xpbd.kernels 1ef2423 load on device &#39;cpu&#39; took 10426.92 ms  (compiled)
-Module newton._src.solvers.solver 85b7f53 load on device &#39;cpu&#39; took 2097.41 ms  (compiled)
+Module newton._src.sim.collide 6d5013e load on device &#39;cpu&#39; took 2936.53 ms  (compiled)
+Module newton._src.geometry.broad_phase_nxn 4d6c195 load on device &#39;cpu&#39; took 2266.92 ms  (compiled)
+Module newton._src.geometry.narrow_phase 82b6478 load on device &#39;cpu&#39; took 3396.70 ms  (compiled)
+Module newton._src.geometry.narrow_phase 681cd49 load on device &#39;cpu&#39; took 5854.96 ms  (compiled)
+Module newton._src.geometry.narrow_phase 61f0081 load on device &#39;cpu&#39; took 5353.95 ms  (compiled)
+Module newton._src.geometry.narrow_phase 35287a6 load on device &#39;cpu&#39; took 6789.84 ms  (compiled)
+Module newton._src.solvers.xpbd.kernels 1ef2423 load on device &#39;cpu&#39; took 11166.32 ms  (compiled)
+Module newton._src.solvers.solver 85b7f53 load on device &#39;cpu&#39; took 2422.65 ms  (compiled)
 
 Simulation complete! Total time: 8.33 seconds
 </pre></div></div>
