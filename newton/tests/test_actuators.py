@@ -100,7 +100,7 @@ class TestActuatorBuilder(unittest.TestCase):
 
         model = builder.finalize()
 
-        self.assertEqual(model.num_worlds, num_worlds)
+        self.assertEqual(model.world_count, num_worlds)
         self.assertEqual(len(model.actuators), 2)
 
         pd_act = next(a for a in model.actuators if type(a) is ActuatorPD)
