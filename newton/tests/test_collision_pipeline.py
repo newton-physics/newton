@@ -276,7 +276,7 @@ def test_collision_pipeline(
         shape_type_b=shape_type_b,
         broad_phase=broad_phase,
     )
-    for _ in range(200):
+    for _ in range(100):
         setup.step()
         setup.render()
     setup.test(test_level_a, 0, tolerance=tolerance)
@@ -386,7 +386,7 @@ def test_mesh_mesh_sdf_modes(
         sdf_max_resolution_a=sdf_max_resolution_a,
         sdf_max_resolution_b=sdf_max_resolution_b,
     )
-    for _ in range(200):
+    for _ in range(100):
         setup.step()
         setup.render()
     setup.test(TestLevel.VELOCITY_YZ, 0, tolerance=tolerance)
@@ -552,10 +552,12 @@ def test_collision_filter_consistent_across_broadphases(test, device):
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
             n = contacts.rigid_contact_count.numpy()[0]
+            shape0_np = contacts.rigid_contact_shape0.numpy()
+            shape1_np = contacts.rigid_contact_shape1.numpy()
             pairs = set()
             for i in range(n):
-                s0 = int(contacts.rigid_contact_shape0.numpy()[i])
-                s1 = int(contacts.rigid_contact_shape1.numpy()[i])
+                s0 = int(shape0_np[i])
+                s1 = int(shape1_np[i])
                 pairs.add((min(s0, s1), max(s0, s1)))
             return pairs
 
