@@ -461,7 +461,6 @@ def convert_mj_coords_to_warp_kernel(
         joint_q[wq_i + 1] = rot[1]
         joint_q[wq_i + 2] = rot[2]
         joint_q[wq_i + 3] = rot[3]
-
         for i in range(3):
             # convert velocity components
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
@@ -553,10 +552,9 @@ def convert_warp_coords_to_mj_kernel(
         qpos[worldid, q_i + 1] = joint_q[wq_i + 0]
         qpos[worldid, q_i + 2] = joint_q[wq_i + 1]
         qpos[worldid, q_i + 3] = joint_q[wq_i + 2]
-
         for i in range(3):
             # convert velocity components
-            joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
+            qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
     else:
         axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
         for i in range(axis_count):

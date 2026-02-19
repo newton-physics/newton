@@ -413,8 +413,7 @@ def test_free_joint_qfrc_actuator_frame(
     model = builder.finalize(device=device)
     model.ground = False
 
-    # Use the MuJoCo solver with ctrl_direct (actuators controlled via control.mujoco.ctrl)
-    solver = newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+    solver = solver_fn(model)
 
     state_0 = model.state()
     state_1 = model.state()
