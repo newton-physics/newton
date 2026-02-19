@@ -22,6 +22,7 @@ from .joints import (
     ActuatorMode,
     EqType,
     JointType,
+    KinematicType,
 )
 from .model import Model
 from .state import State
@@ -35,6 +36,7 @@ __all__ = [
     "Control",
     "EqType",
     "JointType",
+    "KinematicType",
     "Model",
     "ModelBuilder",
     "State",

@@ -22,7 +22,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import ActuatorMode, EqType, JointType
+from ...sim import ActuatorMode, EqType, JointType, KinematicType
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
@@ -2007,3 +2007,112 @@ def update_pair_properties_kernel(
 
     if pair_friction_in:
         pair_friction_out[world, mjc_pair] = pair_friction_in[newton_pair]
+
+
+@wp.kernel
+def apply_kinematic_target_kernel(
+    joint_kinematic_type: wp.array(dtype=wp.int32),
+    joint_type: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    kinematic_target: wp.array(dtype=wp.float32),
+    joint_q: wp.array(dtype=wp.float32),
+    inv_dt: float,
+    joints_per_world: int,
+    # outputs
+    joint_qd: wp.array(dtype=wp.float32),
+):
+    """Apply kinematic targets to joint velocities before MuJoCo step.
+
+    For VELOCITY mode: copies target values directly to joint_qd.
+    For POSITION mode: computes velocity from (target - current) / dt.
+    """
+    worldid, jntid = wp.tid()
+
+    mode = joint_kinematic_type[jntid]
+    if mode == int(KinematicType.NONE):
+        return
+
+    jtype = joint_type[jntid]
+    wq_i = joint_q_start[joints_per_world * worldid + jntid]
+    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+    dof_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+
+    if mode == int(KinematicType.VELOCITY):
+        # Copy target velocities directly to joint_qd
+        for i in range(dof_count):
+            joint_qd[wqd_i + i] = kinematic_target[wq_i + i]
+
+    elif mode == int(KinematicType.POSITION):
+        if jtype == int(JointType.FREE):
+            # Linear velocity: (target_pos - current_pos) * inv_dt
+            for i in range(3):
+                joint_qd[wqd_i + i] = (kinematic_target[wq_i + i] - joint_q[wq_i + i]) * inv_dt
+
+            # Angular velocity from quaternion difference
+            # Newton joint_q quaternion: xyzw
+            cur_qx = joint_q[wq_i + 3]
+            cur_qy = joint_q[wq_i + 4]
+            cur_qz = joint_q[wq_i + 5]
+            cur_qw = joint_q[wq_i + 6]
+            cur_q = wp.quat(cur_qx, cur_qy, cur_qz, cur_qw)
+
+            tgt_qx = kinematic_target[wq_i + 3]
+            tgt_qy = kinematic_target[wq_i + 4]
+            tgt_qz = kinematic_target[wq_i + 5]
+            tgt_qw = kinematic_target[wq_i + 6]
+            tgt_q = wp.quat(tgt_qx, tgt_qy, tgt_qz, tgt_qw)
+
+            # dq = target * inverse(current)
+            dq = tgt_q * wp.quat_inverse(cur_q)
+
+            # Shorter path
+            if dq[3] < 0.0:
+                dq = wp.quat(-dq[0], -dq[1], -dq[2], -dq[3])
+
+            # Extract axis-angle
+            sin_half = wp.sqrt(dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2])
+            if sin_half > 1.0e-10:
+                axis = wp.vec3(dq[0], dq[1], dq[2]) / sin_half
+                angle = 2.0 * wp.atan2(sin_half, dq[3])
+                omega = axis * angle * inv_dt
+            else:
+                omega = wp.vec3(0.0, 0.0, 0.0)
+
+            joint_qd[wqd_i + 3] = omega[0]
+            joint_qd[wqd_i + 4] = omega[1]
+            joint_qd[wqd_i + 5] = omega[2]
+
+        elif jtype == int(JointType.BALL):
+            # Angular velocity from quaternion difference (same as free angular part)
+            cur_q = wp.quat(joint_q[wq_i + 0], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
+            tgt_q = wp.quat(
+                kinematic_target[wq_i + 0],
+                kinematic_target[wq_i + 1],
+                kinematic_target[wq_i + 2],
+                kinematic_target[wq_i + 3],
+            )
+            dq = tgt_q * wp.quat_inverse(cur_q)
+            if dq[3] < 0.0:
+                dq = wp.quat(-dq[0], -dq[1], -dq[2], -dq[3])
+
+            sin_half = wp.sqrt(dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2])
+            if sin_half > 1.0e-10:
+                axis = wp.vec3(dq[0], dq[1], dq[2]) / sin_half
+                angle = 2.0 * wp.atan2(sin_half, dq[3])
+                omega = axis * angle * inv_dt
+            else:
+                omega = wp.vec3(0.0, 0.0, 0.0)
+
+            # Convert from parent frame to body frame for ball joints
+            omega = wp.quat_rotate_inv(cur_q, omega)
+
+            joint_qd[wqd_i + 0] = omega[0]
+            joint_qd[wqd_i + 1] = omega[1]
+            joint_qd[wqd_i + 2] = omega[2]
+
+        else:
+            # Revolute, prismatic, etc: scalar (target - current) / dt
+            for i in range(dof_count):
+                joint_qd[wqd_i + i] = (kinematic_target[wq_i + i] - joint_q[wq_i + i]) * inv_dt

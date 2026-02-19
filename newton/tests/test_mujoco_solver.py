@@ -6113,6 +6113,280 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
                 eq_data[w, 0, 1], new_coef1[w], rtol=1e-5, err_msg=f"coef1 mismatch in world {w}"
             )
 
+    def test_kinematic_type_builder_sets_armature(self):
+        """Test that kinematic joints get high armature on all DOFs."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_free(body, kinematic=newton.KinematicType.VELOCITY)
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        armature = model.joint_armature.numpy()
+        qd_start = model.joint_qd_start.numpy()[joint]
+        # All 6 DOFs should have armature = 1e10
+        for i in range(6):
+            self.assertAlmostEqual(float(armature[qd_start + i]), 1.0e10, places=0)
+
+        # joint_kinematic_type should be VELOCITY
+        mode = model.joint_kinematic_type.numpy()[joint]
+        self.assertEqual(mode, int(newton.KinematicType.VELOCITY))
+
+    def test_kinematic_type_none_no_armature_override(self):
+        """Test that non-kinematic joints keep their original armature."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_free(body)  # default kinematic=NONE
+        builder.add_articulation([joint])
+        model = builder.finalize()
+
+        armature = model.joint_armature.numpy()
+        qd_start = model.joint_qd_start.numpy()[joint]
+        # create_unlimited sets armature=0.0
+        for i in range(6):
+            self.assertAlmostEqual(float(armature[qd_start + i]), 0.0, places=5)
+
+        # joint_kinematic_type is None when no kinematic joints exist
+        self.assertIsNone(model.joint_kinematic_type)
+
+    def test_kinematic_velocity_target_applied(self):
+        """Test that VELOCITY mode kinematic target is applied to joint_qd."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)),
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_free(body, kinematic=newton.KinematicType.VELOCITY)
+        builder.add_articulation([joint])
+        builder.add_ground_plane()
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        # Set angular velocity target: wz = 2.0 rad/s
+        q_start = int(model.joint_q_start.numpy()[joint])
+        target = control.kinematic_target.numpy()
+        target[q_start + 5] = 2.0  # wz
+        control.kinematic_target = wp.array(target, dtype=wp.float32, device=model.device)
+
+        dt = 0.01
+        solver.step(state_0, state_1, control, None, dt)
+
+        # Check that the output state has angular velocity close to 2.0
+        qd = state_1.joint_qd.numpy()
+        qd_start = int(model.joint_qd_start.numpy()[joint])
+        self.assertAlmostEqual(float(qd[qd_start + 5]), 2.0, delta=0.1)
+
+    def test_kinematic_position_target_computes_velocity(self):
+        """Test that POSITION mode computes velocity from target - current."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)),
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = builder.add_joint_free(body, kinematic=newton.KinematicType.POSITION)
+        builder.add_articulation([joint])
+        builder.add_ground_plane()
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        # Set position target: move 0.1 in x direction from initial position
+        q_start = int(model.joint_q_start.numpy()[joint])
+        target = control.kinematic_target.numpy()
+        target[q_start + 0] = 0.1  # target x = 0.1 (initial x = 0.0)
+        control.kinematic_target = wp.array(target, dtype=wp.float32, device=model.device)
+
+        dt = 0.01
+        solver.step(state_0, state_1, control, None, dt)
+
+        # Expected velocity: (0.1 - 0.0) / 0.01 = 10.0 m/s in x
+        # With huge armature the actual velocity should be very close
+        qd = state_1.joint_qd.numpy()
+        qd_start = int(model.joint_qd_start.numpy()[joint])
+        self.assertAlmostEqual(float(qd[qd_start + 0]), 10.0, delta=0.5)
+
+    def test_kinematic_body_stays_in_place(self):
+        """Test that a kinematic body with zero velocity target stays stationary."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 2.0)),
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+        )
+        builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.2)
+        joint = builder.add_joint_free(body, kinematic=newton.KinematicType.VELOCITY)
+        builder.add_articulation([joint])
+        builder.add_ground_plane()
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        # kinematic_target is zero for VELOCITY mode by default
+        # Run 100 substeps — body should resist gravity and stay at z=2.0
+        dt = 0.001
+        for _ in range(100):
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+
+        body_q = state_0.body_q.numpy()
+        z = float(body_q[body][2])
+        self.assertAlmostEqual(z, 2.0, delta=0.01, msg=f"Kinematic body drifted: z={z}")
+
+    def test_kinematic_add_body_convenience(self):
+        """Test that add_body(kinematic=...) creates a kinematic free joint."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 1.0)),
+            mass=1.0,
+            kinematic=newton.KinematicType.POSITION,
+        )
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+
+        # Should have 1 joint with kinematic mode POSITION
+        self.assertEqual(model.joint_count, 1)
+        mode = model.joint_kinematic_type.numpy()[0]
+        self.assertEqual(mode, int(newton.KinematicType.POSITION))
+
+        # All 6 DOFs should have high armature
+        armature = model.joint_armature.numpy()
+        for i in range(6):
+            self.assertAlmostEqual(float(armature[i]), 1.0e10, places=0)
+
+    def test_kinematic_revolute_joint(self):
+        """Test kinematic mode on a revolute joint."""
+        builder = newton.ModelBuilder()
+        b1 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        b2 = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        j1 = builder.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = builder.add_joint_revolute(b1, b2, axis=(0, 0, 1), kinematic=newton.KinematicType.VELOCITY)
+        builder.add_articulation([j1, j2])
+        model = builder.finalize()
+
+        # j1 should be NONE, j2 should be VELOCITY
+        modes = model.joint_kinematic_type.numpy()
+        self.assertEqual(modes[0], int(newton.KinematicType.NONE))
+        self.assertEqual(modes[1], int(newton.KinematicType.VELOCITY))
+
+        # j2 armature should be high
+        armature = model.joint_armature.numpy()
+        j2_qd_start = int(model.joint_qd_start.numpy()[1])
+        self.assertAlmostEqual(float(armature[j2_qd_start]), 1.0e10, places=0)
+
+    def test_kinematic_multiworld_velocity(self):
+        """Test kinematic velocity mode works across multiple worlds."""
+        template = newton.ModelBuilder()
+        body = template.add_link(
+            xform=wp.transform(wp.vec3(0.0, 0.0, 2.0)),
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+        )
+        template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        joint = template.add_joint_free(body, kinematic=newton.KinematicType.VELOCITY)
+        template.add_articulation([joint])
+        template.add_ground_plane()
+
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template, num_worlds)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+
+        # Set different angular velocity for each world
+        target = control.kinematic_target.numpy()
+        q_starts = model.joint_q_start.numpy()
+        for w in range(num_worlds):
+            joint_idx = w  # one joint per world
+            qs = q_starts[joint_idx]
+            target[qs + 5] = float(w + 1)  # wz = 1, 2, 3 rad/s
+        control.kinematic_target = wp.array(target, dtype=wp.float32, device=model.device)
+
+        dt = 0.001
+        for _ in range(50):
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+
+        # All bodies should stay at roughly z=2.0
+        body_q = state_0.body_q.numpy()
+        for w in range(num_worlds):
+            z = float(body_q[w][2])
+            self.assertAlmostEqual(z, 2.0, delta=0.05, msg=f"World {w} body drifted: z={z}")
+
+    def test_kinematic_multiworld_position(self):
+        """Test kinematic position mode works across multiple worlds."""
+        template = newton.ModelBuilder()
+        b1 = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        b2 = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        template.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+        template.add_shape_box(b2, hx=0.1, hy=0.1, hz=0.1)
+        j1 = template.add_joint_revolute(-1, b1, axis=(0, 0, 1))
+        j2 = template.add_joint_revolute(b1, b2, axis=(0, 0, 1), kinematic=newton.KinematicType.POSITION)
+        template.add_articulation([j1, j2])
+
+        num_worlds = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template, num_worlds)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+
+        # Set different position targets for each world
+        target = control.kinematic_target.numpy()
+        q_starts = model.joint_q_start.numpy()
+        joints_per_world = model.joint_count // num_worlds
+        target_angles = [0.1, 0.3, 0.5]
+        for w in range(num_worlds):
+            j2_idx = w * joints_per_world + 1  # second joint in each world
+            qs = q_starts[j2_idx]
+            target[qs] = target_angles[w]
+        control.kinematic_target = wp.array(target, dtype=wp.float32, device=model.device)
+
+        dt = 0.001
+        for _ in range(100):
+            solver.step(state_0, state_1, control, None, dt)
+            state_0, state_1 = state_1, state_0
+
+        # Check each world's kinematic hinge reached its target
+        joint_q = state_0.joint_q.numpy()
+        for w in range(num_worlds):
+            j2_idx = w * joints_per_world + 1
+            qs = q_starts[j2_idx]
+            angle = float(joint_q[qs])
+            self.assertAlmostEqual(
+                angle,
+                target_angles[w],
+                delta=0.05,
+                msg=f"World {w} hinge didn't reach target: {angle:.4f} vs {target_angles[w]}",
+            )
+
 
 class TestMuJoCoSolverFreeJointBodyPos(unittest.TestCase):
     """Verify free joint bodies preserve their initial position in qpos0."""
