@@ -173,7 +173,7 @@ class ModelBuilder:
         """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
         mu_rolling: float = 0.0001
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
-        thickness: float = 1e-5
+        thickness: float = 0.0
         """Outward offset from the shape's surface for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
         their thicknesses are summed (thickness_a + thickness_b) to determine the total separation."""
@@ -1504,8 +1504,6 @@ class ModelBuilder:
         force_show_colliders: bool = False,
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
-        ensure_nonstatic_links: bool = False,
-        static_link_mass: float = 1e-2,
         joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
         bodies_follow_joint_ordering: bool = True,
         collapse_fixed_joints: bool = False,
@@ -1590,8 +1588,6 @@ class ModelBuilder:
             force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
             enable_self_collisions (bool): If True, self-collisions are enabled.
             ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
-            ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-            static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
             joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
             bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
@@ -1619,8 +1615,6 @@ class ModelBuilder:
             force_show_colliders=force_show_colliders,
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
-            ensure_nonstatic_links=ensure_nonstatic_links,
-            static_link_mass=static_link_mass,
             joint_ordering=joint_ordering,
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             collapse_fixed_joints=collapse_fixed_joints,
@@ -1859,8 +1853,6 @@ class ModelBuilder:
         force_show_colliders: bool = False,
         enable_self_collisions: bool = True,
         ignore_inertial_definitions: bool = False,
-        ensure_nonstatic_links: bool = False,
-        static_link_mass: float = 1e-2,
         collapse_fixed_joints: bool = False,
         verbose: bool = False,
         skip_equality_constraints: bool = False,
@@ -1959,8 +1951,6 @@ class ModelBuilder:
             force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
             enable_self_collisions (bool): If True, self-collisions are enabled.
             ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
-            ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-            static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             verbose (bool): If True, print additional information about parsing the MJCF.
             skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
@@ -2001,8 +1991,6 @@ class ModelBuilder:
             force_show_colliders=force_show_colliders,
             enable_self_collisions=enable_self_collisions,
             ignore_inertial_definitions=ignore_inertial_definitions,
-            ensure_nonstatic_links=ensure_nonstatic_links,
-            static_link_mass=static_link_mass,
             collapse_fixed_joints=collapse_fixed_joints,
             verbose=verbose,
             skip_equality_constraints=skip_equality_constraints,

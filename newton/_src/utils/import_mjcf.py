@@ -171,8 +171,6 @@ def parse_mjcf(
     force_show_colliders: bool = False,
     enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = False,
-    ensure_nonstatic_links: bool = False,
-    static_link_mass: float = 1e-2,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
@@ -272,8 +270,6 @@ def parse_mjcf(
         force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
         enable_self_collisions (bool): If True, self-collisions are enabled.
         ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
-        ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-        static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
@@ -353,12 +349,15 @@ def parse_mjcf(
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
+    # Use findall for <option> to handle multiple elements after include expansion
+    # (later values override earlier ones, matching MuJoCo's merge behavior).
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
             [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
         if builder_custom_attr_option:
-            for elem in (compiler, root.find("option")):
+            option_elems = [compiler, *root.findall("option")]
+            for elem in option_elems:
                 if elem is not None:
                     parsed = parse_custom_attributes(elem.attrib, builder_custom_attr_option, "mjcf")
                     for key, value in parsed.items():
@@ -614,6 +613,10 @@ def parse_mjcf(
                     shape_cfg.ke = geom_ke
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
+
+            # Parse MJCF margin for collision thickness (only if explicitly specified)
+            if "margin" in geom_attrib:
+                shape_cfg.thickness = float(geom_attrib["margin"]) * scale
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
@@ -1471,16 +1474,6 @@ def parse_mjcf(
                 builder.body_inv_inertia[link] = wp.inverse(I_m)
             else:
                 builder.body_inv_inertia[link] = I_m
-        if m == 0.0 and ensure_nonstatic_links:
-            # set the mass to something nonzero to ensure the body is dynamic
-            m = static_link_mass
-            # cube with side length 0.5
-            I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(builder.default_body_armature * np.eye(3))
-            builder.body_mass[link] = m
-            builder.body_inv_mass[link] = 1.0 / m
-            builder.body_inertia[link] = I_m
-            builder.body_inv_inertia[link] = wp.inverse(I_m)
 
         # -----------------
         # recurse
