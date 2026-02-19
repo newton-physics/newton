@@ -216,12 +216,12 @@ class Example:
         self.sphere_current_x = self.sphere_start_x
 
         # Create collision pipeline for ground and cube contact
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            broad_phase_mode=newton.BroadPhaseMode.NXN,
+            broad_phase="nxn",
             soft_contact_margin=0.005,  # m (0.5 cm)
         )
-        self.contacts = self.collision_pipeline.collide(self.model, self.state_0)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -258,7 +258,7 @@ class Example:
             self.state_0.body_q = wp.array(body_q, dtype=wp.transform)
 
             # Collision detection
-            self.contacts = self.collision_pipeline.collide(self.model, self.state_0)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
             # Solver step
             self.solver.step(

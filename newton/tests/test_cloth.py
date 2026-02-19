@@ -861,15 +861,15 @@ class ClothSim:
             raise ValueError("Unsupported solver type: " + self.solver_name)
 
         # Create collision pipeline
-        self.collision_pipeline = newton.CollisionPipeline.from_model(
+        self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            broad_phase_mode=newton.BroadPhaseMode.NXN,
+            broad_phase="nxn",
             soft_contact_margin=self.soft_contact_margin,
         )
 
         self.state0 = self.model.state()
         self.state1 = self.model.state()
-        self.model.collide(self.state0, collision_pipeline=self.collision_pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.init_pos = np.array(self.state0.particle_q.numpy(), copy=True)
 
@@ -882,9 +882,9 @@ class ClothSim:
     def simulate(self):
         for _step in range(self.num_substeps):
             self.state0.clear_forces()
-            contacts = self.model.collide(self.state0, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state0, self.contacts)
             control = self.model.control()
-            self.solver.step(self.state0, self.state1, control, contacts, self.dt)
+            self.solver.step(self.state0, self.state1, control, self.contacts, self.dt)
             (self.state0, self.state1) = (self.state1, self.state0)
 
     def run(self):

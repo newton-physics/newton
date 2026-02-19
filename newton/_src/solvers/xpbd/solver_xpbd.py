@@ -221,6 +221,8 @@ class SolverXPBD(SolverBase):
 
         body_q = None
         body_qd = None
+        body_q_init = None
+        body_qd_init = None
         body_deltas = None
 
         rigid_contact_inv_weight = None
@@ -276,6 +278,7 @@ class SolverXPBD(SolverBase):
                             model.joint_parent,
                             model.joint_child,
                             model.joint_X_p,
+                            model.joint_X_c,
                             model.joint_qd_start,
                             model.joint_dof_dim,
                             model.joint_axis,
@@ -538,8 +541,8 @@ class SolverXPBD(SolverBase):
                                 contacts.rigid_contact_shape0,
                                 contacts.rigid_contact_shape1,
                                 model.shape_material_mu,
-                                model.shape_material_torsional_friction,
-                                model.shape_material_rolling_friction,
+                                model.shape_material_mu_torsional,
+                                model.shape_material_mu_rolling,
                                 self.rigid_contact_relaxation,
                                 dt,
                             ],
@@ -604,18 +607,16 @@ class SolverXPBD(SolverBase):
                         kernel=apply_particle_shape_restitution,
                         dim=contacts.soft_contact_max,
                         inputs=[
-                            particle_q,
                             particle_qd,
                             self.particle_q_init,
                             self.particle_qd_init,
-                            model.particle_inv_mass,
                             model.particle_radius,
                             model.particle_flags,
                             body_q,
+                            body_q_init,
                             body_qd,
+                            body_qd_init,
                             model.body_com,
-                            model.body_inv_mass,
-                            model.body_inv_inertia,
                             model.shape_body,
                             model.particle_adhesion,
                             model.soft_contact_restitution,
@@ -626,8 +627,6 @@ class SolverXPBD(SolverBase):
                             contacts.soft_contact_body_vel,
                             contacts.soft_contact_normal,
                             contacts.soft_contact_max,
-                            dt,
-                            self.soft_contact_relaxation,
                         ],
                         outputs=[state_out.particle_qd],
                         device=model.device,

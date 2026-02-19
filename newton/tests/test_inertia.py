@@ -26,7 +26,6 @@ from newton._src.geometry.inertia import (
     compute_mesh_inertia,
     compute_sphere_inertia,
 )
-from newton._src.utils.mesh import create_sphere_mesh
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -115,15 +114,22 @@ class TestInertia(unittest.TestCase):
         assert_np_equal(np.array(I_1_hollow), np.array(I_0_hollow), tol=1e-4)
 
     def test_sphere_mesh_inertia(self):
-        vertices, indices = create_sphere_mesh(radius=2.5, num_latitudes=500, num_longitudes=500)
+        mesh = newton.Mesh.create_sphere(
+            radius=2.5,
+            num_latitudes=500,
+            num_longitudes=500,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
 
         offset = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        vertices = vertices[:, :3] + offset
+        vertices = mesh.vertices + offset
 
         mass_mesh, com_mesh, I_mesh, vol_mesh = compute_mesh_inertia(
             density=1000,
             vertices=vertices,
-            indices=indices,
+            indices=mesh.indices,
             is_solid=True,
         )
 
@@ -136,10 +142,17 @@ class TestInertia(unittest.TestCase):
         self.assertAlmostEqual(vol_mesh, 4.0 / 3.0 * np.pi * 2.5**3, delta=3e-2)
 
     def test_body_inertia(self):
-        vertices, indices = create_sphere_mesh(radius=2.5, num_latitudes=500, num_longitudes=500)
+        mesh = newton.Mesh.create_sphere(
+            radius=2.5,
+            num_latitudes=500,
+            num_longitudes=500,
+            compute_normals=False,
+            compute_uvs=False,
+            compute_inertia=False,
+        )
 
         offset = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        vertices = vertices[:, :3] + offset
+        vertices = mesh.vertices + offset
 
         builder = newton.ModelBuilder()
         b = builder.add_body()
@@ -147,7 +160,7 @@ class TestInertia(unittest.TestCase):
         builder.add_shape_mesh(
             b,
             xform=tf,
-            mesh=newton.Mesh(vertices=vertices, indices=indices),
+            mesh=newton.Mesh(vertices=vertices, indices=mesh.indices),
             cfg=newton.ModelBuilder.ShapeConfig(density=1000.0),
         )
         transformed_com = wp.transform_point(tf, wp.vec3(*offset))

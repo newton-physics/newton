@@ -15,12 +15,13 @@
 
 import functools
 from fnmatch import fnmatch
+from types import NoneType
 from typing import Any
 
 import warp as wp
 from warp.types import is_array
 
-from ..sim import Control, JointType, Model, State, eval_fk
+from ..sim import Control, JointType, Model, State, eval_fk, eval_jacobian, eval_mass_matrix
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -233,15 +234,15 @@ def get_name_from_key(key: str):
     return key.split("/")[-1]
 
 
-def find_matching_ids(pattern: str, keys: list[str], world_ids, num_worlds: int):
-    grouped_ids = [[] for _ in range(num_worlds)]  # ids grouped by world (exclude world -1)
+def find_matching_ids(pattern: str, keys: list[str], world_ids, world_count: int):
+    grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
     for id, key in enumerate(keys):
         if fnmatch(key, pattern):
             world = world_ids[id]
             if world == -1:
                 global_ids.append(id)
-            elif world >= 0 and world < num_worlds:
+            elif world >= 0 and world < world_count:
                 grouped_ids[world].append(id)
             else:
                 raise ValueError(f"World index out of range: {world}")
@@ -278,6 +279,21 @@ class ArticulationView:
     subsets of articulations and their joints, links, and shapes within a Model.
     It supports pattern-based selection, inclusion/exclusion filters, and convenient
     attribute access and modification for simulation and control.
+
+    This is useful in RL and batched simulation workflows where a single policy or
+    control routine operates on many parallel environments with consistent tensor shapes.
+
+    Example:
+
+    .. code-block:: python
+
+        import newton
+
+        view = newton.selection.ArticulationView(model, pattern="robot*")
+        q = view.get_dof_positions(state)
+        q_np = q.numpy()
+        q_np[..., 0] = 0.0
+        view.set_dof_positions(state, q_np)
 
     Args:
         model (Model): The model containing the articulations.
@@ -319,11 +335,11 @@ class ArticulationView:
 
         # get articulation ids grouped by world
         articulation_ids, global_articulation_ids = find_matching_ids(
-            pattern, model.articulation_key, model_articulation_world, model.num_worlds
+            pattern, model.articulation_key, model_articulation_world, model.world_count
         )
 
         # determine articulation counts per world
-        world_count = model.num_worlds
+        world_count = model.world_count
         articulation_count = 0
         counts_per_world = [0] * world_count
         for world_id in range(world_count):
@@ -989,38 +1005,29 @@ class ArticulationView:
         # handle custom slice
         if isinstance(_slice, Slice):
             _slice = _slice.get()
-        elif isinstance(_slice, int):
-            _slice = slice(_slice, _slice + 1)
+        elif not isinstance(_slice, (NoneType, int, slice)):
+            raise ValueError(f"Invalid slice type: expected slice or int, got {type(_slice)}")
 
         if _slice is None:
+            value_slice = layout.indices if is_indexed else layout.slice
             value_count = layout.value_count
-            if is_indexed:
-                value_slice = layout.indices
-            else:
-                value_slice = layout.slice
         else:
-            value_count = _slice.stop - _slice.start
-            if is_indexed:
-                value_slice = layout.indices[_slice]
-            else:
-                value_slice = _slice
-
-        shape = (self.world_count, self.count_per_world, value_count)
-        strides = (
-            layout.stride_between_worlds * value_stride,
-            layout.stride_within_worlds * value_stride,
-            value_stride,
-        )
-        slices = (slice(self.world_count), slice(self.count_per_world), value_slice)
+            value_slice = _slice
+            value_count = 1 if isinstance(_slice, int) else _slice.stop - _slice.start
 
         # trailing dimensions for multidimensional attributes
         trailing_shape = attrib.shape[1:]
         trailing_strides = attrib.strides[1:]
         trailing_slices = [slice(s) for s in trailing_shape]
 
-        shape = (*shape, *trailing_shape)
-        strides = (*strides, *trailing_strides)
-        slices = (*slices, *trailing_slices)
+        shape = (self.world_count, self.count_per_world, value_count, *trailing_shape)
+        strides = (
+            layout.stride_between_worlds * value_stride,
+            layout.stride_within_worlds * value_stride,
+            value_stride,
+            *trailing_strides,
+        )
+        slices = (slice(self.world_count), slice(self.count_per_world), value_slice, *trailing_slices)
 
         # construct reshaped attribute array
         attrib = wp.array(
@@ -1376,3 +1383,45 @@ class ArticulationView:
         # translate view mask to Model articulation mask
         articulation_mask = self.get_model_articulation_mask(mask=mask)
         eval_fk(self.model, target.joint_q, target.joint_qd, target, mask=articulation_mask)
+
+    def eval_jacobian(self, state: State, J=None, joint_S_s=None, mask=None):
+        """Evaluate spatial Jacobian for articulations in this view.
+
+        Computes the spatial Jacobian J that maps joint velocities to spatial
+        velocities of each link in world frame.
+
+        Args:
+            state: The state containing body transforms (body_q).
+            J: Optional output array for the Jacobian, shape (articulation_count, max_links*6, max_dofs).
+               If None, allocates internally.
+            joint_S_s: Optional pre-allocated temp array for motion subspaces.
+            mask: Optional mask of articulations in this ArticulationView (all by default).
+
+        Returns:
+            The Jacobian array J, or None if the model has no articulations.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        return eval_jacobian(self.model, state, J, joint_S_s=joint_S_s, mask=articulation_mask)
+
+    def eval_mass_matrix(self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None):
+        """Evaluate generalized mass matrix for articulations in this view.
+
+        Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
+        Jacobian and M is the block-diagonal spatial mass matrix.
+
+        Args:
+            state: The state containing body transforms (body_q).
+            H: Optional output array for mass matrix, shape (articulation_count, max_dofs, max_dofs).
+               If None, allocates internally.
+            J: Optional pre-computed Jacobian. If None, computes internally.
+            body_I_s: Optional pre-allocated temp array for spatial inertias.
+            joint_S_s: Optional pre-allocated temp array for motion subspaces.
+            mask: Optional mask of articulations in this ArticulationView (all by default).
+
+        Returns:
+            The mass matrix array H, or None if the model has no articulations.
+        """
+        articulation_mask = self.get_model_articulation_mask(mask=mask)
+        return eval_mass_matrix(
+            self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
+        )

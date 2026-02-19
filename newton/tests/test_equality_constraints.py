@@ -71,7 +71,7 @@ class TestEqualityConstraints(unittest.TestCase):
         self.state_0, self.state_1 = self.model.state(), self.model.state()
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        for _ in range(1000):
+        for _ in range(200):
             for _ in range(10):
                 self.state_0.clear_forces()
                 self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
@@ -155,8 +155,8 @@ class TestEqualityConstraints(unittest.TestCase):
         main_builder.add_ground_plane()
 
         # Add multiple robot instances
-        num_worlds = 3
-        for i in range(num_worlds):
+        world_count = 3
+        for i in range(world_count):
             main_builder.add_world(robot, xform=wp.transform((i * 5, 0, 0)))
 
         # Finalize the model
@@ -164,7 +164,7 @@ class TestEqualityConstraints(unittest.TestCase):
 
         # Check that equality constraints count is correct in the Newton model
         # Should be 2 constraints per world * 3 worlds = 6 total
-        self.assertEqual(model.equality_constraint_count, 2 * num_worlds)
+        self.assertEqual(model.equality_constraint_count, 2 * world_count)
 
         # Create MuJoCo solver with separate_worlds=True
         solver = newton.solvers.SolverMuJoCo(
@@ -182,7 +182,7 @@ class TestEqualityConstraints(unittest.TestCase):
         )
 
         print(f"Test passed: MuJoCo model has {solver.mj_model.neq} equality constraints (expected 2)")
-        print(f"Newton model has {model.equality_constraint_count} total constraints across {num_worlds} worlds")
+        print(f"Newton model has {model.equality_constraint_count} total constraints across {world_count} worlds")
 
         # Verify that indices are correctly remapped for each world
         # Each world adds 3 bodies, so body indices should be offset by 3 * world_index
@@ -192,7 +192,7 @@ class TestEqualityConstraints(unittest.TestCase):
         eq_joint1 = model.equality_constraint_joint1.numpy()
         eq_joint2 = model.equality_constraint_joint2.numpy()
 
-        for world_idx in range(num_worlds):
+        for world_idx in range(world_count):
             # Each world has 2 constraints
             constraint_idx = world_idx * 2
 

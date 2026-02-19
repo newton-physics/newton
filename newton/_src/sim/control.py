@@ -31,13 +31,14 @@ class Control:
     def __init__(self):
         self.joint_f: wp.array | None = None
         """
-        Array of generalized joint forces with shape ``(joint_dof_count,)`` and type ``float``.
+        Array of generalized joint forces [N or N·m, depending on joint type] with shape ``(joint_dof_count,)``
+        and type ``float``.
 
         The degrees of freedom for free joints are included in this array and have the same
         convention as the :attr:`newton.State.body_f` array where the 6D wrench is defined as
         ``(f_x, f_y, f_z, t_x, t_y, t_z)``, where ``f_x``, ``f_y``, and ``f_z`` are the components
-        of the force vector (linear) and ``t_x``, ``t_y``, and ``t_z`` are the
-        components of the torque vector (angular). For free joints, the wrench is applied in world frame with the
+        of the force vector (linear) [N] and ``t_x``, ``t_y``, and ``t_z`` are the
+        components of the torque vector (angular) [N·m]. For free joints, the wrench is applied in world frame with the
         body's center of mass (COM) as reference point.
 
         .. note::
@@ -45,20 +46,20 @@ class Control:
             center-of-mass frame, which can lead to unexpected rotation when applying linear force to a body with a non-zero COM offset.
         """
         self.joint_target_pos: wp.array | None = None
-        """Per-DOF position targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
+        """Per-DOF position targets [m or rad, depending on joint type], shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
         self.joint_target_vel: wp.array | None = None
-        """Per-DOF velocity targets, shape ``(joint_dof_count,)``, type ``float`` (optional)."""
+        """Per-DOF velocity targets [m/s or rad/s, depending on joint type], shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
         self.tri_activations: wp.array | None = None
-        """Array of triangle element activations with shape ``(tri_count,)`` and type ``float``."""
+        """Array of triangle element activations [dimensionless] with shape ``(tri_count,)`` and type ``float``."""
 
         self.tet_activations: wp.array | None = None
-        """Array of tetrahedral element activations with shape with shape ``(tet_count,) and type ``float``."""
+        """Array of tetrahedral element activations [dimensionless] with shape ``(tet_count,)`` and type ``float``."""
 
         self.muscle_activations: wp.array | None = None
         """
-        Array of muscle activations with shape ``(muscle_count,)`` and type ``float``.
+        Array of muscle activations [dimensionless, 0 to 1] with shape ``(muscle_count,)`` and type ``float``.
 
         .. note::
             Support for muscle dynamics is not yet implemented.
@@ -83,10 +84,10 @@ class Control:
 
     def _clear_namespaced_arrays(self) -> None:
         """Clear all wp.array attributes in namespaced containers (e.g., control.mujoco.ctrl)."""
-        from .model import AttributeNamespace  # noqa: PLC0415
+        from .model import Model  # noqa: PLC0415
 
         for attr in self.__dict__.values():
-            if isinstance(attr, AttributeNamespace):
+            if isinstance(attr, Model.AttributeNamespace):
                 for value in attr.__dict__.values():
                     if isinstance(value, wp.array):
                         value.zero_()

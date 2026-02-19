@@ -28,10 +28,12 @@ import warp as wp
 from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
+from ..geometry.types import Heightfield
 from ..sim import ActuatorMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
+from .heightfield import load_heightfield_elevation
 from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
 from .mesh import load_meshes_from_file
 
@@ -134,7 +136,8 @@ def parse_mjcf(
     *,
     xform: Transform | None = None,
     floating: bool | None = None,
-    base_joint: dict | str | None = None,
+    base_joint: dict | None = None,
+    parent_body: int = -1,
     armature_scale: float = 1.0,
     scale: float = 1.0,
     hide_visuals: bool = False,
@@ -151,9 +154,7 @@ def parse_mjcf(
     no_class_as_colliders: bool = True,
     force_show_colliders: bool = False,
     enable_self_collisions: bool = True,
-    ignore_inertial_definitions: bool = True,
-    ensure_nonstatic_links: bool = True,
-    static_link_mass: float = 1e-2,
+    ignore_inertial_definitions: bool = False,
     collapse_fixed_joints: bool = False,
     verbose: bool = False,
     skip_equality_constraints: bool = False,
@@ -170,8 +171,72 @@ def parse_mjcf(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str): The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform (Transform): The transform to apply to the imported mechanism.
-        floating (bool): If True, the articulation is treated as a floating base. If False, the articulation is treated as a fixed base. If None, the articulation is treated as a floating base if a free joint is found in the MJCF, otherwise it is treated as a fixed base.
-        base_joint (Union[str, dict]): The joint by which the root body is connected to the world. This can be either a string defining the joint axes of a D6 joint with comma-separated positional and angular axis names (e.g. "px,py,rz" for a D6 joint with linear axes in x, y and an angular axis in z) or a dict with joint parameters (see :meth:`ModelBuilder.add_joint`).
+        floating (bool or None): Controls the base joint type for the root body.
+
+            - ``None`` (default): Uses format-specific default (honors ``<freejoint>`` tags in MJCF,
+              otherwise creates a FIXED joint).
+            - ``True``: Creates a FREE joint with 6 DOF (3 translation + 3 rotation). Only valid when
+              ``parent_body == -1`` since FREE joints must connect to world frame.
+            - ``False``: Creates a FIXED joint (0 DOF).
+
+            Cannot be specified together with ``base_joint``.
+        base_joint (dict): Custom joint specification for connecting the root body to the world
+            (or to ``parent_body`` if specified). This parameter enables hierarchical composition with
+            custom mobility. Dictionary with joint parameters as accepted by
+            :meth:`ModelBuilder.add_joint` (e.g., joint type, axes, limits, stiffness).
+
+            Cannot be specified together with ``floating``.
+        parent_body (int): Parent body index for hierarchical composition. If specified, attaches the
+            imported root body to this existing body, making them part of the same kinematic articulation.
+            The connection type is determined by ``floating`` or ``base_joint``. If ``-1`` (default),
+            the root connects to the world frame. **Restriction**: Only the most recently added
+            articulation can be used as parent; attempting to attach to an older articulation will raise
+            a ``ValueError``.
+
+            .. note::
+               Valid combinations of ``floating``, ``base_joint``, and ``parent_body``:
+
+               .. list-table::
+                  :header-rows: 1
+                  :widths: 15 15 15 55
+
+                  * - floating
+                    - base_joint
+                    - parent_body
+                    - Result
+                  * - ``None``
+                    - ``None``
+                    - ``-1``
+                    - Format default (MJCF: honors ``<freejoint>``, else FIXED)
+                  * - ``True``
+                    - ``None``
+                    - ``-1``
+                    - FREE joint to world (6 DOF)
+                  * - ``False``
+                    - ``None``
+                    - ``-1``
+                    - FIXED joint to world (0 DOF)
+                  * - ``None``
+                    - ``{dict}``
+                    - ``-1``
+                    - Custom joint to world (e.g., D6)
+                  * - ``False``
+                    - ``None``
+                    - ``body_idx``
+                    - FIXED joint to parent body
+                  * - ``None``
+                    - ``{dict}``
+                    - ``body_idx``
+                    - Custom joint to parent body (e.g., D6)
+                  * - *explicitly set*
+                    - *explicitly set*
+                    - *any*
+                    - ❌ Error: mutually exclusive (cannot specify both)
+                  * - ``True``
+                    - ``None``
+                    - ``body_idx``
+                    - ❌ Error: FREE joints require world frame
+
         armature_scale (float): Scaling factor to apply to the MJCF-defined joint armature values.
         scale (float): The scaling factor to apply to the imported mechanism.
         hide_visuals (bool): If True, hide visual shapes after loading them (affects visibility, not loading).
@@ -189,8 +254,6 @@ def parse_mjcf(
         force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
         enable_self_collisions (bool): If True, self-collisions are enabled.
         ignore_inertial_definitions (bool): If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
-        ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-        static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
         verbose (bool): If True, print additional information about parsing the MJCF.
         skip_equality_constraints (bool): Whether <equality> tags should be parsed. If True, equality constraints are ignored.
@@ -203,8 +266,12 @@ def parse_mjcf(
             from :attr:`newton.Control.joint_target_pos` and :attr:`newton.Control.joint_target_vel`.
         path_resolver (Callable): Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
     """
+    # Early validation of base joint parameters
+    builder._validate_base_joint_params(floating, base_joint, parent_body)
+
     if mesh_maxhullvert is None:
         mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
+
     if xform is None:
         xform = wp.transform_identity()
     else:
@@ -264,22 +331,24 @@ def parse_mjcf(
         mesh_dir = "."
         texture_dir = "."
 
-    # Parse MJCF option tag for ONCE and WORLD frequency custom attributes (solver options)
+    # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
     if parse_mujoco_options:
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
             [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
-        option_elem = root.find("option")
-        if option_elem is not None and builder_custom_attr_option:
-            option_attrs = parse_custom_attributes(option_elem.attrib, builder_custom_attr_option, "mjcf")
-            for key, value in option_attrs.items():
-                if key in builder.custom_attributes:
-                    builder.custom_attributes[key].values[0] = value
+        if builder_custom_attr_option:
+            for elem in (compiler, root.find("option")):
+                if elem is not None:
+                    parsed = parse_custom_attributes(elem.attrib, builder_custom_attr_option, "mjcf")
+                    for key, value in parsed.items():
+                        if key in builder.custom_attributes:
+                            builder.custom_attributes[key].values[0] = value
 
     mesh_assets = {}
     texture_assets = {}
     material_assets = {}
+    hfield_assets = {}
     for asset in root.findall("asset"):
         for mesh in asset.findall("mesh"):
             if "file" in mesh.attrib:
@@ -309,6 +378,42 @@ def parse_mjcf(
             material_assets[mat_name] = {
                 "rgba": material.attrib.get("rgba"),
                 "texture": material.attrib.get("texture"),
+            }
+        for hfield in asset.findall("hfield"):
+            hfield_name = hfield.attrib.get("name")
+            if not hfield_name:
+                continue
+            # Parse attributes
+            nrow = int(hfield.attrib.get("nrow", "100"))
+            ncol = int(hfield.attrib.get("ncol", "100"))
+            size_str = hfield.attrib.get("size", "1 1 1 0")
+            size_arr = np.fromstring(size_str, sep=" ", dtype=np.float32)
+            if size_arr.size < 4:
+                size_arr = np.pad(size_arr, (0, 4 - size_arr.size), constant_values=0.0)
+            size = tuple(size_arr[:4])
+            # Parse optional file path
+            file_attr = hfield.attrib.get("file")
+            file_path = None
+            if file_attr:
+                file_path = path_resolver(base_dir, file_attr)
+            # Parse optional inline elevation data
+            elevation_str = hfield.attrib.get("elevation")
+            elevation_data = None
+            if elevation_str and not file_attr:
+                elevation_arr = np.fromstring(elevation_str, sep=" ", dtype=np.float32)
+                if elevation_arr.size == nrow * ncol:
+                    elevation_data = elevation_arr.reshape(nrow, ncol)
+                elif verbose:
+                    print(
+                        f"Warning: hfield '{hfield_name}' elevation has {elevation_arr.size} values, "
+                        f"expected {nrow * ncol} ({nrow}x{ncol}), ignoring"
+                    )
+            hfield_assets[hfield_name] = {
+                "nrow": nrow,
+                "ncol": ncol,
+                "size": size,  # (size_x, size_y, size_z, size_base)
+                "file": file_path,
+                "elevation": elevation_data,
             }
 
     class_parent = {}
@@ -440,6 +545,8 @@ def parse_mjcf(
             geom_type = geom_attrib.get("type", "sphere")
             if "mesh" in geom_attrib:
                 geom_type = "mesh"
+            if "hfield" in geom_attrib:
+                geom_type = "hfield"
 
             ignore_geom = False
             for pattern in ignore_names:
@@ -473,10 +580,10 @@ def parse_mjcf(
                     shape_cfg.mu = float(friction_values[0])
 
                 if len(friction_values) >= 2:
-                    shape_cfg.torsional_friction = float(friction_values[1])
+                    shape_cfg.mu_torsional = float(friction_values[1])
 
                 if len(friction_values) >= 3:
-                    shape_cfg.rolling_friction = float(friction_values[2])
+                    shape_cfg.mu_rolling = float(friction_values[2])
 
             # Parse MJCF solref for contact stiffness/damping (only if explicitly specified)
             # Like friction, only override Newton defaults if solref is authored in MJCF
@@ -487,6 +594,10 @@ def parse_mjcf(
                     shape_cfg.ke = geom_ke
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
+
+            # Parse MJCF margin for collision thickness (only if explicitly specified)
+            if "margin" in geom_attrib:
+                shape_cfg.thickness = float(geom_attrib["margin"]) * scale
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_kwargs = {
@@ -569,10 +680,17 @@ def parse_mjcf(
                         if verbose:
                             print(f"Warning: mesh {stl_file} has a texture but no UVs; texture will be ignored.")
                         m_mesh.texture = None
+                    # Mesh shapes must not use cfg.sdf_*; SDFs are built on the mesh itself.
+                    mesh_shape_kwargs = dict(shape_kwargs)
+                    mesh_cfg = shape_cfg.copy()
+                    mesh_cfg.sdf_max_resolution = None
+                    mesh_cfg.sdf_target_voxel_size = None
+                    mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
+                    mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
-                        **shape_kwargs,
+                        **mesh_shape_kwargs,
                     )
                     shapes.append(s)
 
@@ -625,6 +743,50 @@ def parse_mjcf(
                         **shape_kwargs,
                     )
                     shapes.append(s)
+
+            elif geom_type == "hfield" and parse_meshes:
+                hfield_name = geom_attrib.get("hfield")
+                if hfield_name is None:
+                    if verbose:
+                        print(f"Warning: hfield attribute not defined for {geom_name}, skipping")
+                    continue
+                elif hfield_name not in hfield_assets:
+                    if verbose:
+                        print(f"Warning: hfield asset '{hfield_name}' not found, skipping")
+                    continue
+
+                hfield_asset = hfield_assets[hfield_name]
+                nrow, ncol = hfield_asset["nrow"], hfield_asset["ncol"]
+
+                if hfield_asset["elevation"] is not None:
+                    elevation = hfield_asset["elevation"]
+                elif hfield_asset["file"] is not None:
+                    elevation = load_heightfield_elevation(hfield_asset["file"], nrow, ncol)
+                else:
+                    elevation = np.zeros((nrow, ncol), dtype=np.float32)
+
+                # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
+                # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
+                # so min_z=0 and max_z=size_z. size_base (depth below origin) is ignored.
+                mj_size_x, mj_size_y, mj_size_z, _mj_size_base = hfield_asset["size"]
+                heightfield = Heightfield(
+                    data=elevation,
+                    nrow=nrow,
+                    ncol=ncol,
+                    hx=mj_size_x * scale,
+                    hy=mj_size_y * scale,
+                    min_z=0.0,
+                    max_z=mj_size_z * scale,
+                )
+
+                # Heightfields are always static — don't pass body from shape_kwargs
+                hfield_kwargs = {k: v for k, v in shape_kwargs.items() if k != "body"}
+                s = builder.add_shape_heightfield(
+                    xform=tf,
+                    heightfield=heightfield,
+                    **hfield_kwargs,
+                )
+                shapes.append(s)
 
             elif geom_type == "plane":
                 # Use xform directly - plane has local normal (0,0,1) and passes through origin
@@ -898,7 +1060,13 @@ def parse_mjcf(
 
             # Process child bodies (need world transform)
             for child_body in frame.findall("body"):
-                parse_body(child_body, parent_body, _defaults, childclass=_childclass, incoming_xform=composed_world)
+                parse_body(
+                    child_body,
+                    parent_body,
+                    _defaults,
+                    childclass=_childclass,
+                    incoming_xform=composed_world,
+                )
 
             # Process child geoms (need body-relative transform)
             # Use the same visual/collider partitioning logic as parse_body
@@ -937,12 +1105,21 @@ def parse_mjcf(
 
         Args:
             body: The XML body element.
-            parent: Parent body index (-1 for world).
+            parent: Parent body index. For root bodies in the MJCF, this will be the parent_body
+                parameter from parse_mjcf (-1 for world, or a body index for hierarchical composition).
+                For nested bodies within the MJCF tree, this is the parent body index in the tree.
             incoming_defaults: Default attributes dictionary.
             childclass: Child class name for inheritance.
             incoming_xform: Accumulated transform from parent (may include frame offsets).
-                If None, uses the import root xform.
+
+        Note:
+            Root bodies (direct children of <worldbody>) are automatically detected by checking if
+            parent matches the parent_body parameter from parse_mjcf. Only root bodies respect the
+            floating/base_joint parameters; nested bodies use their defined joints from the MJCF.
         """
+        # Infer if this is a root body by checking if parent matches the outer parent_body parameter
+        # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
+        is_mjcf_root = parent == parent_body
         body_class = body.get("class") or body.get("childclass")
         if body_class is None:
             body_class = childclass
@@ -1047,7 +1224,11 @@ def parse_mjcf(
                     actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
                     if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
                         actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
-                        if actuatorfrclimited in ("true", "auto"):
+                        autolimits_attr = builder.custom_attributes.get("mujoco:autolimits")
+                        autolimits_val = (
+                            autolimits_attr.values.get(0, autolimits_attr.default) if autolimits_attr else 1
+                        )
+                        if actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and autolimits_val):
                             effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
                         elif verbose:
                             print(
@@ -1064,6 +1245,7 @@ def parse_mjcf(
                     target_ke=default_joint_target_ke,
                     target_kd=default_joint_target_kd,
                     armature=joint_armature[-1],
+                    friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
                     actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
                 )
@@ -1108,55 +1290,65 @@ def parse_mjcf(
             elif len(linear_axes) == 1 and len(angular_axes) == 0:
                 joint_type = JointType.PRISMATIC
 
-        if joint_type == JointType.FREE and parent == -1 and (base_joint is not None or floating is not None):
+        # Handle base joint overrides for root bodies or FREE joints with explicit parameters
+        # Only apply base_joint logic when:
+        # (1) This is an MJCF root body AND (base_joint or floating are explicitly set OR parent_body is set)
+        # (2) This is a FREE joint AND it's an MJCF root being attached with parent_body
+        #
+        # NOTE: For root bodies in the MJCF, parent will equal the parent_body parameter from parse_mjcf.
+        # For nested bodies in the MJCF tree, parent will be a different body index within the tree.
+        # We check is_mjcf_root (parent == parent_body) to distinguish these cases.
+
+        # has_override_params: True if user explicitly provided base_joint or floating parameters
+        has_override_params = base_joint is not None or floating is not None
+
+        # has_hierarchical_composition: True if we're doing hierarchical composition (parent_body != -1)
+        has_hierarchical_composition = parent_body != -1
+
+        # is_free_joint_with_override: True if this is a FREE joint at MJCF root with hierarchical composition
+        # This handles the case where a MJCF with a <freejoint> is being attached to an existing body
+        is_free_joint_with_override = joint_type == JointType.FREE and is_mjcf_root and has_hierarchical_composition
+
+        if (is_mjcf_root and (has_override_params or has_hierarchical_composition)) or is_free_joint_with_override:
+            # Extract joint position (used for transform calculation)
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             # Rotate joint_pos by body orientation before adding to body position
             rotated_joint_pos = wp.quat_rotate(body_ori_for_joints, joint_pos)
             _xform = wp.transform(body_pos_for_joints + rotated_joint_pos, body_ori_for_joints)
 
+            # Add base joint based on parameters
             if base_joint is not None:
-                # in case of a given base joint, the position is applied first, the rotation only
+                # In case of a given base joint, the position is applied first, the rotation only
                 # after the base joint itself to not rotate its axis
+                # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
                 base_parent_xform = wp.transform(_xform.p, wp.quat_identity())
                 base_child_xform = wp.transform((0.0, 0.0, 0.0), wp.quat_inverse(_xform.q))
-                if isinstance(base_joint, str):
-                    axes = base_joint.lower().split(",")
-                    axes = [ax.strip() for ax in axes]
-                    linear_axes = [ax[-1] for ax in axes if ax[0] in {"l", "p"}]
-                    angular_axes = [ax[-1] for ax in axes if ax[0] in {"a", "r"}]
-                    axes = {
-                        "x": [1.0, 0.0, 0.0],
-                        "y": [0.0, 1.0, 0.0],
-                        "z": [0.0, 0.0, 1.0],
-                    }
-                    joint_indices.append(
-                        builder.add_joint_d6(
-                            linear_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in linear_axes],
-                            angular_axes=[ModelBuilder.JointDofConfig(axis=axes[a]) for a in angular_axes],
-                            parent_xform=base_parent_xform,
-                            child_xform=base_child_xform,
-                            parent=-1,
-                            child=link,
-                            key="base_joint",
-                        )
+                joint_indices.append(
+                    builder._add_base_joint(
+                        child=link,
+                        base_joint=base_joint,
+                        key="base_joint",
+                        parent_xform=base_parent_xform,
+                        child_xform=base_child_xform,
+                        parent=parent,
                     )
-                elif isinstance(base_joint, dict):
-                    base_joint["parent"] = -1
-                    base_joint["child"] = link
-                    base_joint["parent_xform"] = base_parent_xform
-                    base_joint["child_xform"] = base_child_xform
-                    base_joint["key"] = "base_joint"
-                    joint_indices.append(builder.add_joint(**base_joint))
-                else:
-                    raise ValueError(
-                        "base_joint must be a comma-separated string of joint axes or a dict with joint parameters"
-                    )
-            elif floating is not None and floating:
-                joint_indices.append(builder.add_joint_free(link, key="floating_base"))
+                )
+            elif floating is not None and floating and parent == -1:
+                # floating=True only makes sense when connecting to world
+                joint_indices.append(
+                    builder._add_base_joint(child=link, floating=True, key="floating_base", parent=parent)
+                )
             else:
-                joint_indices.append(builder.add_joint_fixed(-1, link, parent_xform=world_xform, key="fixed_base"))
+                # Fixed joint to world or to parent_body
+                # When parent_body is set, _xform is already relative to parent body (computed via effective_xform)
+                joint_indices.append(
+                    builder._add_base_joint(
+                        child=link, floating=False, key="fixed_base", parent_xform=_xform, parent=parent
+                    )
+                )
 
         else:
+            # Extract joint position for non-root bodies
             joint_pos = joint_pos[0] if len(joint_pos) > 0 else wp.vec3(0.0, 0.0, 0.0)
             if len(joint_name) == 0:
                 joint_name = [f"{body_name}_joint"]
@@ -1263,16 +1455,6 @@ def parse_mjcf(
                 builder.body_inv_inertia[link] = wp.inverse(I_m)
             else:
                 builder.body_inv_inertia[link] = I_m
-        if m == 0.0 and ensure_nonstatic_links:
-            # set the mass to something nonzero to ensure the body is dynamic
-            m = static_link_mass
-            # cube with side length 0.5
-            I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(builder.default_body_armature * np.eye(3))
-            builder.body_mass[link] = m
-            builder.body_inv_mass[link] = 1.0 / m
-            builder.body_inertia[link] = I_m
-            builder.body_inv_inertia[link] = wp.inverse(I_m)
 
         # -----------------
         # recurse
@@ -1509,8 +1691,18 @@ def parse_mjcf(
         # -----------------
         # add bodies
 
+        # Use parent_body if specified for hierarchical composition, otherwise connect to world (-1)
+        root_parent = parent_body
+
+        # When parent_body is specified, xform is interpreted as relative to the parent body.
+        # Compose it with the parent body's world transform to get the actual world transform.
+        if parent_body != -1:
+            effective_xform = builder.body_q[parent_body] * xform
+        else:
+            effective_xform = xform
+
         for body in world.findall("body"):
-            parse_body(body, -1, world_defaults, incoming_xform=xform)
+            parse_body(body, root_parent, world_defaults, incoming_xform=effective_xform)
 
         # -----------------
         # add static geoms
@@ -1538,10 +1730,10 @@ def parse_mjcf(
 
         process_frames(
             world.findall("frame"),
-            parent_body=-1,
+            parent_body=root_parent,
             defaults=world_defaults,
             childclass=None,
-            world_xform=xform,
+            world_xform=effective_xform,
             body_relative_xform=None,  # Static geoms use world coords
         )
 
@@ -1909,22 +2101,6 @@ def parse_mjcf(
             # Add actuator via custom attributes
             parsed_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_actuator, parsing_mode="mjcf")
 
-            # Resolve MuJoCo limited flags based on range values
-            # MuJoCo behavior: if *limited is not explicitly set and range[0]<range[1], then limited=True
-            # Use merged_attrib to respect defaults for both presence check and range values
-            for limited_attr, range_attr, limited_key in [
-                ("ctrllimited", "ctrlrange", "mujoco:actuator_ctrllimited"),
-                ("forcelimited", "forcerange", "mujoco:actuator_forcelimited"),
-                ("actlimited", "actrange", "mujoco:actuator_actlimited"),
-            ]:
-                # Only auto-resolve if *limited was not explicitly specified (including defaults)
-                if limited_attr not in merged_attrib:
-                    range_str = merged_attrib.get(range_attr, "")
-                    if range_str:
-                        range_vals = [float(x) for x in range_str.split()[:2]]
-                        if len(range_vals) == 2 and range_vals[0] < range_vals[1]:
-                            parsed_attrs[limited_key] = 1
-
             # Build full values dict
             actuator_values: dict[str, Any] = {}
             for attr in builder_custom_attr_actuator:
@@ -1983,9 +2159,12 @@ def parse_mjcf(
                 builder.add_shape_collision_filter_pair(i, j)
 
     # Create articulation from all collected joints
-    if joint_indices:
-        articulation_key = root.attrib.get("model")
-        builder.add_articulation(joints=joint_indices, key=articulation_key)
+    articulation_key = root.attrib.get("model")
+    builder._finalize_imported_articulation(
+        joint_indices=joint_indices,
+        parent_body=parent_body,
+        articulation_key=articulation_key,
+    )
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

@@ -209,11 +209,6 @@ def collision_cost(
         max_dist = margin / min_scale
         d = mesh_sdf(mesh, wp.cw_div(x_local, geo_scale), max_dist)
         d *= min_scale  # TODO fix this, mesh scaling needs to be handled properly
-    elif geo_type == newton.GeoType.SDF:
-        volume = shape_source_ptr[shape_index]
-        xpred_local = wp.volume_world_to_index(volume, wp.cw_div(x_local, geo_scale))
-        nn = wp.vec3(0.0, 0.0, 0.0)
-        d = wp.volume_sample_grad_f(volume, xpred_local, wp.Volume.LINEAR, nn)
     elif geo_type == newton.GeoType.PLANE:
         d = plane_sdf(geo_scale[0], geo_scale[1], x_local)
 
