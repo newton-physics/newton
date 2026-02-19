@@ -1,0 +1,6 @@
+﻿newton.geometry.sdf\_sphere
+===========================
+
+.. currentmodule:: newton.geometry
+
+.. autowarpfunc:: sdf_sphere
