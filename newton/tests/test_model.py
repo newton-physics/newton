@@ -114,6 +114,206 @@ class TestModelMesh(unittest.TestCase):
         assert_np_equal(np.array(builder1.edge_rest_angle), np.array(builder2.edge_rest_angle), tol=1.0e-4)
         assert_np_equal(np.array(builder1.edge_bending_properties), np.array(builder2.edge_bending_properties))
 
+    def test_collapse_fixed_joints(self):
+        shape_cfg = ModelBuilder.ShapeConfig(density=1.0)
+
+        def add_three_cubes(builder: ModelBuilder, parent_body=-1):
+            unit_cube = {"hx": 0.5, "hy": 0.5, "hz": 0.5, "cfg": shape_cfg}
+            b0 = builder.add_link()
+            builder.add_shape_box(body=b0, **unit_cube)
+            j0 = builder.add_joint_fixed(
+                parent=parent_body, child=b0, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0))
+            )
+            b1 = builder.add_link()
+            builder.add_shape_box(body=b1, **unit_cube)
+            j1 = builder.add_joint_fixed(
+                parent=parent_body, child=b1, parent_xform=wp.transform(wp.vec3(0.0, 1.0, 0.0))
+            )
+            b2 = builder.add_link()
+            builder.add_shape_box(body=b2, **unit_cube)
+            j2 = builder.add_joint_fixed(
+                parent=parent_body, child=b2, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0))
+            )
+            return b2, [j0, j1, j2]
+
+        builder = ModelBuilder()
+        # only fixed joints
+        last_body, joints = add_three_cubes(builder)
+        builder.add_articulation(joints)
+        assert builder.joint_count == 3
+        assert builder.body_count == 3
+
+        # fixed joints followed by a non-fixed joint
+        last_body, joints = add_three_cubes(builder)
+        assert builder.joint_count == 6
+        assert builder.body_count == 6
+        assert builder.articulation_count == 1  # Only one articulation created so far
+        b3 = builder.add_link()
+        builder.add_shape_box(
+            body=b3, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg, xform=wp.transform(wp.vec3(1.0, 2.0, 3.0))
+        )
+        joints.append(builder.add_joint_revolute(parent=last_body, child=b3, axis=wp.vec3(0.0, 1.0, 0.0)))
+        builder.add_articulation(joints)
+        assert builder.articulation_count == 2  # Now we have two articulations
+
+        # a non-fixed joint followed by fixed joints
+        free_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_rpy(0.4, 0.5, 0.6))
+        b4 = builder.add_link(xform=free_xform)
+        builder.add_shape_box(body=b4, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        j_free = builder.add_joint_free(parent=-1, child=b4, parent_xform=wp.transform(wp.vec3(0.0, -1.0, 0.0)))
+        assert_np_equal(builder.body_q[b4], np.array(free_xform))
+        assert_np_equal(builder.joint_q[-7:], np.array(free_xform))
+        assert builder.joint_count == 8
+        assert builder.body_count == 8
+        _last_body2, joints2 = add_three_cubes(builder, parent_body=b4)
+        all_joints = [j_free, *joints2]
+        builder.add_articulation(all_joints)
+        assert builder.articulation_count == 3  # Three articulations total
+
+        builder.collapse_fixed_joints()
+
+        assert builder.joint_count == 2
+        assert builder.articulation_count == 2
+        assert builder.articulation_start == [0, 1]
+        assert builder.joint_type == [newton.JointType.REVOLUTE, newton.JointType.FREE]
+        assert builder.shape_count == 11
+        assert builder.shape_body == [-1, -1, -1, -1, -1, -1, 0, 1, 1, 1, 1]
+        assert builder.body_count == 2
+        assert builder.body_com[0] == wp.vec3(1.0, 2.0, 3.0)
+        assert builder.body_com[1] == wp.vec3(0.25, 0.25, 0.25)
+        assert builder.body_mass == [1.0, 4.0]
+        assert builder.body_inv_mass == [1.0, 0.25]
+
+        # create another builder, test add_builder function
+        builder2 = ModelBuilder()
+        builder2.add_builder(builder)
+        assert builder2.articulation_count == builder.articulation_count
+        assert builder2.joint_count == builder.joint_count
+        assert builder2.body_count == builder.body_count
+        assert builder2.shape_count == builder.shape_count
+        assert builder2.articulation_start == builder.articulation_start
+        # add the same builder again
+        builder2.add_builder(builder)
+        assert builder2.articulation_count == 2 * builder.articulation_count
+        assert builder2.articulation_start == [0, 1, 2, 3]
+
+    def test_lock_inertia_on_shape_addition(self):
+        builder = ModelBuilder()
+        shape_cfg = ModelBuilder.ShapeConfig(density=1000.0)
+        base_com = wp.vec3(0.1, 0.2, 0.3)
+        base_inertia = wp.mat33(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
+
+        locked_body = builder.add_link(mass=2.0, com=base_com, inertia=base_inertia, lock_inertia=True)
+        unlocked_body = builder.add_link(mass=2.0, com=base_com, inertia=base_inertia, lock_inertia=False)
+
+        locked_mass = builder.body_mass[locked_body]
+        locked_com = builder.body_com[locked_body]
+        locked_inertia = builder.body_inertia[locked_body]
+
+        unlocked_mass = builder.body_mass[unlocked_body]
+
+        builder.add_shape_box(body=locked_body, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+        builder.add_shape_box(body=unlocked_body, hx=0.5, hy=0.5, hz=0.5, cfg=shape_cfg)
+
+        self.assertEqual(builder.body_mass[locked_body], locked_mass)
+        assert_np_equal(np.array(builder.body_com[locked_body]), np.array(locked_com))
+        assert_np_equal(np.array(builder.body_inertia[locked_body]), np.array(locked_inertia))
+        self.assertNotEqual(builder.body_mass[unlocked_body], unlocked_mass)
+
+    def test_add_body_mass_zero_is_kinematic(self):
+        """Explicit mass=0 should create a kinematic body regardless of shape density."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=0.0)
+        builder.add_shape_box(
+            body=body,
+            hx=0.25,
+            hy=0.25,
+            hz=0.25,
+            cfg=ModelBuilder.ShapeConfig(density=1000.0),
+        )
+
+        self.assertEqual(builder.body_mass[body], 0.0)
+        self.assertEqual(builder.body_inv_mass[body], 0.0)
+        self.assertTrue(np.allclose(np.array(builder.body_inertia[body]).reshape(3, 3), 0.0))
+
+    def test_add_body_mass_none_accumulates_shape_mass(self):
+        """mass=None should keep the legacy 'infer mass from shapes' behavior."""
+        builder = ModelBuilder()
+        body = builder.add_body(mass=None)
+        builder.add_shape_box(
+            body=body,
+            hx=0.25,
+            hy=0.25,
+            hz=0.25,
+            cfg=ModelBuilder.ShapeConfig(density=1000.0),
+        )
+
+        expected_mass = 1000.0 * (0.5 * 0.5 * 0.5)
+        self.assertAlmostEqual(builder.body_mass[body], expected_mass, places=6)
+        self.assertAlmostEqual(builder.body_inv_mass[body], 1.0 / expected_mass, places=6)
+
+    def test_zero_mass_body_suppresses_inertia_warning(self):
+        """Explicitly kinematic bodies should not emit confusing zero-mass inertia warnings."""
+        builder = ModelBuilder()
+        builder.validate_inertia_detailed = True
+        body = builder.add_body(mass=0.0, inertia=wp.mat33(np.eye(3)))
+
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            model = builder.finalize()
+
+        warning_messages = [str(w.message) for w in captured]
+        self.assertFalse(any("Zero mass body" in msg for msg in warning_messages))
+        self.assertTrue(np.allclose(model.body_inertia.numpy()[body], 0.0))
+
+    def test_collapse_fixed_joints_with_locked_inertia(self):
+        builder = ModelBuilder()
+        b0 = builder.add_link(mass=1.0, lock_inertia=True)
+        j0 = builder.add_joint_free(b0)
+        b1 = builder.add_link(mass=2.0, lock_inertia=True)
+        j1 = builder.add_joint_fixed(parent=b0, child=b1)
+        builder.add_articulation([j0, j1])
+
+        builder.collapse_fixed_joints()
+
+        self.assertEqual(builder.body_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 3.0)
+        self.assertTrue(builder.body_lock_inertia[0])
+
+    def test_add_world_with_open_edges(self):
+        builder = ModelBuilder()
+
+        dim_x = 16
+        dim_y = 16
+
+        world_builder = ModelBuilder()
+        world_builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 0.0),
+            vel=wp.vec3(0.1, 0.1, 0.0),
+            rot=wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -math.pi * 0.25),
+            dim_x=dim_x,
+            dim_y=dim_y,
+            cell_x=1.0 / dim_x,
+            cell_y=1.0 / dim_y,
+            mass=1.0,
+        )
+
+        world_count = 2
+        world_offsets = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+
+        builder_open_edge_count = np.sum(np.array(builder.edge_indices) == -1)
+        world_builder_open_edge_count = np.sum(np.array(world_builder.edge_indices) == -1)
+
+        for i in range(world_count):
+            xform = wp.transform(world_offsets[i], wp.quat_identity())
+            builder.add_world(world_builder, xform)
+
+        self.assertEqual(
+            np.sum(np.array(builder.edge_indices) == -1),
+            builder_open_edge_count + world_count * world_builder_open_edge_count,
+            "builder does not have the expected number of open edges",
+        )
+
     def test_mesh_approximation(self):
         def box_mesh(scale=(1.0, 1.0, 1.0), transform: wp.transform | None = None):
             mesh = newton.Mesh.create_box(

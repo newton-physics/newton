@@ -1670,9 +1670,9 @@ class SolverMuJoCo(SolverBase):
                     )
                     continue
 
-                if model_joint_type_np[newton_joint] == JointType.D6:
+                if newton_joint >= len(model_joint_type_np):
                     warnings.warn(
-                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
+                        f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
                         stacklevel=2,
                     )
                     continue
@@ -1682,6 +1682,13 @@ class SolverMuJoCo(SolverBase):
                     warnings.warn(
                         f"Skipping joint entry {j} for tendon {i}: Newton joint {newton_joint} "
                         f"not found in MuJoCo joint mapping.",
+                        stacklevel=2,
+                    )
+                    continue
+
+                if model_joint_type_np[newton_joint] == JointType.D6:
+                    warnings.warn(
+                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
                         stacklevel=2,
                     )
                     continue
@@ -1996,6 +2003,8 @@ class SolverMuJoCo(SolverBase):
         Shape [nu], dtype int32."""
         self.mjc_mocap_to_newton_jnt: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
+        self.joint_mjc_dof_start: wp.array(dtype=wp.int32) | None = None
+        """Mapping from Newton template joint index to MuJoCo DOF start index, or -1 for mocap-only joints."""
         self.mjc_eq_to_newton_eq: wp.array(dtype=wp.int32, ndim=2) | None = None
         """Mapping from MuJoCo [world, eq] to Newton equality constraint index.
 
@@ -2338,6 +2347,11 @@ class SolverMuJoCo(SolverBase):
             mj_data.qfrc_applied[:] = qfrc.numpy()
 
     def _update_mjc_data(self, mj_data: MjWarpData | MjData, model: Model, state: State | None = None):
+        if self.joint_mjc_dof_start is None:
+            raise ValueError(
+                "joint_mjc_dof_start is not initialized. Construct SolverMuJoCo via _convert_to_mjc()"
+                " or provide a mapping when reusing mjw_model/mjw_data."
+            )
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have an MjWarp Data object
@@ -2356,6 +2370,35 @@ class SolverMuJoCo(SolverBase):
             joint_q = state.joint_q
             joint_qd = state.joint_qd
         joints_per_world = model.joint_count // nworld
+
+        # Keep mocap transforms synchronized every step for kinematic-free bodies.
+        if self.mjc_mocap_to_newton_jnt is not None:
+            nmocap = self.mjc_mocap_to_newton_jnt.shape[1]
+            if nmocap > 0:
+                if is_mjwarp:
+                    mocap_pos = mj_data.mocap_pos
+                    mocap_quat = mj_data.mocap_quat
+                else:
+                    mocap_pos = wp.array([mj_data.mocap_pos], dtype=wp.vec3, device=model.device)
+                    mocap_quat = wp.array([mj_data.mocap_quat], dtype=wp.quat, device=model.device)
+                wp.launch(
+                    update_mocap_transforms_kernel,
+                    dim=(nworld, nmocap),
+                    inputs=[
+                        self.mjc_mocap_to_newton_jnt,
+                        model.joint_X_p,
+                        model.joint_X_c,
+                    ],
+                    outputs=[
+                        mocap_pos,
+                        mocap_quat,
+                    ],
+                    device=model.device,
+                )
+                if not is_mjwarp:
+                    mj_data.mocap_pos[:] = mocap_pos.numpy()[0]
+                    mj_data.mocap_quat[:] = mocap_quat.numpy()[0]
+
         mujoco_attrs = getattr(model, "mujoco", None)
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         wp.launch(
@@ -2371,6 +2414,7 @@ class SolverMuJoCo(SolverBase):
                 model.joint_dof_dim,
                 model.joint_child,
                 model.body_com,
+                self.joint_mjc_dof_start,
                 dof_ref,
             ],
             outputs=[qpos, qvel],
@@ -2386,6 +2430,11 @@ class SolverMuJoCo(SolverBase):
         state: State,
         mj_data: MjWarpData | MjData,
     ):
+        if self.joint_mjc_dof_start is None:
+            raise ValueError(
+                "joint_mjc_dof_start is not initialized. Construct SolverMuJoCo via _convert_to_mjc()"
+                " or provide a mapping when reusing mjw_model/mjw_data."
+            )
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         if is_mjwarp:
             # we have an MjWarp Data object
@@ -2413,6 +2462,7 @@ class SolverMuJoCo(SolverBase):
                 model.joint_dof_dim,
                 model.joint_child,
                 model.body_com,
+                self.joint_mjc_dof_start,
                 dof_ref,
             ],
             outputs=[state.joint_q, state.joint_qd],
@@ -3285,10 +3335,14 @@ class SolverMuJoCo(SolverBase):
             # add body
             body_mapping[child] = len(mj_bodies)
 
-            # check if fixed-base articulation
-            fixed_base = False
-            if parent == -1 and joint_type[j] == JointType.FIXED:
-                fixed_base = True
+            j_type = joint_type[j]
+
+            # fixed-base articulations are exported as mocap bodies
+            fixed_base = parent == -1 and j_type == JointType.FIXED
+            # explicit kinematic free bodies (mass=0) are also exported as mocap to
+            # avoid invalid MuJoCo inertial requirements on free joints.
+            kinematic_free_body = parent == -1 and j_type == JointType.FREE and body_mass[child] == 0.0
+            use_mocap_body = fixed_base or kinematic_free_body
 
             # Compute body transform for the MjSpec body pos/quat.
             # For free joints, the parent/child xforms are identity and the
@@ -3318,7 +3372,7 @@ class SolverMuJoCo(SolverBase):
             # MuJoCo requires positive-definite inertia. For zero-mass bodies
             # (sensor frames, reference links), omit mass and inertia entirely
             # and let MuJoCo handle them natively.
-            body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": fixed_base}
+            body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": use_mocap_body}
             if mass > 0.0:
                 body_kwargs["mass"] = mass
                 body_kwargs["ipos"] = body_com[child, :]
@@ -3333,12 +3387,11 @@ class SolverMuJoCo(SolverBase):
                 body_kwargs["explicitinertial"] = True
             body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
-            if fixed_base:
+            if use_mocap_body:
                 newton_body_to_mocap_index[child] = next_mocap_index
                 next_mocap_index += 1
 
             # add joint
-            j_type = joint_type[j]
             qd_start = joint_qd_start[j]
             name = model.joint_key[j]
             if name not in joint_names:
@@ -3348,12 +3401,17 @@ class SolverMuJoCo(SolverBase):
                     joint_names[name] += 1
                     name = f"{name}_{joint_names[name]}"
 
-            # Store mapping from Newton joint index to MuJoCo joint name
-            joint_mapping[j] = name
+            adds_mujoco_joint = not kinematic_free_body and j_type != JointType.FIXED
+            if adds_mujoco_joint:
+                # Store mapping from Newton joint index to MuJoCo joint name
+                joint_mapping[j] = name
+                joint_mjc_dof_start[j] = num_dofs
 
-            joint_mjc_dof_start[j] = num_dofs
-
-            if j_type == JointType.FREE:
+            if kinematic_free_body:
+                # Kinematic free bodies are represented as mocap bodies in MuJoCo.
+                # Their transforms are synchronized from Newton in update_mocap_transforms_kernel.
+                pass
+            elif j_type == JointType.FREE:
                 body.add_joint(
                     name=name,
                     type=mujoco.mjtJoint.mjJNT_FREE,
@@ -3819,6 +3877,10 @@ class SolverMuJoCo(SolverBase):
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
 
+        # Template-joint mapping needed by _update_mjc_data()/update_newton_state().
+        if self.joint_mjc_dof_start is None:
+            self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32, device=model.device)
+
         self._update_mjc_data(self.mj_data, model, state)
 
         # fill some MjWarp model fields that are outdated after _update_mjc_data.
@@ -3940,6 +4002,11 @@ class SolverMuJoCo(SolverBase):
                 body_free_qd_start_np[body_indices] = qd_starts
 
             self.body_free_qd_start = wp.array(body_free_qd_start_np, dtype=wp.int32)
+
+            # Template-joint mapping: Newton template joint -> MuJoCo DOF start (or -1 if no MuJoCo joint).
+            # Used by coordinate-conversion kernels to skip joints that are represented as mocap bodies.
+            if self.joint_mjc_dof_start is None:
+                self.joint_mjc_dof_start = wp.array(joint_mjc_dof_start, dtype=wp.int32, device=model.device)
 
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index
             # Mocap bodies are created from fixed-base articulations (FIXED joint to world)
@@ -4465,6 +4532,7 @@ class SolverMuJoCo(SolverBase):
                 self.model.joint_dof_dim,
                 self.model.joint_child,
                 self.model.body_q,
+                self.joint_mjc_dof_start,
                 dof_ref,
                 dof_springref,
             ],
