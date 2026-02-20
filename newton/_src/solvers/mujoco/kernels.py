@@ -185,6 +185,22 @@ def convert_solref(ke: float, kd: float, d_width: float, d_r: float) -> wp.vec2:
     return wp.vec2(timeconst, dampratio)
 
 
+@wp.func
+def quat_wxyz_to_xyzw(q: wp.quat) -> wp.quat:
+    """Convert a quaternion from MuJoCo wxyz storage to Warp xyzw format."""
+    return wp.quat(q[1], q[2], q[3], q[0])
+
+
+@wp.func
+def quat_xyzw_to_wxyz(q: wp.quat) -> wp.quat:
+    """Convert a Warp xyzw quaternion to MuJoCo wxyz storage order.
+
+    The returned wp.quat is NOT valid for Warp math — it is a container
+    for writing components to MuJoCo arrays.
+    """
+    return wp.quat(q[3], q[0], q[1], q[2])
+
+
 # Kernel functions
 @wp.kernel
 def convert_newton_contacts_to_mjwarp_kernel(
@@ -211,6 +227,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_stiffness: wp.array(dtype=wp.float32),
     rigid_contact_damping: wp.array(dtype=wp.float32),
     rigid_contact_friction_scale: wp.array(dtype=wp.float32),
+    shape_thickness: wp.array(dtype=float),
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
     # Mujoco warp contacts
@@ -276,10 +293,15 @@ def convert_newton_contacts_to_mjwarp_kernel(
     bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
 
-    thickness = rigid_contact_thickness0[tid] + rigid_contact_thickness1[tid]
+    # rigid_contact_thickness = radius_eff + shape_thickness per shape.
+    # Subtract only radius_eff so dist is the surface-to-surface distance.
+    # shape_thickness is handled by geom_margin (MuJoCo's includemargin threshold).
+    radius_eff = (rigid_contact_thickness0[tid] - shape_thickness[shape_a]) + (
+        rigid_contact_thickness1[tid] - shape_thickness[shape_b]
+    )
 
     n = -rigid_contact_normal[tid]
-    dist = wp.dot(n, bx_b - bx_a) - thickness
+    dist = wp.dot(n, bx_b - bx_a) - radius_eff
 
     # Contact position: use midpoint between contact points (as in XPBD kernel)
     pos = 0.5 * (bx_a + bx_b)
@@ -404,11 +426,13 @@ def convert_mj_coords_to_warp_kernel(
             joint_q[wq_i + i] = qpos[worldid, q_i + i]
 
         # change quaternion order from wxyz to xyzw
-        rot = wp.quat(
-            qpos[worldid, q_i + 4],
-            qpos[worldid, q_i + 5],
-            qpos[worldid, q_i + 6],
-            qpos[worldid, q_i + 3],
+        rot = quat_wxyz_to_xyzw(
+            wp.quat(
+                qpos[worldid, q_i + 3],
+                qpos[worldid, q_i + 4],
+                qpos[worldid, q_i + 5],
+                qpos[worldid, q_i + 6],
+            )
         )
         joint_q[wq_i + 3] = rot[0]
         joint_q[wq_i + 4] = rot[1]
@@ -445,11 +469,13 @@ def convert_mj_coords_to_warp_kernel(
         joint_qd[wqd_i + 5] = w_world[2]
     elif type == JointType.BALL:
         # change quaternion order from wxyz to xyzw
-        rot = wp.quat(
-            qpos[worldid, q_i + 1],
-            qpos[worldid, q_i + 2],
-            qpos[worldid, q_i + 3],
-            qpos[worldid, q_i],
+        rot = quat_wxyz_to_xyzw(
+            wp.quat(
+                qpos[worldid, q_i],
+                qpos[worldid, q_i + 1],
+                qpos[worldid, q_i + 2],
+                qpos[worldid, q_i + 3],
+            )
         )
         joint_q[wq_i] = rot[0]
         joint_q[wq_i + 1] = rot[1]
@@ -506,10 +532,11 @@ def convert_warp_coords_to_mj_kernel(
             joint_q[wq_i + 6],
         )
         # change quaternion order from xyzw to wxyz
-        qpos[worldid, q_i + 3] = rot[3]
-        qpos[worldid, q_i + 4] = rot[0]
-        qpos[worldid, q_i + 5] = rot[1]
-        qpos[worldid, q_i + 6] = rot[2]
+        rot_wxyz = quat_xyzw_to_wxyz(rot)
+        qpos[worldid, q_i + 3] = rot_wxyz[0]
+        qpos[worldid, q_i + 4] = rot_wxyz[1]
+        qpos[worldid, q_i + 5] = rot_wxyz[2]
+        qpos[worldid, q_i + 6] = rot_wxyz[3]
 
         # Newton joint_qd: linear velocity of CoM (world frame), angular velocity (world frame)
         # MuJoCo qvel: linear velocity of body ORIGIN (world frame), angular velocity (body frame)
@@ -542,10 +569,12 @@ def convert_warp_coords_to_mj_kernel(
 
     elif type == JointType.BALL:
         # change quaternion order from xyzw to wxyz
-        qpos[worldid, q_i + 0] = joint_q[wq_i + 3]
-        qpos[worldid, q_i + 1] = joint_q[wq_i + 0]
-        qpos[worldid, q_i + 2] = joint_q[wq_i + 1]
-        qpos[worldid, q_i + 3] = joint_q[wq_i + 2]
+        ball_q = wp.quat(joint_q[wq_i], joint_q[wq_i + 1], joint_q[wq_i + 2], joint_q[wq_i + 3])
+        ball_q_wxyz = quat_xyzw_to_wxyz(ball_q)
+        qpos[worldid, q_i + 0] = ball_q_wxyz[0]
+        qpos[worldid, q_i + 1] = ball_q_wxyz[1]
+        qpos[worldid, q_i + 2] = ball_q_wxyz[2]
+        qpos[worldid, q_i + 3] = ball_q_wxyz[3]
         for i in range(3):
             # convert velocity components
             qvel[worldid, qd_i + i] = joint_qd[wqd_i + i]
@@ -602,14 +631,10 @@ def sync_qpos0_kernel(
             qpos_spring[worldid, q_i + i] = pos[i]
 
         # Quaternion: Newton stores xyzw, MuJoCo uses wxyz
-        qpos0[worldid, q_i + 3] = rot[3]
-        qpos0[worldid, q_i + 4] = rot[0]
-        qpos0[worldid, q_i + 5] = rot[1]
-        qpos0[worldid, q_i + 6] = rot[2]
-        qpos_spring[worldid, q_i + 3] = rot[3]
-        qpos_spring[worldid, q_i + 4] = rot[0]
-        qpos_spring[worldid, q_i + 5] = rot[1]
-        qpos_spring[worldid, q_i + 6] = rot[2]
+        rot_wxyz = quat_xyzw_to_wxyz(rot)
+        for i in range(4):
+            qpos0[worldid, q_i + 3 + i] = rot_wxyz[i]
+            qpos_spring[worldid, q_i + 3 + i] = rot_wxyz[i]
     elif type == JointType.BALL:
         # Identity quaternion in wxyz order
         qpos0[worldid, q_i + 0] = 1.0
@@ -1028,7 +1053,7 @@ def convert_body_xforms_to_warp_kernel(
         pos = xpos[world, mjc_body]
         quat = xquat[world, mjc_body]
         # convert from wxyz to xyzw
-        quat = wp.quat(quat[1], quat[2], quat[3], quat[0])
+        quat = quat_wxyz_to_xyzw(quat)
         body_q[newton_body] = wp.transform(pos, quat)
 
 
@@ -1038,7 +1063,6 @@ def update_body_mass_ipos_kernel(
     body_com: wp.array(dtype=wp.vec3f),
     body_mass: wp.array(dtype=float),
     body_gravcomp: wp.array(dtype=float),
-    up_axis: int,
     # outputs
     body_ipos: wp.array2d(dtype=wp.vec3f),
     body_mass_out: wp.array2d(dtype=float),
@@ -1055,12 +1079,7 @@ def update_body_mass_ipos_kernel(
         return
 
     # update COM position
-    if up_axis == 1:
-        body_ipos[world, mjc_body] = wp.vec3f(
-            body_com[newton_body][0], -body_com[newton_body][2], body_com[newton_body][1]
-        )
-    else:
-        body_ipos[world, mjc_body] = body_com[newton_body]
+    body_ipos[world, mjc_body] = body_com[newton_body]
 
     # update mass
     body_mass_out[world, mjc_body] = body_mass[newton_body]
@@ -1144,11 +1163,11 @@ def update_body_inertia_kernel(
     # Ensure proper rotation matrix (det=+1) for valid quaternion conversion
     V = _ensure_proper_rotation(V)
 
-    # Convert to quaternion (wp returns xyzw, MuJoCo uses wxyz)
+    # Convert to quaternion (Warp uses xyzw, mujoco_warp stores wxyz)
     q = wp.normalize(wp.quat_from_matrix(V))
 
-    # Convert from xyzw to wxyz format
-    q = wp.quat(q[1], q[2], q[3], q[0])
+    # Convert from xyzw to wxyz
+    q = quat_xyzw_to_wxyz(q)
 
     # Store results
     body_inertia_out[world, mjc_body] = eigenvalues
@@ -1466,7 +1485,7 @@ def update_mocap_transforms_kernel(
 
     # Update mocap position and orientation
     mocap_pos[world, mocap_idx] = tf.p
-    mocap_quat[world, mocap_idx] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+    mocap_quat[world, mocap_idx] = quat_xyzw_to_wxyz(tf.q)
 
 
 @wp.kernel
@@ -1521,7 +1540,7 @@ def update_joint_transforms_kernel(
     # separately by update_mocap_transforms_kernel
     mjc_body = mjc_jnt_bodyid[mjc_jnt]
     body_pos[world, mjc_body] = tf.p
-    body_quat[world, mjc_body] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+    body_quat[world, mjc_body] = quat_xyzw_to_wxyz(tf.q)
 
     # Update joint axis and position (DOF-indexed for axis)
     if newton_dof >= 0:
@@ -1593,6 +1612,7 @@ def update_geom_properties_kernel(
     shape_geom_solimp: wp.array(dtype=vec5),
     shape_geom_solmix: wp.array(dtype=float),
     shape_geom_gap: wp.array(dtype=float),
+    shape_thickness: wp.array(dtype=float),
     # outputs
     geom_friction: wp.array2d(dtype=wp.vec3f),
     geom_solref: wp.array2d(dtype=wp.vec2f),
@@ -1602,6 +1622,7 @@ def update_geom_properties_kernel(
     geom_solimp: wp.array2d(dtype=vec5),
     geom_solmix: wp.array2d(dtype=float),
     geom_gap: wp.array2d(dtype=float),
+    geom_margin: wp.array2d(dtype=float),
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
@@ -1611,6 +1632,9 @@ def update_geom_properties_kernel(
     Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
     this internally based on the geometry, and Newton's shape_collision_radius
     is not compatible with MuJoCo's bounding sphere calculation.
+
+    Note: geom_margin is always updated from shape_thickness (unconditionally,
+    unlike the optional shape_geom_gap/solimp/solmix fields).
     """
     world, geom_idx = wp.tid()
 
@@ -1641,6 +1665,9 @@ def update_geom_properties_kernel(
     if shape_geom_gap:
         geom_gap[world, geom_idx] = shape_geom_gap[shape_idx]
 
+    # update geom_margin from shape thickness
+    geom_margin[world, geom_idx] = shape_thickness[shape_idx]
+
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]
 
@@ -1654,12 +1681,12 @@ def update_geom_properties_kernel(
         mesh_id = geom_dataid[geom_idx]
         mesh_p = mesh_pos[mesh_id]
         mesh_q = mesh_quat[mesh_id]
-        mesh_tf = wp.transform(mesh_p, wp.quat(mesh_q.y, mesh_q.z, mesh_q.w, mesh_q.x))
+        mesh_tf = wp.transform(mesh_p, quat_wxyz_to_xyzw(mesh_q))
         tf = tf * mesh_tf
 
     # store position and orientation
     geom_pos[world, geom_idx] = tf.p
-    geom_quat[world, geom_idx] = wp.quat(tf.q.w, tf.q.x, tf.q.y, tf.q.z)
+    geom_quat[world, geom_idx] = quat_xyzw_to_wxyz(tf.q)
 
 
 @wp.kernel(enable_backward=False)
@@ -1834,12 +1861,9 @@ def update_eq_data_and_active_kernel(
         data[5] = pos[2]
 
         # data[6:10] = relpose quaternion in MuJoCo order (wxyz)
-        # Newton stores as xyzw, MuJoCo expects wxyz
-        quat = wp.transform_get_rotation(relpose)
-        data[6] = quat[3]  # w
-        data[7] = quat[0]  # x
-        data[8] = quat[1]  # y
-        data[9] = quat[2]  # z
+        quat = quat_xyzw_to_wxyz(wp.transform_get_rotation(relpose))
+        for i in range(4):
+            data[6 + i] = quat[i]
 
         # data[10] = torquescale
         data[10] = eq_constraint_torquescale[newton_eq]

@@ -139,7 +139,7 @@ class Example:
                 bend_damping=1.0e-2,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=1.0e-4,
-                key=f"helix_{i}",
+                label=f"helix_{i}",
             )
 
             # Record the body indices for this cable for robust testing
@@ -166,9 +166,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.collision_pipeline.contacts()
+        self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
 
         # Optional capture for CUDA
@@ -197,7 +195,7 @@ class Example:
 
             # Collide for contact detection
             if update_step_history:
-                self.collision_pipeline.collide(self.state_0, self.contacts)
+                self.model.collide(self.state_0, self.contacts)
 
             self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(

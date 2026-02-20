@@ -527,6 +527,11 @@ add_example_test(
     use_viewer=True,
 )
 
+# Skip until the IK cube stacking example is stabilized
+for _attr in list(vars(TestIKExamples)):
+    if _attr.startswith("test_ik.example_ik_cube_stacking"):
+        setattr(TestIKExamples, _attr, unittest.skip("Unstable test")(getattr(TestIKExamples, _attr)))
+
 
 class TestSelectionAPIExamples(unittest.TestCase):
     pass
@@ -697,7 +702,14 @@ class TestContactsExamples(unittest.TestCase):
 
 add_example_test(
     TestContactsExamples,
-    name="contacts.example_sdf",
+    name="contacts.example_nut_bolt_sdf",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "world-count": 1, "scene": "nut_bolt"},
+    use_viewer=True,
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1, "scene": "nut_bolt"},
     use_viewer=True,

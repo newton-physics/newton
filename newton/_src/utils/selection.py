@@ -15,6 +15,7 @@
 
 import functools
 from fnmatch import fnmatch
+from types import NoneType
 from typing import Any
 
 import warp as wp
@@ -229,15 +230,23 @@ class FrequencyLayout:
         return f"FrequencyLayout(\n    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n)"
 
 
-def get_name_from_key(key: str):
-    return key.split("/")[-1]
+def get_name_from_label(label: str):
+    """Return the leaf component of a hierarchical label.
+
+    Args:
+        label: Slash-delimited label string (e.g. ``"robot/link1"``).
+
+    Returns:
+        The final path component of the label.
+    """
+    return label.split("/")[-1]
 
 
-def find_matching_ids(pattern: str, keys: list[str], world_ids, world_count: int):
+def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
-    for id, key in enumerate(keys):
-        if fnmatch(key, pattern):
+    for id, label in enumerate(labels):
+        if fnmatch(label, pattern):
             world = world_ids[id]
             if world == -1:
                 global_ids.append(id)
@@ -335,7 +344,7 @@ class ArticulationView:
 
     Args:
         model (Model): The model containing the articulations.
-        pattern (str): Pattern to match articulation keys.
+        pattern (str): Pattern to match articulation labels.
         include_joints (list[str] | list[int] | None): List of joint names, patterns, or indices to include.
         exclude_joints (list[str] | list[int] | None): List of joint names, patterns, or indices to exclude.
         include_links (list[str] | list[int] | None): List of link names, patterns, or indices to include.
@@ -373,7 +382,7 @@ class ArticulationView:
 
         # get articulation ids grouped by world
         articulation_ids, global_articulation_ids = find_matching_ids(
-            pattern, model.articulation_key, model_articulation_world, model.world_count
+            pattern, model.articulation_label, model_articulation_world, model.world_count
         )
 
         # determine articulation counts per world
@@ -430,7 +439,7 @@ class ArticulationView:
         for joint_id in range(arti_joint_begin, arti_joint_end):
             # joint_id = arti_joint_begin + idx
             arti_joint_ids.append(joint_id)
-            arti_joint_names.append(get_name_from_key(model.joint_key[joint_id]))
+            arti_joint_names.append(get_name_from_label(model.joint_label[joint_id]))
             arti_joint_types.append(model_joint_type[joint_id])
             link_id = int(model_joint_child[joint_id])
             arti_link_ids.append(link_id)
@@ -439,14 +448,14 @@ class ArticulationView:
         arti_link_ids = sorted(arti_link_ids)
         arti_link_count = len(arti_link_ids)
         for link_id in arti_link_ids:
-            arti_link_names.append(get_name_from_key(model.body_key[link_id]))
+            arti_link_names.append(get_name_from_label(model.body_label[link_id]))
             arti_shape_ids.extend(model.body_shapes[link_id])
 
         # use shape order as they appear in the model
         arti_shape_ids = sorted(arti_shape_ids)
         arti_shape_count = len(arti_shape_ids)
         for shape_id in arti_shape_ids:
-            arti_shape_names.append(get_name_from_key(model.shape_key[shape_id]))
+            arti_shape_names.append(get_name_from_label(model.shape_label[shape_id]))
 
         # compute counts and offsets of joints, links, etc.
         joint_starts = list_of_lists(world_count)
@@ -898,11 +907,11 @@ class ArticulationView:
 
                     self.tendon_count = arti_tendon_count
 
-                    # Populate tendon_names from model.mujoco.tendon_key if available
-                    if hasattr(mujoco_attrs, "tendon_key"):
+                    # Populate tendon_names from model.mujoco.tendon_label if available
+                    if hasattr(mujoco_attrs, "tendon_label"):
                         for tendon_idx in arti_tendon_ids:
-                            if tendon_idx < len(mujoco_attrs.tendon_key):
-                                self.tendon_names.append(mujoco_attrs.tendon_key[tendon_idx])
+                            if tendon_idx < len(mujoco_attrs.tendon_label):
+                                self.tendon_names.append(get_name_from_label(mujoco_attrs.tendon_label[tendon_idx]))
                             else:
                                 self.tendon_names.append(f"tendon_{tendon_idx}")
 
@@ -1013,38 +1022,29 @@ class ArticulationView:
         # handle custom slice
         if isinstance(_slice, Slice):
             _slice = _slice.get()
-        elif isinstance(_slice, int):
-            _slice = slice(_slice, _slice + 1)
+        elif not isinstance(_slice, (NoneType, int, slice)):
+            raise ValueError(f"Invalid slice type: expected slice or int, got {type(_slice)}")
 
         if _slice is None:
+            value_slice = layout.indices if is_indexed else layout.slice
             value_count = layout.value_count
-            if is_indexed:
-                value_slice = layout.indices
-            else:
-                value_slice = layout.slice
         else:
-            value_count = _slice.stop - _slice.start
-            if is_indexed:
-                value_slice = layout.indices[_slice]
-            else:
-                value_slice = _slice
-
-        shape = (self.world_count, self.count_per_world, value_count)
-        strides = (
-            layout.stride_between_worlds * value_stride,
-            layout.stride_within_worlds * value_stride,
-            value_stride,
-        )
-        slices = (slice(self.world_count), slice(self.count_per_world), value_slice)
+            value_slice = _slice
+            value_count = 1 if isinstance(_slice, int) else _slice.stop - _slice.start
 
         # trailing dimensions for multidimensional attributes
         trailing_shape = attrib.shape[1:]
         trailing_strides = attrib.strides[1:]
         trailing_slices = [slice(s) for s in trailing_shape]
 
-        shape = (*shape, *trailing_shape)
-        strides = (*strides, *trailing_strides)
-        slices = (*slices, *trailing_slices)
+        shape = (self.world_count, self.count_per_world, value_count, *trailing_shape)
+        strides = (
+            layout.stride_between_worlds * value_stride,
+            layout.stride_within_worlds * value_stride,
+            value_stride,
+            *trailing_strides,
+        )
+        slices = (slice(self.world_count), slice(self.count_per_world), value_slice, *trailing_slices)
 
         # construct reshaped attribute array
         attrib = wp.array(

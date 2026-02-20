@@ -255,9 +255,7 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.collision_pipeline.contacts()
+        self.contacts = self.model.contacts()
 
         # Setup ik and tasks
         self.state = self.model.state()
@@ -272,7 +270,7 @@ class Example:
         self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
 
         # Set cube colors
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
+        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
         self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.cube_colors.items()})
 
         if hasattr(self.viewer, "renderer"):
@@ -303,11 +301,11 @@ class Example:
 
     def simulate(self):
         if not self.collide_substeps:
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.model.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             if self.collide_substeps:
-                self.collision_pipeline.collide(self.state_0, self.contacts)
+                self.model.collide(self.state_0, self.contacts)
 
             self.state_0.clear_forces()
 
@@ -481,7 +479,7 @@ class Example:
             mesh_body = scene.add_body(xform=body_xform)
 
             half_size = 0.5 * self.cube_size
-            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, key=key)
+            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, label=key)
 
             # Set the color of the cube based on the index
             if i == 0:

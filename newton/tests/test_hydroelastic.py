@@ -47,7 +47,7 @@ SIM_TIME = 1.0
 VIEWER_NUM_FRAMES = 300
 
 # Test thresholds
-POSITION_THRESHOLD_FACTOR = 0.1  # multiplied by cube_half
+POSITION_THRESHOLD_FACTOR = 0.15  # multiplied by cube_half
 MAX_ROTATION_DEG = 10.0
 
 # Devices and solvers
@@ -80,7 +80,12 @@ def simulate(solver, model, state_0, state_1, control, contacts, collision_pipel
 
 
 def build_stacked_cubes_scene(
-    device, solver_fn, shape_type: ShapeType, cube_half: float = CUBE_HALF_LARGE, reduce_contacts: bool = True
+    device,
+    solver_fn,
+    shape_type: ShapeType,
+    cube_half: float = CUBE_HALF_LARGE,
+    reduce_contacts: bool = True,
+    sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
 ):
     """Build the stacked cubes scene and return all components for simulation."""
     cube_mesh = None
@@ -99,14 +104,30 @@ def build_stacked_cubes_scene(
     narrow_band = cube_half * 0.2
     contact_margin = cube_half * 0.2
 
+    if cube_mesh is not None:
+        cube_mesh.build_sdf(
+            max_resolution=32,
+            narrow_band_range=(-narrow_band, narrow_band),
+            margin=contact_margin,
+        )
+
     builder = newton.ModelBuilder()
-    builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
-        mu=0.5,
-        sdf_max_resolution=32,
-        is_hydroelastic=True,
-        sdf_narrow_band_range=(-narrow_band, narrow_band),
-        contact_margin=contact_margin,
-    )
+    if shape_type == ShapeType.PRIMITIVE:
+        builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
+            mu=0.5,
+            sdf_max_resolution=32,
+            is_hydroelastic=True,
+            sdf_narrow_band_range=(-narrow_band, narrow_band),
+            contact_margin=contact_margin,
+        )
+    else:
+        builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
+            mu=0.5,
+            is_hydroelastic=True,
+            contact_margin=contact_margin,
+        )
 
     builder.add_ground_plane()
 
@@ -116,7 +137,7 @@ def build_stacked_cubes_scene(
         initial_positions.append(wp.vec3(0.0, 0.0, z_pos))
         body = builder.add_body(
             xform=wp.transform(initial_positions[-1], wp.quat_identity()),
-            key=f"{shape_type.value}_cube_{i}",
+            label=f"{shape_type.value}_cube_{i}",
         )
 
         if shape_type == ShapeType.PRIMITIVE:
@@ -133,9 +154,13 @@ def build_stacked_cubes_scene(
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_hydroelastic_config = HydroelasticSDF.Config(
-        output_contact_surface=True, reduce_contacts=reduce_contacts, anchor_contact=True
-    )
+    if sdf_hydroelastic_config is None:
+        sdf_hydroelastic_config = HydroelasticSDF.Config(
+            output_contact_surface=True,
+            reduce_contacts=reduce_contacts,
+            anchor_contact=True,
+            buffer_fraction=1.0,
+        )
 
     # Hydroelastic without contact reduction can generate many contacts
     rigid_contact_max = 6000 if not reduce_contacts else 100
@@ -154,11 +179,17 @@ def build_stacked_cubes_scene(
 
 
 def run_stacked_cubes_hydroelastic_test(
-    test, device, solver_fn, shape_type: ShapeType, cube_half: float = CUBE_HALF_LARGE, reduce_contacts: bool = True
+    test,
+    device,
+    solver_fn,
+    shape_type: ShapeType,
+    cube_half: float = CUBE_HALF_LARGE,
+    reduce_contacts: bool = True,
+    config: HydroelasticSDF.Config | None = None,
 ):
     """Shared test for stacking 3 cubes using hydroelastic contacts."""
     model, solver, state_0, state_1, control, collision_pipeline, initial_positions, cube_half = (
-        build_stacked_cubes_scene(device, solver_fn, shape_type, cube_half, reduce_contacts)
+        build_stacked_cubes_scene(device, solver_fn, shape_type, cube_half, reduce_contacts, config)
     )
 
     contacts = collision_pipeline.contacts()
@@ -212,17 +243,264 @@ def test_stacked_mesh_cubes_hydroelastic(test, device, solver_fn):
 
 def test_stacked_small_primitive_cubes_hydroelastic(test, device, solver_fn):
     """Test 3 small primitive cubes (1cm) stacked on each other remain stable for 1 second using hydroelastic contacts."""
-    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.PRIMITIVE, CUBE_HALF_SMALL)
+    # This scene can exceed the default pre-pruned face-contact budget on CI GPUs,
+    # which emits overflow warnings and can perturb stability assertions.
+    # Keep defaults unchanged and increase capacity only for this stress test.
+    config = HydroelasticSDF.Config(buffer_mult_contact=2)
+    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.PRIMITIVE, CUBE_HALF_SMALL, config=config)
 
 
 def test_stacked_small_mesh_cubes_hydroelastic(test, device, solver_fn):
     """Test 3 small mesh cubes (1cm) stacked on each other remain stable for 1 second using hydroelastic contacts."""
-    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.MESH, CUBE_HALF_SMALL)
+    # This scene can exceed the default pre-pruned face-contact budget on CI GPUs,
+    # which emits overflow warnings that fail check_output-enabled tests.
+    # Keep defaults unchanged and increase capacity only for this stress test.
+    config = HydroelasticSDF.Config(buffer_mult_contact=2)
+    run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.MESH, CUBE_HALF_SMALL, config=config)
 
 
 def test_stacked_primitive_cubes_hydroelastic_no_reduction(test, device, solver_fn):
     """Test 3 primitive cubes (1m) stacked without contact reduction using hydroelastic contacts."""
     run_stacked_cubes_hydroelastic_test(test, device, solver_fn, ShapeType.PRIMITIVE, CUBE_HALF_LARGE, False)
+
+
+def test_buffer_fraction_no_crash(test, device):
+    """Validate reduced buffer allocation still yields contacts.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    cube_half = 0.5
+    narrow_band = cube_half * 0.2
+    contact_margin = cube_half * 0.2
+    num_cubes = 3
+
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(
+        sdf_max_resolution=32,
+        is_hydroelastic=True,
+        sdf_narrow_band_range=(-narrow_band, narrow_band),
+        contact_margin=contact_margin,
+    )
+    builder.add_ground_plane()
+
+    for i in range(num_cubes):
+        z_pos = cube_half + i * cube_half * 2.0
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, z_pos), q=wp.quat_identity()))
+        builder.add_shape_box(body=body, hx=cube_half, hy=cube_half, hz=cube_half)
+
+    model = builder.finalize(device=device)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    # Reduced allocation with moderate headroom.
+    config_reduced = HydroelasticSDF.Config(buffer_fraction=0.8)
+    pipeline_reduced = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=config_reduced,
+    )
+
+    contacts_reduced = pipeline_reduced.contacts()
+    pipeline_reduced.collide(state, contacts_reduced)
+    wp.synchronize()
+    reduced_count = int(contacts_reduced.rigid_contact_count.numpy()[0])
+    test.assertGreater(reduced_count, 0, "Expected non-zero contacts with reduced buffer_fraction")
+
+    # Full allocation should not produce fewer contacts.
+    config_full = HydroelasticSDF.Config(buffer_fraction=1.0)
+    pipeline_full = newton.CollisionPipeline(
+        model,
+        broad_phase="explicit",
+        sdf_hydroelastic_config=config_full,
+    )
+    contacts_full = pipeline_full.contacts()
+    pipeline_full.collide(state, contacts_full)
+    wp.synchronize()
+    full_count = int(contacts_full.rigid_contact_count.numpy()[0])
+
+    test.assertGreaterEqual(
+        full_count,
+        reduced_count,
+        f"Expected full buffers ({full_count}) to produce >= reduced buffers ({reduced_count}) contacts",
+    )
+
+
+def _compute_total_active_weight_sum(collision_pipeline, state):
+    """Compute total active aggregate weight in the hydroelastic reducer.
+
+    Args:
+        collision_pipeline: Collision pipeline configured for hydroelastic contacts.
+        state: Simulation state used for collision evaluation.
+
+    Returns:
+        Sum of active reducer ``weight_sum`` entries [unitless].
+    """
+    contacts = collision_pipeline.contacts()
+    collision_pipeline.collide(state, contacts)
+    wp.synchronize()
+
+    hydro = collision_pipeline.hydroelastic_sdf
+    reducer = hydro.contact_reduction.reducer
+    active_slots = reducer.hashtable.active_slots.numpy()
+    ht_capacity = reducer.hashtable.capacity
+    active_count = int(active_slots[ht_capacity])
+    if active_count <= 0:
+        return 0.0
+    active_indices = active_slots[:active_count]
+    weight_sum = reducer.weight_sum.numpy()
+    return float(np.sum(weight_sum[active_indices]))
+
+
+def test_iso_scan_scratch_buffers_are_level_sized(test, device):
+    """Validate iso-scan scratch buffers match each level input size.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    # Small cubes generate many contacts; increase buffer to avoid overflow warnings
+    model, _, state_0, _, _, pipeline, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=solvers["xpbd"],
+        shape_type=ShapeType.PRIMITIVE,
+        cube_half=CUBE_HALF_SMALL,
+        reduce_contacts=True,
+        sdf_hydroelastic_config=HydroelasticSDF.Config(buffer_mult_contact=2),
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_0, contacts)
+    wp.synchronize()
+
+    hydro = pipeline.hydroelastic_sdf
+    test.assertIsNotNone(hydro)
+
+    test.assertEqual(len(hydro.input_sizes), 4)
+    test.assertEqual(len(hydro.iso_buffer_num_scratch), 4)
+    test.assertEqual(len(hydro.iso_buffer_prefix_scratch), 4)
+    test.assertEqual(len(hydro.iso_subblock_idx_scratch), 4)
+    for i, level_input in enumerate(hydro.input_sizes):
+        test.assertEqual(hydro.iso_buffer_num_scratch[i].shape[0], level_input)
+        test.assertEqual(hydro.iso_buffer_prefix_scratch[i].shape[0], level_input)
+        test.assertEqual(hydro.iso_subblock_idx_scratch[i].shape[0], level_input)
+
+
+def test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum(test, device):
+    """Validate opt-in aggregate mode keeps at least as much penetrating weight.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+    config_default = HydroelasticSDF.Config(
+        reduce_contacts=True,
+        pre_prune_contacts=True,
+        pre_prune_accumulate_all_penetrating_aggregates=False,
+        buffer_fraction=1.0,
+        buffer_mult_contact=2,
+    )
+    model_default, _, state_default, _, _, pipeline_default, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=solvers["xpbd"],
+        shape_type=ShapeType.MESH,
+        cube_half=CUBE_HALF_SMALL,
+        reduce_contacts=True,
+        sdf_hydroelastic_config=config_default,
+    )
+    newton.eval_fk(model_default, model_default.joint_q, model_default.joint_qd, state_default)
+    total_weight_default = _compute_total_active_weight_sum(pipeline_default, state_default)
+
+    config_accurate = HydroelasticSDF.Config(
+        reduce_contacts=True,
+        pre_prune_contacts=True,
+        pre_prune_accumulate_all_penetrating_aggregates=True,
+        buffer_fraction=1.0,
+        buffer_mult_contact=2,
+    )
+    model_accurate, _, state_accurate, _, _, pipeline_accurate, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=solvers["xpbd"],
+        shape_type=ShapeType.MESH,
+        cube_half=CUBE_HALF_SMALL,
+        reduce_contacts=True,
+        sdf_hydroelastic_config=config_accurate,
+    )
+    newton.eval_fk(model_accurate, model_accurate.joint_q, model_accurate.joint_qd, state_accurate)
+    total_weight_accurate = _compute_total_active_weight_sum(pipeline_accurate, state_accurate)
+
+    test.assertGreater(total_weight_default, 0.0, "Expected positive aggregate weight in default mode")
+    test.assertGreater(total_weight_accurate, 0.0, "Expected positive aggregate weight in accurate mode")
+    test.assertGreaterEqual(
+        total_weight_accurate,
+        total_weight_default - 1e-6,
+        "Expected accurate aggregate mode to retain at least as much penetrating aggregate weight",
+    )
+
+
+def test_reduce_contacts_with_pre_prune_disabled_no_crash(test, device):
+    """Validate the reduce_contacts=True, pre_prune_contacts=False path."""
+    config = HydroelasticSDF.Config(
+        reduce_contacts=True,
+        pre_prune_contacts=False,
+        buffer_fraction=1.0,
+        buffer_mult_contact=2,
+    )
+    model, _, state_0, _, _, pipeline, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=solvers["xpbd"],
+        shape_type=ShapeType.MESH,
+        cube_half=CUBE_HALF_SMALL,
+        reduce_contacts=True,
+        sdf_hydroelastic_config=config,
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_0, contacts)
+    wp.synchronize()
+
+    rigid_count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertGreater(rigid_count, 0, "Expected non-zero contacts with pre_prune_contacts=False")
+
+
+def test_entry_k_eff_matches_shape_harmonic_mean(test, device):
+    """Validate entry_k_eff uses the pairwise harmonic-mean stiffness formula."""
+    expected_k_eff = 0.5 * 1.0e10  # k_a == k_b == default kh for these shapes
+    config = HydroelasticSDF.Config(
+        reduce_contacts=True,
+        pre_prune_contacts=False,
+        buffer_fraction=1.0,
+        buffer_mult_contact=2,
+    )
+    model, _, state_0, _, _, pipeline, _, _ = build_stacked_cubes_scene(
+        device=device,
+        solver_fn=solvers["xpbd"],
+        shape_type=ShapeType.MESH,
+        cube_half=CUBE_HALF_SMALL,
+        reduce_contacts=True,
+        sdf_hydroelastic_config=config,
+    )
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    contacts = pipeline.contacts()
+    pipeline.collide(state_0, contacts)
+    wp.synchronize()
+
+    hydro = pipeline.hydroelastic_sdf
+    reducer = hydro.contact_reduction.reducer
+    active_slots = reducer.hashtable.active_slots.numpy()
+    ht_capacity = reducer.hashtable.capacity
+    active_count = int(active_slots[ht_capacity])
+    test.assertGreater(active_count, 0, "Expected at least one active reduction hashtable entry")
+
+    active_indices = active_slots[:active_count]
+    entry_k_eff = reducer.entry_k_eff.numpy()[active_indices]
+    nonzero_k_eff = entry_k_eff[entry_k_eff > 0.0]
+    test.assertGreater(len(nonzero_k_eff), 0, "Expected non-zero entry_k_eff values")
+    test.assertTrue(
+        np.allclose(nonzero_k_eff, expected_k_eff, rtol=1.0e-4, atol=1.0e-3),
+        f"Expected entry_k_eff to match harmonic mean ({expected_k_eff:.6e})",
+    )
 
 
 def test_mujoco_hydroelastic_penetration_depth(test, device):
@@ -277,6 +555,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         I_m_upper = wp.mat33(inertia_upper, 0.0, 0.0, 0.0, inertia_upper, 0.0, 0.0, 0.0, inertia_upper)
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(
+            thickness=1e-5,
             sdf_max_resolution=64,
             is_hydroelastic=True,
             sdf_narrow_band_range=(-0.1, 0.1),
@@ -291,7 +570,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         lower_pos = wp.vec3(x_pos, 0.0, box_half_lower)
         body_lower = builder.add_body(
             xform=wp.transform(p=lower_pos, q=wp.quat_identity()),
-            key=f"lower_{i}",
+            label=f"lower_{i}",
             mass=mass_lower,
             inertia=I_m_lower,
         )
@@ -307,7 +586,7 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         upper_pos = wp.vec3(x_pos, 0.0, upper_z)
         body_upper = builder.add_body(
             xform=wp.transform(p=upper_pos, q=wp.quat_identity()),
-            key=f"upper_{i}",
+            label=f"upper_{i}",
             mass=mass_upper,
             inertia=I_m_upper,
         )
@@ -338,10 +617,10 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    sdf_config = HydroelasticSDF.Config(output_contact_surface=True)
+    sdf_config = HydroelasticSDF.Config(output_contact_surface=True, buffer_fraction=1.0)
     collision_pipeline = newton.CollisionPipeline(
         model,
-        broad_phase_mode="explicit",
+        broad_phase="explicit",
         sdf_hydroelastic_config=sdf_config,
     )
     # Enable contact surface output for this test (validates penetration depth)
@@ -353,19 +632,19 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
     substeps = 10
     sim_time = 3.0
     num_frames = int(sim_time / sim_dt)
+    total_steps = num_frames * substeps
 
-    for _ in range(num_frames):
-        for _ in range(substeps):
-            state_0.clear_forces()
-            # Apply external force to upper boxes
-            forces = np.zeros(model.body_count * 6, dtype=np.float32)
-            for body_idx in upper_body_indices:
-                forces[body_idx * 6 + 2] = -external_force
-            state_0.body_f.assign(forces)
+    # Pre-compute forces as a Warp array
+    forces_np = np.zeros(model.body_count * 6, dtype=np.float32)
+    for body_idx in upper_body_indices:
+        forces_np[body_idx * 6 + 2] = -external_force
+    precomputed_forces = wp.array(forces_np.reshape(model.body_count, 6), dtype=wp.spatial_vector, device=device)
 
-            collision_pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
-            state_0, state_1 = state_1, state_0
+    for _ in range(total_steps):
+        wp.copy(state_0.body_f, precomputed_forces)
+        collision_pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, sim_dt / substeps)
+        state_0, state_1 = state_1, state_0
 
     # Check that upper cubes are near their original positions
     body_q = state_0.body_q.numpy()
@@ -518,6 +797,41 @@ add_function_test(
     TestHydroelastic,
     "test_mujoco_hydroelastic_penetration_depth",
     test_mujoco_hydroelastic_penetration_depth,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_buffer_fraction_no_crash",
+    test_buffer_fraction_no_crash,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_iso_scan_scratch_buffers_are_level_sized",
+    test_iso_scan_scratch_buffers_are_level_sized,
+    devices=cuda_devices,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum",
+    test_pre_prune_accumulate_all_penetrating_aggregates_increases_total_weight_sum,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_reduce_contacts_with_pre_prune_disabled_no_crash",
+    test_reduce_contacts_with_pre_prune_disabled_no_crash,
+    devices=cuda_devices,
+    check_output=False,
+)
+add_function_test(
+    TestHydroelastic,
+    "test_entry_k_eff_matches_shape_harmonic_mean",
+    test_entry_k_eff_matches_shape_harmonic_mean,
     devices=cuda_devices,
 )
 

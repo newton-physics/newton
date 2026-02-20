@@ -80,8 +80,6 @@ def parse_urdf(
     force_show_colliders: bool = False,
     enable_self_collisions: bool = True,
     ignore_inertial_definitions: bool = False,
-    ensure_nonstatic_links: bool = False,
-    static_link_mass: float = 1e-2,
     joint_ordering: Literal["bfs", "dfs"] | None = "dfs",
     bodies_follow_joint_ordering: bool = True,
     collapse_fixed_joints: bool = False,
@@ -167,8 +165,6 @@ def parse_urdf(
         force_show_colliders (bool): If True, the collision shapes are always shown, even if there are visual shapes.
         enable_self_collisions (bool): If True, self-collisions are enabled.
         ignore_inertial_definitions (bool): If True, the inertial parameters defined in the URDF are ignored and the inertia is calculated from the shape geometry.
-        ensure_nonstatic_links (bool): If True, links with zero mass are given a small mass (see `static_link_mass`) to ensure they are dynamic.
-        static_link_mass (float): The mass to assign to links with zero mass (if `ensure_nonstatic_links` is set to True).
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the URDF. Default is "dfs".
         bodies_follow_joint_ordering (bool): If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the URDF. Default is True.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
@@ -496,10 +492,17 @@ def parse_urdf(
                             stacklevel=2,
                         )
                         m_mesh.texture = None
+                    # Mesh shapes must not use cfg.sdf_*; SDFs are built on the mesh itself.
+                    mesh_shape_kwargs = dict(shape_kwargs)
+                    mesh_cfg = shape_cfg.copy()
+                    mesh_cfg.sdf_max_resolution = None
+                    mesh_cfg.sdf_target_voxel_size = None
+                    mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
+                    mesh_shape_kwargs["cfg"] = mesh_cfg
                     s = builder.add_shape_mesh(
                         xform=tf,
                         mesh=m_mesh,
-                        **shape_kwargs,
+                        **mesh_shape_kwargs,
                     )
                     shapes.append(s)
 
@@ -555,6 +558,21 @@ def parse_urdf(
         parent_child_joint[(parent, child)] = joint_data
         joints.append(joint_data)
 
+    # Extract the articulation label early so we can build hierarchical labels
+    articulation_label = urdf_root.attrib.get("name")
+
+    def make_label(name: str) -> str:
+        """Build a hierarchical label for an entity name.
+
+        Args:
+            name: The entity name to label.
+
+        Returns:
+            Hierarchical label ``{articulation_label}/{name}`` when an
+            articulation label is present, otherwise ``name``.
+        """
+        return f"{articulation_label}/{name}" if articulation_label else name
+
     # topological sorting of joints because the FK function will resolve body transforms
     # in joint order and needs the parent link transform to be resolved before the child
     urdf_links = []
@@ -589,7 +607,7 @@ def parse_urdf(
         if name is None:
             raise ValueError("Link has no name")
         link = builder.add_link(
-            key=name,
+            label=make_label(name),
             custom_attributes=parse_custom_attributes(urdf_link.attrib, builder_custom_attr_body, parsing_mode="urdf"),
         )
 
@@ -644,16 +662,6 @@ def parse_urdf(
                 m = float(el_mass.get("value", 0))
                 builder.body_mass[link] = m
                 builder.body_inv_mass[link] = 1.0 / m if m > 0.0 else 0.0
-        if m == 0.0 and ensure_nonstatic_links:
-            # set the mass to something nonzero to ensure the body is dynamic
-            m = static_link_mass
-            # cube with side length 0.5
-            I_m = wp.mat33(np.eye(3)) * m / 12.0 * (0.5 * scale) ** 2 * 2.0
-            I_m += wp.mat33(builder.default_body_armature * np.eye(3))
-            builder.body_mass[link] = m
-            builder.body_inv_mass[link] = 1.0 / m
-            builder.body_inertia[link] = I_m
-            builder.body_inv_inertia[link] = wp.inverse(I_m)
 
     end_shape_count = len(builder.shape_type)
 
@@ -676,7 +684,7 @@ def parse_urdf(
         base_joint_id = builder._add_base_joint(
             child=root,
             base_joint=base_joint,
-            key="base_joint",
+            label=make_label("base_joint"),
             parent_xform=base_parent_xform,
             child_xform=base_child_xform,
             parent=base_parent,
@@ -687,7 +695,7 @@ def parse_urdf(
         floating_joint_id = builder._add_base_joint(
             child=root,
             floating=True,
-            key="floating_base",
+            label=make_label("floating_base"),
             parent_xform=xform,
             parent=base_parent,
         )
@@ -711,7 +719,7 @@ def parse_urdf(
             builder._add_base_joint(
                 child=root,
                 floating=False,
-                key="fixed_base",
+                label=make_label("fixed_base"),
                 parent_xform=xform,
                 parent=base_parent,
             )
@@ -737,7 +745,7 @@ def parse_urdf(
             "parent": parent,
             "child": child,
             "parent_xform": parent_xform,
-            "key": joint["name"],
+            "label": make_label(joint["name"]),
             "custom_attributes": joint["custom_attributes"],
         }
 
@@ -833,18 +841,17 @@ def parse_urdf(
                 joint1=leader_idx,
                 coef0=joint.get("mimic_coef0", 0.0),
                 coef1=joint.get("mimic_coef1", 1.0),
-                key=f"mimic_{joint['name']}",
+                label=make_label(f"mimic_{joint['name']}"),
             )
 
     # Create articulation from all collected joints
-    articulation_key = urdf_root.attrib.get("name")
     articulation_custom_attrs = parse_custom_attributes(
         urdf_root.attrib, builder_custom_attr_articulation, parsing_mode="urdf"
     )
     builder._finalize_imported_articulation(
         joint_indices=joint_indices,
         parent_body=parent_body,
-        articulation_key=articulation_key,
+        articulation_label=articulation_label,
         custom_attributes=articulation_custom_attrs,
     )
 

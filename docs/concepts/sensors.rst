@@ -74,11 +74,11 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    builder = newton.ModelBuilder()
    
    base = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   ref_site = builder.add_site(base, key="reference")
+   ref_site = builder.add_site(base, label="reference")
    j_free = builder.add_joint_free(base)
    
    end_effector = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   ee_site = builder.add_site(end_effector, key="end_effector")
+   ee_site = builder.add_site(end_effector, label="end_effector")
    
    # Add a revolute joint to connect bodies
    j_revolute = builder.add_joint_revolute(
@@ -129,18 +129,18 @@ The sensor supports measuring multiple objects, optionally with different refere
    # Setup model with multiple sites
    builder = newton.ModelBuilder()
    body1 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   site1 = builder.add_site(body1, key="site1")
+   site1 = builder.add_site(body1, label="site1")
    body2 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   site2 = builder.add_site(body2, key="site2")
+   site2 = builder.add_site(body2, label="site2")
    body3 = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   site3 = builder.add_site(body3, key="site3")
+   site3 = builder.add_site(body3, label="site3")
    ref_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   ref_site = builder.add_site(ref_body, key="ref_site")
+   ref_site = builder.add_site(ref_body, label="ref_site")
 
    # Multiple objects, multiple references (must match in count) for sensor 2
-   ref1 = builder.add_site(body1, key="ref1")
-   ref2 = builder.add_site(body2, key="ref2")
-   ref3 = builder.add_site(body3, key="ref3")
+   ref1 = builder.add_site(body1, label="ref1")
+   ref2 = builder.add_site(body2, label="ref2")
+   ref3 = builder.add_site(body3, label="ref3")
    
    model = builder.finalize()
    state = model.state()
@@ -213,8 +213,8 @@ If you need to allocate the State before constructing the sensor, you must reque
 
    builder = newton.ModelBuilder()
    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-   s1 = builder.add_site(body, key="imu1")
-   s2 = builder.add_site(body, key="imu2")
+   s1 = builder.add_site(body, label="imu1")
+   s2 = builder.add_site(body, label="imu2")
    model = builder.finalize()
 
    imu = SensorIMU(model, sites=[s1, s2])

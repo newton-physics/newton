@@ -29,7 +29,8 @@ Basic usage:
         model,
         broad_phase="sap",
     )
-    contacts = model.collide(state, collision_pipeline=pipeline)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
 
 .. _Supported Shape Types:
 
@@ -67,11 +68,10 @@ Newton supports the following geometry types via :class:`~newton.GeoType`:
    **Heightfields** (``HFIELD``) are not implemented. Convert heightfield terrain to a triangle mesh.
 
 .. note::
-   **SDF is a collision option**, not a standalone shape type. Enable SDF generation on any shape 
-   via ``sdf_max_resolution`` or ``sdf_target_voxel_size`` to precompute a signed distance field 
-   from the shape's geometry. The SDF provides O(1) distance queries that accelerate collision 
-   detection, especially for mesh-mesh pairs. The collision pipeline decides when to use SDF data 
-   based on efficiency.
+   **SDF is collision data, not a standalone shape type.** For mesh shapes, build and attach
+   an SDF explicitly with ``mesh.build_sdf(...)`` and then pass that mesh to
+   ``builder.add_shape_mesh(...)``. For primitive hydroelastic workflows, SDF generation uses
+   ``ShapeConfig`` SDF parameters.
 
 .. _Shapes and Bodies:
 
@@ -84,7 +84,7 @@ Collision shapes are attached to rigid bodies. Each shape has:
 - **Local transform** (``shape_transform``): Position and orientation relative to the body frame.
 - **Scale** (``shape_scale``): 3D scale factors applied to the shape geometry.
 - **Thickness** (``shape_thickness``): Surface thickness used in contact generation (see :ref:`Shape Configuration`).
-- **Source geometry** (``shape_source``): Reference to the underlying geometry object (e.g., :class:`~newton.Mesh`, :class:`~newton.SDF`).
+- **Source geometry** (``shape_source``): Reference to the underlying geometry object (e.g., :class:`~newton.Mesh`).
 
 During collision detection, shapes are transformed to world space using their parent body's pose:
 
@@ -476,7 +476,8 @@ The collision pipeline supports collision detection between all shape type combi
 Ellipsoid and ConvexMesh are also fully supported. The only unsupported type is ``HFIELD`` (heightfield) - convert to mesh instead.
 
 .. note::
-   **SDF** in this table refers to shapes with precomputed SDF data (via ``sdf_max_resolution`` or ``sdf_target_voxel_size``). SDFs are generated from a shape's primary geometry and provide O(1) distance queries.
+   **SDF** in this table refers to shapes with precomputed SDF data. Mesh SDFs are attached
+   through ``mesh.build_sdf(...)`` and provide O(1) distance queries.
 
 .. note::
    Particle (soft body) collision support is available; see cloth and cable examples that use the collision pipeline for particle-shape contacts.
@@ -518,20 +519,18 @@ Two approaches available:
 1. **BVH-based** (default when no SDF configured): Iterates mesh vertices against the other mesh's BVH. 
    Performance scales with triangle count - can be very slow for complex meshes.
 
-2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries. 
-   Enable by setting ``sdf_max_resolution`` or ``sdf_target_voxel_size`` on shapes.
+2. **SDF-based** (recommended): Uses precomputed signed distance fields for fast queries.
+   For mesh shapes, call ``mesh.build_sdf(...)`` once and reuse the mesh.
 
 .. warning::
-   If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries 
-   which are **significantly slower**. For production use with complex meshes, configure SDF 
-   via ``sdf_max_resolution`` or ``sdf_target_voxel_size``:
+   If SDF is not precomputed, mesh-mesh contacts fall back to on-the-fly BVH distance queries
+   which are **significantly slower**. For production use with complex meshes, precompute and
+   attach SDF data on meshes:
 
    .. code-block:: python
 
-       cfg = builder.ShapeConfig(
-           sdf_max_resolution=64,  # Precompute SDF for fast mesh-mesh collision
-       )
-       builder.add_shape_mesh(body, mesh=my_mesh, cfg=cfg)
+       my_mesh.build_sdf(max_resolution=64)
+       builder.add_shape_mesh(body, mesh=my_mesh)
 
 .. _Contact Reduction:
 
@@ -544,7 +543,7 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 1. Contacts are binned by normal direction (20 icosahedron face directions)
 2. Within each bin, contacts are scored by spatial distribution and penetration depth
-3. Representative contacts are selected using configurable depth thresholds (betas)
+3. Representative contacts are selected to preserve coverage and depth cues
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
@@ -558,28 +557,12 @@ For hydroelastic and SDF-based contacts, use :class:`~newton.geometry.Hydroelast
 
     config = HydroelasticSDF.Config(
         reduce_contacts=True,           # Enable contact reduction
-        betas=(10.0, -0.5),             # Scoring thresholds (default)
-        sticky_contacts=0.0,            # Temporal persistence (0 = disabled)
+        buffer_fraction=0.2,            # Reduce hydroelastic GPU buffer allocations
         normal_matching=True,           # Align reduced normals with aggregate force
-        moment_matching=False,          # Match friction moments (experimental)
+        anchor_contact=False,           # Optional center-of-pressure anchor contact
     )
 
     pipeline = CollisionPipeline(model, sdf_hydroelastic_config=config)
-
-**Understanding betas:**
-
-The ``betas`` tuple controls how contacts are scored for selection. Each beta value (first element, second element, etc.) produces a separate set of representative contacts per normal bin:
-
-- **Positive beta** (e.g., ``10.0``): Score = ``spatial_position + depth * beta``. Higher values favor deeper contacts.
-- **Negative beta** (e.g., ``-0.5``): Score = ``spatial_position * depth^(-beta)`` for penetrating contacts.
-  This weighs spatial distribution more heavily for shallow contacts.
-
-The default ``(10.0, -0.5)`` provides a balance: one set prioritizes penetration depth,
-another prioritizes spatial coverage. More betas = more contacts retained but better coverage.
-
-.. note::
-   The beta scoring behavior is subject to refinement. The collision pipeline 
-   is under active development and these parameters may change in future releases.
 
 **Other reduction options:**
 
@@ -589,15 +572,12 @@ another prioritizes spatial coverage. More betas = more contacts retained but be
 
    * - Parameter
      - Description
-   * - ``sticky_contacts``
-     - Temporal persistence threshold. When > 0, contacts from previous frames within this distance are preserved to prevent jittering. Default: 0.0 (disabled).
    * - ``normal_matching``
      - Rotates selected contact normals so their weighted sum aligns with the aggregate force direction 
        from all unreduced contacts. Preserves net force direction after reduction. Default: True.
-   * - ``moment_matching``
-     - Preserves torsional friction by adding an anchor contact at the depth-weighted centroid and 
-       scaling friction coefficients. This ensures the reduced contact set produces similar resistance 
-       to rotational sliding as the original contacts. Experimental. Default: False.
+   * - ``anchor_contact``
+     - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
+       Default: False.
    * - ``margin_contact_area``
      - Lower bound on contact area. Hydroelastic stiffness is ``area * k_eff``, but contacts 
        within the contact margin that are not yet penetrating (speculative contacts) have zero 
@@ -651,7 +631,7 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
    ``d = surface_distance - (thickness_a + thickness_b)``. The solver enforces ``d >= 0``, 
    so objects at rest settle with surfaces separated by ``thickness_a + thickness_b``.
 
-**SDF configuration (generates SDF from shape geometry):**
+**SDF configuration (primitive generation defaults):**
 
 .. list-table::
    :header-rows: 1
@@ -660,13 +640,13 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
    * - Parameter
      - Description
    * - ``sdf_max_resolution``
-     - Maximum SDF grid dimension (must be divisible by 8). Either this or ``sdf_target_voxel_size`` enables SDF.
+     - Maximum SDF grid dimension (must be divisible by 8) for primitive SDF generation.
    * - ``sdf_target_voxel_size``
-     - Target voxel size for SDF. Takes precedence over ``sdf_max_resolution``.
+     - Target voxel size for primitive SDF generation. Takes precedence over ``sdf_max_resolution``.
    * - ``sdf_narrow_band_range``
      - SDF narrow band distance range (inner, outer). Default: (-0.1, 0.1).
 
-Example:
+Example (mesh SDF workflow):
 
 .. code-block:: python
 
@@ -674,8 +654,8 @@ Example:
         collision_group=-1,           # Collide with everything
         thickness=0.001,              # 1mm thickness
         contact_margin=0.01,          # 1cm margin
-        sdf_max_resolution=64,        # Enable SDF for mesh
     )
+    my_mesh.build_sdf(max_resolution=64)
     builder.add_shape_mesh(body, mesh=my_mesh, cfg=cfg)
 
 **Builder default margin:**
@@ -716,7 +696,7 @@ Use ``builder.default_shape_cfg`` to set defaults for all shapes:
     builder.default_shape_cfg.kd = 1000.0
     builder.default_shape_cfg.mu = 0.5
     builder.default_shape_cfg.is_hydroelastic = True
-    builder.default_shape_cfg.sdf_max_resolution = 64
+    builder.default_shape_cfg.sdf_max_resolution = 64  # Primitive SDF defaults
 
 **Running collision less frequently**
 
@@ -880,7 +860,10 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 **Requirements:**
 
 - Both shapes in a pair must have ``is_hydroelastic=True``
-- Shapes must have SDF enabled (``sdf_max_resolution`` or ``sdf_target_voxel_size``)
+- Shapes must have SDF data available:
+  - mesh shapes: call ``mesh.build_sdf(...)``
+  - primitive shapes: use ``sdf_max_resolution`` or ``sdf_target_voxel_size`` in ``ShapeConfig``
+- For non-unit shape scale, the attached SDF must be scale-baked
 - Only volumetric shapes supported (not planes, heightfields, or non-watertight meshes)
 
 .. code-block:: python
@@ -904,6 +887,23 @@ When ``is_hydroelastic=True`` on **both** shapes in a pair, the system generates
 The ``kh`` parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: ``k_eff = 2 * k_a * k_b / (k_a + k_b)``. Tune this for desired penetration behavior.
 
 Contact reduction options for hydroelastic contacts are configured via :class:`~newton.geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
+
+Hydroelastic memory can be tuned with ``buffer_fraction`` on
+:class:`~newton.geometry.HydroelasticSDF.Config`. This scales broadphase, iso-refinement,
+and hydroelastic face-contact buffer allocations as a fraction of the worst-case
+size. Lower values reduce memory usage but also reduce overflow headroom.
+
+.. code-block:: python
+
+    from newton.geometry import HydroelasticSDF
+
+    config = HydroelasticSDF.Config(
+        reduce_contacts=True,
+        buffer_fraction=0.2,  # 20% of worst-case hydroelastic buffers
+    )
+
+If runtime overflow warnings appear, increase ``buffer_fraction`` (or stage-specific
+``buffer_mult_*`` values) until warnings disappear in your target scenes.
 
 .. _Contact Material Properties:
 

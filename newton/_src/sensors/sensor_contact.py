@@ -217,24 +217,24 @@ class SensorContact:
             model.request_contact_attributes("force")
 
         if sensing_obj_bodies is not None:
-            s_bodies = match_labels(model.body_key, sensing_obj_bodies)  # FIXME: rename to label
-            _check_index_bounds(s_bodies, len(model.body_key), "sensing_obj_bodies", "bodies")
+            s_bodies = match_labels(model.body_label, sensing_obj_bodies)
+            _check_index_bounds(s_bodies, len(model.body_label), "sensing_obj_bodies", "bodies")
             s_shapes = []
         else:
             s_bodies = []
-            s_shapes = match_labels(model.shape_key, sensing_obj_shapes)  # FIXME: rename to label
-            _check_index_bounds(s_shapes, len(model.shape_key), "sensing_obj_shapes", "shapes")
+            s_shapes = match_labels(model.shape_label, sensing_obj_shapes)
+            _check_index_bounds(s_shapes, len(model.shape_label), "sensing_obj_shapes", "shapes")
 
         if counterpart_bodies is not None:
-            c_bodies = match_labels(model.body_key, counterpart_bodies)  # FIXME: rename to label
-            _check_index_bounds(c_bodies, len(model.body_key), "counterpart_bodies", "bodies")
+            c_bodies = match_labels(model.body_label, counterpart_bodies)
+            _check_index_bounds(c_bodies, len(model.body_label), "counterpart_bodies", "bodies")
             c_shapes = []
             if include_total:
                 c_bodies = [MatchAny, *c_bodies]
         elif counterpart_shapes is not None:
             c_bodies = []
-            c_shapes = match_labels(model.shape_key, counterpart_shapes)  # FIXME: rename to label
-            _check_index_bounds(c_shapes, len(model.shape_key), "counterpart_shapes", "shapes")
+            c_shapes = match_labels(model.shape_label, counterpart_shapes)
+            _check_index_bounds(c_shapes, len(model.shape_label), "counterpart_shapes", "shapes")
             if include_total:
                 c_shapes = [MatchAny, *c_shapes]
         else:
