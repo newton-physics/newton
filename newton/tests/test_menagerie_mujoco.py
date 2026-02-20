@@ -1800,7 +1800,6 @@ class TestMenagerieBase(unittest.TestCase):
     # When False, runs both full pipelines (may need looser tolerances).
     use_split_pipeline: bool = False
     split_pipeline_tol: float = 1e-5  # Tolerance for contact/constraint matching in split pipeline
-    enable_cuda_graph: bool = True  # Set False to disable CUDA graph capture
 
     @classmethod
     def setUpClass(cls):
@@ -2128,8 +2127,8 @@ class TestMenagerieBase(unittest.TestCase):
             sync_to_viewer()
             viewer.sync()
 
-        # Setup CUDA graphs
-        use_cuda_graph = self.enable_cuda_graph and wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
+        # Setup CUDA graphs (disabled — injection between graph captures needs investigation)
+        use_cuda_graph = False
         newton_graph = None
         native_graph = None
         # For contact injection mode:
@@ -2819,7 +2818,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     robot_folder = "apptronik_apollo"
     backfill_model = True
     use_split_pipeline = True
-    enable_cuda_graph = False  # TODO: investigate CUDA graph + injection interaction
     num_steps = 1  # TODO: increase once tolerances are calibrated
     discard_visual = False
     parse_visuals = True
