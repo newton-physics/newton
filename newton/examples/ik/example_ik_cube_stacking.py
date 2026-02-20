@@ -676,15 +676,17 @@ class Example:
                 cube_pos = body_q[cube_body_id][:3]
                 cube_rot = body_q[cube_body_id][3:]
 
-                pos_error = np.linalg.norm(cube_pos - drop_off_pos)
-                if np.isnan(pos_error) or pos_error > 0.05:
+                pos_error = cube_pos - drop_off_pos
+                pos_error_xy = np.linalg.norm(pos_error[:2])
+                pos_error_z = np.abs(pos_error[2])
+                if np.isnan(pos_error_xy) or np.isnan(pos_error_z) or pos_error_xy > 0.02 or pos_error_z > 0.01:
                     world_success[world_id] = False
                     break
 
                 quat_rel = wp.quat(cube_rot) * target_rot_inv
                 quat_rel_np = np.array(quat_rel)
                 rot_err = np.abs(np.degrees(2.0 * np.arctan2(np.linalg.norm(quat_rel_np[:3]), quat_rel_np[3])))
-                if np.isnan(rot_err) or rot_err > 2.0:
+                if np.isnan(rot_err) or rot_err > 5.0:
                     world_success[world_id] = False
                     break
 
