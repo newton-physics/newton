@@ -176,7 +176,8 @@ def advance_task_kernel(
     # Advance the task if the time elapsed is greater than the soft limit,
     # the end-effector position error is less than 0.001 meters,
     # the rotation error is less than 0.5 degrees, and the task index is not the last one.
-    # NOTE: These tolerances can be achieved thanks the the gravity compensation enabled in the model builder.
+    # NOTE: These tolerances can be achieved thanks to the gravity compensation enabled via
+    # mujoco:gravcomp and mujoco:jnt_actgravcomp custom attributes.
     if (
         task_time_elapsed[tid] >= task_time_soft_limit
         and pos_err < 0.001
