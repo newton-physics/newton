@@ -593,9 +593,9 @@ class TestSensorFrameTransform(unittest.TestCase):
         """Test SensorFrameTransform accepts string patterns."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        builder.add_site(body, key="target_a")
-        builder.add_site(body, key="target_b")
-        builder.add_site(body, key="ref")
+        builder.add_site(body, label="target_a")
+        builder.add_site(body, label="target_b")
+        builder.add_site(body, label="ref")
         model = builder.finalize()
 
         sensor = SensorFrameTransform(model, shapes="target_*", reference_sites="ref")
@@ -605,8 +605,8 @@ class TestSensorFrameTransform(unittest.TestCase):
         """Test SensorFrameTransform raises when no labels match."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        builder.add_site(body, key="site")
-        ref = builder.add_site(body, key="ref")
+        builder.add_site(body, label="site")
+        ref = builder.add_site(body, label="ref")
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
@@ -623,8 +623,8 @@ class TestSensorFrameTransform(unittest.TestCase):
             inertia=wp.mat33(np.eye(3)),
             xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()),
         )
-        target = builder.add_site(body, key="target")
-        ref = builder.add_site(body, key="ref")
+        target = builder.add_site(body, label="target")
+        ref = builder.add_site(body, label="ref")
         model = builder.finalize()
 
         state = model.state()

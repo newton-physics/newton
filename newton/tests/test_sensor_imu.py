@@ -186,7 +186,7 @@ class TestSensorIMU(unittest.TestCase):
         """Test SensorIMU accepts a string pattern for sites."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        builder.add_site(body, key="imu_site")
+        builder.add_site(body, label="imu_site")
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites="imu_site")
@@ -196,9 +196,9 @@ class TestSensorIMU(unittest.TestCase):
         """Test SensorIMU with wildcard pattern."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        builder.add_site(body, key="imu_a")
-        builder.add_site(body, key="imu_b")
-        builder.add_site(body, key="other")
+        builder.add_site(body, label="imu_a")
+        builder.add_site(body, label="imu_b")
+        builder.add_site(body, label="other")
         model = builder.finalize()
 
         sensor = SensorIMU(model, sites="imu_*")
@@ -208,7 +208,7 @@ class TestSensorIMU(unittest.TestCase):
         """Test SensorIMU raises when no labels match."""
         builder = newton.ModelBuilder()
         body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        builder.add_site(body, key="site")
+        builder.add_site(body, label="site")
         model = builder.finalize()
 
         with self.assertRaises(ValueError):
