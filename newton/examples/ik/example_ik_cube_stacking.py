@@ -174,12 +174,13 @@ def advance_task_kernel(
     rot_err = wp.abs(wp.degrees(2.0 * wp.atan2(wp.length(quat_rel[:3]), quat_rel[3])))
 
     # Advance the task if the time elapsed is greater than the soft limit,
-    # the end-effector position error is less than 0.01 meters,
-    # the rotation error is less than 1.0 degrees, and the task index is not the last one.
+    # the end-effector position error is less than 0.001 meters,
+    # the rotation error is less than 0.5 degrees, and the task index is not the last one.
+    # NOTE: These tolerances can be achieved thanks the the gravity compensation enabled in the model builder.
     if (
         task_time_elapsed[tid] >= task_time_soft_limit
-        and pos_err < 0.01
-        and rot_err < 1.0
+        and pos_err < 0.001
+        and rot_err < 0.5
         and task_idx[tid] < wp.len(task_time_soft_limits) - 1
     ):
         # Advance to the next task
@@ -384,6 +385,25 @@ class Example:
         builder.joint_target_kd[:9] = [450, 450, 350, 350, 200, 200, 200, 10, 10]
         builder.joint_effort_limit[:9] = [87, 87, 87, 87, 12, 12, 12, 100, 100]
         builder.joint_armature[:9] = [0.3] * 4 + [0.11] * 3 + [0.15] * 2
+
+        # Enable gravity compensation for the 7 arm joint DOFs
+        gravcomp_attr = builder.custom_attributes["mujoco:jnt_actgravcomp"]
+        if gravcomp_attr.values is None:
+            gravcomp_attr.values = {}
+        for dof_idx in range(7):
+            gravcomp_attr.values[dof_idx] = True
+
+        # Enable body gravcomp on the arm links and hand assembly so MuJoCo
+        # cancels their gravitational load.
+        # Body 0 = base (root), body 1 = fr3_link0 (fixed to world).
+        # Bodies 2-8 = fr3_link1-7 (revolute arm joints).
+        # Bodies 9-11 = fr3_link8, fr3_hand, fr3_hand_tcp (hand assembly).
+        # Bodies 12-13 = fr3_leftfinger, fr3_rightfinger (gripper).
+        gravcomp_body = builder.custom_attributes["mujoco:gravcomp"]
+        if gravcomp_body.values is None:
+            gravcomp_body.values = {}
+        for body_idx in range(2, 14):
+            gravcomp_body.values[body_idx] = 1.0
 
         shape_cfg = newton.ModelBuilder.ShapeConfig(thickness=1e-3, density=1000.0)
         shape_cfg.ke = 5.0e4
