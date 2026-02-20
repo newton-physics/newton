@@ -72,6 +72,12 @@ class TestMatchLabels(unittest.TestCase):
         result = match_labels(labels, [99])
         self.assertEqual(result, [99])
 
+    def test_list_str_overlapping_patterns_deduplicates(self):
+        """Overlapping glob patterns should not produce duplicate indices."""
+        labels = ["arm_left", "arm_right", "leg_left", "leg_right"]
+        result = match_labels(labels, ["arm_*", "*_left"])
+        self.assertEqual(result, [0, 1, 2])
+
 
 if __name__ == "__main__":
     unittest.main()

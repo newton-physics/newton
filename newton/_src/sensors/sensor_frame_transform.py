@@ -147,9 +147,9 @@ class SensorFrameTransform:
 
         # Resolve label patterns to indices
         original_shapes = shapes
-        shapes = match_labels(model.shape_key, shapes)  # FIXME: rename to label
+        shapes = match_labels(model.shape_label, shapes)
         original_reference_sites = reference_sites
-        reference_sites = match_labels(model.shape_key, reference_sites)  # FIXME: rename to label
+        reference_sites = match_labels(model.shape_label, reference_sites)
 
         # Validate shape indices
         if not shapes:

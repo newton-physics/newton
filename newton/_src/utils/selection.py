@@ -265,32 +265,25 @@ def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> lis
     Args:
         labels: List of label strings to match against.
         pattern: A ``str`` is matched via :func:`fnmatch.fnmatch` against each label.
-            A ``list`` is iterated element-wise: ``str`` elements are matched via
-            fnmatch (union of matches); ``int`` elements are used directly as indices.
+            A ``list[str]`` matches any pattern.
+            A ``list[int]`` is returned as-is (indices used directly).
+            Mixing ``str`` and ``int`` in the same list is not allowed.
 
     Returns:
-        List of matching indices.
+        Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
 
     Raises:
-        TypeError: If a list element is neither ``str`` nor ``int``.
+        TypeError: If list elements are not all ``str`` or all ``int``.
     """
     if isinstance(pattern, str):
         return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
 
-    has_str = any(isinstance(item, str) for item in pattern)
-    has_int = any(isinstance(item, int) for item in pattern)
-    if has_str and has_int:
-        raise TypeError("Expected a list of str patterns or a list of int indices, got a mix of both")
-
-    matches = []
-    for item in pattern:
-        if isinstance(item, str):
-            matches.extend(idx for idx, label in enumerate(labels) if fnmatch(label, item))
-        elif isinstance(item, int):
-            matches.append(item)
-        else:
-            raise TypeError(f"Pattern elements must be strings or integers, got {item!r} of type {type(item).__name__}")
-    return matches
+    if all(isinstance(item, int) for item in pattern):
+        return pattern
+    if all(isinstance(item, str) for item in pattern):
+        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+    types = {type(item).__name__ for item in pattern}
+    raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
 
 
 def all_equal(values):

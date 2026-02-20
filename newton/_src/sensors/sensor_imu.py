@@ -86,7 +86,7 @@ class SensorIMU:
     a solver that supports computing ``body_qdd``, and requesting ``body_qdd`` from the model before calling
     ``model.state()``. Instantiating the SensorIMU will automatically request ``body_qdd`` from the model by default.
 
-    The ``sites`` parameter accepts label patterns — see :ref:`label-matching`.
+    The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
 
     Example:
         Create a SensorIMU for a model with a list of site indices::
@@ -136,7 +136,7 @@ class SensorIMU:
         self.verbose = verbose if verbose is not None else wp.config.verbose
 
         original_sites = sites
-        sites = match_labels(model.shape_key, sites)  # FIXME: rename to label
+        sites = match_labels(model.shape_label, sites)
         if not sites:
             if isinstance(original_sites, list) and len(original_sites) == 0:
                 raise ValueError("'sites' must not be empty")
