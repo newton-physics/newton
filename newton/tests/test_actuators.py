@@ -54,9 +54,7 @@ class TestActuatorBuilder(unittest.TestCase):
         # Add actuators - should accumulate into one
         builder.add_actuator(ActuatorPD, input_indices=[dofs[0]], kp=50.0, gear=2.5, constant_force=1.0)
         builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], kp=100.0, kd=10.0)
-        builder.add_actuator(
-            ActuatorPD, input_indices=[dofs[1]], output_indices=[dofs[2]], kp=150.0, max_force=50.0
-        )
+        builder.add_actuator(ActuatorPD, input_indices=[dofs[1]], output_indices=[dofs[2]], kp=150.0, max_force=50.0)
 
         model = builder.finalize()
 
