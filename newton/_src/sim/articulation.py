@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..core.spatial import quat_decompose, quat_twist, transform_twist
 from .joints import JointType
 from .model import Model
 from .state import State
@@ -69,7 +68,7 @@ def invert_2d_rotational_dofs(
     q_pc = wp.quat_inverse(q_off) * wp.quat_inverse(q_p) * q_c * q_off
 
     # decompose to a compound rotation each axis
-    angles = quat_decompose(q_pc)
+    angles = wp.quat_to_euler(q_pc, 2, 1, 0)
 
     # find rotation axes
     local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
@@ -145,7 +144,7 @@ def invert_3d_rotational_dofs(
     q_pc = wp.quat_inverse(q_off) * wp.quat_inverse(q_p) * q_c * q_off
 
     # decompose to a compound rotation each axis
-    angles = quat_decompose(q_pc)
+    angles = wp.quat_to_euler(q_pc, 2, 1, 0)
 
     # find rotation axes
     local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
@@ -529,7 +528,7 @@ def reconstruct_angular_q_qd(q_pc: wp.quat, w_err: wp.vec3, X_wp: wp.transform, 
         qd (float): The joint velocity coordinate.
     """
     axis_p = wp.transform_vector(X_wp, axis)
-    twist = quat_twist(axis, q_pc)
+    twist = wp.quat_twist(axis, q_pc)
     q = wp.acos(twist[3]) * 2.0 * wp.sign(wp.dot(axis, wp.vec3(twist[0], twist[1], twist[2])))
     qd = wp.dot(w_err, axis_p)
     return q, qd
@@ -827,55 +826,55 @@ def jcalc_motion_subspace(
     """
     if type == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+        S_s = wp.transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
         joint_S_s[qd_start] = S_s
 
     elif type == JointType.REVOLUTE:
         axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+        S_s = wp.transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
         joint_S_s[qd_start] = S_s
 
     elif type == JointType.D6:
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = wp.transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 0] = S_s
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = wp.transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 1] = S_s
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
+            S_s = wp.transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 2] = S_s
         if ang_axis_count > 0:
             axis = joint_axis[qd_start + lin_axis_count + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = wp.transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
             joint_S_s[qd_start + lin_axis_count + 0] = S_s
         if ang_axis_count > 1:
             axis = joint_axis[qd_start + lin_axis_count + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = wp.transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
             joint_S_s[qd_start + lin_axis_count + 1] = S_s
         if ang_axis_count > 2:
             axis = joint_axis[qd_start + lin_axis_count + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
+            S_s = wp.transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
             joint_S_s[qd_start + lin_axis_count + 2] = S_s
 
     elif type == JointType.BALL:
-        S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
-        S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+        S_0 = wp.transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        S_1 = wp.transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        S_2 = wp.transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
         joint_S_s[qd_start + 0] = S_0
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
     elif type == JointType.FREE or type == JointType.DISTANCE:
-        joint_S_s[qd_start + 0] = transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 1] = transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 2] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        joint_S_s[qd_start + 3] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        joint_S_s[qd_start + 4] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
-        joint_S_s[qd_start + 5] = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+        joint_S_s[qd_start + 0] = wp.transform_twist(X_sc, wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 1] = wp.transform_twist(X_sc, wp.spatial_vector(0.0, 1.0, 0.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 2] = wp.transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        joint_S_s[qd_start + 3] = wp.transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
+        joint_S_s[qd_start + 4] = wp.transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
+        joint_S_s[qd_start + 5] = wp.transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
 
 
 @wp.kernel

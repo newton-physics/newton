@@ -15,15 +15,6 @@
 
 from .spatial import (
     quat_between_axes,
-    quat_decompose,
-    quat_from_euler,
-    quat_to_euler,
-    quat_to_rpy,
-    quat_twist,
-    quat_twist_angle,
-    transform_twist,
-    transform_wrench,
-    velocity_at_point,
 )
 from .types import (
     MAXVAL,
@@ -36,13 +27,4 @@ __all__ = [
     "Axis",
     "AxisType",
     "quat_between_axes",
-    "quat_decompose",
-    "quat_from_euler",
-    "quat_to_euler",
-    "quat_to_rpy",
-    "quat_twist",
-    "quat_twist_angle",
-    "transform_twist",
-    "transform_wrench",
-    "velocity_at_point",
 ]

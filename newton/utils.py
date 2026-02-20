@@ -85,29 +85,11 @@ __all__ += [
 from ._src.core.spatial import (  # noqa: E402
     quat_between_axes,
     quat_between_vectors_robust,
-    quat_decompose,
-    quat_from_euler,
-    quat_to_euler,
-    quat_to_rpy,
-    quat_twist,
-    quat_twist_angle,
-    transform_twist,
-    transform_wrench,
-    velocity_at_point,
 )
 
 __all__ += [
     "quat_between_axes",
     "quat_between_vectors_robust",
-    "quat_decompose",
-    "quat_from_euler",
-    "quat_to_euler",
-    "quat_to_rpy",
-    "quat_twist",
-    "quat_twist_angle",
-    "transform_twist",
-    "transform_wrench",
-    "velocity_at_point",
 ]
 
 # ==================================================================================

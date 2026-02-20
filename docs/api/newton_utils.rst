@@ -42,19 +42,11 @@ newton.utils
    plot_graph
    quat_between_axes
    quat_between_vectors_robust
-   quat_decompose
-   quat_from_euler
-   quat_to_euler
-   quat_to_rpy
-   quat_twist
-   quat_twist_angle
    run_benchmark
    smooth_max
    smooth_min
    solidify_mesh
    string_to_warp
-   transform_twist
-   transform_wrench
    vec_abs
    vec_allclose
    vec_inside_limits
@@ -62,4 +54,3 @@ newton.utils
    vec_leaky_min
    vec_max
    vec_min
-   velocity_at_point

@@ -15,7 +15,6 @@
 
 import warp as wp
 
-from ...core import velocity_at_point
 from ...geometry import ParticleFlags
 from ...sim import JointType
 from ...utils import (
@@ -95,8 +94,8 @@ def apply_particle_shape_restitution(
     bv_old = bv_contact
     bv_new = bv_contact
     if body_index >= 0:
-        bv_old = velocity_at_point(body_qd_prev[body_index], r) + bv_contact
-        bv_new = velocity_at_point(body_qd[body_index], r) + bv_contact
+        bv_old = wp.velocity_at_point(body_qd_prev[body_index], r) + bv_contact
+        bv_new = wp.velocity_at_point(body_qd[body_index], r) + bv_contact
 
     rel_vel_old = wp.dot(n, v_old - bv_old)
     rel_vel_new = wp.dot(n, v_new - bv_new)
@@ -2406,8 +2405,8 @@ def apply_rigid_restitution(
     if body_a >= 0:
         world_idx_a = body_world[body_a]
         world_a_g = gravity[wp.max(world_idx_a, 0)]
-        v_a = velocity_at_point(body_qd_prev[body_a], r_a) + world_a_g * dt
-        v_a_new = velocity_at_point(body_qd[body_a], r_a)
+        v_a = wp.velocity_at_point(body_qd_prev[body_a], r_a) + world_a_g * dt
+        v_a_new = wp.velocity_at_point(body_qd[body_a], r_a)
         q_a = wp.transform_get_rotation(X_wb_a_prev)
         rxn_a = wp.quat_rotate_inv(q_a, wp.cross(r_a, n))
         # Eq. 2
@@ -2419,8 +2418,8 @@ def apply_rigid_restitution(
     if body_b >= 0:
         world_idx_b = body_world[body_b]
         world_b_g = gravity[wp.max(world_idx_b, 0)]
-        v_b = velocity_at_point(body_qd_prev[body_b], r_b) + world_b_g * dt
-        v_b_new = velocity_at_point(body_qd[body_b], r_b)
+        v_b = wp.velocity_at_point(body_qd_prev[body_b], r_b) + world_b_g * dt
+        v_b_new = wp.velocity_at_point(body_qd[body_b], r_b)
         q_b = wp.transform_get_rotation(X_wb_b_prev)
         rxn_b = wp.quat_rotate_inv(q_b, wp.cross(r_b, n))
         # Eq. 3

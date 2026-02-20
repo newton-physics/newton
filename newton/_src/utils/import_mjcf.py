@@ -25,7 +25,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ..core import quat_between_axes, quat_from_euler
+from ..core import quat_between_axes
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
@@ -501,7 +501,7 @@ def parse_mjcf(
             euler = np.fromstring(attrib["euler"], sep=" ")
             if use_degrees:
                 euler *= np.pi / 180
-            return quat_from_euler(wp.vec3(euler), *euler_seq)
+            return wp.quat_from_euler(wp.vec3(euler), *euler_seq)
         if "axisangle" in attrib:
             axisangle = np.fromstring(attrib["axisangle"], sep=" ")
             angle = axisangle[3]
