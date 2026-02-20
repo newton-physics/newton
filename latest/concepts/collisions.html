@@ -1336,7 +1336,7 @@ attach SDF data on meshes:</p>
 <ol class="arabic simple">
 <li><p>Contacts are binned by normal direction (20 icosahedron face directions)</p></li>
 <li><p>Within each bin, contacts are scored by spatial distribution and penetration depth</p></li>
-<li><p>Representative contacts are selected using configurable depth thresholds (betas)</p></li>
+<li><p>Representative contacts are selected to preserve coverage and depth cues</p></li>
 </ol>
 <p>To disable reduction, set <code class="docutils literal notranslate"><span class="pre">reduce_contacts=False</span></code> when creating the pipeline.</p>
 <p><strong>Configuring contact reduction (HydroelasticSDF.Config):</strong></p>
@@ -1345,28 +1345,13 @@ attach SDF data on meshes:</p>
 
 <span class="n">config</span> <span class="o">=</span> <span class="n">HydroelasticSDF</span><span class="o">.</span><span class="n">Config</span><span class="p">(</span>
     <span class="n">reduce_contacts</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>           <span class="c1"># Enable contact reduction</span>
-    <span class="n">betas</span><span class="o">=</span><span class="p">(</span><span class="mf">10.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.5</span><span class="p">),</span>             <span class="c1"># Scoring thresholds (default)</span>
-    <span class="n">sticky_contacts</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>            <span class="c1"># Temporal persistence (0 = disabled)</span>
+    <span class="n">buffer_fraction</span><span class="o">=</span><span class="mf">0.2</span><span class="p">,</span>            <span class="c1"># Reduce hydroelastic GPU buffer allocations</span>
     <span class="n">normal_matching</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>           <span class="c1"># Align reduced normals with aggregate force</span>
-    <span class="n">moment_matching</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>          <span class="c1"># Match friction moments (experimental)</span>
+    <span class="n">anchor_contact</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>           <span class="c1"># Optional center-of-pressure anchor contact</span>
 <span class="p">)</span>
 
 <span class="n">pipeline</span> <span class="o">=</span> <span class="n">CollisionPipeline</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sdf_hydroelastic_config</span><span class="o">=</span><span class="n">config</span><span class="p">)</span>
 </pre></div>
-</div>
-<p><strong>Understanding betas:</strong></p>
-<p>The <code class="docutils literal notranslate"><span class="pre">betas</span></code> tuple controls how contacts are scored for selection. Each beta value (first element, second element, etc.) produces a separate set of representative contacts per normal bin:</p>
-<ul class="simple">
-<li><p><strong>Positive beta</strong> (e.g., <code class="docutils literal notranslate"><span class="pre">10.0</span></code>): Score = <code class="docutils literal notranslate"><span class="pre">spatial_position</span> <span class="pre">+</span> <span class="pre">depth</span> <span class="pre">*</span> <span class="pre">beta</span></code>. Higher values favor deeper contacts.</p></li>
-<li><p><strong>Negative beta</strong> (e.g., <code class="docutils literal notranslate"><span class="pre">-0.5</span></code>): Score = <code class="docutils literal notranslate"><span class="pre">spatial_position</span> <span class="pre">*</span> <span class="pre">depth^(-beta)</span></code> for penetrating contacts.
-This weighs spatial distribution more heavily for shallow contacts.</p></li>
-</ul>
-<p>The default <code class="docutils literal notranslate"><span class="pre">(10.0,</span> <span class="pre">-0.5)</span></code> provides a balance: one set prioritizes penetration depth,
-another prioritizes spatial coverage. More betas = more contacts retained but better coverage.</p>
-<div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>The beta scoring behavior is subject to refinement. The collision pipeline
-is under active development and these parameters may change in future releases.</p>
 </div>
 <p><strong>Other reduction options:</strong></p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1380,19 +1365,15 @@ is under active development and these parameters may change in future releases.<
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sticky_contacts</span></code></p></td>
-<td><p>Temporal persistence threshold. When &gt; 0, contacts from previous frames within this distance are preserved to prevent jittering. Default: 0.0 (disabled).</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">normal_matching</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">normal_matching</span></code></p></td>
 <td><p>Rotates selected contact normals so their weighted sum aligns with the aggregate force direction
 from all unreduced contacts. Preserves net force direction after reduction. Default: True.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">moment_matching</span></code></p></td>
-<td><p>Preserves torsional friction by adding an anchor contact at the depth-weighted centroid and
-scaling friction coefficients. This ensures the reduced contact set produces similar resistance
-to rotational sliding as the original contacts. Experimental. Default: False.</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">anchor_contact</span></code></p></td>
+<td><p>Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
+Default: False.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">margin_contact_area</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">margin_contact_area</span></code></p></td>
 <td><p>Lower bound on contact area. Hydroelastic stiffness is <code class="docutils literal notranslate"><span class="pre">area</span> <span class="pre">*</span> <span class="pre">k_eff</span></code>, but contacts
 within the contact margin that are not yet penetrating (speculative contacts) have zero
 geometric area. This provides a floor value so they still generate repulsive force. Default: 0.01.</p></td>
@@ -1724,6 +1705,20 @@ and is consumed by the solver <a class="reference internal" href="../api/_genera
 <p><strong>Hydroelastic stiffness (kh):</strong></p>
 <p>The <code class="docutils literal notranslate"><span class="pre">kh</span></code> parameter on each shape controls area-dependent contact stiffness. For a pair, the effective stiffness is computed as the harmonic mean: <code class="docutils literal notranslate"><span class="pre">k_eff</span> <span class="pre">=</span> <span class="pre">2</span> <span class="pre">*</span> <span class="pre">k_a</span> <span class="pre">*</span> <span class="pre">k_b</span> <span class="pre">/</span> <span class="pre">(k_a</span> <span class="pre">+</span> <span class="pre">k_b)</span></code>. Tune this for desired penetration behavior.</p>
 <p>Contact reduction options for hydroelastic contacts are configured via <a class="reference internal" href="../api/_generated/newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">Config</span></code></a> (see <a class="reference internal" href="#contact-reduction"><span class="std std-ref">Contact Reduction</span></a>).</p>
+<p>Hydroelastic memory can be tuned with <code class="docutils literal notranslate"><span class="pre">buffer_fraction</span></code> on
+<a class="reference internal" href="../api/_generated/newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><code class="xref py py-class docutils literal notranslate"><span class="pre">Config</span></code></a>. This scales broadphase, iso-refinement,
+and hydroelastic face-contact buffer allocations as a fraction of the worst-case
+size. Lower values reduce memory usage but also reduce overflow headroom.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">HydroelasticSDF</span>
+
+<span class="n">config</span> <span class="o">=</span> <span class="n">HydroelasticSDF</span><span class="o">.</span><span class="n">Config</span><span class="p">(</span>
+    <span class="n">reduce_contacts</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">buffer_fraction</span><span class="o">=</span><span class="mf">0.2</span><span class="p">,</span>  <span class="c1"># 20% of worst-case hydroelastic buffers</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>If runtime overflow warnings appear, increase <code class="docutils literal notranslate"><span class="pre">buffer_fraction</span></code> (or stage-specific
+<code class="docutils literal notranslate"><span class="pre">buffer_mult_*</span></code> values) until warnings disappear in your target scenes.</p>
 </section>
 <section id="contact-materials">
 <span id="contact-material-properties"></span><h2>Contact Materials<a class="headerlink" href="#contact-materials" title="Link to this heading">#</a></h2>
