@@ -900,7 +900,7 @@ class ModelBuilder:
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
 
-        # Actuator entries (accumulated during add_external_actuator calls)
+        # Actuator entries (accumulated during add_actuator calls)
         # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
         self.actuator_entries: dict[tuple[type, tuple], ActuatorEntry] = {}
 
@@ -1263,7 +1263,7 @@ class ModelBuilder:
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
                 )
 
-    def add_external_actuator(
+    def add_actuator(
         self,
         actuator_class: type[Actuator],
         input_indices: list[int],
@@ -1272,13 +1272,14 @@ class ModelBuilder:
     ) -> None:
         """Add an external actuator, independent of any ``UsdPhysics`` joint drives.
 
-        External actuators (e.g. ``ActuatorPD``) apply forces computed outside
-        the physics engine. Multiple calls with the same *actuator_class* and
-        identical scalar parameters are accumulated into one entry; the actuator
-        instance is created during ``finalize()``.
+        External actuators (e.g. :class:`newton_actuators.ActuatorPD`) apply
+        forces computed outside the physics engine. Multiple calls with the same
+        *actuator_class* and identical scalar parameters are accumulated into one
+        entry; the actuator instance is created during :meth:`finalize`.
 
         Args:
-            actuator_class: The actuator class (must derive from ``Actuator``).
+            actuator_class: The actuator class (must derive from
+                :class:`newton_actuators.Actuator`).
             input_indices: DOF indices this actuator reads from. Length 1 for single-input,
                 length > 1 for multi-input actuators.
             output_indices: DOF indices for writing output. Defaults to *input_indices*.

@@ -2257,7 +2257,7 @@ def parse_usd(
             continue
         dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
         if dof_indices:
-            builder.add_external_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
+            builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
             actuator_count += 1
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
