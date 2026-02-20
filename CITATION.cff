@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use Newton, please cite it using this metadata."
+title: "Newton: GPU-accelerated physics simulation for robotics and simulation research"
+type: software
+authors:
+  - name: "The Newton Contributors"
+url: "https://github.com/newton-physics/newton"
+license: Apache-2.0
+date-released: "2025-04-22"
