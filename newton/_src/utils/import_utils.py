@@ -207,6 +207,10 @@ def should_show_collider(
         force_show_colliders: User explicitly wants collision shapes visible.
         has_visual_shapes: Whether the body/link has visual (non-collision) shapes.
         parse_visuals_as_colliders: Whether visual geometry is repurposed as collision geometry.
+
+    Returns:
+        True if the collision shape should carry the VISIBLE flag; False if it should
+        be hidden by default and only revealed via the viewer's "Show Collision" toggle.
     """
     if force_show_colliders or parse_visuals_as_colliders:
         return True
