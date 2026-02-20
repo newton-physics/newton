@@ -1317,6 +1317,15 @@ def compare_mjdata_field(
     newton_np = newton_arr.numpy()
     native_np = native_arr.numpy()
 
+    # Skip world body (index 0 on body axis) for cfrc_int — mujoco_warp's
+    # _cfrc_backward accumulates child forces into the world body without
+    # zeroing it first, causing stale values to persist across rne calls.
+    # MuJoCo C's mj_rne never writes d->cfrc_int (uses local arrays), so
+    # the world body value is meaningless in the regular forward pass.
+    if field_name == "cfrc_int" and newton_np.ndim >= 2:
+        newton_np = newton_np[:, 1:]
+        native_np = native_np[:, 1:]
+
     # Vectorized comparison
     diff = np.abs(newton_np - native_np)
     max_diff = float(np.max(diff))
@@ -2114,7 +2123,6 @@ class TestMenagerieBase(unittest.TestCase):
                 run_native_transmission(native_mjw_model, native_mjw_data)
                 run_native_step1_rest(native_mjw_model, native_mjw_data)
                 run_native_step2(native_mjw_model, native_mjw_data)
-            wp.synchronize()
 
         # Helper: compare at step (for non-visual mode)
         def compare_at_step(step_num: int):
