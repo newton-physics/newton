@@ -6200,6 +6200,33 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             "pair_solref should have changed after update!",
         )
 
+    def test_global_pair_exported_to_spec(self):
+        """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.
+
+        Regression test: previously global pairs were skipped because -1 != template_world.
+        """
+        mjcf = """<mujoco>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.05">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="ball_geom" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="ball_geom" condim="3"
+                      friction="2 2 0.01 0.0001 0.0001"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        self.assertEqual(solver.mj_model.npair, 1, "Global pair should be exported to MuJoCo spec")
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_dof_label_resolution_all_joint_types(self):
         """Test that mujoco:joint_dof_label resolves correctly for fixed, revolute, spherical, and D6 joints."""

@@ -30,7 +30,6 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.utils.download_assets import download_git_folder
 
 # Assembly type for the nut and bolt
 ASSEMBLY_STR = "m20_loose"
@@ -42,6 +41,9 @@ GEAR_FILES = [
     ("factory_gear_medium_space_5e-4.obj", "gear_medium"),
     ("factory_gear_small_space_5e-4.obj", "gear_small"),
 ]
+ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
+ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
+ISAACGYM_GEARS_FOLDER = "assets/factory/mesh/factory_gears"
 
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     thickness=0.0,
@@ -60,32 +62,16 @@ MESH_SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
 
 def add_mesh_object(
     builder: newton.ModelBuilder,
-    mesh_file: str,
+    mesh: newton.Mesh,
     transform: wp.transform,
     shape_cfg: newton.ModelBuilder.ShapeConfig | None = None,
     label: str | None = None,
-    center_origin: bool = True,
+    center_vec: wp.vec3 | None = None,
     scale: float = 1.0,
 ) -> int:
-    mesh_data = trimesh.load(mesh_file, force="mesh")
-    vertices = np.array(mesh_data.vertices, dtype=np.float32)
-    indices = np.array(mesh_data.faces.flatten(), dtype=np.int32)
-
-    if center_origin:
-        min_extent = vertices.min(axis=0)
-        max_extent = vertices.max(axis=0)
-        center = (min_extent + max_extent) / 2
-        vertices = vertices - center
-        center_vec = wp.vec3(center) * float(scale)
+    if center_vec is not None:
         center_world = wp.quat_rotate(transform.q, center_vec)
         transform = wp.transform(transform.p + center_world, transform.q)
-
-    mesh = newton.Mesh(vertices, indices)
-    mesh.build_sdf(
-        max_resolution=MESH_SDF_MAX_RESOLUTION,
-        narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
-        margin=shape_cfg.contact_margin if shape_cfg and shape_cfg.contact_margin is not None else 0.05,
-    )
 
     if label == "gear_base":
         body = -1
@@ -96,6 +82,32 @@ def add_mesh_object(
         body = builder.add_body(label=label, xform=transform)
         builder.add_shape_mesh(body, mesh=mesh, scale=(scale, scale, scale), cfg=shape_cfg)
     return body
+
+
+def load_mesh_with_sdf(
+    mesh_file: str,
+    shape_cfg: newton.ModelBuilder.ShapeConfig | None = None,
+    center_origin: bool = True,
+) -> tuple[newton.Mesh, wp.vec3]:
+    mesh_data = trimesh.load(mesh_file, force="mesh")
+    vertices = np.array(mesh_data.vertices, dtype=np.float32)
+    indices = np.array(mesh_data.faces.flatten(), dtype=np.int32)
+    center_vec = wp.vec3(0.0, 0.0, 0.0)
+
+    if center_origin:
+        min_extent = vertices.min(axis=0)
+        max_extent = vertices.max(axis=0)
+        center = (min_extent + max_extent) / 2
+        vertices = vertices - center
+        center_vec = wp.vec3(center)
+
+    mesh = newton.Mesh(vertices, indices)
+    mesh.build_sdf(
+        max_resolution=MESH_SDF_MAX_RESOLUTION,
+        narrow_band_range=MESH_SDF_NARROW_BAND_RANGE,
+        margin=shape_cfg.contact_margin if shape_cfg and shape_cfg.contact_margin is not None else 0.05,
+    )
+    return mesh, center_vec
 
 
 class Example:
@@ -228,9 +240,8 @@ class Example:
         self.capture()
 
     def _build_nut_bolt_scene(self) -> newton.ModelBuilder:
-        repo_url = "https://github.com/isaac-sim/IsaacGymEnvs.git"
-        print(f"Downloading nut/bolt assets from {repo_url}...")
-        asset_path = download_git_folder(repo_url, "assets/factory/mesh/factory_nut_bolt")
+        print("Downloading nut/bolt assets...")
+        asset_path = newton.examples.download_external_git_folder(ISAACGYM_ENVS_REPO_URL, ISAACGYM_NUT_BOLT_FOLDER)
         print(f"Assets downloaded to: {asset_path}")
 
         world_builder = newton.ModelBuilder()
@@ -238,6 +249,8 @@ class Example:
 
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
         nut_file = str(asset_path / f"factory_nut_{ASSEMBLY_STR}_subdiv_3x.obj")
+        bolt_mesh, bolt_center = load_mesh_with_sdf(bolt_file, shape_cfg=SHAPE_CFG, center_origin=True)
+        nut_mesh, nut_center = load_mesh_with_sdf(nut_file, shape_cfg=SHAPE_CFG, center_origin=True)
 
         # Spacing between assemblies in the grid
         spacing = 0.1 * self.scene_scale
@@ -258,11 +271,11 @@ class Example:
                 bolt_xform = wp.transform(wp.vec3(x_offset, y_offset, 0.0 * self.scene_scale), wp.quat_identity())
                 add_mesh_object(
                     world_builder,
-                    bolt_file,
+                    bolt_mesh,
                     bolt_xform,
                     SHAPE_CFG,
                     label=f"bolt_{i}_{j}",
-                    center_origin=True,
+                    center_vec=bolt_center * self.scene_scale,
                     scale=self.scene_scale,
                 )
 
@@ -273,11 +286,11 @@ class Example:
                 )
                 add_mesh_object(
                     world_builder,
-                    nut_file,
+                    nut_mesh,
                     nut_xform,
                     SHAPE_CFG,
                     label=f"nut_{i}_{j}",
-                    center_origin=True,
+                    center_vec=nut_center * self.scene_scale,
                     scale=self.scene_scale,
                 )
                 count += 1
@@ -285,9 +298,8 @@ class Example:
         return world_builder
 
     def _build_gears_scene(self) -> newton.ModelBuilder:
-        repo_url = "https://github.com/isaac-sim/IsaacGymEnvs.git"
-        print(f"Downloading gear assets from {repo_url}...")
-        asset_path = download_git_folder(repo_url, "assets/factory/mesh/factory_gears")
+        print("Downloading gear assets...")
+        asset_path = newton.examples.download_external_git_folder(ISAACGYM_ENVS_REPO_URL, ISAACGYM_GEARS_FOLDER)
         print(f"Assets downloaded to: {asset_path}")
 
         world_builder = newton.ModelBuilder()
@@ -295,14 +307,15 @@ class Example:
 
         for _, (gear_filename, gear_key) in enumerate(GEAR_FILES):
             gear_file = str(asset_path / gear_filename)
+            gear_mesh, gear_center = load_mesh_with_sdf(gear_file, shape_cfg=SHAPE_CFG, center_origin=True)
             gear_xform = wp.transform(wp.vec3(0.0, 0.0, 0.01) * self.scene_scale, wp.quat_identity())
             add_mesh_object(
                 world_builder,
-                gear_file,
+                gear_mesh,
                 gear_xform,
                 SHAPE_CFG,
                 label=gear_key,
-                center_origin=True,
+                center_vec=gear_center * self.scene_scale,
                 scale=self.scene_scale,
             )
 

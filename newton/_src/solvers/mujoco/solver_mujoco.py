@@ -856,7 +856,8 @@ class SolverMuJoCo(SolverBase):
 
         # region pair attributes
         # --- Pair attributes (from MJCF <pair> tag) ---
-        # Explicit contact pairs with custom properties. Only pairs from the template world are used.
+        # Explicit contact pairs with custom properties. Pairs from the template world and
+        # global pairs (world < 0) are used.
         # These are parsed automatically from MJCF <contact><pair> elements.
         # All pair attributes share the "mujoco:pair" custom frequency.
         builder.add_custom_attribute(
@@ -1908,8 +1909,9 @@ class SolverMuJoCo(SolverBase):
         """
         Initialize MuJoCo contact pairs from custom attributes.
 
-        Only pairs belonging to the template world are added to the MuJoCo spec.
-        MuJoCo will replicate these pairs across all worlds automatically.
+        Pairs belonging to the template world and global pairs (world < 0) are
+        added to the MuJoCo spec. MuJoCo will replicate these pairs across all
+        worlds automatically.
 
         Args:
             model: The Newton model.
@@ -1942,8 +1944,9 @@ class SolverMuJoCo(SolverBase):
         pair_friction = get_numpy("pair_friction")
 
         for i in range(pair_count):
-            # Only include pairs from the template world
-            if int(pair_world[i]) != template_world:
+            # Only include pairs from the template world or global pairs (world < 0)
+            pw = int(pair_world[i])
+            if pw != template_world and pw >= 0:
                 continue
 
             # Map Newton shape indices to MuJoCo geom names
@@ -2316,7 +2319,7 @@ class SolverMuJoCo(SolverBase):
             tendon_name = tendon_label
             suffix = 1
             while tendon_name in used_tendon_names:
-                tendon_name = f"{tendon_name_base}_{suffix}"
+                tendon_name = f"{tendon_label}_{suffix}"
                 suffix += 1
             used_tendon_names.add(tendon_name)
 
@@ -3846,8 +3849,8 @@ class SolverMuJoCo(SolverBase):
 
         selected_shapes_set = set(selected_shapes)
 
-        # Compute shapes required by spatial tendons (wrapping geoms and sidesites)
-        # so they are not skipped even when skip_visual_only_geoms=True
+        # Compute shapes required by spatial tendons (sites, wrapping geoms, sidesites)
+        # so they are not skipped when skip_visual_only_geoms=True or include_sites=False
         tendon_required_shapes: set[int] = set()
         mujoco_attrs = getattr(model, "mujoco", None)
         if mujoco_attrs is not None:
@@ -3880,7 +3883,7 @@ class SolverMuJoCo(SolverBase):
                 name = f"{model.shape_label[shape]}_{shape}"
 
                 if is_site:
-                    if not include_sites:
+                    if not include_sites and shape not in tendon_required_shapes:
                         continue
 
                     # Map unsupported site types to SPHERE
