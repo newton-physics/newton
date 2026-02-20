@@ -351,15 +351,9 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     newton_pos = new_coms[newton_body]
                     mjc_pos = solver.mjw_model.body_ipos.numpy()[world_idx, mjc_body]
 
-                    # Convert positions based on up_axis
-                    if self.model.up_axis == 1:  # Y-axis up
-                        expected_pos = np.array([newton_pos[0], -newton_pos[2], newton_pos[1]])
-                    else:  # Z-axis up
-                        expected_pos = newton_pos
-
                     for dim in range(3):
                         self.assertAlmostEqual(
-                            expected_pos[dim],
+                            newton_pos[dim],
                             mjc_pos[dim],
                             places=6,
                             msg=f"COM position mismatch for mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}, dimension {dim}",
@@ -384,15 +378,9 @@ class TestMuJoCoSolverMassProperties(TestMuJoCoSolverPropertiesBase):
                     newton_pos = updated_coms[newton_body]
                     mjc_pos = solver.mjw_model.body_ipos.numpy()[world_idx, mjc_body]
 
-                    # Convert positions based on up_axis
-                    if self.model.up_axis == 1:  # Y-axis up
-                        expected_pos = np.array([newton_pos[0], -newton_pos[2], newton_pos[1]])
-                    else:  # Z-axis up
-                        expected_pos = newton_pos
-
                     for dim in range(3):
                         self.assertAlmostEqual(
-                            expected_pos[dim],
+                            newton_pos[dim],
                             mjc_pos[dim],
                             places=6,
                             msg=f"Updated COM position mismatch for mjc_body {mjc_body} (newton {newton_body}) in world {world_idx}, dimension {dim}",
@@ -1889,7 +1877,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         shape_kd = self.model.shape_material_kd.numpy()
         shape_sizes = self.model.shape_scale.numpy()
         shape_transforms = self.model.shape_transform.numpy()
-        shape_bodies = self.model.shape_body.numpy()
 
         # Get all property arrays from MuJoCo
         geom_friction = solver.mjw_model.geom_friction.numpy()
@@ -1987,17 +1974,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 shape_transform = wp.transform(*shape_transforms[shape_idx])
                 expected_pos = wp.vec3(*shape_transform.p)
                 expected_quat = wp.quat(*shape_transform.q)
-
-                # Apply shape-specific rotations (matching update_geom_properties_kernel logic)
-                shape_body = shape_bodies[shape_idx]
-
-                # Handle up-axis conversion if needed
-                if self.model.up_axis == 1:  # Y-up to Z-up conversion
-                    # For static geoms, position conversion
-                    if shape_body == -1:
-                        expected_pos = wp.vec3(expected_pos[0], -expected_pos[2], expected_pos[1])
-                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = rot_y2z * expected_quat
 
                 # Convert expected quaternion to MuJoCo format (wxyz)
                 expected_quat_mjc = np.array([expected_quat.w, expected_quat.x, expected_quat.y, expected_quat.z])
@@ -2210,16 +2186,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 new_transform = wp.transform(*new_transforms[shape_idx])
                 expected_pos = new_transform.p
                 expected_quat = new_transform.q
-
-                # Apply same transformations as in the kernel
-                shape_body = self.model.shape_body.numpy()[shape_idx]
-
-                # Handle up-axis conversion if needed
-                if self.model.up_axis == 1:  # Y-up to Z-up conversion
-                    if shape_body == -1:
-                        expected_pos = wp.vec3(expected_pos[0], -expected_pos[2], expected_pos[1])
-                    rot_y2z = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -wp.pi * 0.5)
-                    expected_quat = rot_y2z * expected_quat
 
                 # Convert expected quaternion to MuJoCo format (wxyz)
                 expected_quat_mjc = np.array([expected_quat.w, expected_quat.x, expected_quat.y, expected_quat.z])

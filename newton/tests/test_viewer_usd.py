@@ -60,6 +60,40 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(interpolation, UsdGeom.Tokens.vertex)
         np.testing.assert_allclose(display_color, colors.numpy(), atol=1e-6)
 
+    def test_reuses_existing_layer_for_same_output_path(self):
+        temp_file = tempfile.NamedTemporaryFile(suffix=".usda", delete=False)
+        temp_file.close()
+        self.addCleanup(lambda: os.path.exists(temp_file.name) and os.remove(temp_file.name))
+
+        # Create first viewer and write some data into the stage.
+        viewer1 = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        self.addCleanup(viewer1.close)
+        self.addCleanup(lambda: setattr(viewer1, "output_path", ""))
+
+        viewer1.begin_frame(0.0)
+        points = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3)
+        colors = wp.array([[1.0, 1.0, 1.0]], dtype=wp.vec3)
+        path = viewer1.log_points("/points_from_viewer1", points, radii=0.01, colors=colors)
+
+        # Ensure the prim written by viewer1 is present before creating viewer2.
+        prim_before = UsdGeom.Points.Get(viewer1.stage, path).GetPrim()
+        self.assertTrue(prim_before.IsValid())
+
+        # Create second viewer for the same output path; this should reuse the same
+        # underlying layer and clear any previous contents.
+        viewer2 = ViewerUSD(output_path=temp_file.name, num_frames=1)
+        self.addCleanup(viewer2.close)
+        self.addCleanup(lambda: setattr(viewer2, "output_path", ""))
+
+        # Verify that the stage/layer reuse actually occurred.
+        self.assertIsNotNone(viewer2.stage)
+        self.assertIs(viewer1.stage.GetRootLayer(), viewer2.stage.GetRootLayer())
+
+        # Verify that viewer2 cleared/overwrote viewer1's data.
+        prim_after = UsdGeom.Points.Get(viewer2.stage, path).GetPrim()
+        self.assertFalse(prim_after.IsValid())
+        self.assertTrue(os.path.exists(temp_file.name))
+
     def test_log_points_treats_wp_float_triplet_as_single_constant_color(self):
         viewer = self._make_viewer()
 

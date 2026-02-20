@@ -1063,7 +1063,6 @@ def update_body_mass_ipos_kernel(
     body_com: wp.array(dtype=wp.vec3f),
     body_mass: wp.array(dtype=float),
     body_gravcomp: wp.array(dtype=float),
-    up_axis: int,
     # outputs
     body_ipos: wp.array2d(dtype=wp.vec3f),
     body_mass_out: wp.array2d(dtype=float),
@@ -1080,12 +1079,7 @@ def update_body_mass_ipos_kernel(
         return
 
     # update COM position
-    if up_axis == 1:
-        body_ipos[world, mjc_body] = wp.vec3f(
-            body_com[newton_body][0], -body_com[newton_body][2], body_com[newton_body][1]
-        )
-    else:
-        body_ipos[world, mjc_body] = body_com[newton_body]
+    body_ipos[world, mjc_body] = body_com[newton_body]
 
     # update mass
     body_mass_out[world, mjc_body] = body_mass[newton_body]
