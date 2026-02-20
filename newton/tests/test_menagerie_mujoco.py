@@ -956,13 +956,18 @@ def compare_jnt_range(
 def run_native_step1_rest(
     native_model: Any,
     native_data: Any,
+    inject_from: Any | None = None,
 ) -> None:
     """Run rest of step1 after fwd_position: sensors + fwd_velocity.
 
     Call this after run_native_make_constraint() or run_native_transmission().
+
+    Args:
+        inject_from: If provided, inject cvel from this data after com_vel
+            but before rne, to eliminate float32 non-determinism in bias forces.
     """
     from mujoco_warp._src import forward as mjw_forward
-    from mujoco_warp._src import sensor
+    from mujoco_warp._src import sensor, smooth
     from mujoco_warp._src.types import EnableBit
 
     m, d = native_model, native_data
@@ -977,7 +982,26 @@ def run_native_step1_rest(
     else:
         d.energy.zero_()
 
-    mjw_forward.fwd_velocity(m, d)
+    if inject_from is not None:
+        # Run fwd_velocity (includes com_vel → rne), then inject cvel
+        # and re-run rne. subtree_com/cdof/cinert are already injected
+        # earlier (in inject_contacts), but cvel is recomputed by com_vel
+        # inside fwd_velocity and may have float32 accumulation noise.
+        mjw_forward.fwd_velocity(m, d)
+        # Verify cvel matches within epsilon before injecting
+        wp.synchronize()
+        _cvel_diff = float(
+            np.max(np.abs(d.cvel.numpy().astype(np.float64) - inject_from.cvel.numpy().astype(np.float64)))
+        )
+        if _cvel_diff > 1e-5:
+            raise AssertionError(
+                f"step1_rest: cvel diff {_cvel_diff:.2e} > tol 1e-05 (expected only float32 accumulation noise)"
+            )
+        d.cvel.assign(inject_from.cvel)
+        smooth.rne(m, d)
+    else:
+        mjw_forward.fwd_velocity(m, d)
+
     sensor.sensor_vel(m, d)
 
     if energy:
@@ -1065,7 +1089,7 @@ def inject_contacts(src_data: Any, dst_data: Any, tol: float = 1e-5) -> None:
     # Verify kinematic fields match within tolerance before injection.
     # These should only differ by float32 accumulation noise (~1e-7).
     wp.synchronize()
-    for field_name in ("subtree_com", "cdof"):
+    for field_name in ("subtree_com", "cdof", "cinert"):
         src_np = getattr(src_data, field_name).numpy()
         dst_np = getattr(dst_data, field_name).numpy()
         diff = float(np.max(np.abs(src_np.astype(np.float64) - dst_np.astype(np.float64))))
@@ -1089,11 +1113,12 @@ def inject_contacts(src_data: Any, dst_data: Any, tol: float = 1e-5) -> None:
     dst_data.contact.solimp.assign(src_data.contact.solimp)
     dst_data.contact.dim.assign(src_data.contact.dim)
     dst_data.contact.efc_address.assign(src_data.contact.efc_address)
-    # Kinematic data used by make_constraint — cdof and subtree_com have
+    # Kinematic data computed in com_pos — subtree_com, cdof, cinert have
     # float32 accumulation diffs from _subtree_com_acc atomic_add that
-    # affect friction cone Jacobian computation.
+    # propagate into constraint Jacobians and bias forces.
     dst_data.subtree_com.assign(src_data.subtree_com)
     dst_data.cdof.assign(src_data.cdof)
+    dst_data.cinert.assign(src_data.cinert)
     wp.synchronize()
 
 
@@ -2162,7 +2187,7 @@ class TestMenagerieBase(unittest.TestCase):
                 wp.capture_launch(post_constraint_graph)
             else:
                 run_native_transmission(native_mjw_model, native_mjw_data)
-                run_native_step1_rest(native_mjw_model, native_mjw_data)
+                run_native_step1_rest(native_mjw_model, native_mjw_data, inject_from=newton_solver.mjw_data)
                 run_native_step2(native_mjw_model, native_mjw_data)
 
         # Helper: compare at step (for non-visual mode)
@@ -2864,22 +2889,13 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     robot_folder = "apptronik_apollo"
     backfill_model = True
     use_split_pipeline = True
-    num_steps = 1  # TODO: increase once tolerances are calibrated
+    split_pipeline_tol = 1e-5
+    num_steps = 100
+    njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
     parse_visuals = True
     # Skip geom data fields in dynamics comparison (geom ordering differs with parse_visuals)
     compare_fields: ClassVar[list[str]] = [f for f in DEFAULT_COMPARE_FIELDS if not f.startswith("geom_")]
-    # Float32 qfrc_bias diff (~2e-6) from gravity accumulation propagates through
-    # the constraint solver into qacc (~0.1), then cascades through integration.
-    tolerance_overrides: ClassVar[dict[str, float]] = {
-        "qfrc_bias": 1e-5,
-        "qM": 1e-5,
-        "qacc": 5e-1,
-        "qvel": 1e-3,
-        "qpos": 1e-5,
-        "cacc": 5e3,
-        "cfrc_int": 5e3,
-    }
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
         "dof_invweight0",
