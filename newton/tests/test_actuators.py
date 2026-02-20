@@ -317,11 +317,11 @@ class TestActuatorSelectionAPI(unittest.TestCase):
             single_world_builder.add_builder(single_articulation_builder)
 
         # Customise the articulation keys in single_world_builder
-        single_world_builder.articulation_key[1] = "art1"
+        single_world_builder.articulation_label[1] = "art1"
         if use_multiple_artics_per_view:
-            single_world_builder.articulation_key[0] = "art1"
+            single_world_builder.articulation_label[0] = "art1"
         else:
-            single_world_builder.articulation_key[0] = "art0"
+            single_world_builder.articulation_label[0] = "art0"
 
         # Create 3 worlds with two articulations per world and 3 actuators per articulation.
         builder = newton.ModelBuilder()
