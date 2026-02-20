@@ -72,6 +72,7 @@ from .joints import (
     JointType,
 )
 from .model import Model
+from .utils import IntIndexList, IntIndexList2D
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -793,7 +794,7 @@ class ModelBuilder:
         # transform from shape to body
         self.shape_transform = []
         # maps from shape index to body index
-        self.shape_body = []
+        self.shape_body = IntIndexList()
         self.shape_flags = []
         self.shape_type = []
         self.shape_scale = []
@@ -824,7 +825,7 @@ class ModelBuilder:
         # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
 
         # filtering to ignore certain collision pairs
-        self.shape_collision_filter_pairs: list[tuple[int, int]] = []
+        self.shape_collision_filter_pairs: IntIndexList2D = IntIndexList2D()
 
         self._requested_contact_attributes: set[str] = set()
         self._requested_state_attributes: set[str] = set()
@@ -877,10 +878,10 @@ class ModelBuilder:
         self.body_color_groups: list[nparray] = []
 
         # rigid joints
-        self.joint_parent = []  # index of the parent body                      (constant)
+        self.joint_parent = IntIndexList()  # index of the parent body                      (constant)
         self.joint_parents = {}  # mapping from child body to parent bodies
         self.joint_children = {}  # mapping from parent body to child bodies
-        self.joint_child = []  # index of the child body                       (constant)
+        self.joint_child = IntIndexList()  # index of the child body                       (constant)
         self.joint_axis = []  # joint axis in joint parent anchor frame        (constant)
         self.joint_X_p = []  # frame of joint in parent                      (constant)
         self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
@@ -910,14 +911,14 @@ class ModelBuilder:
 
         self.joint_enabled = []
 
-        self.joint_q_start = []
-        self.joint_qd_start = []
-        self.joint_cts_start = []
+        self.joint_q_start = IntIndexList()
+        self.joint_qd_start = IntIndexList()
+        self.joint_cts_start = IntIndexList()
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
-        self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
+        self.joint_articulation = IntIndexList()  # articulation index for each joint, -1 if not in any articulation
 
-        self.articulation_start = []
+        self.articulation_start = IntIndexList()
         self.articulation_label = []
         self.articulation_world = []  # world index for each articulation
 
@@ -946,21 +947,21 @@ class ModelBuilder:
 
         # equality constraints
         self.equality_constraint_type = []
-        self.equality_constraint_body1 = []
-        self.equality_constraint_body2 = []
+        self.equality_constraint_body1 = IntIndexList()
+        self.equality_constraint_body2 = IntIndexList()
         self.equality_constraint_anchor = []
         self.equality_constraint_relpose = []
         self.equality_constraint_torquescale = []
-        self.equality_constraint_joint1 = []
-        self.equality_constraint_joint2 = []
+        self.equality_constraint_joint1 = IntIndexList()
+        self.equality_constraint_joint2 = IntIndexList()
         self.equality_constraint_polycoef = []
         self.equality_constraint_label = []
         self.equality_constraint_enabled = []
         self.equality_constraint_world = []
 
         # mimic constraints
-        self.constraint_mimic_joint0 = []
-        self.constraint_mimic_joint1 = []
+        self.constraint_mimic_joint0 = IntIndexList()
+        self.constraint_mimic_joint1 = IntIndexList()
         self.constraint_mimic_coef0 = []
         self.constraint_mimic_coef1 = []
         self.constraint_mimic_enabled = []
@@ -2395,6 +2396,16 @@ class ModelBuilder:
             transform_mul_cfunc(a, b, ctypes.byref(out))
             return out
 
+        def remap_indices(values: Iterable[int], offset: int) -> IntIndexList:
+            remapped = IntIndexList()
+            remapped.extend_with_offset(values, offset)
+            return remapped
+
+        def remap_indices_except(values: Iterable[int], offset: int, sentinel: int = -1) -> IntIndexList:
+            remapped = IntIndexList()
+            remapped.extend_with_offset_except(values, offset, sentinel=sentinel)
+            return remapped
+
         start_particle_idx = self.particle_count
         start_body_idx = self.body_count
         start_shape_idx = self.shape_count
@@ -2453,10 +2464,11 @@ class ModelBuilder:
                     self.shape_transform.append(builder.shape_transform[s])
 
         for b, shapes in builder.body_shapes.items():
+            remapped_shapes = remap_indices(shapes, start_shape_idx).tolist()
             if b == -1:
-                self.body_shapes[-1].extend([s + start_shape_idx for s in shapes])
+                self.body_shapes[-1].extend(remapped_shapes)
             else:
-                self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
+                self.body_shapes[b + start_body_idx] = remapped_shapes
 
         if builder.joint_count:
             start_q = len(self.joint_q)
@@ -2475,10 +2487,10 @@ class ModelBuilder:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
-            self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
+            self.articulation_start.extend_with_offset(builder.articulation_start, self.joint_count)
 
-            new_parents = [p + start_body_idx if p != -1 else -1 for p in builder.joint_parent]
-            new_children = [c + start_body_idx for c in builder.joint_child]
+            new_parents = remap_indices_except(builder.joint_parent, start_body_idx, sentinel=-1)
+            new_children = remap_indices(builder.joint_child, start_body_idx)
 
             self.joint_parent.extend(new_parents)
             self.joint_child.extend(new_children)
@@ -2495,9 +2507,9 @@ class ModelBuilder:
                 elif c not in self.joint_children[p]:
                     self.joint_children[p].append(c)
 
-            self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
-            self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
-            self.joint_cts_start.extend([c + self.joint_constraint_count for c in builder.joint_cts_start])
+            self.joint_q_start.extend_with_offset(builder.joint_q_start, self.joint_coord_count)
+            self.joint_qd_start.extend_with_offset(builder.joint_qd_start, self.joint_dof_count)
+            self.joint_cts_start.extend_with_offset(builder.joint_cts_start, self.joint_constraint_count)
 
         if xform is not None:
             for i in range(builder.body_count):
@@ -2509,9 +2521,7 @@ class ModelBuilder:
         self.shape_collision_group.extend(builder.shape_collision_group)
 
         # Copy collision filter pairs with offset
-        self.shape_collision_filter_pairs.extend(
-            [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
-        )
+        self.shape_collision_filter_pairs.extend_with_offset(builder.shape_collision_filter_pairs, start_shape_idx)
 
         # Handle world assignments
         # For particles
@@ -2535,9 +2545,7 @@ class ModelBuilder:
             s = [self.current_world] * builder.joint_count
             self.joint_world.extend(s)
             # Offset articulation indices for joints (-1 stays -1)
-            self.joint_articulation.extend(
-                [a + start_articulation_idx if a >= 0 else -1 for a in builder.joint_articulation]
-            )
+            self.joint_articulation.extend_with_offset_nonnegative(builder.joint_articulation, start_articulation_idx)
 
         # For articulations
         if builder.articulation_count > 0:
@@ -2551,20 +2559,16 @@ class ModelBuilder:
 
             # Remap body and joint indices in equality constraints
             self.equality_constraint_type.extend(builder.equality_constraint_type)
-            self.equality_constraint_body1.extend(
-                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body1]
-            )
-            self.equality_constraint_body2.extend(
-                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body2]
-            )
+            self.equality_constraint_body1.extend_with_offset_except(builder.equality_constraint_body1, start_body_idx)
+            self.equality_constraint_body2.extend_with_offset_except(builder.equality_constraint_body2, start_body_idx)
             self.equality_constraint_anchor.extend(builder.equality_constraint_anchor)
             self.equality_constraint_torquescale.extend(builder.equality_constraint_torquescale)
             self.equality_constraint_relpose.extend(builder.equality_constraint_relpose)
-            self.equality_constraint_joint1.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint1]
+            self.equality_constraint_joint1.extend_with_offset_except(
+                builder.equality_constraint_joint1, start_joint_idx
             )
-            self.equality_constraint_joint2.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint2]
+            self.equality_constraint_joint2.extend_with_offset_except(
+                builder.equality_constraint_joint2, start_joint_idx
             )
             self.equality_constraint_polycoef.extend(builder.equality_constraint_polycoef)
             if label_prefix:
@@ -2581,12 +2585,8 @@ class ModelBuilder:
             self.constraint_mimic_world.extend(constraint_worlds)
 
             # Remap joint indices in mimic constraints
-            self.constraint_mimic_joint0.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint0]
-            )
-            self.constraint_mimic_joint1.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint1]
-            )
+            self.constraint_mimic_joint0.extend_with_offset_except(builder.constraint_mimic_joint0, start_joint_idx)
+            self.constraint_mimic_joint1.extend_with_offset_except(builder.constraint_mimic_joint1, start_joint_idx)
             self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
             self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
             self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
@@ -2721,6 +2721,40 @@ class ModelBuilder:
                 f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
             )
 
+        def is_scalar_int_dtype(dtype: object) -> bool:
+            if dtype in (bool, wp.bool):
+                return False
+            if dtype is int:
+                return True
+            try:
+                return (
+                    wp.types.type_is_int(dtype)
+                    and not wp.types.type_is_vector(dtype)
+                    and not wp.types.type_is_matrix(dtype)
+                )
+            except TypeError:
+                return False
+
+        def is_scalar_int_value(value: Any) -> bool:
+            return isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))
+
+        def remap_scalar_int_values(values: Iterable[Any], offset: int) -> list[int]:
+            remapped = IntIndexList()
+            remapped.extend_with_offset_nonnegative(values, offset)
+            return remapped.tolist()
+
+        def remap_scalar_int_dict(
+            values: dict[int, Any], index_offset: int, value_offset: int, replace_with_world: bool
+        ) -> dict[int, int]:
+            remapped_indices = remap_indices(values.keys(), index_offset)
+            if replace_with_world:
+                remapped_values = [self.current_world] * len(values)
+            elif value_offset == 0:
+                remapped_values = [int(v) for v in values.values()]
+            else:
+                remapped_values = remap_scalar_int_values(values.values(), value_offset)
+            return dict(zip(remapped_indices, remapped_values, strict=True))
+
         for full_key, attr in builder.custom_attributes.items():
             # Fast path: skip attributes with no values (avoids computing offsets/closures)
             if not attr.values:
@@ -2743,11 +2777,12 @@ class ModelBuilder:
                 # When called via add_world(), current_world is the world being added
                 index_offset = 0 if self.current_world == -1 else self.current_world
             else:
-                index_offset = get_offset(attr.frequency.name.lower())
+                index_offset = get_offset(freq_key.name.lower())
 
             # Value transformation based on references
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
+            scalar_int_fast_path = is_scalar_int_dtype(attr.dtype)
 
             def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
                 if replace_with_world:
@@ -2772,10 +2807,30 @@ class ModelBuilder:
             if merged is None:
                 if isinstance(freq_key, str):
                     # String frequency: copy list as-is (no offset for sequential data)
-                    mapped_values = [transform_value(value) for value in attr.values]
+                    if (
+                        scalar_int_fast_path
+                        and isinstance(attr.values, list)
+                        and all(is_scalar_int_value(value) for value in attr.values)
+                    ):
+                        if use_current_world:
+                            mapped_values = [self.current_world] * len(attr.values)
+                        elif value_offset == 0:
+                            mapped_values = [int(value) for value in attr.values]
+                        else:
+                            mapped_values = remap_scalar_int_values(attr.values, value_offset)
+                    else:
+                        mapped_values = [transform_value(value) for value in attr.values]
                 else:
                     # Enum frequency: remap dict indices with offset
-                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                    enum_values = attr.values if isinstance(attr.values, dict) else {}
+                    if scalar_int_fast_path and all(is_scalar_int_value(value) for value in enum_values.values()):
+                        mapped_values = remap_scalar_int_dict(
+                            enum_values, index_offset, value_offset, use_current_world
+                        )
+                    else:
+                        remapped_indices = remap_indices(enum_values.keys(), index_offset)
+                        transformed_values = [transform_value(value) for value in enum_values.values()]
+                        mapped_values = dict(zip(remapped_indices, transformed_values, strict=True))
                 self.custom_attributes[full_key] = replace(attr, values=mapped_values)
                 continue
 
@@ -2801,12 +2856,34 @@ class ModelBuilder:
                 merged.values = [] if isinstance(freq_key, str) else {}
 
             if isinstance(freq_key, str):
+                if not isinstance(merged.values, list):
+                    merged.values = []
                 # String frequency: extend list with transformed values
-                new_values = [transform_value(value) for value in attr.values]
+                if (
+                    scalar_int_fast_path
+                    and isinstance(attr.values, list)
+                    and all(is_scalar_int_value(value) for value in attr.values)
+                ):
+                    if use_current_world:
+                        new_values = [self.current_world] * len(attr.values)
+                    elif value_offset == 0:
+                        new_values = [int(value) for value in attr.values]
+                    else:
+                        new_values = remap_scalar_int_values(attr.values, value_offset)
+                else:
+                    new_values = [transform_value(value) for value in attr.values]
                 merged.values.extend(new_values)
             else:
+                if not isinstance(merged.values, dict):
+                    merged.values = {}
+                enum_values = attr.values if isinstance(attr.values, dict) else {}
                 # Enum frequency: update dict with remapped indices
-                new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
+                if scalar_int_fast_path and all(is_scalar_int_value(value) for value in enum_values.values()):
+                    new_indices = remap_scalar_int_dict(enum_values, index_offset, value_offset, use_current_world)
+                else:
+                    remapped_indices = remap_indices(enum_values.keys(), index_offset)
+                    transformed_values = [transform_value(value) for value in enum_values.values()]
+                    new_indices = dict(zip(remapped_indices, transformed_values, strict=True))
                 merged.values.update(new_indices)
 
         # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
@@ -4375,7 +4452,7 @@ class ModelBuilder:
                     break
             self.articulation_start[i] = joint_remap.get(start_i, start_i)
         # remove empty articulation starts, i.e. where the start and end are the same
-        self.articulation_start = list(set(self.articulation_start))
+        self.articulation_start = IntIndexList(list(set(self.articulation_start)))
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
