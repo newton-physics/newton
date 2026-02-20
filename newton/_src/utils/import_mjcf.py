@@ -1415,13 +1415,15 @@ def parse_mjcf(
             joint_label = f"{body_label_path}/{joint_label_name}"
             if joint_type == JointType.FREE:
                 assert parent == -1, "Free joints must have the world body as parent"
-                joint_indices.append(
-                    builder.add_joint_free(
-                        link,
-                        label=joint_label,
-                        custom_attributes=joint_custom_attributes,
-                    )
+                joint_idx = builder.add_joint_free(
+                    link,
+                    label=joint_label,
+                    custom_attributes=joint_custom_attributes,
                 )
+                joint_indices.append(joint_idx)
+                # Map free joint names so actuators can target them
+                for jn in joint_name:
+                    joint_name_to_idx[jn] = joint_idx
             else:
                 # When parent is world (-1), use world_xform to respect the xform argument
                 if parent == -1:
