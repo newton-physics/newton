@@ -1812,6 +1812,8 @@ class TestMenagerieBase(unittest.TestCase):
     # When False, runs both full pipelines (may need looser tolerances).
     use_split_pipeline: bool = False
     split_pipeline_tol: float = 1e-5  # Tolerance for contact/constraint matching in split pipeline
+    njmax: int | None = None  # Max constraint rows per world (None = auto from MuJoCo)
+    nconmax: int | None = None  # Max contacts per world (None = auto from MuJoCo)
     # CUDA graph capture with split pipeline injection produces incorrect results.
     # Disabled by default; re-enable per robot once the interaction is understood.
     use_cuda_graph: bool = False
@@ -1934,7 +1936,9 @@ class TestMenagerieBase(unittest.TestCase):
         # Create mujoco_warp model/data with multiple worlds
         # Note: put_model creates arrays with nworld=1, expansion happens in test_simulation_equivalence
         mjw_model = _mujoco_warp.put_model(mj_model)
-        mjw_data = _mujoco_warp.put_data(mj_model, mj_data, nworld=self.num_worlds)
+        mjw_data = _mujoco_warp.put_data(
+            mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
+        )
 
         return mj_model, mj_data, mjw_model, mjw_data
 
@@ -1956,7 +1960,12 @@ class TestMenagerieBase(unittest.TestCase):
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-        newton_solver = SolverMuJoCo(newton_model, skip_visual_only_geoms=not self.parse_visuals)
+        newton_solver = SolverMuJoCo(
+            newton_model,
+            skip_visual_only_geoms=not self.parse_visuals,
+            njmax=self.njmax,
+            nconmax=self.nconmax,
+        )
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
