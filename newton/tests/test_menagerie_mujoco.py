@@ -2869,16 +2869,16 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     parse_visuals = True
     # Skip geom data fields in dynamics comparison (geom ordering differs with parse_visuals)
     compare_fields: ClassVar[list[str]] = [f for f in DEFAULT_COMPARE_FIELDS if not f.startswith("geom_")]
-    # Float32 qfrc_bias accumulation diff (~6e-5) propagates through the constraint
-    # solver, amplified by M^{-1}. These tolerances accommodate the cascade.
+    # Float32 qfrc_bias diff (~2e-6) from gravity accumulation propagates through
+    # the constraint solver into qacc (~0.1), then cascades through integration.
     tolerance_overrides: ClassVar[dict[str, float]] = {
-        "qfrc_bias": 1e-4,
-        "qfrc_smooth": 1e-4,
+        "qfrc_bias": 1e-5,
         "qM": 1e-5,
-        "qacc": 5e-2,
+        "qacc": 5e-1,
+        "qvel": 1e-3,
+        "qpos": 1e-5,
         "cacc": 5e3,
         "cfrc_int": 5e3,
-        "energy": 1e2,
     }
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
