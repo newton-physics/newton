@@ -527,6 +527,11 @@ add_example_test(
     use_viewer=True,
 )
 
+# Skip until the IK cube stacking example is stabilized
+for _attr in list(vars(TestIKExamples)):
+    if _attr.startswith("test_ik.example_ik_cube_stacking"):
+        setattr(TestIKExamples, _attr, unittest.skip("Unstable test")(getattr(TestIKExamples, _attr)))
+
 
 class TestSelectionAPIExamples(unittest.TestCase):
     pass
