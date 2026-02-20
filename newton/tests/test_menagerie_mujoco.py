@@ -537,6 +537,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_",
     "pair_geom",  # geom indices depend on geom ordering
     "nxn_",  # broadphase pairs depend on geom ordering
+    # Actuator acc0: derived from mass matrix + actuator moment, differs due to
+    # inertia re-diagonalization float32 round-trip
+    "actuator_acc0",
 }
 
 
@@ -1317,12 +1320,12 @@ def compare_mjdata_field(
     newton_np = newton_arr.numpy()
     native_np = native_arr.numpy()
 
-    # Skip world body (index 0 on body axis) for cfrc_int — mujoco_warp's
-    # _cfrc_backward accumulates child forces into the world body without
-    # zeroing it first, causing stale values to persist across rne calls.
-    # MuJoCo C's mj_rne never writes d->cfrc_int (uses local arrays), so
-    # the world body value is meaningless in the regular forward pass.
-    if field_name == "cfrc_int" and newton_np.ndim >= 2:
+    # Skip world body (index 0 on body axis) for cfrc_int and cacc —
+    # mujoco_warp's _cfrc_backward accumulates child forces into the world
+    # body without zeroing it first, causing stale values across rne calls.
+    # MuJoCo C's mj_rne uses local arrays and never writes d->cfrc_int,
+    # and cacc[world] is only meaningful as the gravity seed, not as output.
+    if field_name in ("cfrc_int", "cacc") and newton_np.ndim >= 2:
         newton_np = newton_np[:, 1:]
         native_np = native_np[:, 1:]
 
@@ -1809,6 +1812,9 @@ class TestMenagerieBase(unittest.TestCase):
     # When False, runs both full pipelines (may need looser tolerances).
     use_split_pipeline: bool = False
     split_pipeline_tol: float = 1e-5  # Tolerance for contact/constraint matching in split pipeline
+    # CUDA graph capture with split pipeline injection produces incorrect results.
+    # Disabled by default; re-enable per robot once the interaction is understood.
+    use_cuda_graph: bool = False
 
     @classmethod
     def setUpClass(cls):
@@ -2135,8 +2141,8 @@ class TestMenagerieBase(unittest.TestCase):
             sync_to_viewer()
             viewer.sync()
 
-        # Setup CUDA graphs (disabled — injection between graph captures needs investigation)
-        use_cuda_graph = False
+        # Setup CUDA graphs
+        use_cuda_graph = self.use_cuda_graph and wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         newton_graph = None
         native_graph = None
         # For contact injection mode:
@@ -2545,9 +2551,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     # Together these give bit-identical results, so no tolerance overrides needed.
     backfill_model = True
     use_split_pipeline = True
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "actuator_acc0",  # derived from mass matrix + actuator moment; differs due to inertia re-diag
-    }
 
 
 class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
@@ -2831,7 +2834,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     parse_visuals = True
     # Skip geom data fields in dynamics comparison (geom ordering differs with parse_visuals)
     compare_fields: ClassVar[list[str]] = [f for f in DEFAULT_COMPARE_FIELDS if not f.startswith("geom_")]
-    # Float32 qfrc_bias accumulation diff (~6e-5) propagates through constraint solver.
     # Float32 qfrc_bias accumulation diff (~6e-5) propagates through the constraint
     # solver, amplified by M^{-1}. These tolerances accommodate the cascade.
     tolerance_overrides: ClassVar[dict[str, float]] = {
@@ -2846,7 +2848,6 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
         "dof_invweight0",
-        "actuator_acc0",  # derived from mass matrix; small residual diff (~1.5e-4)
         "stat",  # meaninertia computed from invweight0
     }
 
