@@ -18,6 +18,7 @@ import warp as wp
 from .broad_phase_common import binary_search
 from .flags import ParticleFlags, ShapeFlags
 from .types import (
+    Axis,
     GeoType,
 )
 
@@ -139,21 +140,88 @@ def triangle_closest_point(a: wp.vec3, b: wp.vec3, c: wp.vec3, p: wp.vec3):
 
 
 @wp.func
-def sphere_sdf(center: wp.vec3, radius: float, p: wp.vec3):
-    return wp.length(p - center) - radius
+def _sdf_point_to_z_up(point: wp.vec3, up_axis: int):
+    if up_axis == int(Axis.X):
+        return wp.vec3(point[1], point[2], point[0])
+    if up_axis == int(Axis.Y):
+        return wp.vec3(point[0], point[2], point[1])
+    return point
 
 
 @wp.func
-def sphere_sdf_grad(center: wp.vec3, radius: float, p: wp.vec3):
-    return wp.normalize(p - center)
+def _sdf_capped_cone_z(bottom_radius: float, top_radius: float, half_height: float, point_z_up: wp.vec3):
+    q = wp.vec2(wp.length(wp.vec2(point_z_up[0], point_z_up[1])), point_z_up[2])
+    k1 = wp.vec2(top_radius, half_height)
+    k2 = wp.vec2(top_radius - bottom_radius, 2.0 * half_height)
+
+    if q[1] < 0.0:
+        ca = wp.vec2(q[0] - wp.min(q[0], bottom_radius), wp.abs(q[1]) - half_height)
+    else:
+        ca = wp.vec2(q[0] - wp.min(q[0], top_radius), wp.abs(q[1]) - half_height)
+
+    denom = wp.dot(k2, k2)
+    t = 0.0
+    if denom > 0.0:
+        t = wp.clamp(wp.dot(k1 - q, k2) / denom, 0.0, 1.0)
+    cb = q - k1 + k2 * t
+
+    sign = 1.0
+    if cb[0] < 0.0 and ca[1] < 0.0:
+        sign = -1.0
+
+    return sign * wp.sqrt(wp.min(wp.dot(ca, ca), wp.dot(cb, cb)))
 
 
 @wp.func
-def box_sdf(upper: wp.vec3, p: wp.vec3):
+def sdf_sphere(point: wp.vec3, radius: float):
+    """Compute signed distance to a sphere for ``Mesh.create_sphere`` geometry.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radius [m]: Sphere radius.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    return wp.length(point) - radius
+
+
+@wp.func
+def sdf_sphere_grad(point: wp.vec3, radius: float):
+    """Compute outward SDF gradient for ``sdf_sphere``.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radius [m]: Sphere radius (unused, kept for API symmetry).
+
+    Returns:
+        Unit-length gradient direction in local frame.
+    """
+    _ = radius
+    eps = 1.0e-8
+    p_len = wp.length(point)
+    if p_len > eps:
+        return point / p_len
+    return wp.vec3(0.0, 0.0, 1.0)
+
+
+@wp.func
+def sdf_box(point: wp.vec3, hx: float, hy: float, hz: float):
+    """Compute signed distance to an axis-aligned box.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        hx [m]: Half-extent along X.
+        hy [m]: Half-extent along Y.
+        hz [m]: Half-extent along Z.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
     # adapted from https://www.iquilezles.org/www/articles/distfunctions/distfunctions.htm
-    qx = abs(p[0]) - upper[0]
-    qy = abs(p[1]) - upper[1]
-    qz = abs(p[2]) - upper[2]
+    qx = abs(point[0]) - hx
+    qy = abs(point[1]) - hy
+    qz = abs(point[2]) - hz
 
     e = wp.vec3(wp.max(qx, 0.0), wp.max(qy, 0.0), wp.max(qz, 0.0))
 
@@ -161,22 +229,33 @@ def box_sdf(upper: wp.vec3, p: wp.vec3):
 
 
 @wp.func
-def box_sdf_grad(upper: wp.vec3, p: wp.vec3):
-    qx = abs(p[0]) - upper[0]
-    qy = abs(p[1]) - upper[1]
-    qz = abs(p[2]) - upper[2]
+def sdf_box_grad(point: wp.vec3, hx: float, hy: float, hz: float):
+    """Compute outward SDF gradient for ``sdf_box``.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        hx [m]: Half-extent along X.
+        hy [m]: Half-extent along Y.
+        hz [m]: Half-extent along Z.
+
+    Returns:
+        Unit-length (or axis-aligned) outward gradient direction.
+    """
+    qx = abs(point[0]) - hx
+    qy = abs(point[1]) - hy
+    qz = abs(point[2]) - hz
 
     # exterior case
     if qx > 0.0 or qy > 0.0 or qz > 0.0:
-        x = wp.clamp(p[0], -upper[0], upper[0])
-        y = wp.clamp(p[1], -upper[1], upper[1])
-        z = wp.clamp(p[2], -upper[2], upper[2])
+        x = wp.clamp(point[0], -hx, hx)
+        y = wp.clamp(point[1], -hy, hy)
+        z = wp.clamp(point[2], -hz, hz)
 
-        return wp.normalize(p - wp.vec3(x, y, z))
+        return wp.normalize(point - wp.vec3(x, y, z))
 
-    sx = wp.sign(p[0])
-    sy = wp.sign(p[1])
-    sz = wp.sign(p[2])
+    sx = wp.sign(point[0])
+    sy = wp.sign(point[1])
+    sz = wp.sign(point[2])
 
     # x projection
     if (qx > qy and qx > qz) or (qy == 0.0 and qz == 0.0):
@@ -191,45 +270,203 @@ def box_sdf_grad(upper: wp.vec3, p: wp.vec3):
 
 
 @wp.func
-def capsule_sdf(radius: float, half_height: float, p: wp.vec3):
-    if p[2] > half_height:
-        return wp.length(wp.vec3(p[0], p[1], p[2] - half_height)) - radius
+def sdf_capsule(point: wp.vec3, radius: float, half_height: float, up_axis: int = int(Axis.Y)):
+    """Compute signed distance to a capsule for ``Mesh.create_capsule`` geometry.
 
-    if p[2] < -half_height:
-        return wp.length(wp.vec3(p[0], p[1], p[2] + half_height)) - radius
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radius [m]: Capsule radius.
+        half_height [m]: Half-height of the cylindrical section.
+        up_axis: Capsule long axis as ``int(newton.Axis.*)``.
 
-    return wp.length(wp.vec3(p[0], p[1], 0.0)) - radius
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if point_z_up[2] > half_height:
+        return wp.length(wp.vec3(point_z_up[0], point_z_up[1], point_z_up[2] - half_height)) - radius
 
+    if point_z_up[2] < -half_height:
+        return wp.length(wp.vec3(point_z_up[0], point_z_up[1], point_z_up[2] + half_height)) - radius
 
-@wp.func
-def capsule_sdf_grad(radius: float, half_height: float, p: wp.vec3):
-    if p[2] > half_height:
-        return wp.normalize(wp.vec3(p[0], p[1], p[2] - half_height))
-
-    if p[2] < -half_height:
-        return wp.normalize(wp.vec3(p[0], p[1], p[2] + half_height))
-
-    return wp.normalize(wp.vec3(p[0], p[1], 0.0))
-
-
-@wp.func
-def cylinder_sdf(radius: float, half_height: float, p: wp.vec3):
-    dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius
-    dy = wp.abs(p[2]) - half_height
-    return wp.min(wp.max(dx, dy), 0.0) + wp.length(wp.vec2(wp.max(dx, 0.0), wp.max(dy, 0.0)))
+    return wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0)) - radius
 
 
 @wp.func
-def cylinder_sdf_grad(radius: float, half_height: float, p: wp.vec3):
-    dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius
-    dy = wp.abs(p[2]) - half_height
-    if dx > dy:
-        return wp.normalize(wp.vec3(p[0], p[1], 0.0))
-    return wp.vec3(0.0, 0.0, wp.sign(p[2]))
+def _sdf_vector_from_z_up(v: wp.vec3, up_axis: int):
+    if up_axis == int(Axis.X):
+        return wp.vec3(v[2], v[0], v[1])
+    if up_axis == int(Axis.Y):
+        return wp.vec3(v[0], v[2], v[1])
+    return v
 
 
 @wp.func
-def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
+def sdf_capsule_grad(point: wp.vec3, radius: float, half_height: float, up_axis: int = int(Axis.Y)):
+    """Compute outward SDF gradient for ``sdf_capsule``.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radius [m]: Capsule radius.
+        half_height [m]: Half-height of the cylindrical section.
+        up_axis: Capsule long axis as ``int(newton.Axis.*)``.
+
+    Returns:
+        Unit-length outward gradient direction in local frame.
+    """
+    _ = radius
+    eps = 1.0e-8
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    grad_z_up = wp.vec3()
+    if point_z_up[2] > half_height:
+        v = wp.vec3(point_z_up[0], point_z_up[1], point_z_up[2] - half_height)
+        v_len = wp.length(v)
+        grad_z_up = wp.vec3(0.0, 0.0, 1.0)
+        if v_len > eps:
+            grad_z_up = v / v_len
+    elif point_z_up[2] < -half_height:
+        v = wp.vec3(point_z_up[0], point_z_up[1], point_z_up[2] + half_height)
+        v_len = wp.length(v)
+        grad_z_up = wp.vec3(0.0, 0.0, -1.0)
+        if v_len > eps:
+            grad_z_up = v / v_len
+    else:
+        v = wp.vec3(point_z_up[0], point_z_up[1], 0.0)
+        v_len = wp.length(v)
+        grad_z_up = wp.vec3(0.0, 0.0, 1.0)
+        if v_len > eps:
+            grad_z_up = v / v_len
+    return _sdf_vector_from_z_up(grad_z_up, up_axis)
+
+
+@wp.func
+def sdf_cylinder(
+    point: wp.vec3,
+    radius: float,
+    half_height: float,
+    up_axis: int = int(Axis.Y),
+    top_radius: float = -1.0,
+):
+    """Compute signed distance to ``Mesh.create_cylinder`` geometry.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radius [m]: Bottom radius.
+        half_height [m]: Half-height along the cylinder axis.
+        up_axis: Cylinder long axis as ``int(newton.Axis.*)``.
+        top_radius [m]: Top radius. Negative values use ``radius``.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if top_radius < 0.0 or wp.abs(top_radius - radius) <= 1.0e-6:
+        dx = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0)) - radius
+        dy = wp.abs(point_z_up[2]) - half_height
+        return wp.min(wp.max(dx, dy), 0.0) + wp.length(wp.vec2(wp.max(dx, 0.0), wp.max(dy, 0.0)))
+    return _sdf_capped_cone_z(radius, top_radius, half_height, point_z_up)
+
+
+@wp.func
+def sdf_cylinder_grad(
+    point: wp.vec3,
+    radius: float,
+    half_height: float,
+    up_axis: int = int(Axis.Y),
+    top_radius: float = -1.0,
+):
+    """Compute outward SDF gradient for ``sdf_cylinder``.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radius [m]: Bottom radius.
+        half_height [m]: Half-height along the cylinder axis.
+        up_axis: Cylinder long axis as ``int(newton.Axis.*)``.
+        top_radius [m]: Top radius. Negative values use ``radius``.
+
+    Returns:
+        Unit-length outward gradient direction in local frame.
+    """
+    eps = 1.0e-8
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if top_radius >= 0.0 and wp.abs(top_radius - radius) > 1.0e-6:
+        # Use finite-difference gradient of the tapered capped-cone SDF.
+        fd_eps = 1.0e-4
+        dx = _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up + wp.vec3(fd_eps, 0.0, 0.0),
+        ) - _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up - wp.vec3(fd_eps, 0.0, 0.0),
+        )
+        dy = _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up + wp.vec3(0.0, fd_eps, 0.0),
+        ) - _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up - wp.vec3(0.0, fd_eps, 0.0),
+        )
+        dz = _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up + wp.vec3(0.0, 0.0, fd_eps),
+        ) - _sdf_capped_cone_z(
+            radius,
+            top_radius,
+            half_height,
+            point_z_up - wp.vec3(0.0, 0.0, fd_eps),
+        )
+        grad_z_up = wp.vec3(dx, dy, dz)
+        grad_len = wp.length(grad_z_up)
+        if grad_len > eps:
+            grad_z_up = grad_z_up / grad_len
+        else:
+            grad_z_up = wp.vec3(0.0, 0.0, 1.0)
+        return _sdf_vector_from_z_up(grad_z_up, up_axis)
+
+    v = wp.vec3(point_z_up[0], point_z_up[1], 0.0)
+    v_len = wp.length(v)
+    radial = wp.vec3(0.0, 0.0, 1.0)
+    if v_len > eps:
+        radial = v / v_len
+    axial = wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
+    dx = v_len - radius
+    dy = wp.abs(point_z_up[2]) - half_height
+    grad_z_up = wp.vec3()
+    if dx > 0.0 and dy > 0.0:
+        g = radial * dx + axial * dy
+        g_len = wp.length(g)
+        if g_len > eps:
+            grad_z_up = g / g_len
+        else:
+            grad_z_up = radial
+    elif dx > dy:
+        grad_z_up = radial
+    else:
+        grad_z_up = axial
+    return _sdf_vector_from_z_up(grad_z_up, up_axis)
+
+
+@wp.func
+def sdf_ellipsoid(point: wp.vec3, radii: wp.vec3):
+    """Compute approximate signed distance to an ellipsoid.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radii [m]: Ellipsoid radii along XYZ, shape [3], float.
+
+    Returns:
+        Approximate signed distance [m], negative inside, positive outside.
+    """
     # Approximate SDF for ellipsoid with radii (rx, ry, rz)
     # Using the approximation: k0 * (k0 - 1) / k1
     eps = 1.0e-8
@@ -240,8 +477,8 @@ def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
     )
     inv_r = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), r)
     inv_r2 = wp.cw_mul(inv_r, inv_r)
-    q0 = wp.cw_mul(p, inv_r)  # p / r
-    q1 = wp.cw_mul(p, inv_r2)  # p / r^2
+    q0 = wp.cw_mul(point, inv_r)  # p / r
+    q1 = wp.cw_mul(point, inv_r2)  # p / r^2
     k0 = wp.length(q0)
     k1 = wp.length(q1)
     if k1 > eps:
@@ -251,7 +488,16 @@ def ellipsoid_sdf(radii: wp.vec3, p: wp.vec3):
 
 
 @wp.func
-def ellipsoid_sdf_grad(radii: wp.vec3, p: wp.vec3):
+def sdf_ellipsoid_grad(point: wp.vec3, radii: wp.vec3):
+    """Compute approximate outward SDF gradient for ``sdf_ellipsoid``.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radii [m]: Ellipsoid radii along XYZ, shape [3], float.
+
+    Returns:
+        Unit-length approximate outward gradient direction.
+    """
     # Gradient of the ellipsoid SDF approximation
     # grad(d) ≈ normalize((k0 / k1) * (p / r^2))
     eps = 1.0e-8
@@ -262,8 +508,8 @@ def ellipsoid_sdf_grad(radii: wp.vec3, p: wp.vec3):
     )
     inv_r = wp.cw_div(wp.vec3(1.0, 1.0, 1.0), r)
     inv_r2 = wp.cw_mul(inv_r, inv_r)
-    q0 = wp.cw_mul(p, inv_r)  # p / r
-    q1 = wp.cw_mul(p, inv_r2)  # p / r^2
+    q0 = wp.cw_mul(point, inv_r)  # p / r
+    q1 = wp.cw_mul(point, inv_r2)  # p / r^2
     k0 = wp.length(q0)
     k1 = wp.length(q1)
     if k1 < eps:
@@ -277,39 +523,96 @@ def ellipsoid_sdf_grad(radii: wp.vec3, p: wp.vec3):
 
 
 @wp.func
-def cone_sdf(radius: float, half_height: float, p: wp.vec3):
-    # Cone with apex at +half_height and base at -half_height
-    dx = wp.length(wp.vec3(p[0], p[1], 0.0)) - radius * (half_height - p[2]) / (2.0 * half_height)
-    dy = wp.abs(p[2]) - half_height
-    return wp.min(wp.max(dx, dy), 0.0) + wp.length(wp.vec2(wp.max(dx, 0.0), wp.max(dy, 0.0)))
+def sdf_cone(point: wp.vec3, radius: float, half_height: float, up_axis: int = int(Axis.Y)):
+    """Compute signed distance to a cone for ``Mesh.create_cone`` geometry.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radius [m]: Cone base radius.
+        half_height [m]: Half-height from center to apex/base.
+        up_axis: Cone long axis as ``int(newton.Axis.*)``.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    return _sdf_capped_cone_z(radius, 0.0, half_height, point_z_up)
 
 
 @wp.func
-def cone_sdf_grad(radius: float, half_height: float, p: wp.vec3):
+def sdf_cone_grad(point: wp.vec3, radius: float, half_height: float, up_axis: int = int(Axis.Y)):
+    """Compute outward SDF gradient for ``sdf_cone``.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        radius [m]: Cone base radius.
+        half_height [m]: Half-height from center to apex/base.
+        up_axis: Cone long axis as ``int(newton.Axis.*)``.
+
+    Returns:
+        Unit-length outward gradient direction in local frame.
+    """
+    point_z_up = _sdf_point_to_z_up(point, up_axis)
+    if half_height <= 0.0:
+        return _sdf_vector_from_z_up(wp.vec3(0.0, 0.0, wp.sign(point_z_up[2])), up_axis)
+
     # Gradient for cone with apex at +half_height and base at -half_height
-    r = wp.length(wp.vec3(p[0], p[1], 0.0))
-    dx = r - radius * (half_height - p[2]) / (2.0 * half_height)
-    dy = wp.abs(p[2]) - half_height
+    r = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0))
+    dx = r - radius * (half_height - point_z_up[2]) / (2.0 * half_height)
+    dy = wp.abs(point_z_up[2]) - half_height
+    grad_z_up = wp.vec3()
     if dx > dy:
         # Closest to lateral surface
         if r > 0.0:
-            radial_dir = wp.vec3(p[0], p[1], 0.0) / r
+            radial_dir = wp.vec3(point_z_up[0], point_z_up[1], 0.0) / r
             # Normal to cone surface
-            return wp.normalize(radial_dir + wp.vec3(0.0, 0.0, radius / (2.0 * half_height)))
+            grad_z_up = wp.normalize(radial_dir + wp.vec3(0.0, 0.0, radius / (2.0 * half_height)))
         else:
-            return wp.vec3(0.0, 0.0, 1.0)
+            grad_z_up = wp.vec3(0.0, 0.0, 1.0)
     else:
         # Closest to cap
-        return wp.vec3(0.0, 0.0, wp.sign(p[2]))
+        grad_z_up = wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
+    return _sdf_vector_from_z_up(grad_z_up, up_axis)
 
 
 @wp.func
-def plane_sdf(width: float, length: float, p: wp.vec3):
+def sdf_plane(point: wp.vec3, width: float, length: float):
+    """Compute signed distance to a finite quad in the XY plane.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        width [m]: Half-extent along X.
+        length [m]: Half-extent along Y.
+
+    Returns:
+        Distance [m]. For finite extents (``width > 0`` and ``length > 0``), this
+        is a Chebyshev (L∞) distance approximation to the quad sheet (not exact
+        Euclidean distance). The exact Euclidean distance would be
+        ``sqrt(max(|x|-width, 0)^2 + max(|y|-length, 0)^2 + z^2)``.
+        Otherwise, for ``width <= 0`` or ``length <= 0``, it reduces to the
+        signed distance of the infinite plane (``point.z``).
+    """
     # SDF for a quad in the xy plane
     if width > 0.0 and length > 0.0:
-        d = wp.max(wp.abs(p[0]) - width, wp.abs(p[1]) - length)
-        return wp.max(d, wp.abs(p[2]))
-    return p[2]
+        d = wp.max(wp.abs(point[0]) - width, wp.abs(point[1]) - length)
+        return wp.max(d, wp.abs(point[2]))
+    return point[2]
+
+
+@wp.func
+def sdf_plane_grad(point: wp.vec3, width: float, length: float):
+    """Compute a simple upward normal for ``sdf_plane``.
+
+    Args:
+        point [m]: Query point in the mesh local frame, shape [3], float.
+        width [m]: Half-extent along X.
+        length [m]: Half-extent along Y.
+
+    Returns:
+        Upward unit normal in local frame.
+    """
+    _ = (width, length, point)
+    return wp.vec3(0.0, 0.0, 1.0)
 
 
 @wp.func
@@ -419,9 +722,9 @@ def closest_edge_coordinate_box(upper: wp.vec3, edge_a: wp.vec3, edge_b: wp.vec3
     c = a + invphi2 * h
     d = a + invphi * h
     query = (1.0 - c) * edge_a + c * edge_b
-    yc = box_sdf(upper, query)
+    yc = sdf_box(query, upper[0], upper[1], upper[2])
     query = (1.0 - d) * edge_a + d * edge_b
-    yd = box_sdf(upper, query)
+    yd = sdf_box(query, upper[0], upper[1], upper[2])
 
     for _k in range(max_iter):
         if yc < yd:  # yc > yd to find the maximum
@@ -431,7 +734,7 @@ def closest_edge_coordinate_box(upper: wp.vec3, edge_a: wp.vec3, edge_b: wp.vec3
             h = invphi * h
             c = a + invphi2 * h
             query = (1.0 - c) * edge_a + c * edge_b
-            yc = box_sdf(upper, query)
+            yc = sdf_box(query, upper[0], upper[1], upper[2])
         else:
             a = c
             c = d
@@ -439,7 +742,7 @@ def closest_edge_coordinate_box(upper: wp.vec3, edge_a: wp.vec3, edge_b: wp.vec3
             h = invphi * h
             d = a + invphi * h
             query = (1.0 - d) * edge_a + d * edge_b
-            yd = box_sdf(upper, query)
+            yd = sdf_box(query, upper[0], upper[1], upper[2])
 
     if yc < yd:
         return 0.5 * (a + d)
@@ -464,9 +767,9 @@ def closest_edge_coordinate_plane(
     c = a + invphi2 * h
     d = a + invphi * h
     query = (1.0 - c) * edge_a + c * edge_b
-    yc = plane_sdf(plane_width, plane_length, query)
+    yc = sdf_plane(query, plane_width, plane_length)
     query = (1.0 - d) * edge_a + d * edge_b
-    yd = plane_sdf(plane_width, plane_length, query)
+    yd = sdf_plane(query, plane_width, plane_length)
 
     for _k in range(max_iter):
         if yc < yd:  # yc > yd to find the maximum
@@ -476,7 +779,7 @@ def closest_edge_coordinate_plane(
             h = invphi * h
             c = a + invphi2 * h
             query = (1.0 - c) * edge_a + c * edge_b
-            yc = plane_sdf(plane_width, plane_length, query)
+            yc = sdf_plane(query, plane_width, plane_length)
         else:
             a = c
             c = d
@@ -484,7 +787,7 @@ def closest_edge_coordinate_plane(
             h = invphi * h
             d = a + invphi * h
             query = (1.0 - d) * edge_a + d * edge_b
-            yd = plane_sdf(plane_width, plane_length, query)
+            yd = sdf_plane(query, plane_width, plane_length)
 
     if yc < yd:
         return 0.5 * (a + d)
@@ -503,9 +806,9 @@ def closest_edge_coordinate_capsule(radius: float, half_height: float, edge_a: w
     c = a + invphi2 * h
     d = a + invphi * h
     query = (1.0 - c) * edge_a + c * edge_b
-    yc = capsule_sdf(radius, half_height, query)
+    yc = sdf_capsule(query, radius, half_height, int(Axis.Z))
     query = (1.0 - d) * edge_a + d * edge_b
-    yd = capsule_sdf(radius, half_height, query)
+    yd = sdf_capsule(query, radius, half_height, int(Axis.Z))
 
     for _k in range(max_iter):
         if yc < yd:  # yc > yd to find the maximum
@@ -515,7 +818,7 @@ def closest_edge_coordinate_capsule(radius: float, half_height: float, edge_a: w
             h = invphi * h
             c = a + invphi2 * h
             query = (1.0 - c) * edge_a + c * edge_b
-            yc = capsule_sdf(radius, half_height, query)
+            yc = sdf_capsule(query, radius, half_height, int(Axis.Z))
         else:
             a = c
             c = d
@@ -523,7 +826,7 @@ def closest_edge_coordinate_capsule(radius: float, half_height: float, edge_a: w
             h = invphi * h
             d = a + invphi * h
             query = (1.0 - d) * edge_a + d * edge_b
-            yd = capsule_sdf(radius, half_height, query)
+            yd = sdf_capsule(query, radius, half_height, int(Axis.Z))
 
     if yc < yd:
         return 0.5 * (a + d)
@@ -545,9 +848,9 @@ def closest_edge_coordinate_cylinder(
     c = a + invphi2 * h
     d = a + invphi * h
     query = (1.0 - c) * edge_a + c * edge_b
-    yc = cylinder_sdf(radius, half_height, query)
+    yc = sdf_cylinder(query, radius, half_height, int(Axis.Z))
     query = (1.0 - d) * edge_a + d * edge_b
-    yd = cylinder_sdf(radius, half_height, query)
+    yd = sdf_cylinder(query, radius, half_height, int(Axis.Z))
 
     for _k in range(max_iter):
         if yc < yd:  # yc > yd to find the maximum
@@ -557,7 +860,7 @@ def closest_edge_coordinate_cylinder(
             h = invphi * h
             c = a + invphi2 * h
             query = (1.0 - c) * edge_a + c * edge_b
-            yc = cylinder_sdf(radius, half_height, query)
+            yc = sdf_cylinder(query, radius, half_height, int(Axis.Z))
         else:
             a = c
             c = d
@@ -565,7 +868,7 @@ def closest_edge_coordinate_cylinder(
             h = invphi * h
             d = a + invphi * h
             query = (1.0 - d) * edge_a + d * edge_b
-            yd = cylinder_sdf(radius, half_height, query)
+            yd = sdf_cylinder(query, radius, half_height, int(Axis.Z))
 
     if yc < yd:
         return 0.5 * (a + d)
@@ -585,6 +888,21 @@ def mesh_sdf(mesh: wp.uint64, point: wp.vec3, max_dist: float):
         closest = wp.mesh_eval_position(mesh, face_index, face_u, face_v)
         return wp.length(point - closest) * sign
     return max_dist
+
+
+@wp.func
+def sdf_mesh(mesh: wp.uint64, point: wp.vec3, max_dist: float):
+    """Compute signed distance to a triangle mesh.
+
+    Args:
+        mesh: Warp mesh ID (``mesh.id``).
+        point [m]: Query point in mesh local frame, shape [3], float.
+        max_dist [m]: Maximum query distance.
+
+    Returns:
+        Signed distance [m], negative inside, zero on surface, positive outside.
+    """
+    return mesh_sdf(mesh, point, max_dist)
 
 
 @wp.func
@@ -760,28 +1078,28 @@ def create_soft_contacts(
     v = wp.vec3()
 
     if geo_type == GeoType.SPHERE:
-        d = sphere_sdf(wp.vec3(), geo_scale[0], x_local)
-        n = sphere_sdf_grad(wp.vec3(), geo_scale[0], x_local)
+        d = sdf_sphere(x_local, geo_scale[0])
+        n = sdf_sphere_grad(x_local, geo_scale[0])
 
     if geo_type == GeoType.BOX:
-        d = box_sdf(geo_scale, x_local)
-        n = box_sdf_grad(geo_scale, x_local)
+        d = sdf_box(x_local, geo_scale[0], geo_scale[1], geo_scale[2])
+        n = sdf_box_grad(x_local, geo_scale[0], geo_scale[1], geo_scale[2])
 
     if geo_type == GeoType.CAPSULE:
-        d = capsule_sdf(geo_scale[0], geo_scale[1], x_local)
-        n = capsule_sdf_grad(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_capsule(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+        n = sdf_capsule_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
 
     if geo_type == GeoType.CYLINDER:
-        d = cylinder_sdf(geo_scale[0], geo_scale[1], x_local)
-        n = cylinder_sdf_grad(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_cylinder(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+        n = sdf_cylinder_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
 
     if geo_type == GeoType.CONE:
-        d = cone_sdf(geo_scale[0], geo_scale[1], x_local)
-        n = cone_sdf_grad(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_cone(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
+        n = sdf_cone_grad(x_local, geo_scale[0], geo_scale[1], int(Axis.Z))
 
     if geo_type == GeoType.ELLIPSOID:
-        d = ellipsoid_sdf(geo_scale, x_local)
-        n = ellipsoid_sdf_grad(geo_scale, x_local)
+        d = sdf_ellipsoid(x_local, geo_scale)
+        n = sdf_ellipsoid_grad(x_local, geo_scale)
 
     if geo_type == GeoType.MESH or geo_type == GeoType.CONVEX_MESH:
         mesh = shape_source_ptr[shape_index]
@@ -808,7 +1126,7 @@ def create_soft_contacts(
             v = shape_v
 
     if geo_type == GeoType.PLANE:
-        d = plane_sdf(geo_scale[0], geo_scale[1], x_local)
+        d = sdf_plane(x_local, geo_scale[0] * 0.5, geo_scale[1] * 0.5)
         n = wp.vec3(0.0, 0.0, 1.0)
 
     if d < margin + radius:

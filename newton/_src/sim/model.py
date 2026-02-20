@@ -193,8 +193,8 @@ class Model:
             `num_global_particles = particle_world_start[-1] - particle_world_start[-2] + particle_world_start[0]`.
         """
 
-        self.shape_key = []
-        """List of keys for each shape."""
+        self.shape_label = []
+        """List of labels for each shape."""
         self.shape_transform = None
         """Rigid shape transforms [m, unitless quaternion], shape [shape_count, 7], float."""
         self.shape_body = None
@@ -381,8 +381,8 @@ class Model:
         """Rigid body mass [kg], shape [body_count], float."""
         self.body_inv_mass = None
         """Rigid body inverse mass [1/kg], shape [body_count], float."""
-        self.body_key = []
-        """Rigid body keys, shape [body_count], str."""
+        self.body_label = []
+        """Rigid body labels, shape [body_count], str."""
         self.body_world = None
         """World index for each body, shape [body_count], int. Global entities have index -1."""
         self.body_world_start = None
@@ -459,8 +459,8 @@ class Model:
         """Start index of the first position coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
         self.joint_qd_start = None
         """Start index of the first velocity coordinate per joint (last value is a sentinel for dimension queries), shape [joint_count + 1], int."""
-        self.joint_key = []
-        """Joint keys, shape [joint_count], str."""
+        self.joint_label = []
+        """Joint labels, shape [joint_count], str."""
         self.joint_world = None
         """World index for each joint, shape [joint_count], int. -1 for global."""
         self.joint_world_start = None
@@ -518,8 +518,8 @@ class Model:
 
         self.articulation_start = None
         """Articulation start index, shape [articulation_count], int."""
-        self.articulation_key = []
-        """Articulation keys, shape [articulation_count], str."""
+        self.articulation_label = []
+        """Articulation labels, shape [articulation_count], str."""
         self.articulation_world = None
         """World index for each articulation, shape [articulation_count], int. -1 for global."""
         self.articulation_world_start = None
@@ -579,8 +579,8 @@ class Model:
         """Second joint index, shape [equality_constraint_count], int."""
         self.equality_constraint_polycoef = None
         """Polynomial coefficients, shape [equality_constraint_count, 2], float."""
-        self.equality_constraint_key = []
-        """Constraint name/key, shape [equality_constraint_count], str."""
+        self.equality_constraint_label = []
+        """Constraint name/label, shape [equality_constraint_count], str."""
         self.equality_constraint_enabled = None
         """Whether constraint is active, shape [equality_constraint_count], bool."""
         self.equality_constraint_world = None
@@ -609,8 +609,8 @@ class Model:
         """Scale coefficient (coef1) for the mimic constraint (``joint0 = coef0 + coef1 * joint1``), shape [constraint_mimic_count], float."""
         self.constraint_mimic_enabled = None
         """Whether constraint is active, shape [constraint_mimic_count], bool."""
-        self.constraint_mimic_key = []
-        """Constraint name/key, shape [constraint_mimic_count], str."""
+        self.constraint_mimic_label = []
+        """Constraint name/label, shape [constraint_mimic_count], str."""
         self.constraint_mimic_world = None
         """World index for each constraint, shape [constraint_mimic_count], int."""
 

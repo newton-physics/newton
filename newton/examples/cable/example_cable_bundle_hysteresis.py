@@ -235,7 +235,7 @@ class Example:
                 bend_damping=bend_damping,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
-                key=f"bundle_cable_{i}",
+                label=f"bundle_cable_{i}",
             )
 
         # Create moving obstacles (capsules arranged along X axis)

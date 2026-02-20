@@ -270,7 +270,7 @@ class Example:
         self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
 
         # Set cube colors
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
+        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
         self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.cube_colors.items()})
 
         if hasattr(self.viewer, "renderer"):
@@ -479,7 +479,7 @@ class Example:
             mesh_body = scene.add_body(xform=body_xform)
 
             half_size = 0.5 * self.cube_size
-            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, key=key)
+            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, label=key)
 
             # Set the color of the cube based on the index
             if i == 0:

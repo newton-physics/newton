@@ -301,9 +301,13 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         single_articulation_builder.add_mjcf(mjcf)
 
         # Add an ActuatorPD for each slide joint: kp = 100, 200, 300
-        joint_names = ["joint1", "joint2", "joint3"]
+        joint_names = [
+            "myart/worldbody/root/link1/joint1",
+            "myart/worldbody/root/link2/joint2",
+            "myart/worldbody/root/link3/joint3",
+        ]
         for i, jname in enumerate(joint_names):
-            j_idx = single_articulation_builder.joint_key.index(jname)
+            j_idx = single_articulation_builder.joint_label.index(jname)
             dof = single_articulation_builder.joint_qd_start[j_idx]
             single_articulation_builder.add_actuator(ActuatorPD, input_indices=[dof], kp=100.0 * (i + 1))
 
