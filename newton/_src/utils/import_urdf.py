@@ -31,7 +31,7 @@ from ..geometry import Mesh
 from ..sim import ModelBuilder
 from ..sim.joints import ActuatorMode
 from ..sim.model import Model
-from .import_utils import parse_custom_attributes, sanitize_xml_content
+from .import_utils import parse_custom_attributes, sanitize_xml_content, should_show_collider
 from .mesh import load_meshes_from_file
 from .texture import load_texture
 from .topology import topological_sort
@@ -623,12 +623,11 @@ def parse_urdf(
             s = parse_shapes(link, visuals, density=0.0, just_visual=True, visible=not hide_visuals)
             visual_shapes.extend(s)
 
-        show_colliders = force_show_colliders
-        if parse_visuals_as_colliders:
-            show_colliders = True
-        elif len(visuals) == 0:
-            # we need to show the collision shapes since there are no visual shapes
-            show_colliders = True
+        show_colliders = should_show_collider(
+            force_show_colliders,
+            has_visual_shapes=len(visuals) > 0,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+        )
 
         parse_shapes(link, colliders, density=default_shape_density, visible=show_colliders)
         m = builder.body_mass[link]

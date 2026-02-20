@@ -35,6 +35,7 @@ from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .import_utils import should_show_collider
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -62,6 +63,7 @@ def parse_usd(
     load_sites: bool = True,
     load_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
+    force_show_colliders: bool = False,
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
@@ -158,6 +160,8 @@ def parse_usd(
         load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
+        force_show_colliders (bool): If True, collision shapes always get the VISIBLE flag
+            regardless of whether visual shapes exist. Default is False.
         parse_mujoco_options (bool): Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -360,6 +364,8 @@ def parse_usd(
         mesh_cache[key] = mesh
         return mesh
 
+    bodies_with_visual_shapes: set[int] = set()
+
     def _load_visual_shapes_impl(
         parent_body_id: int,
         prim: Usd.Prim,
@@ -550,6 +556,7 @@ def parse_usd(
             if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
                 path_shape_scale[path_name] = scale
+                bodies_with_visual_shapes.add(parent_body_id)
                 if verbose:
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
@@ -1888,7 +1895,11 @@ def parse_usd(
                         mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
-                        is_visible=not hide_collision_shapes,
+                        is_visible=should_show_collider(
+                            force_show_colliders,
+                            has_visual_shapes=load_visual_shapes and body_id in bodies_with_visual_shapes,
+                        )
+                        and not hide_collision_shapes,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,

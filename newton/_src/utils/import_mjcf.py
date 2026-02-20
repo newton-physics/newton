@@ -34,7 +34,13 @@ from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
-from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
+from .import_utils import (
+    is_xml_content,
+    parse_custom_attributes,
+    sanitize_name,
+    sanitize_xml_content,
+    should_show_collider,
+)
 from .mesh import load_meshes_from_file
 
 
@@ -1032,12 +1038,11 @@ def parse_mjcf(
             )
             visual_shape_indices.extend(s)
 
-        show_colliders = force_show_colliders
-        if parse_visuals_as_colliders:
-            show_colliders = True
-        elif len(visuals) == 0 or not parse_visuals:
-            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
-            show_colliders = True
+        show_colliders = should_show_collider(
+            force_show_colliders,
+            has_visual_shapes=len(visuals) > 0 and parse_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+        )
 
         parse_shapes(
             defaults,

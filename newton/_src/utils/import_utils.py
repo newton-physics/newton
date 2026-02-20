@@ -190,6 +190,29 @@ def sanitize_name(name: str) -> str:
     return name.replace("-", "_")
 
 
+def should_show_collider(
+    force_show_colliders: bool,
+    has_visual_shapes: bool,
+    parse_visuals_as_colliders: bool = False,
+) -> bool:
+    """Determine whether collision shapes should have the VISIBLE flag.
+
+    Collision shapes are shown (VISIBLE flag) when explicitly forced, when
+    visual shapes are used as colliders, or when no visual shapes exist for
+    the owning body (so there is something to render). Otherwise, collision
+    shapes get only COLLIDE_SHAPES and are controlled by the viewer's
+    "Show Collision" toggle.
+
+    Args:
+        force_show_colliders: User explicitly wants collision shapes visible.
+        has_visual_shapes: Whether the body/link has visual (non-collision) shapes.
+        parse_visuals_as_colliders: Whether visual geometry is repurposed as collision geometry.
+    """
+    if force_show_colliders or parse_visuals_as_colliders:
+        return True
+    return not has_visual_shapes
+
+
 def is_xml_content(source: str) -> bool:
     """Check if a string appears to be XML content rather than a file path.
 
