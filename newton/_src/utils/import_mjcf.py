@@ -1753,7 +1753,7 @@ def parse_mjcf(
                     custom_attributes=custom_attrs,
                 )
 
-        # add support for types "tendon" and "flex" once Newton supports them
+        # TODO: add support for equality constraint type "flex" once Newton supports it
 
     # -----------------
     # start articulation
@@ -1961,16 +1961,30 @@ def parse_mjcf(
                 )
 
     # -----------------
-    # Parse all fixed tendons in a single tendon section.
+    # Parse fixed and spatial tendons.
 
     # Get variable-length custom attributes for tendon parsing (frequency="mujoco:tendon")
-    # Exclude tendon_world, tendon_joint_adr, tendon_joint_num as they're handled specially
+    # Exclude attributes that are handled specially during parsing
+    _tendon_special_attrs = {
+        "tendon_world",
+        "tendon_type",
+        "tendon_joint_adr",
+        "tendon_joint_num",
+        "tendon_joint",
+        "tendon_coef",
+        "tendon_wrap_adr",
+        "tendon_wrap_num",
+        "tendon_wrap_type",
+        "tendon_wrap_shape",
+        "tendon_wrap_sidesite",
+        "tendon_wrap_prm",
+    }
     builder_custom_attr_tendon: list[ModelBuilder.CustomAttribute] = [
         attr
         for attr in builder.custom_attributes.values()
         if isinstance(attr.frequency, str)
         and attr.name.startswith("tendon_")
-        and attr.name not in ("tendon_world", "tendon_joint_adr", "tendon_joint_num", "tendon_joint", "tendon_coef")
+        and attr.name not in _tendon_special_attrs
     ]
 
     def parse_tendons(tendon_section):
@@ -2029,8 +2043,11 @@ def parse_mjcf(
             # Build values dict for tendon-level attributes
             tendon_values: dict[str, Any] = {
                 "mujoco:tendon_world": builder.current_world,
+                "mujoco:tendon_type": 0,  # fixed tendon
                 "mujoco:tendon_joint_adr": joint_start,
                 "mujoco:tendon_joint_num": len(joint_entries),
+                "mujoco:tendon_wrap_adr": 0,
+                "mujoco:tendon_wrap_num": 0,
             }
             # Add remaining attributes with parsed values or defaults
             for attr in builder_custom_attr_tendon:
@@ -2046,6 +2063,123 @@ def parse_mjcf(
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_label[j]}*{c}" for j, c in joint_entries)
                 print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
+
+        def find_shape_by_name(name: str, want_site: bool) -> int:
+            """Find a shape index by name, disambiguating sites from geoms.
+
+            MuJoCo allows sites and geoms to share the same name (different namespaces).
+            Newton stores both as shapes in shape_label, so we need to pick the right one
+            based on whether we're looking for a site or a geom.
+
+            Returns -1 if no shape with the matching name and type is found.
+            """
+            for i, label in enumerate(builder.shape_label):
+                if label == name or label.endswith(f"/{name}"):
+                    is_site = bool(builder.shape_flags[i] & ShapeFlags.SITE)
+                    if is_site == want_site:
+                        return i
+            return -1
+
+        for spatial in tendon_section.findall("spatial"):
+            # Apply default class inheritance for spatial tendon attributes.
+            # MuJoCo defaults use <tendon> tag for both <fixed> and <spatial> tendons.
+            elem_class = get_class(spatial)
+            elem_defaults = class_defaults.get(elem_class, {}).get("tendon", {})
+            all_defaults = class_defaults.get("__all__", {}).get("tendon", {})
+            merged_attrib = merge_attrib(merge_attrib(all_defaults, elem_defaults), dict(spatial.attrib))
+
+            tendon_name = merged_attrib.get("name", "")
+
+            # Parse wrap path elements in order
+            wrap_entries: list[tuple[int, int, int, float]] = []  # (type, shape_idx, sidesite_idx, prm)
+            for child in spatial:
+                if child.tag == "site":
+                    site_name = child.attrib.get("site", "")
+                    if site_name:
+                        site_name = sanitize_name(site_name)
+                    site_idx = find_shape_by_name(site_name, want_site=True) if site_name else -1
+                    if site_idx < 0:
+                        if verbose:
+                            print(
+                                f"Warning: Spatial tendon '{tendon_name}' references "
+                                f"unknown site '{site_name}', skipping element"
+                            )
+                        continue
+                    wrap_entries.append((0, site_idx, -1, 0.0))
+
+                elif child.tag == "geom":
+                    geom_name = child.attrib.get("geom", "")
+                    if geom_name:
+                        geom_name = sanitize_name(geom_name)
+                    geom_idx = find_shape_by_name(geom_name, want_site=False) if geom_name else -1
+                    if geom_idx < 0:
+                        if verbose:
+                            print(
+                                f"Warning: Spatial tendon '{tendon_name}' references "
+                                f"unknown geom '{geom_name}', skipping element"
+                            )
+                        continue
+
+                    sidesite_name = child.attrib.get("sidesite", "")
+                    sidesite_idx = -1
+                    if sidesite_name:
+                        sidesite_name = sanitize_name(sidesite_name)
+                        sidesite_idx = find_shape_by_name(sidesite_name, want_site=True)
+                        if sidesite_idx < 0 and verbose:
+                            print(f"Warning: Spatial tendon '{tendon_name}' sidesite '{sidesite_name}' not found")
+                    wrap_entries.append((1, geom_idx, sidesite_idx, 0.0))
+
+                elif child.tag == "pulley":
+                    divisor = float(child.attrib.get("divisor", "0.0"))
+                    wrap_entries.append((2, -1, -1, divisor))
+
+            if not wrap_entries:
+                if verbose:
+                    print(f"Warning: Spatial tendon '{tendon_name}' has no valid wrap elements, skipping")
+                continue
+
+            # Parse tendon-level attributes using the standard custom attribute parsing
+            tendon_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
+
+            # Determine wrap array start index
+            tendon_wrap_type_attr = builder.custom_attributes.get("mujoco:tendon_wrap_type")
+            wrap_start = (
+                len(tendon_wrap_type_attr.values) if tendon_wrap_type_attr and tendon_wrap_type_attr.values else 0
+            )
+
+            # Add wrap entries to the wrap path arrays
+            for wrap_type, shape_idx, sidesite_idx, prm in wrap_entries:
+                builder.add_custom_values(
+                    **{
+                        "mujoco:tendon_wrap_type": wrap_type,
+                        "mujoco:tendon_wrap_shape": shape_idx,
+                        "mujoco:tendon_wrap_sidesite": sidesite_idx,
+                        "mujoco:tendon_wrap_prm": prm,
+                    }
+                )
+
+            # Build values dict for tendon-level attributes
+            tendon_values: dict[str, Any] = {
+                "mujoco:tendon_world": builder.current_world,
+                "mujoco:tendon_type": 1,  # spatial tendon
+                "mujoco:tendon_joint_adr": 0,
+                "mujoco:tendon_joint_num": 0,
+                "mujoco:tendon_wrap_adr": wrap_start,
+                "mujoco:tendon_wrap_num": len(wrap_entries),
+            }
+            # Add remaining attributes with parsed values or defaults
+            for attr in builder_custom_attr_tendon:
+                tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
+
+            indices = builder.add_custom_values(**tendon_values)
+
+            # Track tendon name for actuator resolution
+            if tendon_name:
+                tendon_idx = indices.get("mujoco:tendon_world", 0)
+                tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
+
+            if verbose:
+                print(f"Parsed spatial tendon: {tendon_name} ({len(wrap_entries)} wrap elements)")
 
     # -----------------
     # parse actuators

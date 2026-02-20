@@ -421,6 +421,12 @@ class SolverMuJoCo(SolverBase):
                 usd_entry_expander=cls._expand_mjc_tendon_joint_rows,
             )
         )
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(
+                name="tendon_wrap",
+                namespace="mujoco",
+            )
+        )
         # endregion custom frequencies
 
         # region geom attributes
@@ -1826,6 +1832,78 @@ class SolverMuJoCo(SolverBase):
         )
         # endregion tendon attributes
 
+        # --- Spatial tendon attributes ---
+        # Tendon type distinguishes fixed (0) from spatial (1) tendons.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_type",
+                frequency="mujoco:tendon",
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+            )
+        )
+        # Addressing into wrap path arrays (one per tendon, used by spatial tendons)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_wrap_adr",
+                frequency="mujoco:tendon",
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+                references="mujoco:tendon_wrap",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_wrap_num",
+                frequency="mujoco:tendon",
+                dtype=wp.int32,
+                default=0,
+                namespace="mujoco",
+            )
+        )
+
+        # Wrap path arrays (one entry per wrap element in a spatial tendon's path)
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_wrap_type",
+                frequency="mujoco:tendon_wrap",
+                dtype=wp.int32,
+                default=0,  # 0=site, 1=geom, 2=pulley
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_wrap_shape",
+                frequency="mujoco:tendon_wrap",
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="shape",  # Offset by shape count during merge
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_wrap_sidesite",
+                frequency="mujoco:tendon_wrap",
+                dtype=wp.int32,
+                default=-1,
+                namespace="mujoco",
+                references="shape",  # Offset by shape count during merge
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="tendon_wrap_prm",
+                frequency="mujoco:tendon_wrap",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+            )
+        )
+
     def _init_pairs(self, model: Model, spec, shape_mapping: dict[int, str], template_world: int) -> None:
         """
         Initialize MuJoCo contact pairs from custom attributes.
@@ -1911,7 +1989,7 @@ class SolverMuJoCo(SolverBase):
             spec.add_pair(**pair_kwargs)
 
     @staticmethod
-    def _validate_tendon_attributes(model: Model) -> tuple[int, int]:
+    def _validate_tendon_attributes(model: Model) -> tuple[int, int, int]:
         """
         Validate that all tendon attributes have consistent lengths.
 
@@ -1919,18 +1997,19 @@ class SolverMuJoCo(SolverBase):
             model: The Newton model to validate.
 
         Returns:
-            tuple[int, int]: (tendon_count, wrap_count) - number of tendons and total wraps defined.
+            tuple[int, int, int]: (tendon_count, joint_entry_count, wrap_entry_count).
 
         Raises:
             ValueError: If tendon attributes have inconsistent lengths.
         """
         mujoco_attrs = getattr(model, "mujoco", None)
         if mujoco_attrs is None:
-            return 0, 0
+            return 0, 0, 0
 
         # Tendon-level attributes
         tendon_attr_names = [
             "tendon_world",
+            "tendon_type",
             "tendon_stiffness",
             "tendon_damping",
             "tendon_frictionloss",
@@ -1947,6 +2026,8 @@ class SolverMuJoCo(SolverBase):
             "tendon_armature",
             "tendon_joint_adr",
             "tendon_joint_num",
+            "tendon_wrap_adr",
+            "tendon_wrap_num",
         ]
 
         # If the list above has N parameters then each tendon should have exactly N parameters.
@@ -1961,7 +2042,7 @@ class SolverMuJoCo(SolverBase):
             if attr is not None:
                 tendon_lengths[name] = len(attr)
         if not tendon_lengths:
-            return 0, 0
+            return 0, 0, 0
         # Check all tendon-level lengths are the same
         unique_tendon_lengths = set(tendon_lengths.values())
         if len(unique_tendon_lengths) > 1:
@@ -1983,26 +2064,47 @@ class SolverMuJoCo(SolverBase):
             if attr is not None:
                 joint_lengths[name] = len(attr)
         if not joint_lengths:
-            return tendon_count, 0
-        # Check all joint-level lengths are the same
-        unique_joint_lengths = set(joint_lengths.values())
-        if len(unique_joint_lengths) > 1:
-            raise ValueError(
-                f"MuJoCo tendon joint attributes have inconsistent lengths: {joint_lengths}. "
-                "All joint-level attributes must have the same number of elements."
-            )
+            joint_entry_count = 0
+        else:
+            unique_joint_lengths = set(joint_lengths.values())
+            if len(unique_joint_lengths) > 1:
+                raise ValueError(
+                    f"MuJoCo tendon joint attributes have inconsistent lengths: {joint_lengths}. "
+                    "All joint-level attributes must have the same number of elements."
+                )
+            joint_entry_count = next(iter(unique_joint_lengths))
 
-        # Count the length of the array of all joint indices and the
-        # length of the array of all coefficients.
-        joint_entry_count = next(iter(unique_joint_lengths))
+        # Wrap path attributes for spatial tendons
+        wrap_attr_names = ["tendon_wrap_type", "tendon_wrap_shape", "tendon_wrap_sidesite", "tendon_wrap_prm"]
+        wrap_lengths: dict[str, int] = {}
+        for name in wrap_attr_names:
+            attr = getattr(mujoco_attrs, name, None)
+            if attr is not None:
+                wrap_lengths[name] = len(attr)
+        if not wrap_lengths:
+            wrap_entry_count = 0
+        else:
+            unique_wrap_lengths = set(wrap_lengths.values())
+            if len(unique_wrap_lengths) > 1:
+                raise ValueError(
+                    f"MuJoCo tendon wrap attributes have inconsistent lengths: {wrap_lengths}. "
+                    "All wrap-level attributes must have the same number of elements."
+                )
+            wrap_entry_count = next(iter(unique_wrap_lengths))
 
-        return tendon_count, joint_entry_count
+        return tendon_count, joint_entry_count, wrap_entry_count
 
     def _init_tendons(
-        self, model: Model, spec, joint_mapping: dict[int, str], template_world: int
+        self,
+        model: Model,
+        spec,
+        joint_mapping: dict[int, str],
+        shape_mapping: dict[int, str],
+        site_mapping: dict[int, str],
+        template_world: int,
     ) -> tuple[list[int], list[str]]:
         """
-        Initialize MuJoCo fixed tendons from custom attributes.
+        Initialize MuJoCo fixed and spatial tendons from custom attributes.
 
         Only tendons belonging to the template world are added to the MuJoCo spec.
         MuJoCo will replicate these tendons across all worlds automatically.
@@ -2011,22 +2113,24 @@ class SolverMuJoCo(SolverBase):
             model: The Newton model.
             spec: The MuJoCo spec to add tendons to.
             joint_mapping: Mapping from Newton joint index to MuJoCo joint name.
+            shape_mapping: Mapping from Newton shape index to MuJoCo geom name.
+            site_mapping: Mapping from Newton shape index (sites) to MuJoCo site name.
             template_world: The world index to use as the template (typically first_group).
 
         Returns:
             tuple[list[int], list[str]]: Tuple of (Newton tendon indices, MuJoCo tendon names).
         """
 
-        # Count the number of tendons (tendon_count)
-        # Count the length of the arrays that contains the joint indices of all tendons (joint_entry_count)
-        tendon_count, joint_entry_count = self._validate_tendon_attributes(model)
+        tendon_count, joint_entry_count, wrap_entry_count = self._validate_tendon_attributes(model)
         if tendon_count == 0:
             return [], []
 
         mujoco_attrs = model.mujoco
 
-        # Get tendon arrays
+        # Get tendon-level arrays
         tendon_world = mujoco_attrs.tendon_world.numpy()
+        tendon_type_attr = getattr(mujoco_attrs, "tendon_type", None)
+        tendon_type_np = tendon_type_attr.numpy() if tendon_type_attr is not None else None
         tendon_stiffness = getattr(mujoco_attrs, "tendon_stiffness", None)
         tendon_stiffness_np = tendon_stiffness.numpy() if tendon_stiffness is not None else None
         tendon_damping = getattr(mujoco_attrs, "tendon_damping", None)
@@ -2060,12 +2164,20 @@ class SolverMuJoCo(SolverBase):
         tendon_springlength = getattr(mujoco_attrs, "tendon_springlength", None)
         tendon_springlength_np = tendon_springlength.numpy() if tendon_springlength is not None else None
         tendon_label_arr = getattr(mujoco_attrs, "tendon_label", None)
+
+        # Fixed tendon arrays
         tendon_joint_adr = mujoco_attrs.tendon_joint_adr.numpy()
         tendon_joint_num = mujoco_attrs.tendon_joint_num.numpy()
-
-        # Get joint arrays (for the linear combination)
         tendon_joint = mujoco_attrs.tendon_joint.numpy() if joint_entry_count > 0 else None
         tendon_coef = mujoco_attrs.tendon_coef.numpy() if joint_entry_count > 0 else None
+
+        # Spatial tendon wrap path arrays
+        tendon_wrap_adr_np = mujoco_attrs.tendon_wrap_adr.numpy() if wrap_entry_count > 0 else None
+        tendon_wrap_num_np = mujoco_attrs.tendon_wrap_num.numpy() if wrap_entry_count > 0 else None
+        tendon_wrap_type_np = mujoco_attrs.tendon_wrap_type.numpy() if wrap_entry_count > 0 else None
+        tendon_wrap_shape_np = mujoco_attrs.tendon_wrap_shape.numpy() if wrap_entry_count > 0 else None
+        tendon_wrap_sidesite_np = mujoco_attrs.tendon_wrap_sidesite.numpy() if wrap_entry_count > 0 else None
+        tendon_wrap_prm_np = mujoco_attrs.tendon_wrap_prm.numpy() if wrap_entry_count > 0 else None
 
         model_joint_type_np = model.joint_type.numpy()
 
@@ -2080,68 +2192,128 @@ class SolverMuJoCo(SolverBase):
             if tw != template_world and tw >= 0:
                 continue
 
-            joint_start = int(tendon_joint_adr[i])
-            joint_num = int(tendon_joint_num[i])
-            if joint_num <= 0:
-                if wp.config.verbose:
-                    print(
-                        f"Warning: Skipping tendon {i} during MuJoCo export because it has no joint wraps. "
-                        "Only fixed tendons with joint paths are currently supported."
-                    )
-                continue
+            # Resolve tendon label early so it can be included in warnings.
+            tendon_label = ""
+            if isinstance(tendon_label_arr, list) and i < len(tendon_label_arr):
+                tendon_label = str(tendon_label_arr[i]).strip()
+            if tendon_label == "":
+                tendon_label = f"tendon_{i}"
 
-            wraps: list[tuple[str, float]] = []
+            ttype = int(tendon_type_np[i]) if tendon_type_np is not None else 0
 
-            for j in range(joint_start, joint_start + joint_num):
-                if tendon_joint is None or tendon_coef is None:
-                    break
+            # Pre-validate wrapping path before creating the tendon in the spec.
+            if ttype == 0:
+                # Fixed tendon: build joint wraps list
+                joint_start = int(tendon_joint_adr[i])
+                joint_num = int(tendon_joint_num[i])
+                if joint_num <= 0:
+                    if wp.config.verbose:
+                        print(f"Warning: Skipping tendon {i} during MuJoCo export because it has no joint wraps.")
+                    continue
 
-                newton_joint = int(tendon_joint[j])
-                coef = float(tendon_coef[j])
+                fixed_wraps: list[tuple[str, float]] = []
+                for j in range(joint_start, joint_start + joint_num):
+                    if tendon_joint is None or tendon_coef is None:
+                        break
+                    newton_joint = int(tendon_joint[j])
+                    coef = float(tendon_coef[j])
+                    if newton_joint < 0:
+                        warnings.warn(
+                            f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
+                            stacklevel=2,
+                        )
+                        continue
+                    if model_joint_type_np[newton_joint] == JointType.D6:
+                        warnings.warn(
+                            f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
+                            stacklevel=2,
+                        )
+                        continue
+                    joint_name = joint_mapping.get(newton_joint)
+                    if joint_name is None:
+                        warnings.warn(
+                            f"Skipping joint entry {j} for tendon {i}: Newton joint {newton_joint} "
+                            f"not found in MuJoCo joint mapping.",
+                            stacklevel=2,
+                        )
+                        continue
+                    fixed_wraps.append((joint_name, coef))
 
-                if newton_joint < 0:
+                if len(fixed_wraps) == 0:
+                    if wp.config.verbose:
+                        print(
+                            f"Warning: Skipping tendon {i} during MuJoCo export "
+                            "because no valid joint wraps were resolved."
+                        )
+                    continue
+
+            elif ttype == 1:
+                # Spatial tendon: validate wrap path arrays and bounds
+                if tendon_wrap_adr_np is None or tendon_wrap_num_np is None:
                     warnings.warn(
-                        f"Skipping joint entry {j} for tendon {i}: invalid joint index {newton_joint}.",
+                        f"Spatial tendon '{tendon_label}' has no wrap path arrays, skipping.",
                         stacklevel=2,
                     )
                     continue
 
-                if model_joint_type_np[newton_joint] == JointType.D6:
+                wrap_start = int(tendon_wrap_adr_np[i])
+                wrap_num = int(tendon_wrap_num_np[i])
+                if wrap_start < 0 or wrap_num <= 0 or wrap_start + wrap_num > wrap_entry_count:
                     warnings.warn(
-                        f"Skipping joint entry {j} for tendon {i}: invalid D6 joint type {newton_joint}.",
+                        f"Skipping spatial tendon '{tendon_label}': wrap range "
+                        f"[{wrap_start}, {wrap_start + wrap_num}) "
+                        f"out of bounds for wrap entries ({wrap_entry_count}).",
                         stacklevel=2,
                     )
                     continue
 
-                joint_name = joint_mapping.get(newton_joint)
-                if joint_name is None:
-                    warnings.warn(
-                        f"Skipping joint entry {j} for tendon {i}: Newton joint {newton_joint} "
-                        f"not found in MuJoCo joint mapping.",
-                        stacklevel=2,
-                    )
+                # Pre-resolve all wrap elements; skip entire tendon if any element fails
+                spatial_wraps_valid = True
+                for w in range(wrap_start, wrap_start + wrap_num):
+                    if tendon_wrap_type_np is None or tendon_wrap_shape_np is None:
+                        spatial_wraps_valid = False
+                        break
+                    wtype = int(tendon_wrap_type_np[w])
+                    if wtype == 0:  # site
+                        if site_mapping.get(int(tendon_wrap_shape_np[w])) is None:
+                            warnings.warn(
+                                f"Skipping spatial tendon '{tendon_label}': wrap site at index {w} "
+                                f"(shape {int(tendon_wrap_shape_np[w])}) not in site mapping.",
+                                stacklevel=2,
+                            )
+                            spatial_wraps_valid = False
+                            break
+                    elif wtype == 1:  # geom
+                        if shape_mapping.get(int(tendon_wrap_shape_np[w])) is None:
+                            warnings.warn(
+                                f"Skipping spatial tendon '{tendon_label}': wrap geom at index {w} "
+                                f"(shape {int(tendon_wrap_shape_np[w])}) not in shape mapping.",
+                                stacklevel=2,
+                            )
+                            spatial_wraps_valid = False
+                            break
+                    elif wtype == 2:  # pulley
+                        divisor = float(tendon_wrap_prm_np[w]) if tendon_wrap_prm_np is not None else 0.0
+                        if divisor <= 0.0:
+                            warnings.warn(
+                                f"Skipping spatial tendon '{tendon_label}': pulley at index {w} "
+                                f"has non-positive divisor {divisor}.",
+                                stacklevel=2,
+                            )
+                            spatial_wraps_valid = False
+                            break
+                if not spatial_wraps_valid:
                     continue
 
-                wraps.append((joint_name, coef))
-
-            if len(wraps) == 0:
-                if wp.config.verbose:
-                    print(
-                        f"Warning: Skipping tendon {i} during MuJoCo export because no valid joint wraps were resolved."
-                    )
+            else:
+                warnings.warn(f"Skipping tendon '{tendon_label}': unknown tendon type {ttype}.", stacklevel=2)
                 continue
 
             # Track this tendon only after confirming it can be exported.
             selected_tendons.append(i)
 
-            # Prefer authored tendon names from MJCF/USD; fall back to a generic name.
-            tendon_name_base = ""
-            if isinstance(tendon_label_arr, list) and i < len(tendon_label_arr):
-                tendon_name_base = str(tendon_label_arr[i]).strip()
-            if tendon_name_base == "":
-                tendon_name_base = f"tendon_{i}"
-
-            tendon_name = tendon_name_base
+            # Use the label resolved earlier; ensure unique names for the spec.
+            tendon_name = tendon_label
             suffix = 1
             while tendon_name in used_tendon_names:
                 tendon_name = f"{tendon_name_base}_{suffix}"
@@ -2152,7 +2324,7 @@ class SolverMuJoCo(SolverBase):
             t = spec.add_tendon()
             t.name = tendon_name
 
-            # Set tendon properties
+            # Set tendon properties (shared between fixed and spatial)
             if tendon_stiffness_np is not None:
                 t.stiffness = float(tendon_stiffness_np[i])
             if tendon_damping_np is not None:
@@ -2184,22 +2356,41 @@ class SolverMuJoCo(SolverBase):
                 has_automatic_length_computation = val[0] == -1.0
                 has_dead_zone = val[1] >= val[0]
                 if has_automatic_length_computation:
-                    # The spring length is automatically computed from
-                    # start state. In this mode it is not possible to
-                    # author a dead zone.
                     t.springlength[0] = -1.0
                     t.springlength[1] = -1.0
                 elif has_dead_zone:
-                    # Set a finite dead zone.
                     t.springlength[0] = val[0]
                     t.springlength[1] = val[1]
                 else:
-                    # Set a dead zone of zero width
                     t.springlength[0] = val[0]
                     t.springlength[1] = val[0]
 
-            for joint_name, coef in wraps:
-                t.wrap_joint(joint_name, coef)
+            # Add wrapping path (all elements pre-validated above)
+            if ttype == 0:
+                for joint_name, coef in fixed_wraps:
+                    t.wrap_joint(joint_name, coef)
+            elif ttype == 1:
+                for w in range(wrap_start, wrap_start + wrap_num):
+                    wtype = int(tendon_wrap_type_np[w])
+                    if wtype == 0:
+                        t.wrap_site(site_mapping[int(tendon_wrap_shape_np[w])])
+                    elif wtype == 1:
+                        geom_name = shape_mapping[int(tendon_wrap_shape_np[w])]
+                        sidesite_name = ""
+                        if tendon_wrap_sidesite_np is not None:
+                            sidesite_idx = int(tendon_wrap_sidesite_np[w])
+                            if sidesite_idx >= 0:
+                                sidesite_name = site_mapping.get(sidesite_idx)
+                                if sidesite_name is None:
+                                    warnings.warn(
+                                        f"Wrap geom {w} for tendon {i} references sidesite "
+                                        f"{sidesite_idx} not in site mapping; ignoring sidesite.",
+                                        stacklevel=2,
+                                    )
+                                    sidesite_name = ""
+                        t.wrap_geom(geom_name, sidesite_name)
+                    elif wtype == 2:
+                        t.wrap_pulley(float(tendon_wrap_prm_np[w]))
 
         return selected_tendons, tendon_names
 
@@ -3580,6 +3771,8 @@ class SolverMuJoCo(SolverBase):
         body_mapping = {-1: 0}
         # mapping from Newton shape id to MuJoCo geom name
         shape_mapping = {}
+        # mapping from Newton shape id (sites) to MuJoCo site name
+        site_mapping = {}
         # Store mapping from Newton joint index to MuJoCo joint name
         joint_mapping = {}
         # track mocap index for each Newton body (dict: newton_body_id -> mocap_index)
@@ -3653,6 +3846,22 @@ class SolverMuJoCo(SolverBase):
 
         selected_shapes_set = set(selected_shapes)
 
+        # Compute shapes required by spatial tendons (wrapping geoms and sidesites)
+        # so they are not skipped even when skip_visual_only_geoms=True
+        tendon_required_shapes: set[int] = set()
+        mujoco_attrs = getattr(model, "mujoco", None)
+        if mujoco_attrs is not None:
+            _wrap_shape = getattr(mujoco_attrs, "tendon_wrap_shape", None)
+            if _wrap_shape is not None:
+                for idx in _wrap_shape.numpy():
+                    if idx >= 0:
+                        tendon_required_shapes.add(int(idx))
+            _wrap_sidesite = getattr(mujoco_attrs, "tendon_wrap_sidesite", None)
+            if _wrap_sidesite is not None:
+                for idx in _wrap_sidesite.numpy():
+                    if idx >= 0:
+                        tendon_required_shapes.add(int(idx))
+
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]
             shapes = model.body_shapes.get(newton_body_id)
@@ -3662,10 +3871,11 @@ class SolverMuJoCo(SolverBase):
                 if shape not in selected_shapes_set:
                     # skip shapes that are not selected for this world
                     continue
-                # Skip visual-only geoms, but don't skip sites
+                # Skip visual-only geoms, but don't skip sites or shapes needed by spatial tendons
                 is_site = shape_flags[shape] & ShapeFlags.SITE
                 if skip_visual_only_geoms and not is_site and not (shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES):
-                    continue
+                    if shape not in tendon_required_shapes:
+                        continue
                 stype = shape_type[shape]
                 name = f"{model.shape_label[shape]}_{shape}"
 
@@ -3701,6 +3911,7 @@ class SolverMuJoCo(SolverBase):
                         site_params["rgba"] = [0.0, 1.0, 0.0, 0.0]
 
                     body.add_site(**site_params)
+                    site_mapping[shape] = name
                     continue
 
                 if stype == GeoType.PLANE and newton_body_id != -1:
@@ -4325,7 +4536,15 @@ class SolverMuJoCo(SolverBase):
             eq.data[4] = 0.0
             mjc_eq_to_newton_mimic_dict[eq.id] = i
 
-        if skip_visual_only_geoms and len(spec.geoms) != colliding_shapes_per_world:
+        # Count non-colliding geoms that were kept because they are required by spatial tendons
+        tendon_extra_geoms = sum(
+            1
+            for s in tendon_required_shapes
+            if s in selected_shapes_set
+            and not (shape_flags[s] & ShapeFlags.SITE)
+            and not (shape_flags[s] & ShapeFlags.COLLIDE_SHAPES)
+        )
+        if skip_visual_only_geoms and len(spec.geoms) != colliding_shapes_per_world + tendon_extra_geoms:
             raise ValueError(
                 "The number of geoms in the MuJoCo model does not match the number of colliding shapes in the Newton model."
             )
@@ -4345,7 +4564,9 @@ class SolverMuJoCo(SolverBase):
         # add explicit contact pairs from custom attributes
         self._init_pairs(model, spec, shape_mapping, first_world)
 
-        selected_tendons, mjc_tendon_names = self._init_tendons(model, spec, joint_mapping, first_world)
+        selected_tendons, mjc_tendon_names = self._init_tendons(
+            model, spec, joint_mapping, shape_mapping, site_mapping, first_world
+        )
 
         # Process MuJoCo general actuators (motor, general, etc.) from custom attributes
         actuator_count += self._init_actuators(
