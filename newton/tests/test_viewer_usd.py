@@ -72,7 +72,8 @@ class TestViewerUSD(unittest.TestCase):
 
         viewer1.begin_frame(0.0)
         points = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3)
-        path = viewer1.log_points("/points_from_viewer1", points, radii=0.01)
+        colors = wp.array([[1.0, 1.0, 1.0]], dtype=wp.vec3)
+        path = viewer1.log_points("/points_from_viewer1", points, radii=0.01, colors=colors)
 
         # Ensure the prim written by viewer1 is present before creating viewer2.
         prim_before = UsdGeom.Points.Get(viewer1.stage, path).GetPrim()
