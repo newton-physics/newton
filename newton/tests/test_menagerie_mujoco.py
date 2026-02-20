@@ -1047,13 +1047,34 @@ def run_native_step2(
     mjw_forward.step2(native_model, native_data)
 
 
-def inject_contacts(src_data: Any, dst_data: Any) -> None:
-    """Copy all contact arrays and constraint inputs from src_data to dst_data.
+def inject_contacts(src_data: Any, dst_data: Any, tol: float = 1e-5) -> None:
+    """Copy contact arrays and kinematic inputs from src_data to dst_data.
 
-    This ensures both Newton and native use identical contact data AND kinematic
-    inputs for constraint solving, bypassing non-deterministic ordering in
-    mujoco_warp's broadphase and subtree accumulation.
+    This ensures both sides use identical inputs for constraint solving,
+    bypassing non-deterministic ordering in mujoco_warp's broadphase and
+    float32 accumulation differences in subtree_com/cdof.
+
+    Before injecting kinematic fields, verifies they match within tolerance
+    to catch real divergences (not just float32 accumulation noise).
+
+    Args:
+        src_data: Source MjWarpData (Newton's)
+        dst_data: Destination MjWarpData (native's)
+        tol: Tolerance for kinematic field verification
     """
+    # Verify kinematic fields match within tolerance before injection.
+    # These should only differ by float32 accumulation noise (~1e-7).
+    wp.synchronize()
+    for field_name in ("subtree_com", "cdof"):
+        src_np = getattr(src_data, field_name).numpy()
+        dst_np = getattr(dst_data, field_name).numpy()
+        diff = float(np.max(np.abs(src_np.astype(np.float64) - dst_np.astype(np.float64))))
+        if diff > tol:
+            raise AssertionError(
+                f"inject_contacts: {field_name} diff {diff:.2e} > tol {tol:.0e} "
+                f"(expected only float32 accumulation noise)"
+            )
+
     # Contact data
     dst_data.nacon.assign(src_data.nacon)
     dst_data.contact.worldid.assign(src_data.contact.worldid)
@@ -1068,6 +1089,11 @@ def inject_contacts(src_data: Any, dst_data: Any) -> None:
     dst_data.contact.solimp.assign(src_data.contact.solimp)
     dst_data.contact.dim.assign(src_data.contact.dim)
     dst_data.contact.efc_address.assign(src_data.contact.efc_address)
+    # Kinematic data used by make_constraint — cdof and subtree_com have
+    # float32 accumulation diffs from _subtree_com_acc atomic_add that
+    # affect friction cone Jacobian computation.
+    dst_data.subtree_com.assign(src_data.subtree_com)
+    dst_data.cdof.assign(src_data.cdof)
     wp.synchronize()
 
 
