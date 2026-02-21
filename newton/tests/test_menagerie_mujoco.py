@@ -2083,38 +2083,16 @@ class TestMenagerieBase(unittest.TestCase):
                 newton_solver.step(newton_state, newton_state, newton_control, None, dt)
 
         # Helper: step with contact injection (split pipeline mode)
-        def step_with_contact_injection(
-            step_num: int,
-            newton_graph: Any = None,
-            pre_constraint_graph: Any = None,
-            make_constraint_graph: Any = None,
-            post_constraint_graph: Any = None,
-        ):
-            """
-            Split pipeline that injects contacts and constraints to bypass non-determinism.
-
-            Flow:
-            1. Newton: full step (forward + integrate)
-            2. Native: kinematics through collision
-            3. Verify contacts match (sorted), inject Newton's contacts
-            4. Native: make_constraint
-            5. Verify constraints match (sorted), inject Newton's constraints
-            6. Native: transmission + step1_rest + step2
-            """
+        def step_with_contact_injection(step_num: int):
+            """Split pipeline: inject contacts and constraints to bypass non-determinism."""
             t = step_num * dt
             self.control_strategy.fill_control(t)  # type: ignore[union-attr]
 
             # 1. Newton full step
-            if newton_graph:
-                wp.capture_launch(newton_graph)
-            else:
-                newton_solver.step(newton_state, newton_state, newton_control, None, dt)
+            newton_solver.step(newton_state, newton_state, newton_control, None, dt)
 
             # 2. Native: kinematics through collision
-            if pre_constraint_graph:
-                wp.capture_launch(pre_constraint_graph)
-            else:
-                run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
+            run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
             wp.synchronize()
 
             # 3. Verify contacts match (sorted), inject
@@ -2126,10 +2104,7 @@ class TestMenagerieBase(unittest.TestCase):
             inject_contacts(newton_solver.mjw_data, native_mjw_data)
 
             # 4. Native: make_constraint
-            if make_constraint_graph:
-                wp.capture_launch(make_constraint_graph)
-            else:
-                run_native_make_constraint(native_mjw_model, native_mjw_data)
+            run_native_make_constraint(native_mjw_model, native_mjw_data)
             wp.synchronize()
 
             # 5. Verify constraints match (sorted), inject
@@ -2141,12 +2116,9 @@ class TestMenagerieBase(unittest.TestCase):
             inject_constraints(newton_solver.mjw_data, native_mjw_data)
 
             # 6. Native: transmission + step1_rest + step2
-            if post_constraint_graph:
-                wp.capture_launch(post_constraint_graph)
-            else:
-                run_native_transmission(native_mjw_model, native_mjw_data)
-                run_native_step1_rest(native_mjw_model, native_mjw_data)
-                run_native_step2(native_mjw_model, native_mjw_data)
+            run_native_transmission(native_mjw_model, native_mjw_data)
+            run_native_step1_rest(native_mjw_model, native_mjw_data)
+            run_native_step2(native_mjw_model, native_mjw_data)
 
         # Helper: compare at step (for non-visual mode)
         def compare_at_step(step_num: int):
@@ -2159,14 +2131,10 @@ class TestMenagerieBase(unittest.TestCase):
             sync_to_viewer()
             viewer.sync()
 
-        # Setup CUDA graphs
+        # Setup CUDA graphs (full pipeline mode only — split pipeline doesn't use graphs)
         use_cuda_graph = self.use_cuda_graph and wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         newton_graph = None
         native_graph = None
-        # For contact injection mode:
-        pre_constraint_graph = None
-        make_constraint_graph = None
-        post_constraint_graph = None
 
         # Compare/print initial state
         # Skip step -1 comparison when using split pipeline — the initial mj_forward
@@ -2185,55 +2153,7 @@ class TestMenagerieBase(unittest.TestCase):
                 break
 
             if self.use_split_pipeline:
-                # Contact+constraint injection: capture graphs on step 0, use thereafter
-                if step == 0 and use_cuda_graph:
-                    self.control_strategy.fill_control(0.0)  # type: ignore[union-attr]
-
-                    # Capture Newton step
-                    with wp.ScopedCapture() as capture:
-                        newton_solver.step(newton_state, newton_state, newton_control, None, dt)
-                    newton_graph = capture.graph
-
-                    # Capture native kinematics through collision
-                    with wp.ScopedCapture() as capture:
-                        run_native_fwd_position_pre_constraint(native_mjw_model, native_mjw_data)
-                    pre_constraint_graph = capture.graph
-                    wp.synchronize()
-
-                    # Compare and inject contacts (not in graph - data-dependent)
-                    contacts_match, contact_msg = compare_contacts_sorted(
-                        newton_solver.mjw_data, native_mjw_data, tol=self.split_pipeline_tol
-                    )
-                    if not contacts_match:
-                        raise AssertionError(f"Step {step}: Contact mismatch - {contact_msg}")
-                    inject_contacts(newton_solver.mjw_data, native_mjw_data)
-
-                    # Capture native make_constraint
-                    with wp.ScopedCapture() as capture:
-                        run_native_make_constraint(native_mjw_model, native_mjw_data)
-                    make_constraint_graph = capture.graph
-                    wp.synchronize()
-
-                    # Compare and inject constraints (not in graph - data-dependent)
-                    constraints_match, constraint_msg = compare_constraints_sorted(
-                        newton_solver.mjw_data, native_mjw_data, tol=self.split_pipeline_tol
-                    )
-                    if not constraints_match:
-                        raise AssertionError(f"Step {step}: Constraint mismatch - {constraint_msg}")
-                    inject_constraints(newton_solver.mjw_data, native_mjw_data)
-
-                    # Capture native transmission + step1_rest + step2
-                    with wp.ScopedCapture() as capture:
-                        run_native_transmission(native_mjw_model, native_mjw_data)
-                        run_native_step1_rest(native_mjw_model, native_mjw_data)
-                        run_native_step2(native_mjw_model, native_mjw_data)
-                    post_constraint_graph = capture.graph
-                    wp.synchronize()
-                else:
-                    # Use captured graphs (or fallback if not available)
-                    step_with_contact_injection(
-                        step, newton_graph, pre_constraint_graph, make_constraint_graph, post_constraint_graph
-                    )
+                step_with_contact_injection(step)
             elif step == 0 and use_cuda_graph:
                 # Step 0: capture CUDA graphs if available (full pipeline mode only)
                 self.control_strategy.fill_control(0.0)  # type: ignore[union-attr]
