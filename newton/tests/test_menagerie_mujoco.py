@@ -13,44 +13,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-MuJoCo Menagerie Integration Tests
+"""MuJoCo Menagerie integration tests.
 
-This module tests that robots from the MuJoCo Menagerie simulate identically
-when loaded via MJCF into Newton's MuJoCo solver vs native MuJoCo.
+Verifies that robots from the MuJoCo Menagerie produce equivalent simulation
+results when loaded via MJCF into Newton's SolverMuJoCo vs native mujoco_warp.
 
-Test Architecture:
-    - TestMenagerieBase: Abstract base class with all test infrastructure
-    - TestMenagerieMJCF / TestMenagerieUSD: Model source variants
-    - TestMenagerie_<RobotName>: One derived class per menagerie robot
+Architecture::
+
+    TestMenagerieBase           Abstract base with all test infrastructure
+    ├── TestMenagerieMJCF       Load Newton model from MJCF
+    │   ├── TestMenagerie_UniversalRobotsUr5e   (enabled, split pipeline)
+    │   ├── TestMenagerie_ApptronikApollo       (enabled, full pipeline)
+    │   └── ...                                 (61 robots total, most skipped)
+    └── TestMenagerieUSD        Load Newton model from USD (all skipped)
 
 Each test:
-    1. Downloads the robot from menagerie (cached)
-    2. Creates Newton model (via MJCF or USD factory)
-    3. Creates native MuJoCo model from same source
-    4. Compares model fields (with physics-equivalence checks for inertia, solref, etc.)
-    5. Runs simulation with configurable control strategies
-    6. Compares per-step state values within tolerance
+    1. Downloads the robot from menagerie (cached).
+    2. Creates a Newton model (via MJCF or USD) and a native mujoco_warp model.
+    3. Compares model fields with physics-equivalence checks for inertia, solref, etc.
+    4. Runs N steps with randomized controls across 34 parallel worlds.
+    5. Compares per-step dynamics fields within tolerance.
 
-Known limitations and workarounds:
-    - Friction defaults: Newton's MJCF parser must explicitly set MuJoCo friction
-      defaults [slide=1.0, torsion=0.005, roll=0.0001] on the builder. See
-      create_newton_model_from_mjcf().
-    - Model field skips: See DEFAULT_MODEL_SKIP_FIELDS for fields that are skipped
-      in model comparison (with inline comments explaining each).
-    - Model backfill: Newton's model compilation differs from MuJoCo's mj_setConst()
-      (e.g. inertia re-diagonalization, body_pos/quat recomputation from joint transforms).
-      Set backfill_model=True to copy computed fields from native, isolating simulation
-      diffs from model compilation diffs. See MODEL_BACKFILL_FIELDS.
-    - Split pipeline: mujoco_warp uses wp.atomic_add() for contact and constraint
-      allocation, causing non-deterministic ordering with >8 worlds. Set
-      use_split_pipeline=True to inject contacts+constraints from Newton into native,
-      bypassing this. Sorted comparisons verify the rows match modulo ordering.
+Comparison modes:
+    - **Full pipeline**: Both sides run ``mujoco_warp.step()`` independently. Fast
+      (supports CUDA graph capture) but subject to float32 solver noise from
+      ``wp.atomic_add`` in the constraint solver and Euler damping. Suitable for
+      position-level comparison at ~5e-4 tolerance.
+    - **Split pipeline**: Newton runs a full step, then native replays kinematics
+      through collision, with contacts and constraints injected from Newton to
+      bypass non-deterministic ordering from ``wp.atomic_add``. Achieves bit-identical
+      results at 1e-6 tolerance but is slower (no CUDA graph support).
 
-TODOs:
-    - Parse timestep from MJCF <option timestep="..."/> into Newton model
-    - Fix collision exclusion (nexclude) parent/child filtering in Newton
-    - Align mocap body handling between Newton and MuJoCo
+Per-robot configuration (override in subclass):
+    - ``backfill_model``: Copy computed model fields from native to Newton to
+      isolate simulation diffs from model compilation diffs.
+    - ``use_split_pipeline``: Enable contact/constraint injection.
+    - ``use_cuda_graph``: Enable CUDA graph capture (full pipeline only).
+    - ``compare_fields`` / ``tolerance_overrides``: Which fields to compare and at
+      what tolerance.
+    - ``model_skip_fields``: Fields to skip in model comparison.
 """
 
 from __future__ import annotations
