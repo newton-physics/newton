@@ -501,9 +501,7 @@ def compute_shape_inertia(
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow box geom"
-            hollow = compute_box_inertia(
-                density, scale[0] - thickness / 2, scale[1] - thickness / 2, scale[2] - thickness / 2
-            )
+            hollow = compute_box_inertia(density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CAPSULE:
         # scale[0] = radius, scale[1] = half_height
