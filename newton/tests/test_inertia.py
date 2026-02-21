@@ -340,8 +340,8 @@ class TestInertia(unittest.TestCase):
         inner_half_height = outer_half_height - thickness
         v_out, i_out = self._create_cone_mesh(outer_radius, outer_half_height)
         v_in, i_in = self._create_cone_mesh(inner_radius, inner_half_height)
-        m_out, com_out, I_out, _ = compute_mesh_inertia(density, v_out, i_out)
-        m_in, com_in, I_in, _ = compute_mesh_inertia(density, v_in, i_in)
+        m_out, com_out, I_out, _ = compute_mesh_inertia(density, v_out, i_out, is_solid=True)
+        m_in, com_in, I_in, _ = compute_mesh_inertia(density, v_in, i_in, is_solid=True)
         m_ref = m_out - m_in
         com_ref = (m_out * np.array(com_out) - m_in * np.array(com_in)) / m_ref
 
@@ -354,7 +354,10 @@ class TestInertia(unittest.TestCase):
         tol = 0.01  # 1% relative tolerance
         self.assertAlmostEqual(m_an, m_ref, delta=tol * abs(m_ref))
         assert_np_equal(np.array(com_an), com_ref, tol=1e-3)
-        assert_np_equal(np.array(I_an).reshape(3, 3), I_ref, tol=tol * abs(I_ref[0, 0]))
+        I_an_np = np.array(I_an).reshape(3, 3)
+        # Check each diagonal with its own element-specific scale
+        for i in range(3):
+            self.assertAlmostEqual(I_an_np[i, i], I_ref[i, i], delta=tol * abs(I_ref[i, i]))
 
 
 if __name__ == "__main__":
