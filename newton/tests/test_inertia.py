@@ -65,8 +65,8 @@ class TestInertia(unittest.TestCase):
         self.assertAlmostEqual(volume_0, 1.0, delta=1e-6)
         assert_np_equal(np.array(com_0), np.array([0.5, 0.5, 0.5]), tol=1e-6)
 
-        # Check against analytical inertia
-        mass_box, com_box, I_box = compute_box_inertia(1000.0, 1.0, 1.0, 1.0)
+        # Check against analytical inertia (unit cube has half-extents 0.5)
+        mass_box, com_box, I_box = compute_box_inertia(1000.0, 0.5, 0.5, 0.5)
         self.assertAlmostEqual(mass_box, mass_0, delta=1e-6)
         assert_np_equal(np.array(com_box), np.zeros(3), tol=1e-6)
         assert_np_equal(np.array(I_0), np.array(I_box), tol=1e-4)
@@ -321,7 +321,7 @@ class TestInertia(unittest.TestCase):
         )
 
         # Compute analytical inertia
-        mass_cone, com_cone, I_cone = compute_cone_inertia(density, radius, 2 * half_height)
+        mass_cone, com_cone, I_cone = compute_cone_inertia(density, radius, half_height)
 
         # Check mass (within 0.1%)
         self.assertAlmostEqual(mass_mesh, mass_cone, delta=mass_cone * 0.001)
