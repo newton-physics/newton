@@ -24,7 +24,7 @@ from typing import SupportsIndex, overload
 import numpy as np
 
 
-class IntIndexList(MutableSequence):
+class _IntIndexList(MutableSequence):
     """Compact array-backed storage for 1D integer indices.
 
     Stores indices in a typed ``array.array("i")`` for lower per-element overhead
@@ -65,7 +65,7 @@ class IntIndexList(MutableSequence):
 
     def __setitem__(self, idx: SupportsIndex | slice, value: int | Iterable[int]) -> None:
         if isinstance(idx, slice):
-            if isinstance(value, IntIndexList):
+            if isinstance(value, _IntIndexList):
                 self._data[idx] = value._data
             elif isinstance(value, Iterable):
                 self._data[idx] = array("i", (int(v) for v in value))
@@ -91,7 +91,7 @@ class IntIndexList(MutableSequence):
         return repr(self._data.tolist())
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, IntIndexList):
+        if isinstance(other, _IntIndexList):
             return self._data == other._data
         if isinstance(other, array):
             return self._data == other
@@ -100,7 +100,7 @@ class IntIndexList(MutableSequence):
         return NotImplemented
 
     def __copy__(self):
-        out = IntIndexList()
+        out = _IntIndexList()
         out._data = self._data[:]
         return out
 
@@ -114,7 +114,7 @@ class IntIndexList(MutableSequence):
         self._data.append(int(value))
 
     def extend(self, values: Iterable[int]) -> None:
-        if isinstance(values, IntIndexList):
+        if isinstance(values, _IntIndexList):
             self._data.extend(values._data)
             return
         append = self._data.append
@@ -128,7 +128,7 @@ class IntIndexList(MutableSequence):
         return self._data.tolist()
 
     def extend_with_offset(self, values: Iterable[int], offset: int) -> None:
-        if isinstance(values, IntIndexList):
+        if isinstance(values, _IntIndexList):
             if not values._data:
                 return
 
@@ -149,7 +149,7 @@ class IntIndexList(MutableSequence):
             append(int(value) + offset)
 
     def extend_with_offset_except(self, values: Iterable[int], offset: int, sentinel: int = -1) -> None:
-        if isinstance(values, IntIndexList):
+        if isinstance(values, _IntIndexList):
             if not values._data:
                 return
 
@@ -173,7 +173,7 @@ class IntIndexList(MutableSequence):
             append(value_int if value_int == sentinel else value_int + offset)
 
     def extend_with_offset_nonnegative(self, values: Iterable[int], offset: int) -> None:
-        if isinstance(values, IntIndexList):
+        if isinstance(values, _IntIndexList):
             if not values._data:
                 return
 
@@ -196,7 +196,7 @@ class IntIndexList(MutableSequence):
             append(value_int + offset if value_int >= 0 else value_int)
 
 
-class IntIndexList2D(MutableSequence):
+class _IntIndexList2D(MutableSequence):
     """Compact array-backed storage for fixed-width integer tuples.
 
     Rows are stored flat in a single typed ``array.array("i")`` with all elements
@@ -252,7 +252,7 @@ class IntIndexList2D(MutableSequence):
 
     def __setitem__(self, idx: SupportsIndex | slice, value: Iterable[int] | Iterable[Iterable[int]]) -> None:
         if isinstance(idx, slice):
-            replacement = IntIndexList2D(value, width=self._width)
+            replacement = _IntIndexList2D(value, width=self._width)
             n = len(self)
             start, stop, step = idx.indices(n)
             if step == 1:
@@ -306,14 +306,14 @@ class IntIndexList2D(MutableSequence):
         return repr(self.tolist())
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, IntIndexList2D):
+        if isinstance(other, _IntIndexList2D):
             return self._width == other._width and self._data == other._data
         if isinstance(other, (list, tuple)):
             return self.tolist() == [tuple(row) for row in other]
         return NotImplemented
 
     def __copy__(self):
-        out = IntIndexList2D(width=self._width)
+        out = _IntIndexList2D(width=self._width)
         out._data = self._data[:]
         return out
 
@@ -330,7 +330,7 @@ class IntIndexList2D(MutableSequence):
         self._data.extend(values)
 
     def extend(self, rows: Iterable[Iterable[int]]) -> None:
-        if isinstance(rows, IntIndexList2D):
+        if isinstance(rows, _IntIndexList2D):
             if rows._width != self._width:
                 raise ValueError(f"row width mismatch: expected {self._width}, got {rows._width}")
             self._data.extend(rows._data)
@@ -346,7 +346,7 @@ class IntIndexList2D(MutableSequence):
         return list(self)
 
     def extend_with_offset(self, rows: Iterable[Iterable[int]], offset: int) -> None:
-        if isinstance(rows, IntIndexList2D):
+        if isinstance(rows, _IntIndexList2D):
             if rows._width != self._width:
                 raise ValueError(f"row width mismatch: expected {self._width}, got {rows._width}")
             if not rows._data:
@@ -359,11 +359,19 @@ class IntIndexList2D(MutableSequence):
             return
 
         offset = int(offset)
+        if offset == 0:
+            for row in rows:
+                self.append(row)
+            return
+        w = self._width
         for row in rows:
-            self.append(int(v) + offset for v in row)
+            values = tuple(int(v) + offset for v in row)
+            if len(values) != w:
+                raise ValueError(f"row must have width {w}, got {len(values)}")
+            self._data.extend(values)
 
     def extend_with_offset_except(self, rows: Iterable[Iterable[int]], offset: int, sentinel: int = -1) -> None:
-        if isinstance(rows, IntIndexList2D):
+        if isinstance(rows, _IntIndexList2D):
             if rows._width != self._width:
                 raise ValueError(f"row width mismatch: expected {self._width}, got {rows._width}")
             if not rows._data:
@@ -378,11 +386,19 @@ class IntIndexList2D(MutableSequence):
 
         offset = int(offset)
         sentinel = int(sentinel)
+        if offset == 0:
+            for row in rows:
+                self.append(row)
+            return
+        w = self._width
         for row in rows:
-            self.append(int(v) if int(v) == sentinel else int(v) + offset for v in row)
+            values = tuple(iv if (iv := int(v)) == sentinel else iv + offset for v in row)
+            if len(values) != w:
+                raise ValueError(f"row must have width {w}, got {len(values)}")
+            self._data.extend(values)
 
     def extend_with_offset_nonnegative(self, rows: Iterable[Iterable[int]], offset: int) -> None:
-        if isinstance(rows, IntIndexList2D):
+        if isinstance(rows, _IntIndexList2D):
             if rows._width != self._width:
                 raise ValueError(f"row width mismatch: expected {self._width}, got {rows._width}")
             if not rows._data:
@@ -396,5 +412,13 @@ class IntIndexList2D(MutableSequence):
             return
 
         offset = int(offset)
+        if offset == 0:
+            for row in rows:
+                self.append(row)
+            return
+        w = self._width
         for row in rows:
-            self.append(int(v) + offset if int(v) >= 0 else int(v) for v in row)
+            values = tuple((iv := int(v)) + offset if iv >= 0 else iv for v in row)
+            if len(values) != w:
+                raise ValueError(f"row must have width {w}, got {len(values)}")
+            self._data.extend(values)
