@@ -267,44 +267,22 @@ class TestInertia(unittest.TestCase):
             I_cone[0, 0], I_cone[2, 2], delta=1e-3, msg="I_xx should not equal I_zz for Z-axis cone"
         )
 
+    @staticmethod
+    def _create_cone_mesh(radius, half_height, num_segments=500):
+        """Create a cone mesh with apex at +half_height and base at -half_height."""
+        vertices = [[0, 0, half_height], [0, 0, -half_height]]
+        for i in range(num_segments):
+            angle = 2 * np.pi * i / num_segments
+            vertices.append([radius * np.cos(angle), radius * np.sin(angle), -half_height])
+        indices = []
+        for i in range(num_segments):
+            ni = (i + 1) % num_segments
+            indices.append([0, i + 2, ni + 2])
+            indices.append([1, ni + 2, i + 2])
+        return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.int32)
+
     def test_cone_mesh_inertia(self):
         """Test cone inertia by comparing analytical formula with mesh computation."""
-
-        def create_cone_mesh(radius=1.0, half_height=1.0, num_segments=32):
-            """Create a cone mesh with vertices and triangles.
-
-            The cone has its apex at +half_height and base at -half_height,
-            matching our cone primitive convention.
-            """
-            vertices = []
-            indices = []
-
-            # Add apex vertex
-            vertices.append([0, 0, half_height])
-
-            # Add base center vertex
-            vertices.append([0, 0, -half_height])
-
-            # Add vertices around the base circle
-            for i in range(num_segments):
-                angle = 2 * np.pi * i / num_segments
-                x = radius * np.cos(angle)
-                y = radius * np.sin(angle)
-                vertices.append([x, y, -half_height])
-
-            # Create triangles for the conical surface (from apex to base edge)
-            for i in range(num_segments):
-                next_i = (i + 1) % num_segments
-                # Triangle: apex, current base vertex, next base vertex
-                indices.append([0, i + 2, next_i + 2])
-
-            # Create triangles for the base (fan from center)
-            for i in range(num_segments):
-                next_i = (i + 1) % num_segments
-                # Triangle: base center, next base vertex, current base vertex
-                indices.append([1, next_i + 2, i + 2])
-
-            return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.int32)
 
         # Test parameters
         radius = 2.5
@@ -312,7 +290,7 @@ class TestInertia(unittest.TestCase):
         density = 1000.0
 
         # Create high-resolution cone mesh
-        vertices, indices = create_cone_mesh(radius, half_height, num_segments=500)
+        vertices, indices = self._create_cone_mesh(radius, half_height, num_segments=500)
 
         # Compute mesh inertia
         mass_mesh, com_mesh, I_mesh, vol_mesh = compute_mesh_inertia(
@@ -346,18 +324,6 @@ class TestInertia(unittest.TestCase):
         theorem) before subtraction.
         """
 
-        def create_cone_mesh(radius, half_height, num_segments=500):
-            vertices = [[0, 0, half_height], [0, 0, -half_height]]
-            for i in range(num_segments):
-                angle = 2 * np.pi * i / num_segments
-                vertices.append([radius * np.cos(angle), radius * np.sin(angle), -half_height])
-            indices = []
-            for i in range(num_segments):
-                ni = (i + 1) % num_segments
-                indices.append([0, i + 2, ni + 2])
-                indices.append([1, ni + 2, i + 2])
-            return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.int32)
-
         density = 1000.0
         outer_radius = 1.0
         outer_half_height = 2.0
@@ -372,8 +338,8 @@ class TestInertia(unittest.TestCase):
         # Reference: mesh subtraction with proper parallel-axis shifts
         inner_radius = outer_radius - thickness
         inner_half_height = outer_half_height - thickness
-        v_out, i_out = create_cone_mesh(outer_radius, outer_half_height)
-        v_in, i_in = create_cone_mesh(inner_radius, inner_half_height)
+        v_out, i_out = self._create_cone_mesh(outer_radius, outer_half_height)
+        v_in, i_in = self._create_cone_mesh(inner_radius, inner_half_height)
         m_out, com_out, I_out, _ = compute_mesh_inertia(density, v_out, i_out)
         m_in, com_in, I_in, _ = compute_mesh_inertia(density, v_in, i_in)
         m_ref = m_out - m_in
