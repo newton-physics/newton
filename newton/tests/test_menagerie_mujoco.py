@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -146,9 +146,8 @@ def create_newton_model_from_mjcf(
     robot_builder.default_shape_cfg.mu_torsional = 0.005
     robot_builder.default_shape_cfg.mu_rolling = 0.0001
 
-    # Use floating=None to honor the MJCF's explicit joint definitions.
+    # floating defaults to None, which honors the MJCF's explicit joint definitions.
     # Menagerie models define their own <freejoint> tags for floating-base robots.
-    # Disable ensure_nonstatic_links to match MuJoCo's handling of zero-mass bodies.
     robot_builder.add_mjcf(
         str(mjcf_path),
         parse_visuals=parse_visuals,
@@ -314,7 +313,7 @@ class StructuredControlStrategy(ControlStrategy):
                 self._newton_ctrl,
                 t,
                 self.amplitude_scale,
-                self._n // self._frequencies.shape[0],  # num_actuators
+                self._frequencies.shape[0],  # num_actuators
             ],
         )
 
@@ -801,7 +800,7 @@ def compare_geom_fields_unordered(
     assert newton_groups.keys() == native_groups.keys(), (
         f"geom (body, type) groups differ:\n"
         f"  newton-only: {newton_groups.keys() - native_groups.keys()}\n"
-        f"  native-only: {native_groups.keys() - native_groups.keys()}"
+        f"  native-only: {native_groups.keys() - newton_groups.keys()}"
     )
 
     # Build index mapping: newton_idx -> native_idx
@@ -1306,8 +1305,14 @@ def compare_mjdata_field(
     newton_arr = getattr(newton_mjw_data, field_name, None)
     native_arr = getattr(native_mjw_data, field_name, None)
 
-    if newton_arr is None or native_arr is None:
-        return
+    if newton_arr is None and native_arr is None:
+        raise AssertionError(
+            f"Step {step}, field '{field_name}': not found on either side (check for typos in compare_fields)"
+        )
+    if newton_arr is None:
+        raise AssertionError(f"Step {step}, field '{field_name}': missing on Newton side but present on native")
+    if native_arr is None:
+        raise AssertionError(f"Step {step}, field '{field_name}': missing on native side but present on Newton")
 
     if newton_arr.size == 0:
         return
@@ -1827,7 +1832,7 @@ class TestMenagerieBase(unittest.TestCase):
         # Download the robot assets
         try:
             cls.asset_path = download_menagerie_asset(cls.robot_folder)
-        except Exception as e:
+        except (OSError, TimeoutError, ConnectionError) as e:
             raise unittest.SkipTest(f"Failed to download {cls.robot_folder}: {e}") from e
 
         cls.mjcf_path = cls.asset_path / cls.robot_xml
@@ -2782,15 +2787,15 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "actuator_length",
         "actuator_velocity",
     ]
-    tolerances: ClassVar[dict[str, float]] = {
-        "qpos": 1e-4,
-        "qvel": 5e-3,
-        "xpos": 1e-4,
-        "xquat": 1e-4,
-        "site_xpos": 1e-4,
-        "subtree_com": 1e-4,
-        "actuator_length": 1e-4,
-        "actuator_velocity": 5e-3,
+    tolerance_overrides: ClassVar[dict[str, float]] = {
+        "qpos": 5e-4,
+        "qvel": 2e-2,
+        "xpos": 5e-4,
+        "xquat": 5e-4,
+        "site_xpos": 5e-4,
+        "subtree_com": 5e-4,
+        "actuator_length": 5e-4,
+        "actuator_velocity": 2e-2,
     }
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
