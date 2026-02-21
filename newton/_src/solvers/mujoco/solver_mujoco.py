@@ -850,7 +850,8 @@ class SolverMuJoCo(SolverBase):
 
         # region pair attributes
         # --- Pair attributes (from MJCF <pair> tag) ---
-        # Explicit contact pairs with custom properties. Only pairs from the template world are used.
+        # Explicit contact pairs with custom properties. Pairs from the template world and
+        # global pairs (world < 0) are used.
         # These are parsed automatically from MJCF <contact><pair> elements.
         # All pair attributes share the "mujoco:pair" custom frequency.
         builder.add_custom_attribute(
@@ -1830,8 +1831,9 @@ class SolverMuJoCo(SolverBase):
         """
         Initialize MuJoCo contact pairs from custom attributes.
 
-        Only pairs belonging to the template world are added to the MuJoCo spec.
-        MuJoCo will replicate these pairs across all worlds automatically.
+        Pairs belonging to the template world and global pairs (world < 0) are
+        added to the MuJoCo spec. MuJoCo will replicate these pairs across all
+        worlds automatically.
 
         Args:
             model: The Newton model.
@@ -1864,8 +1866,9 @@ class SolverMuJoCo(SolverBase):
         pair_friction = get_numpy("pair_friction")
 
         for i in range(pair_count):
-            # Only include pairs from the template world
-            if int(pair_world[i]) != template_world:
+            # Only include pairs from the template world or global pairs (world < 0)
+            pw = int(pair_world[i])
+            if pw != template_world and pw >= 0:
                 continue
 
             # Map Newton shape indices to MuJoCo geom names
@@ -4897,7 +4900,6 @@ class SolverMuJoCo(SolverBase):
                 self.model.body_com,
                 self.model.body_mass,
                 gravcomp,
-                self.model.up_axis,
             ],
             outputs=[
                 self.mjw_model.body_ipos,

@@ -35,6 +35,12 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
+def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
+    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
+
+    return download_git_folder(git_url, folder_path, force_refresh=force_refresh)
+
+
 def test_body_state(
     model: newton.Model,
     state: newton.State,

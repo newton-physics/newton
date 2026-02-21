@@ -69,19 +69,19 @@ class SensorTiledCameraBenchmark:
         self.color_image = self.tiled_camera_sensor.create_color_image_output(resolution, resolution)
         self.depth_image = self.tiled_camera_sensor.create_depth_image_output(resolution, resolution)
 
-        self.tiled_camera_sensor.update_from_state(self.state)
+        self.tiled_camera_sensor.sync_transforms(self.state)
 
         with wp.ScopedTimer("Refit BVH", synchronize=True, print=False) as timer:
             self.tiled_camera_sensor.render_context.refit_bvh()
         self.timings["refit"] = timer.elapsed
 
         for _ in range(iterations):
-            self.tiled_camera_sensor.render(
+            self.tiled_camera_sensor.update(
                 None,
                 self.camera_transforms,
                 self.camera_rays,
-                self.color_image,
-                self.depth_image,
+                color_image=self.color_image,
+                depth_image=self.depth_image,
                 refit_bvh=False,
             )
 
@@ -90,12 +90,12 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_context.options.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         with wp.ScopedTimer("Rendering", synchronize=True, print=True) as timer:
             for _ in range(iterations):
-                self.tiled_camera_sensor.render(
+                self.tiled_camera_sensor.update(
                     None,
                     self.camera_transforms,
                     self.camera_rays,
-                    self.color_image,
-                    self.depth_image,
+                    color_image=self.color_image,
+                    depth_image=self.depth_image,
                     refit_bvh=False,
                     clear_data=None,
                 )
@@ -108,12 +108,12 @@ class SensorTiledCameraBenchmark:
         self.tiled_camera_sensor.render_context.options.tile_height = 8
         with wp.ScopedTimer("Tiled Rendering", synchronize=True, print=False) as timer:
             for _ in range(iterations):
-                self.tiled_camera_sensor.render(
+                self.tiled_camera_sensor.update(
                     None,
                     self.camera_transforms,
                     self.camera_rays,
-                    self.color_image,
-                    self.depth_image,
+                    color_image=self.color_image,
+                    depth_image=self.depth_image,
                     refit_bvh=False,
                     clear_data=None,
                 )
