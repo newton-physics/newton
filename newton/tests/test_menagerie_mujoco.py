@@ -2776,24 +2776,28 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
     parse_visuals = True
-    # Compare only position-level fields — velocities and forces diverge due to
+    # Positions and velocities — forces/accelerations diverge too much from
     # irreducible float32 solver noise (atomic_add in constraint solver and
-    # Euler damping), but positions stay tightly correlated (~5e-5 over 100 steps).
+    # Euler damping). Positions stay within ~6e-5, velocities within ~5e-3.
     compare_fields: ClassVar[list[str]] = [
+        "qpos",
+        "qvel",
         "xpos",
         "xquat",
-        "xmat",
         "site_xpos",
-        "site_xmat",
         "subtree_com",
+        "actuator_length",
+        "actuator_velocity",
     ]
     tolerances: ClassVar[dict[str, float]] = {
-        "xpos": 5e-4,
-        "xquat": 5e-4,
-        "xmat": 5e-4,
-        "site_xpos": 5e-4,
-        "site_xmat": 5e-4,
-        "subtree_com": 5e-4,
+        "qpos": 1e-4,
+        "qvel": 5e-3,
+        "xpos": 1e-4,
+        "xquat": 1e-4,
+        "site_xpos": 1e-4,
+        "subtree_com": 1e-4,
+        "actuator_length": 1e-4,
+        "actuator_velocity": 5e-3,
     }
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
