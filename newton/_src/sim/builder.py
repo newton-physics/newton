@@ -2464,7 +2464,7 @@ class ModelBuilder:
                     self.shape_transform.append(builder.shape_transform[s])
 
         for b, shapes in builder.body_shapes.items():
-            remapped_shapes = remap_indices(shapes, start_shape_idx).tolist()
+            remapped_shapes = [s + start_shape_idx for s in shapes]
             if b == -1:
                 self.body_shapes[-1].extend(remapped_shapes)
             else:
@@ -2735,9 +2735,6 @@ class ModelBuilder:
             except TypeError:
                 return False
 
-        def is_scalar_int_value(value: Any) -> bool:
-            return isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))
-
         def remap_scalar_int_values(values: Iterable[Any], offset: int) -> list[int]:
             remapped = IntIndexList()
             remapped.extend_with_offset_nonnegative(values, offset)
@@ -2746,14 +2743,20 @@ class ModelBuilder:
         def remap_scalar_int_dict(
             values: dict[int, Any], index_offset: int, value_offset: int, replace_with_world: bool
         ) -> dict[int, int]:
-            remapped_indices = remap_indices(values.keys(), index_offset)
+            if not values:
+                return {}
+            raw_keys = list(values.keys())
+            if index_offset != 0:
+                remapped_keys = (np.array(raw_keys, dtype=np.intc) + index_offset).tolist()
+            else:
+                remapped_keys = raw_keys
             if replace_with_world:
                 remapped_values = [self.current_world] * len(values)
             elif value_offset == 0:
                 remapped_values = [int(v) for v in values.values()]
             else:
                 remapped_values = remap_scalar_int_values(values.values(), value_offset)
-            return dict(zip(remapped_indices, remapped_values, strict=True))
+            return dict(zip(remapped_keys, remapped_values, strict=True))
 
         for full_key, attr in builder.custom_attributes.items():
             # Fast path: skip attributes with no values (avoids computing offsets/closures)
@@ -2807,11 +2810,7 @@ class ModelBuilder:
             if merged is None:
                 if isinstance(freq_key, str):
                     # String frequency: copy list as-is (no offset for sequential data)
-                    if (
-                        scalar_int_fast_path
-                        and isinstance(attr.values, list)
-                        and all(is_scalar_int_value(value) for value in attr.values)
-                    ):
+                    if scalar_int_fast_path and isinstance(attr.values, list):
                         if use_current_world:
                             mapped_values = [self.current_world] * len(attr.values)
                         elif value_offset == 0:
@@ -2823,7 +2822,7 @@ class ModelBuilder:
                 else:
                     # Enum frequency: remap dict indices with offset
                     enum_values = attr.values if isinstance(attr.values, dict) else {}
-                    if scalar_int_fast_path and all(is_scalar_int_value(value) for value in enum_values.values()):
+                    if scalar_int_fast_path:
                         mapped_values = remap_scalar_int_dict(
                             enum_values, index_offset, value_offset, use_current_world
                         )
@@ -2859,11 +2858,7 @@ class ModelBuilder:
                 if not isinstance(merged.values, list):
                     merged.values = []
                 # String frequency: extend list with transformed values
-                if (
-                    scalar_int_fast_path
-                    and isinstance(attr.values, list)
-                    and all(is_scalar_int_value(value) for value in attr.values)
-                ):
+                if scalar_int_fast_path and isinstance(attr.values, list):
                     if use_current_world:
                         new_values = [self.current_world] * len(attr.values)
                     elif value_offset == 0:
@@ -2878,7 +2873,7 @@ class ModelBuilder:
                     merged.values = {}
                 enum_values = attr.values if isinstance(attr.values, dict) else {}
                 # Enum frequency: update dict with remapped indices
-                if scalar_int_fast_path and all(is_scalar_int_value(value) for value in enum_values.values()):
+                if scalar_int_fast_path:
                     new_indices = remap_scalar_int_dict(enum_values, index_offset, value_offset, use_current_world)
                 else:
                     remapped_indices = remap_indices(enum_values.keys(), index_offset)
@@ -4452,7 +4447,7 @@ class ModelBuilder:
                     break
             self.articulation_start[i] = joint_remap.get(start_i, start_i)
         # remove empty articulation starts, i.e. where the start and end are the same
-        self.articulation_start = IntIndexList(list(set(self.articulation_start)))
+        self.articulation_start = IntIndexList(list(dict.fromkeys(self.articulation_start)))
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []

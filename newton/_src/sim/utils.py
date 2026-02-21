@@ -18,14 +18,19 @@
 from __future__ import annotations
 
 from array import array
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableSequence
 from typing import SupportsIndex, overload
 
 import numpy as np
 
 
-class IntIndexList(list[int]):
-    """Compact list-like storage for 1D integer indices."""
+class IntIndexList(MutableSequence):
+    """Compact array-backed storage for 1D integer indices.
+
+    Stores indices in a typed ``array.array("i")`` for lower per-element overhead
+    than a plain Python ``list``.  Hot paths for offset-extension are accelerated
+    via NumPy in-place addition on the underlying buffer.
+    """
 
     __slots__ = ("_data",)
     __hash__ = None
@@ -70,6 +75,12 @@ class IntIndexList(list[int]):
         if isinstance(value, Iterable):
             raise TypeError("int assignment expected for scalar index")
         self._data[idx] = int(value)
+
+    def __delitem__(self, idx: SupportsIndex | slice) -> None:
+        raise NotImplementedError("IntIndexList does not support item deletion")
+
+    def insert(self, idx: SupportsIndex, value: int) -> None:
+        raise NotImplementedError("IntIndexList does not support insert; use append() or extend()")
 
     def __contains__(self, value: object) -> bool:
         if isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_)):
@@ -185,8 +196,12 @@ class IntIndexList(list[int]):
             append(value_int + offset if value_int >= 0 else value_int)
 
 
-class IntIndexList2D(list[tuple[int, ...]]):
-    """Compact list-like storage for fixed-width integer tuples."""
+class IntIndexList2D(MutableSequence):
+    """Compact array-backed storage for fixed-width integer tuples.
+
+    Rows are stored flat in a single typed ``array.array("i")`` with all elements
+    of each row contiguous.  Offset-extension is accelerated via NumPy.
+    """
 
     __slots__ = ("_data", "_width")
     __hash__ = None
@@ -238,7 +253,19 @@ class IntIndexList2D(list[tuple[int, ...]]):
     def __setitem__(self, idx: SupportsIndex | slice, value: Iterable[int] | Iterable[Iterable[int]]) -> None:
         if isinstance(idx, slice):
             replacement = IntIndexList2D(value, width=self._width)
-            self._data[idx] = replacement._data
+            n = len(self)
+            start, stop, step = idx.indices(n)
+            if step == 1:
+                # Contiguous row range: map directly to the flat buffer.
+                self._data[start * self._width : stop * self._width] = replacement._data
+            else:
+                row_indices = range(start, stop, step)
+                if len(row_indices) != len(replacement):
+                    raise ValueError(f"cannot assign {len(replacement)} row(s) to a slice of length {len(row_indices)}")
+                w = self._width
+                for i, row_idx in enumerate(row_indices):
+                    flat = row_idx * w
+                    self._data[flat : flat + w] = replacement._data[i * w : (i + 1) * w]
             return
 
         idx_int = int(idx)
@@ -253,6 +280,12 @@ class IntIndexList2D(list[tuple[int, ...]]):
             raise ValueError(f"row must have width {self._width}, got {len(row)}")
         base_idx = idx_int * self._width
         self._data[base_idx : base_idx + self._width] = array("i", row)
+
+    def __delitem__(self, idx: SupportsIndex | slice) -> None:
+        raise NotImplementedError("IntIndexList2D does not support item deletion")
+
+    def insert(self, idx: SupportsIndex, value: Iterable[int]) -> None:
+        raise NotImplementedError("IntIndexList2D does not support insert; use append() or extend()")
 
     def __contains__(self, row: object) -> bool:
         if not isinstance(row, tuple) or len(row) != self._width:
