@@ -811,7 +811,7 @@
 <h1>newton.sensors.SensorTiledCamera<a class="headerlink" href="#newton-sensors-sensortiledcamera" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorTiledCamera</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_tiled_camera.py#L94"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorTiledCamera" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.sensors.</span></span><span class="sig-name descname"><span class="pre">SensorTiledCamera</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sensors/sensor_tiled_camera.py#L94"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.sensors.SensorTiledCamera" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>A Warp-based tiled camera sensor for raytraced rendering across multiple worlds.</p>
 <p>Renders color and depth images for multiple cameras and worlds, organizing the
@@ -967,7 +967,7 @@ output as tiles in a grid layout.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.__init__">
-<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.__init__" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.__init__" title="Link to this definition">#</a></dt>
 <dd><dl class="field-list simple">
 </dl>
 </dd></dl>
@@ -1201,8 +1201,19 @@ shows one camera’s view of one world.</p>
 </dd></dl>
 
 <dl class="py method">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.render">
-<span class="sig-name descname"><span class="pre">render</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_transforms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_rays</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_index_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normal_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">albedo_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refit_bvh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">DEFAULT_CLEAR_DATA</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.render" title="Link to this definition">#</a></dt>
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.sync_transforms">
+<span class="sig-name descname"><span class="pre">sync_transforms</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.sync_transforms" title="Link to this definition">#</a></dt>
+<dd><p>Synchronize transforms from the current simulation state.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The current simulation state containing body transforms.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.update">
+<span class="sig-name descname"><span class="pre">update</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_transforms</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_rays</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">color_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">depth_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_index_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normal_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">albedo_image</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">refit_bvh</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">DEFAULT_CLEAR_DATA</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.update" title="Link to this definition">#</a></dt>
 <dd><p>Render output images for all worlds and cameras.
 The shape of the output images is (world_count, camera_count, height, width) where element
 [world_id, camera_id, y, x] is the output generated by the ray in camera_rays[camera_id, y, x].</p>
@@ -1225,17 +1236,6 @@ If None, no albedo rendering is performed.</p></li>
 <li><p><strong>refit_bvh</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to refit the BVH or not.</p></li>
 <li><p><strong>clear_data</strong> (<em>ClearData</em><em> | </em><em>None</em>) – The data to clear the image buffers with (or skip if None).</p></li>
 </ul>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.update_from_state">
-<span class="sig-name descname"><span class="pre">update_from_state</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.update_from_state" title="Link to this definition">#</a></dt>
-<dd><p>Update data from Newton State.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The current simulation state containing body transforms.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -1315,8 +1315,8 @@ If None, no albedo rendering is performed.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_color_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.flatten_color_image_to_rgba()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_depth_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.flatten_depth_image_to_rgba()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.flatten_normal_image_to_rgba"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.flatten_normal_image_to_rgba()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.render"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.render()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.update_from_state"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.update_from_state()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.sync_transforms"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.sync_transforms()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.update"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.update()</span></code></a></li>
 </ul>
 </li>
 </ul>

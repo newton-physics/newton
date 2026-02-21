@@ -814,6 +814,29 @@
 </ol>
 <p>Sensors are designed to be efficient and GPU-friendly, computing results in parallel where possible.</p>
 </section>
+<section id="label-matching">
+<span id="id1"></span><h2>Label Matching<a class="headerlink" href="#label-matching" title="Link to this heading">#</a></h2>
+<p>Several Newton APIs accept <strong>label patterns</strong> to select bodies, shapes, joints,
+etc. by name. Parameters that support label matching accept one of the following:</p>
+<ul class="simple">
+<li><p>A <strong>list of integer indices</strong> — selects directly by index.</p></li>
+<li><p>A <strong>single string pattern</strong> — selects all entries whose label matches the
+pattern via <a class="reference external" href="https://docs.python.org/3/library/fnmatch.html#fnmatch.fnmatch" title="(in Python v3.14)"><code class="xref py py-func docutils literal notranslate"><span class="pre">fnmatch.fnmatch()</span></code></a> (supports <code class="docutils literal notranslate"><span class="pre">*</span></code> and <code class="docutils literal notranslate"><span class="pre">?</span></code> wildcards).</p></li>
+<li><p>A <strong>list of string patterns</strong> — selects all entries whose label matches at
+least one of the patterns.</p></li>
+</ul>
+<p>Examples:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># single pattern: all shapes whose label starts with &quot;foot_&quot;</span>
+<span class="n">SensorIMU</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sites</span><span class="o">=</span><span class="s2">&quot;foot_*&quot;</span><span class="p">)</span>
+
+<span class="c1"># list of patterns: union of two groups</span>
+<span class="n">SensorContact</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">sensing_obj_shapes</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;*Plate*&quot;</span><span class="p">,</span> <span class="s2">&quot;*Flap*&quot;</span><span class="p">])</span>
+
+<span class="c1"># list of indices: explicit selection</span>
+<span class="n">SensorFrameTransform</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">shapes</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">7</span><span class="p">],</span> <span class="n">reference_sites</span><span class="o">=</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+</pre></div>
+</div>
+</section>
 <section id="available-sensors">
 <h2>Available Sensors<a class="headerlink" href="#available-sensors" title="Link to this heading">#</a></h2>
 <p>Newton currently provides five sensor types:</p>
@@ -872,7 +895,7 @@
 
 <span class="c1"># In simulation loop (after eval_fk)</span>
 <span class="n">newton</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
-<span class="n">sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+<span class="n">sensor</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
 <span class="n">transforms</span> <span class="o">=</span> <span class="n">sensor</span><span class="o">.</span><span class="n">transforms</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># Array of relative transforms</span>
 </pre></div>
 </div>
@@ -924,7 +947,7 @@
 <span class="p">)</span>
 
 <span class="n">newton</span><span class="o">.</span><span class="n">eval_fk</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_q</span><span class="p">,</span> <span class="n">state</span><span class="o">.</span><span class="n">joint_qd</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
-<span class="n">sensor2</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+<span class="n">sensor2</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
 <span class="n">transforms</span> <span class="o">=</span> <span class="n">sensor2</span><span class="o">.</span><span class="n">transforms</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>  <span class="c1"># Shape: (num_objects, 7)</span>
 
 <span class="c1"># Extract position and rotation for first object</span>
@@ -955,14 +978,14 @@
 </section>
 </section>
 <section id="sensorimu">
-<span id="id1"></span><h2>SensorIMU<a class="headerlink" href="#sensorimu" title="Link to this heading">#</a></h2>
+<span id="id2"></span><h2>SensorIMU<a class="headerlink" href="#sensorimu" title="Link to this heading">#</a></h2>
 <p><a class="reference internal" href="../api/_generated/newton.sensors.SensorIMU.html#newton.sensors.SensorIMU" title="newton.sensors.SensorIMU"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorIMU</span></code></a> measures inertial quantities at one or more sites; each site defines the IMU frame. Outputs are stored in two arrays:</p>
 <ul class="simple">
 <li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorIMU.html#newton.sensors.SensorIMU.accelerometer" title="newton.sensors.SensorIMU.accelerometer"><code class="xref py py-attr docutils literal notranslate"><span class="pre">accelerometer</span></code></a>: linear acceleration (specific force)</p></li>
 <li><p><a class="reference internal" href="../api/_generated/newton.sensors.SensorIMU.html#newton.sensors.SensorIMU.gyroscope" title="newton.sensors.SensorIMU.gyroscope"><code class="xref py py-attr docutils literal notranslate"><span class="pre">gyroscope</span></code></a>: angular velocity</p></li>
 </ul>
-<section id="id2">
-<h3>Basic Usage<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
+<section id="id3">
+<h3>Basic Usage<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">SensorIMU</span></code> takes a list of site indices and computes IMU readings at each site. It requires rigid-body accelerations via the <a class="reference internal" href="extended_attributes.html"><span class="doc">extended attribute</span></a> <a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_qdd" title="newton.State.body_qdd"><code class="xref py py-attr docutils literal notranslate"><span class="pre">State.body_qdd</span></code></a>.</p>
 <p>By default, the sensor requests <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> from the model during construction, so that subsequent calls to <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.state" title="newton.Model.state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.state()</span></code></a> allocate it.
 If you need to allocate the State before constructing the sensor, you must request <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> on the model yourself before calling <a class="reference internal" href="../api/_generated/newton.Model.html#newton.Model.state" title="newton.Model.state"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Model.state()</span></code></a>.</p>
@@ -1030,6 +1053,7 @@ If you need to allocate the State before constructing the sensor, you must reque
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#overview">Overview</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#label-matching">Label Matching</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#available-sensors">Available Sensors</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sensorframetransform">SensorFrameTransform</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-usage">Basic Usage</a></li>
@@ -1040,7 +1064,7 @@ If you need to allocate the State before constructing the sensor, you must reque
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sensorimu">SensorIMU</a><ul class="visible nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Basic Usage</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">Basic Usage</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#state-solver-requirements">State / Solver Requirements</a></li>
 </ul>
 </li>

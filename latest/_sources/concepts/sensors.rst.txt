@@ -14,6 +14,31 @@ Newton sensors follow a consistent pattern:
 
 Sensors are designed to be efficient and GPU-friendly, computing results in parallel where possible.
 
+.. _label-matching:
+
+Label Matching
+--------------
+
+Several Newton APIs accept **label patterns** to select bodies, shapes, joints,
+etc. by name. Parameters that support label matching accept one of the following:
+
+- A **list of integer indices** — selects directly by index.
+- A **single string pattern** — selects all entries whose label matches the
+  pattern via :func:`fnmatch.fnmatch` (supports ``*`` and ``?`` wildcards).
+- A **list of string patterns** — selects all entries whose label matches at
+  least one of the patterns.
+
+Examples::
+
+   # single pattern: all shapes whose label starts with "foot_"
+   SensorIMU(model, sites="foot_*")
+
+   # list of patterns: union of two groups
+   SensorContact(model, sensing_obj_shapes=["*Plate*", "*Flap*"])
+
+   # list of indices: explicit selection
+   SensorFrameTransform(model, shapes=[0, 3, 7], reference_sites=[1])
+
 Available Sensors
 -----------------
 
@@ -77,7 +102,7 @@ The sensor takes shape indices (which can include sites or regular shapes) and c
    
    # In simulation loop (after eval_fk)
    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-   sensor.update(model, state)
+   sensor.update(state)
    transforms = sensor.transforms.numpy()  # Array of relative transforms
 
 Transform Computation
@@ -134,7 +159,7 @@ The sensor supports measuring multiple objects, optionally with different refere
    )
    
    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
-   sensor2.update(model, state)
+   sensor2.update(state)
    transforms = sensor2.transforms.numpy()  # Shape: (num_objects, 7)
    
    # Extract position and rotation for first object
