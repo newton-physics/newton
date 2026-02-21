@@ -529,7 +529,22 @@ def compute_shape_inertia(
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
             hollow = compute_cone_inertia(density, scale[0] - thickness, scale[1] - thickness)
-            return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
+            m_shell = solid[0] - hollow[0]
+            # Cones have non-zero COM so outer and inner cones have different COMs;
+            # compute the shell COM as the weighted difference, then shift both
+            # inertia tensors to the shell COM before subtracting (parallel-axis theorem).
+            com_s = np.array(solid[1])
+            com_i = np.array(hollow[1])
+            com_shell = (solid[0] * com_s - hollow[0] * com_i) / m_shell
+
+            def _shift_inertia(mass, I_mat, com_from, com_to):
+                d = com_to - np.array(com_from)
+                return np.array(I_mat).reshape(3, 3) + mass * (np.dot(d, d) * np.eye(3) - np.outer(d, d))
+
+            I_shell = _shift_inertia(solid[0], solid[2], com_s, com_shell) - _shift_inertia(
+                hollow[0], hollow[2], com_i, com_shell
+            )
+            return m_shell, wp.vec3(*com_shell), wp.mat33(*I_shell.flatten())
     elif type == GeoType.ELLIPSOID:
         # scale stores semi-axes (rx, ry, rz)
         solid = compute_ellipsoid_inertia(density, scale[0], scale[1], scale[2])

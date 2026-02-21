@@ -24,8 +24,10 @@ from newton._src.geometry.inertia import (
     compute_box_inertia,
     compute_cone_inertia,
     compute_mesh_inertia,
+    compute_shape_inertia,
     compute_sphere_inertia,
 )
+from newton._src.geometry.types import GeoType
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -335,6 +337,58 @@ class TestInertia(unittest.TestCase):
         # Check volume
         vol_cone = np.pi * radius**2 * (2 * half_height) / 3
         self.assertAlmostEqual(vol_mesh, vol_cone, delta=vol_cone * 0.001)
+
+    def test_hollow_cone_inertia(self):
+        """Test hollow cone inertia via compute_shape_inertia against mesh subtraction.
+
+        The hollow cone has a non-zero COM, so outer and inner cones have
+        different COMs and the inertia tensors must be shifted (parallel-axis
+        theorem) before subtraction.
+        """
+
+        def create_cone_mesh(radius, half_height, num_segments=500):
+            vertices = [[0, 0, half_height], [0, 0, -half_height]]
+            for i in range(num_segments):
+                angle = 2 * np.pi * i / num_segments
+                vertices.append([radius * np.cos(angle), radius * np.sin(angle), -half_height])
+            indices = []
+            for i in range(num_segments):
+                ni = (i + 1) % num_segments
+                indices.append([0, i + 2, ni + 2])
+                indices.append([1, ni + 2, i + 2])
+            return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.int32)
+
+        density = 1000.0
+        outer_radius = 1.0
+        outer_half_height = 2.0
+        thickness = 0.1
+
+        # Analytical hollow cone via compute_shape_inertia
+        scale = wp.vec3(outer_radius, outer_half_height, 0.0)
+        m_an, com_an, I_an = compute_shape_inertia(
+            GeoType.CONE, scale, None, density, is_solid=False, thickness=thickness
+        )
+
+        # Reference: mesh subtraction with proper parallel-axis shifts
+        inner_radius = outer_radius - thickness
+        inner_half_height = outer_half_height - thickness
+        v_out, i_out = create_cone_mesh(outer_radius, outer_half_height)
+        v_in, i_in = create_cone_mesh(inner_radius, inner_half_height)
+        m_out, com_out, I_out, _ = compute_mesh_inertia(density, v_out, i_out)
+        m_in, com_in, I_in, _ = compute_mesh_inertia(density, v_in, i_in)
+        m_ref = m_out - m_in
+        com_ref = (m_out * np.array(com_out) - m_in * np.array(com_in)) / m_ref
+
+        def _shift(mass, I_mat, com_f, com_t):
+            d = np.array(com_t) - np.array(com_f)
+            return np.array(I_mat).reshape(3, 3) + mass * (np.dot(d, d) * np.eye(3) - np.outer(d, d))
+
+        I_ref = _shift(m_out, I_out, com_out, com_ref) - _shift(m_in, I_in, com_in, com_ref)
+
+        tol = 0.01  # 1% relative tolerance
+        self.assertAlmostEqual(m_an, m_ref, delta=tol * abs(m_ref))
+        assert_np_equal(np.array(com_an), com_ref, tol=1e-3)
+        assert_np_equal(np.array(I_an).reshape(3, 3), I_ref, tol=tol * abs(I_ref[0, 0]))
 
 
 if __name__ == "__main__":
