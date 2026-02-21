@@ -2069,6 +2069,11 @@ class TestMenagerieBase(unittest.TestCase):
         # Compare joint ranges only for limited joints (unlimited joints may differ in representation)
         compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
 
+        # Disable sensor_rne_postconstraint on native — Newton doesn't support
+        # sensors, so rne_postconstraint would compute cacc/cfrc_int on native
+        # but not on Newton, causing spurious diffs.
+        native_mjw_model.sensor_rne_postconstraint = False
+
         # Optional: backfill computed fields from native to Newton to eliminate
         # numerical differences from model compilation (enables tighter tolerances for dynamics)
         # Must happen AFTER all model comparisons
