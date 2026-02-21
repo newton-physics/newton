@@ -3571,6 +3571,7 @@ class SolverMuJoCo(SolverBase):
         geom_type_mapping = {
             GeoType.SPHERE: mujoco.mjtGeom.mjGEOM_SPHERE,
             GeoType.PLANE: mujoco.mjtGeom.mjGEOM_PLANE,
+            GeoType.HFIELD: mujoco.mjtGeom.mjGEOM_HFIELD,
             GeoType.CAPSULE: mujoco.mjtGeom.mjGEOM_CAPSULE,
             GeoType.CYLINDER: mujoco.mjtGeom.mjGEOM_CYLINDER,
             GeoType.BOX: mujoco.mjtGeom.mjGEOM_BOX,
