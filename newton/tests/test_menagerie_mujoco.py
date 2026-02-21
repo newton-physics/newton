@@ -2851,6 +2851,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
 
     robot_folder = "apptronik_apollo"
     backfill_model = True
+    use_cuda_graph = True
     num_steps = 100
     njmax = 128  # initial 63 constraints may grow during stepping
     discard_visual = False
