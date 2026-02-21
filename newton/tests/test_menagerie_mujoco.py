@@ -152,7 +152,6 @@ def create_newton_model_from_mjcf(
     robot_builder.add_mjcf(
         str(mjcf_path),
         parse_visuals=parse_visuals,
-        include_mesh_materials=not parse_visuals,  # skip materials for mesh deduplication
         ctrl_direct=True,
     )
 
@@ -524,12 +523,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # Timestep: not registered as custom attribute (conflicts with step() parameter).
     # Extracted from native model at runtime instead.
     "opt.timestep",
-    # Mesh arrays: Newton orders meshes by geom (not MJCF asset order) and trimesh
-    # deduplicates vertices on load. Total face count (nmeshface) still matches.
-    "mesh_",
-    "nmeshvert",
-    "nmeshnormal",
-    "nmeshpoly",
     # Geom ordering: Newton's solver may order geoms differently (e.g. colliders before
     # visuals). Content is verified by compare_geom_fields_unordered() instead.
     "body_geomadr",
@@ -2803,6 +2796,15 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
         "dof_invweight0",
         "stat",  # meaninertia computed from invweight0
+        # Apollo has 44 mesh assets but many geoms share the same mesh. Without
+        # include_mesh_materials dedup, Newton creates 60 meshes (one per geom).
+        # Also, trimesh deduplicates vertices on load, changing per-mesh counts.
+        "nmesh",
+        "nmeshvert",
+        "nmeshnormal",
+        "nmeshpoly",
+        "nmeshface",
+        "mesh_",
     }
 
 
