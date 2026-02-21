@@ -127,6 +127,12 @@ class _IntIndexList(MutableSequence):
     def tolist(self) -> list[int]:
         return self._data.tolist()
 
+    def __array__(self, dtype=None, copy=None):
+        arr = np.frombuffer(self._data, dtype=np.intc)
+        if dtype is None or np.dtype(dtype) == np.dtype(np.intc):
+            return arr.copy()
+        return arr.astype(dtype)
+
     def extend_with_offset(self, values: Iterable[int], offset: int) -> None:
         if isinstance(values, _IntIndexList):
             if not values._data:

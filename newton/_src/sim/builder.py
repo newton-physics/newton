@@ -8736,9 +8736,13 @@ class ModelBuilder:
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
-            m.shape_collision_filter_pairs = {
-                (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
-            }
+            if self.shape_collision_filter_pairs:
+                fp = np.frombuffer(self.shape_collision_filter_pairs._data, dtype=np.intc).reshape(-1, 2)
+                sa = np.minimum(fp[:, 0], fp[:, 1])
+                sb = np.maximum(fp[:, 0], fp[:, 1])
+                m.shape_collision_filter_pairs = set(zip(sa.tolist(), sb.tolist(), strict=True))
+            else:
+                m.shape_collision_filter_pairs = set()
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
@@ -9496,41 +9500,97 @@ class ModelBuilder:
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
         filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
-        contact_pairs: list[tuple[int, int]] = []
 
-        # Keep only colliding shapes (those with COLLIDE_SHAPES flag) and sort by world for optimization
-        colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
-        sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_world[i])
+        # Build numpy arrays for vectorized pair generation.
+        shape_flags_arr = np.array(self.shape_flags, dtype=np.int32)
+        shape_world_arr = np.array(self.shape_world, dtype=np.int32)
+        shape_group_arr = np.array(self.shape_collision_group, dtype=np.int32)
 
-        # Iterate over all pairs of colliding shapes
-        for i1 in range(len(sorted_indices)):
-            s1 = sorted_indices[i1]
-            world1 = self.shape_world[s1]
-            collision_group1 = self.shape_collision_group[s1]
+        colliding_mask = (shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0
+        colliding_idx = np.where(colliding_mask)[0].astype(np.int32)
 
-            for i2 in range(i1 + 1, len(sorted_indices)):
-                s2 = sorted_indices[i2]
-                world2 = self.shape_world[s2]
-                collision_group2 = self.shape_collision_group[s2]
+        if len(colliding_idx) == 0:
+            model.shape_contact_pairs = wp.array(np.empty((0, 2), dtype=np.int32), dtype=wp.vec2i, device=model.device)
+            model.shape_contact_pair_count = 0
+            return
 
-                # Early break optimization: if both shapes are in non-global worlds and different worlds,
-                # they can never collide. Since shapes are sorted by world, all remaining shapes will also
-                # be in different worlds, so we can break early.
-                if world1 != -1 and world2 != -1 and world1 != world2:
-                    break
+        worlds = shape_world_arr[colliding_idx]
+        groups = shape_group_arr[colliding_idx]
 
-                # Apply the exact same filtering logic as test_world_and_group_pair kernel
-                if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
+        all_sa: list[np.ndarray] = []
+        all_sb: list[np.ndarray] = []
+
+        global_mask = worlds == -1
+        non_global_local_idx = np.where(~global_mask)[0]
+        global_local_idx = np.where(global_mask)[0]
+
+        # Helper: vectorized test_group_pair for numpy arrays.
+        def _group_valid(ga: np.ndarray, gb: np.ndarray) -> np.ndarray:
+            not_zero = (ga != 0) & (gb != 0)
+            pos_a = (ga > 0) & ((ga == gb) | (gb < 0))
+            neg_a = (ga < 0) & (ga != gb)
+            return not_zero & (pos_a | neg_a)
+
+        # Global shapes pair with all non-global shapes.
+        if len(global_local_idx) > 0 and len(non_global_local_idx) > 0:
+            g_shapes = colliding_idx[global_local_idx]
+            g_groups = groups[global_local_idx]
+            ng_shapes = colliding_idx[non_global_local_idx]
+            ng_groups = groups[non_global_local_idx]
+            # Broadcast (n_global, 1) vs (1, n_non_global) for vectorized pair test.
+            valid = _group_valid(g_groups[:, None], ng_groups[None, :])
+            gi_valid, ngi_valid = np.where(valid)
+            if len(gi_valid) > 0:
+                sa = g_shapes[gi_valid]
+                sb = ng_shapes[ngi_valid]
+                all_sa.append(np.minimum(sa, sb))
+                all_sb.append(np.maximum(sa, sb))
+
+        # Global-global pairs.
+        if len(global_local_idx) >= 2:
+            ii, jj = np.triu_indices(len(global_local_idx), k=1)
+            valid = _group_valid(groups[global_local_idx[ii]], groups[global_local_idx[jj]])
+            if np.any(valid):
+                sa = colliding_idx[global_local_idx[ii[valid]]]
+                sb = colliding_idx[global_local_idx[jj[valid]]]
+                all_sa.append(np.minimum(sa, sb))
+                all_sb.append(np.maximum(sa, sb))
+
+        # Per-world pairs: loop over worlds, cache triu_indices by world size.
+        if len(non_global_local_idx) > 0:
+            non_global_worlds = worlds[non_global_local_idx]
+            _unique_worlds, world_starts = np.unique(non_global_worlds, return_index=True)
+            world_ends = np.append(world_starts[1:], len(non_global_local_idx))
+            triu_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+            for start, end in zip(world_starts, world_ends, strict=True):
+                n_w = int(end - start)
+                if n_w < 2:
                     continue
+                if n_w not in triu_cache:
+                    triu_cache[n_w] = np.triu_indices(n_w, k=1)
+                ii, jj = triu_cache[n_w]
+                w_local = non_global_local_idx[start:end]
+                valid = _group_valid(groups[w_local[ii]], groups[w_local[jj]])
+                sa = colliding_idx[w_local[ii[valid]]]
+                sb = colliding_idx[w_local[jj[valid]]]
+                all_sa.append(np.minimum(sa, sb))
+                all_sb.append(np.maximum(sa, sb))
 
-                if s1 > s2:
-                    shape_a, shape_b = s2, s1
-                else:
-                    shape_a, shape_b = s1, s2
+        if all_sa:
+            combined = np.stack([np.concatenate(all_sa), np.concatenate(all_sb)], axis=1)
+        else:
+            combined = np.empty((0, 2), dtype=np.int32)
 
-                # Skip if explicitly filtered
-                if (shape_a, shape_b) not in filters:
-                    contact_pairs.append((shape_a, shape_b))
+        if filters and len(combined) > 0:
+            # Encode each (a, b) pair as a single int64 key for vectorized membership test.
+            # Both a and b are non-negative shape indices that fit in 32 bits.
+            combined_key = combined[:, 0].astype(np.int64) << 32 | combined[:, 1].astype(np.int64)
+            filter_arr = np.array(list(filters), dtype=np.int64)
+            filter_keys = np.sort(filter_arr[:, 0] << 32 | filter_arr[:, 1])
+            pos = np.searchsorted(filter_keys, combined_key)
+            pos = np.clip(pos, 0, len(filter_keys) - 1)
+            keep = filter_keys[pos] != combined_key
+            combined = combined[keep]
 
-        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
-        model.shape_contact_pair_count = len(contact_pairs)
+        model.shape_contact_pairs = wp.array(combined, dtype=wp.vec2i, device=model.device)
+        model.shape_contact_pair_count = len(combined)
