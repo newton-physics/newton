@@ -712,7 +712,6 @@ def parse_mjcf(
                     override_color=material_color,
                     override_texture=texture,
                 )
-
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
