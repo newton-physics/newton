@@ -2743,8 +2743,12 @@ class ModelBuilder:
 
         # Pre-build or reuse (attr, src_list) pairs from builder — cached so the 68 dict lookups
         # happen only on the first add_builder() call; reused cheaply on calls 2..N in replicate().
+        # Empty attrs are filtered out so the extend loop skips no-op calls (e.g. particle/soft-body
+        # attrs for a rigid-body-only builder).
         if _AB_SRCS_KEY not in builder_dict:
-            builder_dict[_AB_SRCS_KEY] = tuple((attr, builder_dict[attr]) for attr in _ALL_BUILDER_ATTRS)
+            builder_dict[_AB_SRCS_KEY] = tuple(
+                (attr, src) for attr in _ALL_BUILDER_ATTRS if (src := builder_dict[attr])
+            )
 
         # Extend all plain-copy attributes using __dict__ access (faster than getattr for instance attrs).
         if label_prefix is None:
