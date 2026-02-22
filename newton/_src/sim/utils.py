@@ -23,6 +23,10 @@ from typing import SupportsIndex, overload
 
 import numpy as np
 
+# Below this element count, a Python loop is faster than np.frombuffer + vectorised add
+# (numpy has ~2 µs per-call overhead regardless of array size; Python loop breaks even ~n=22).
+_NUMPY_THRESHOLD: int = 16
+
 
 class _IntIndexList(MutableSequence):
     """Compact array-backed storage for 1D integer indices.
@@ -117,6 +121,9 @@ class _IntIndexList(MutableSequence):
         if isinstance(values, _IntIndexList):
             self._data.extend(values._data)
             return
+        if isinstance(values, list):
+            self._data.extend(values)
+            return
         append = self._data.append
         for value in values:
             append(int(value))
@@ -129,9 +136,15 @@ class _IntIndexList(MutableSequence):
 
     def __array__(self, dtype=None, copy=None):
         arr = np.frombuffer(self._data, dtype=np.intc)
-        if dtype is None or np.dtype(dtype) == np.dtype(np.intc):
-            return arr.copy()
-        return arr.astype(dtype)
+        if dtype is not None and np.dtype(dtype) != np.dtype(np.intc):
+            if copy is False:
+                raise ValueError(
+                    f"Cannot produce a non-copy array with dtype {dtype!r} from _IntIndexList (stored as intc)"
+                )
+            return arr.astype(dtype)
+        if copy is False:
+            return arr
+        return arr.copy()
 
     def extend_with_offset(self, values: Iterable[int], offset: int) -> None:
         if isinstance(values, _IntIndexList):
@@ -139,9 +152,16 @@ class _IntIndexList(MutableSequence):
                 return
 
             start = len(self._data)
+            n = len(values._data)
             self._data.extend(values._data)
             if offset != 0:
-                np.frombuffer(self._data, dtype=np.intc)[start:] += int(offset)
+                if n < _NUMPY_THRESHOLD:
+                    off = int(offset)
+                    data = self._data
+                    for i in range(start, start + n):
+                        data[i] += off
+                else:
+                    np.frombuffer(self._data, dtype=np.intc)[start:] += int(offset)
             return
 
         offset = int(offset)
@@ -160,10 +180,19 @@ class _IntIndexList(MutableSequence):
                 return
 
             start = len(self._data)
+            n = len(values._data)
             self._data.extend(values._data)
             if offset != 0:
-                new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
-                new_data[new_data != int(sentinel)] += int(offset)
+                if n < _NUMPY_THRESHOLD:
+                    off = int(offset)
+                    sent = int(sentinel)
+                    data = self._data
+                    for i in range(start, start + n):
+                        if data[i] != sent:
+                            data[i] += off
+                else:
+                    new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
+                    new_data[new_data != int(sentinel)] += int(offset)
             return
 
         offset = int(offset)
@@ -184,10 +213,18 @@ class _IntIndexList(MutableSequence):
                 return
 
             start = len(self._data)
+            n = len(values._data)
             self._data.extend(values._data)
             if offset != 0:
-                new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
-                new_data[new_data >= 0] += int(offset)
+                if n < _NUMPY_THRESHOLD:
+                    off = int(offset)
+                    data = self._data
+                    for i in range(start, start + n):
+                        if data[i] >= 0:
+                            data[i] += off
+                else:
+                    new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
+                    new_data[new_data >= 0] += int(offset)
             return
 
         offset = int(offset)
@@ -359,9 +396,16 @@ class _IntIndexList2D(MutableSequence):
                 return
 
             start = len(self._data)
+            n = len(rows._data)
             self._data.extend(rows._data)
             if offset != 0:
-                np.frombuffer(self._data, dtype=np.intc)[start:] += int(offset)
+                if n < _NUMPY_THRESHOLD:
+                    off = int(offset)
+                    data = self._data
+                    for i in range(start, start + n):
+                        data[i] += off
+                else:
+                    np.frombuffer(self._data, dtype=np.intc)[start:] += int(offset)
             return
 
         offset = int(offset)
@@ -384,10 +428,19 @@ class _IntIndexList2D(MutableSequence):
                 return
 
             start = len(self._data)
+            n = len(rows._data)
             self._data.extend(rows._data)
             if offset != 0:
-                new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
-                new_data[new_data != int(sentinel)] += int(offset)
+                if n < _NUMPY_THRESHOLD:
+                    off = int(offset)
+                    sent = int(sentinel)
+                    data = self._data
+                    for i in range(start, start + n):
+                        if data[i] != sent:
+                            data[i] += off
+                else:
+                    new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
+                    new_data[new_data != int(sentinel)] += int(offset)
             return
 
         offset = int(offset)
@@ -411,10 +464,18 @@ class _IntIndexList2D(MutableSequence):
                 return
 
             start = len(self._data)
+            n = len(rows._data)
             self._data.extend(rows._data)
             if offset != 0:
-                new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
-                new_data[new_data >= 0] += int(offset)
+                if n < _NUMPY_THRESHOLD:
+                    off = int(offset)
+                    data = self._data
+                    for i in range(start, start + n):
+                        if data[i] >= 0:
+                            data[i] += off
+                else:
+                    new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
+                    new_data[new_data >= 0] += int(offset)
             return
 
         offset = int(offset)
@@ -424,7 +485,7 @@ class _IntIndexList2D(MutableSequence):
             return
         w = self._width
         for row in rows:
-            values = tuple((iv := int(v)) + offset if iv >= 0 else iv for v in row)
+            values = tuple(iv + offset if (iv := int(v)) >= 0 else iv for v in row)
             if len(values) != w:
                 raise ValueError(f"row must have width {w}, got {len(values)}")
             self._data.extend(values)

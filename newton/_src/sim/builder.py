@@ -2810,11 +2810,7 @@ class ModelBuilder:
             if merged is None:
                 if isinstance(freq_key, str):
                     # String frequency: copy list as-is (no offset for sequential data)
-                    if (
-                        scalar_int_fast_path
-                        and isinstance(attr.values, list)
-                        and not any(v is None for v in attr.values)
-                    ):
+                    if scalar_int_fast_path and isinstance(attr.values, list) and None not in attr.values:
                         if use_current_world:
                             mapped_values = [self.current_world] * len(attr.values)
                         elif value_offset == 0:
@@ -2826,7 +2822,7 @@ class ModelBuilder:
                 else:
                     # Enum frequency: remap dict indices with offset
                     enum_values = attr.values if isinstance(attr.values, dict) else {}
-                    if scalar_int_fast_path:
+                    if scalar_int_fast_path and None not in enum_values.values():
                         mapped_values = remap_scalar_int_dict(
                             enum_values, index_offset, value_offset, use_current_world
                         )
@@ -2862,7 +2858,7 @@ class ModelBuilder:
                 if not isinstance(merged.values, list):
                     merged.values = []
                 # String frequency: extend list with transformed values
-                if scalar_int_fast_path and isinstance(attr.values, list) and not any(v is None for v in attr.values):
+                if scalar_int_fast_path and isinstance(attr.values, list) and None not in attr.values:
                     if use_current_world:
                         new_values = [self.current_world] * len(attr.values)
                     elif value_offset == 0:
@@ -2877,7 +2873,7 @@ class ModelBuilder:
                     merged.values = {}
                 enum_values = attr.values if isinstance(attr.values, dict) else {}
                 # Enum frequency: update dict with remapped indices
-                if scalar_int_fast_path:
+                if scalar_int_fast_path and None not in enum_values.values():
                     new_indices = remap_scalar_int_dict(enum_values, index_offset, value_offset, use_current_world)
                 else:
                     remapped_indices = remap_indices(enum_values.keys(), index_offset)
