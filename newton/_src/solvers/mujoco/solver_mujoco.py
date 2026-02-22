@@ -4473,12 +4473,7 @@ class SolverMuJoCo(SolverBase):
                     if custom_arr is None:
                         continue
                     compiled = getattr(self.mj_model, field)  # (nu, 10)
-                    nu = compiled.shape[0]
-                    custom_np = custom_arr.numpy()  # (nu * nworld, 10)
-                    nw = custom_np.shape[0] // nu if nu > 0 else 1
-                    for w in range(nw):
-                        custom_np[w * nu : (w + 1) * nu] = compiled
-                    custom_arr.assign(wp.array(custom_np, dtype=custom_arr.dtype))
+                    custom_arr.assign(wp.array(compiled.astype(np.float32), dtype=custom_arr.dtype))
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
