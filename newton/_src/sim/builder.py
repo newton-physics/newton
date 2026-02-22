@@ -2454,18 +2454,19 @@ class ModelBuilder:
 
         start_body_idx = self.body_count
         start_shape_idx = self.shape_count
-        for s, b in enumerate(builder.shape_body):
-            if b > -1:
-                new_b = b + start_body_idx
-                self.shape_body.append(new_b)
-                self.shape_transform.append(builder.shape_transform[s])
-            else:
-                self.shape_body.append(-1)
-                # apply offset transform to root bodies
-                if xform is not None:
-                    self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
-                else:
+        if xform is None:
+            # Fast path: no transform to apply — extend in bulk
+            self.shape_body.extend_with_offset_nonnegative(builder.shape_body, start_body_idx)
+            self.shape_transform.extend(builder.shape_transform)
+        else:
+            for s, b in enumerate(builder.shape_body):
+                if b > -1:
+                    self.shape_body.append(b + start_body_idx)
                     self.shape_transform.append(builder.shape_transform[s])
+                else:
+                    self.shape_body.append(-1)
+                    # apply offset transform to root bodies
+                    self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
 
         for b, shapes in builder.body_shapes.items():
             remapped_shapes = [s + start_shape_idx for s in shapes]
