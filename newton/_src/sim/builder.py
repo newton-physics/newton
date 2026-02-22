@@ -584,8 +584,24 @@ class ModelBuilder:
             For string dtype, returns a Python list[str] instead of a Warp array.
             """
             if self.values is None or len(self.values) == 0:
-                # No values provided, use default for all
-                arr = [self.default] * count
+                # String dtype: return as Python list instead of warp array
+                if self.dtype is str:
+                    return [self.default] * count
+                # Fast path: build a numpy array directly instead of a Python list of
+                # ``count`` Python objects.  For large counts (e.g. 23 040 joints across
+                # 512 worlds) this is ~100x faster than ``[default] * count`` because
+                # warp's array constructor avoids iterating over Python objects.
+                try:
+                    # Scalar warp types (float32, int32, bool, …): dtype_to_numpy succeeds.
+                    import warp._src.types as _wt  # noqa: PLC0415
+
+                    np_dtype = _wt.dtype_to_numpy(self.dtype)
+                    arr_np = np.full(count, self.default, dtype=np_dtype)
+                except Exception:
+                    # Vector/matrix types (vec2f, vec3f, …): tile flat components.
+                    default_np = np.asarray(self.default, dtype=np.float32)
+                    arr_np = np.tile(default_np, count)
+                return wp.array(arr_np, dtype=self.dtype, requires_grad=requires_grad, device=device)
             elif self.is_custom_frequency:
                 # Custom frequency: vals is a list, replace None with defaults and pad/truncate as needed
                 arr = [val if val is not None else self.default for val in self.values]
@@ -8827,8 +8843,12 @@ class ModelBuilder:
                 sa = np.minimum(fp[:, 0], fp[:, 1])
                 sb = np.maximum(fp[:, 0], fp[:, 1])
                 m.shape_collision_filter_pairs = set(zip(sa.tolist(), sb.tolist(), strict=True))
+                # Pre-compute sorted int64 keys so find_shape_contact_pairs() can skip the
+                # expensive np.array(list(filters)) conversion (≈150 ms for 512 worlds).
+                m._shape_collision_filter_keys = np.sort(sa.astype(np.int64) << 32 | sb.astype(np.int64))
             else:
                 m.shape_collision_filter_pairs = set()
+                m._shape_collision_filter_keys = np.empty(0, dtype=np.int64)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
@@ -9691,6 +9711,10 @@ class ModelBuilder:
                 all_sb.append(np.maximum(sa, sb))
 
         # Per-world pairs: loop over worlds, cache triu_indices by world size.
+        # fast_path_already_filtered is set to True when the fast broadcast path applies
+        # collision filters to world-0 pairs before broadcasting, eliminating the need for
+        # the expensive post-hoc filter step on the full (n_worlds * n_pairs) combined array.
+        fast_path_already_filtered = False
         if len(non_global_local_idx) > 0:
             non_global_worlds = worlds[non_global_local_idx]
             _unique_worlds, world_starts = np.unique(non_global_worlds, return_index=True)
@@ -9718,6 +9742,29 @@ class ModelBuilder:
                     sa_0 = colliding_idx[w_local_0[ii_v]]
                     sb_0 = colliding_idx[w_local_0[jj_v]]
                     stride = self._shapes_per_world
+
+                    # Filter-before-broadcast: for uniformly replicated models, every
+                    # collision-filter pair for world i is the world-0 pair offset by
+                    # i*stride.  Filtering world-0 candidates (≤ n_w*(n_w-1)/2 pairs)
+                    # against world-0 filters is O(world-0 pairs) instead of
+                    # O(n_worlds * world-0 pairs), giving a large speedup for large n_worlds.
+                    precomputed_keys = getattr(model, "_shape_collision_filter_keys", None)
+                    if precomputed_keys is not None and len(precomputed_keys) > 0:
+                        # World-0 filter keys: both shapes in [0, stride) → key >> 32 < stride
+                        world_0_keys = precomputed_keys[precomputed_keys < (np.int64(stride) << 32)]
+                        # Verify all filter pairs are within-world replicas of world-0
+                        # (i.e. len(filter_keys) == world_0_count * n_unique).  This check
+                        # is O(1) and guards against models with cross-world filter pairs.
+                        if len(world_0_keys) * n_unique == len(precomputed_keys):
+                            if len(world_0_keys) > 0:
+                                ck0 = sa_0.astype(np.int64) << 32 | sb_0.astype(np.int64)
+                                p0 = np.searchsorted(world_0_keys, ck0)
+                                v0 = p0 < len(world_0_keys)
+                                keep0 = ~v0 | (world_0_keys[np.minimum(p0, len(world_0_keys) - 1)] != ck0)
+                                sa_0 = sa_0[keep0]
+                                sb_0 = sb_0[keep0]
+                            fast_path_already_filtered = True
+
                     # world_offsets shape: (n_unique, 1); sa_0/sb_0 shape: (n_valid,)
                     # Broadcasting produces (n_unique, n_valid) → ravel to 1-D.
                     offsets = np.arange(n_unique, dtype=np.int32)[:, None] * stride
@@ -9740,16 +9787,34 @@ class ModelBuilder:
                     all_sb.append(np.maximum(sa, sb))
 
         if all_sa:
-            combined = np.stack([np.concatenate(all_sa), np.concatenate(all_sb)], axis=1)
+            # Avoid np.stack + np.concatenate overhead: assign directly into a pre-allocated array.
+            if len(all_sa) == 1:
+                sa_all, sb_all = all_sa[0], all_sb[0]
+            else:
+                sa_all = np.concatenate(all_sa)
+                sb_all = np.concatenate(all_sb)
+            combined = np.empty((len(sa_all), 2), dtype=np.int32)
+            combined[:, 0] = sa_all
+            combined[:, 1] = sb_all
         else:
             combined = np.empty((0, 2), dtype=np.int32)
 
-        if filters and len(combined) > 0:
+        # Apply post-hoc filter unless the fast broadcast path already handled it.
+        # fast_path_already_filtered is True when all filter pairs are within-world replicas
+        # (checked above) and no global shapes are present in the collision pairs.
+        need_postfilter = (
+            filters and len(combined) > 0 and not (fast_path_already_filtered and len(global_local_idx) == 0)
+        )
+        if need_postfilter:
             # Encode each (a, b) pair as a single int64 key for vectorized membership test.
             # Both a and b are non-negative shape indices that fit in 32 bits.
             combined_key = combined[:, 0].astype(np.int64) << 32 | combined[:, 1].astype(np.int64)
-            filter_arr = np.array(list(filters), dtype=np.int64)
-            filter_keys = np.sort(filter_arr[:, 0] << 32 | filter_arr[:, 1])
+            # Use pre-computed sorted keys from finalize() if available (avoids the expensive
+            # np.array(list(filters)) call which iterates over a large Python set of tuples).
+            filter_keys = getattr(model, "_shape_collision_filter_keys", None)
+            if filter_keys is None:
+                filter_arr = np.array(list(filters), dtype=np.int64)
+                filter_keys = np.sort(filter_arr[:, 0] << 32 | filter_arr[:, 1])
             pos = np.searchsorted(filter_keys, combined_key)
             pos = np.clip(pos, 0, len(filter_keys) - 1)
             keep = filter_keys[pos] != combined_key
