@@ -2313,6 +2313,7 @@ class SolverMuJoCo(SolverBase):
         actlimited_arr = (
             mujoco_attrs.actuator_actlimited.numpy() if hasattr(mujoco_attrs, "actuator_actlimited") else None
         )
+        dampratio_arr = mujoco_attrs.actuator_dampratio.numpy() if hasattr(mujoco_attrs, "actuator_dampratio") else None
 
         for mujoco_act_idx in range(mujoco_actuator_count):
             # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
@@ -2444,9 +2445,7 @@ class SolverMuJoCo(SolverBase):
             # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
             shortcut = None  # "position" or "velocity" if detected
             shortcut_args: dict[str, float] = {}
-            dampratio = 0.0
-            if hasattr(mujoco_attrs, "actuator_dampratio"):
-                dampratio = float(mujoco_attrs.actuator_dampratio.numpy()[mujoco_act_idx])
+            dampratio = float(dampratio_arr[mujoco_act_idx]) if dampratio_arr is not None else 0.0
             if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
