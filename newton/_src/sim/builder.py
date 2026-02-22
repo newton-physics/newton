@@ -165,6 +165,7 @@ _ALL_BUILDER_ATTRS: tuple[str, ...] = _MORE_BUILDER_ATTRS + _LABEL_ATTRS
 _AB_CACHE_KEY: str = "_ab_has_custom_vals"  # bool: any non-empty custom attr values in builder
 _AB_SRCS_KEY: str = "_ab_attr_srcs"  # tuple of (attr_name, src_list) pairs for _ALL_BUILDER_ATTRS
 _AB_CUSTOM_DECL_KEY: str = "_ab_custom_decl_id"  # id(self) after schema declared into self
+_AB_GRAVITY_VEC_KEY: str = "_ab_gravity_vec"  # pre-computed (gx, gy, gz) gravity tuple for this builder
 
 
 class ModelBuilder:
@@ -2524,8 +2525,11 @@ class ModelBuilder:
 
         # Copy gravity from source builder
         if cw >= 0 and cw < len(self.world_gravity):
-            # We're in a world context, update this world's gravity vector
-            self.world_gravity[cw] = tuple(g * builder.gravity for g in builder.up_axis.to_vector())
+            # We're in a world context, update this world's gravity vector.
+            # Cache the computed tuple on builder so it is only created once per replicate() call.
+            if _AB_GRAVITY_VEC_KEY not in builder_dict:
+                builder_dict[_AB_GRAVITY_VEC_KEY] = tuple(g * builder.gravity for g in builder.up_axis.to_vector())
+            self.world_gravity[cw] = builder_dict[_AB_GRAVITY_VEC_KEY]
         elif cw < 0:
             # No world context (add_builder called directly), copy scalar gravity
             self.gravity = builder.gravity
@@ -2539,6 +2543,10 @@ class ModelBuilder:
         b_shape_count = len(builder_dict["shape_type"])
         b_joint_count = len(builder_dict["joint_type"])
         b_articulation_count = len(builder_dict["articulation_start"])
+        b_spring_count = len(builder_dict["spring_rest_length"])
+        b_edge_count = len(builder_dict["edge_rest_angle"])
+        b_tri_count = len(builder_dict["tri_poses"])
+        b_tet_count = len(builder_dict["tet_poses"])
 
         # Read start indices via __dict__ to bypass property descriptor overhead.
         start_particle_idx = len(self_dict["particle_q"])
@@ -2565,17 +2573,17 @@ class ModelBuilder:
             self.particle_q.extend((np.array(builder.particle_q) + pos_offset).tolist())
             # other particle attributes are added below
 
-        if builder.spring_count:
+        if b_spring_count:
             self.spring_indices.extend((np.array(builder.spring_indices, dtype=np.int32) + start_particle_idx).tolist())
-        if builder.edge_count:
+        if b_edge_count:
             # Update edge indices by adding offset, preserving -1 values
             edge_indices = np.array(builder.edge_indices, dtype=np.int32)
             mask = edge_indices != -1
             edge_indices[mask] += start_particle_idx
             self.edge_indices.extend(edge_indices.tolist())
-        if builder.tri_count:
+        if b_tri_count:
             self.tri_indices.extend((np.array(builder.tri_indices, dtype=np.int32) + start_particle_idx).tolist())
-        if builder.tet_count:
+        if b_tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
 
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
