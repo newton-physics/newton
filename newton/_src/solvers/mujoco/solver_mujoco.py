@@ -1332,6 +1332,18 @@ class SolverMuJoCo(SolverBase):
 
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="actuator_dampratio",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="dampratio",
+            )
+        )
+
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="actuator_world",
                 frequency="mujoco:actuator",
                 assignment=AttributeAssignment.MODEL,
@@ -2427,6 +2439,35 @@ class SolverMuJoCo(SolverBase):
                 biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
                 general_args["biastype"] = biastype
 
+            # Detect position/velocity actuator shortcuts. Use set_to_position/
+            # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
+            # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
+            shortcut = None  # "position" or "velocity" if detected
+            shortcut_args: dict[str, float] = {}
+            dampratio = 0.0
+            if hasattr(mujoco_attrs, "actuator_dampratio"):
+                dampratio = float(mujoco_attrs.actuator_dampratio.numpy()[mujoco_act_idx])
+            if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
+                kp = general_args["gainprm"][0]
+                bp = general_args.get("biasprm", [0, 0, 0])
+                # Position shortcut: biasprm = [0, -kp, -kv]
+                if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
+                    shortcut = "position"
+                    shortcut_args["kp"] = kp
+                    kv = -bp[2] if bp[2] != 0 else 0.0
+                    if kv > 0:
+                        shortcut_args["kv"] = kv
+                    if dampratio > 0:
+                        shortcut_args["dampratio"] = dampratio
+                    for key in ("biasprm", "biastype", "gainprm", "gaintype"):
+                        general_args.pop(key, None)
+                # Velocity shortcut: biasprm = [0, 0, -kv]
+                elif bp[0] == 0 and bp[1] == 0 and bp[2] != 0:
+                    shortcut = "velocity"
+                    shortcut_args["kv"] = general_args["gainprm"][0]
+                    for key in ("biasprm", "biastype", "gainprm", "gaintype"):
+                        general_args.pop(key, None)
+
             # Map trntype integer to MuJoCo enum and override default in general_args
             trntype_enum = {
                 0: mujoco.mjtTrn.mjTRN_JOINT,
@@ -2437,7 +2478,11 @@ class SolverMuJoCo(SolverBase):
                 5: mujoco.mjtTrn.mjTRN_SLIDERCRANK,
             }.get(trntype, mujoco.mjtTrn.mjTRN_JOINT)
             general_args["trntype"] = trntype_enum
-            spec.add_actuator(target=target_name, **general_args)
+            act = spec.add_actuator(target=target_name, **general_args)
+            if shortcut == "position":
+                act.set_to_position(**shortcut_args)
+            elif shortcut == "velocity":
+                act.set_to_velocity(**shortcut_args)
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
@@ -4409,6 +4454,25 @@ class SolverMuJoCo(SolverBase):
         with wp.ScopedDevice(model.device):
             # create the MuJoCo Warp model
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
+
+            # Sync compiler-computed actuator params back to custom attributes.
+            # MuJoCo's mj_setConst computes biasprm[2] (damping) from dampratio
+            # for position/velocity shortcuts. The custom attribute has the pre-
+            # compilation value (kv=0 when dampratio was used instead). Copy the
+            # compiled values so update_actuator_properties uses correct ones.
+            mujoco_attrs = getattr(model, "mujoco", None)
+            if mujoco_attrs is not None and self.mj_model.nu > 0:
+                for field in ("actuator_biasprm", "actuator_gainprm"):
+                    custom_arr = getattr(mujoco_attrs, field, None)
+                    if custom_arr is None:
+                        continue
+                    compiled = getattr(self.mj_model, field)  # (nu, 10)
+                    nu = compiled.shape[0]
+                    custom_np = custom_arr.numpy()  # (nu * nworld, 10)
+                    nw = custom_np.shape[0] // nu if nu > 0 else 1
+                    for w in range(nw):
+                        custom_np[w * nu : (w + 1) * nu] = compiled
+                    custom_arr.assign(wp.array(custom_np, dtype=custom_arr.dtype))
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
