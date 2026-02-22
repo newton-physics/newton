@@ -237,6 +237,7 @@ def main(argv=None):
     menagerie_url = "https://github.com/google-deepmind/mujoco_menagerie.git"
     menagerie_folders = [
         "universal_robots_ur5e",
+        "apptronik_apollo",
         "leap_hand",
         "wonik_allegro",
         "robotiq_2f85",

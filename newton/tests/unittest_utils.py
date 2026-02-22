@@ -459,7 +459,10 @@ class ParallelJunitTestResult(unittest.TextTestResult):
         self.stream.flush()
 
     def _record_test(self, test, code, message=None, details=None):
-        duration = round((time.perf_counter_ns() - self.start_time) * 1e-9, 3)  # [s]
+        # start_time may not exist for class-level skips (setUpClass raising SkipTest)
+        # because startTest is never called in that case.
+        start = getattr(self, "start_time", None)
+        duration = round((time.perf_counter_ns() - start) * 1e-9, 3) if start is not None else 0.0
         self.test_record.append((test.__class__.__name__, test._testMethodName, duration, code, message, details))
 
     def addSuccess(self, test):
