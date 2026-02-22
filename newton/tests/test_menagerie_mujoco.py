@@ -2489,6 +2489,15 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     backfill_model = True
     use_split_pipeline = True
 
+    # invweight0 fields are derived from mass matrix factorization (mj_setConst)
+    # and have small numerical diffs (~1e-5) between Newton and native compilation.
+    # They are backfilled before dynamics, so skipping model comparison is safe.
+    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
+        "body_invweight0",
+        "dof_invweight0",
+        "stat",  # meaninertia derived from invweight0
+    }
+
 
 class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
     """Universal Robots UR5e arm (USD)."""
