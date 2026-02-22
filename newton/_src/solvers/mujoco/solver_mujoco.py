@@ -4466,14 +4466,12 @@ class SolverMuJoCo(SolverBase):
             # for position/velocity shortcuts. The custom attribute has the pre-
             # compilation value (kv=0 when dampratio was used instead). Copy the
             # compiled values so update_actuator_properties uses correct ones.
-            mujoco_attrs = getattr(model, "mujoco", None)
-            if mujoco_attrs is not None and self.mj_model.nu > 0:
+            if hasattr(model, "mujoco") and self.mj_model.nu > 0:
                 for field in ("actuator_biasprm", "actuator_gainprm"):
-                    custom_arr = getattr(mujoco_attrs, field, None)
+                    custom_arr = getattr(model.mujoco, field, None)
                     if custom_arr is None:
                         continue
-                    compiled = getattr(self.mj_model, field)  # (nu, 10)
-                    custom_arr.assign(wp.array(compiled.astype(np.float32), dtype=custom_arr.dtype))
+                    custom_arr.assign(getattr(self.mjw_model, field))
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
