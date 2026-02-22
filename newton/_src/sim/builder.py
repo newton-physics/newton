@@ -716,6 +716,12 @@ class ModelBuilder:
         # construction until all worlds are added, then rebuild in bulk (faster).
         self._deferred_lookup_rebuild: bool = False
 
+        # Set by replicate() when building from an empty builder so that
+        # find_shape_contact_pairs() can vectorize across uniform worlds instead of
+        # iterating per-world.  Reset to 0 whenever the builder is non-uniform
+        # (e.g. if replicate() is called on a non-empty builder).
+        self._shapes_per_world: int = 0
+
         # region defaults
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
@@ -1577,10 +1583,18 @@ class ModelBuilder:
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
         """
+        # If the builder is empty, record the shapes-per-world stride so
+        # find_shape_contact_pairs() can vectorize across uniform worlds.
+        if self.shape_count == 0:
+            self._shapes_per_world = builder.shape_count
+        else:
+            self._shapes_per_world = 0  # non-uniform; disable fast path
+
         if all(s == 0.0 for s in spacing):
             # Defer body_shapes / joint_parents / joint_children construction
             # until after all worlds are added; rebuild in a single bulk pass.
             start_shape_idx = self.shape_count
+            start_body_idx = self.body_count
             start_joint_idx = self.joint_count
             self._deferred_lookup_rebuild = True
             try:
@@ -1588,7 +1602,7 @@ class ModelBuilder:
                     self.add_world(builder, xform=None)
             finally:
                 self._deferred_lookup_rebuild = False
-            self._rebuild_lookup_dicts(start_shape_idx, start_joint_idx)
+            self._rebuild_lookup_dicts(start_shape_idx, start_body_idx, start_joint_idx)
         else:
             offsets = compute_world_offsets(world_count, spacing, self.up_axis)
             xform = wp.transform_identity()
@@ -2912,13 +2926,19 @@ class ModelBuilder:
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
 
-    def _rebuild_lookup_dicts(self, start_shape_idx: int, start_joint_idx: int) -> None:
+    def _rebuild_lookup_dicts(self, start_shape_idx: int, start_body_idx: int, start_joint_idx: int) -> None:
         """Rebuild body_shapes and joint_parents/children from flat arrays.
 
         Called by replicate() after all worlds are added to avoid building these
         lookup dicts incrementally (which has O(N x M) Python overhead per world).
         """
-        # body_shapes: group shape indices by body index
+        # body_shapes: ensure every body in the replicated range has an entry,
+        # even bodies that have no shapes (so callers can safely do body_shapes[b]).
+        for b_idx in range(start_body_idx, self.body_count):
+            if b_idx not in self.body_shapes:
+                self.body_shapes[b_idx] = []
+
+        # Populate shape lists by iterating over the flat shape_body array.
         for shape_idx in range(start_shape_idx, self.shape_count):
             b = self.shape_body[shape_idx]
             if b == -1:
@@ -8546,34 +8566,42 @@ class ModelBuilder:
                     f"expected {self.joint_count}, found {len(joint_space_start)}."
                 )
 
-            # Initialize world_space_start with zeros
+            # Vectorized implementation using numpy (replaces two O(N_joints) Python loops).
+            jss_arr = np.asarray(joint_space_start, dtype=np.int64)
+            per_joint = np.empty(self.joint_count, dtype=np.int64)
+            if self.joint_count > 0:
+                per_joint[:-1] = jss_arr[1:] - jss_arr[:-1]
+                per_joint[-1] = space_count - jss_arr[-1]
+
+            jw_arr = np.asarray(self.joint_world, dtype=np.int32)
+
+            # Front-global count: joints at the head of joint_world with world == -1.
+            if self.joint_count > 0:
+                front_end = int(np.searchsorted(jw_arr, 0))  # first non-global joint index
+                front_global_space_count = int(np.sum(per_joint[:front_end]))
+            else:
+                front_global_space_count = 0
+
+            # Per-world DOF/coord/constraint counts via bincount.
+            non_global_mask = jw_arr >= 0
+            if np.any(non_global_mask):
+                per_world_counts = np.bincount(
+                    jw_arr[non_global_mask],
+                    weights=per_joint[non_global_mask].astype(np.float64),
+                    minlength=self.world_count,
+                ).astype(np.int64)
+            else:
+                per_world_counts = np.zeros(self.world_count, dtype=np.int64)
+
+            # Build cumulative world_space_start array of length world_count + 2.
+            wss = np.empty(self.world_count + 2, dtype=np.int64)
+            wss[0] = front_global_space_count
+            np.cumsum(per_world_counts, out=wss[1 : self.world_count + 1])
+            wss[1 : self.world_count + 1] += front_global_space_count
+            wss[-1] = space_count
+
             world_space_start.clear()
-            world_space_start.extend([0] * (self.world_count + 2))
-
-            # Extend joint_space_start with total count to enable computing per-world counts
-            joint_space_start_ext = copy.copy(joint_space_start)
-            joint_space_start_ext.append(space_count)
-
-            # Count global entities at the front of the entity_world array
-            front_global_space_count = 0
-            for j, w in enumerate(self.joint_world):
-                if w == -1:
-                    front_global_space_count += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
-                else:
-                    break
-
-            # Compute per-world cumulative joint space counts to initialize world_space_start
-            for j, w in enumerate(self.joint_world):
-                if w >= 0:
-                    world_space_start[w + 1] += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
-
-            # Convert per-world counts to cumulative start indices
-            world_space_start[0] += front_global_space_count
-            for w in range(self.world_count):
-                world_space_start[w + 1] += world_space_start[w]
-
-            # Add total (i.e. final) entity counts to the per-world start indices
-            world_space_start[-1] = space_count
+            world_space_start.extend(wss.tolist())
 
         # Check that all world offset indices are cumulative and match counts
         for world_start_array, space_start_array, total_count, name in world_joint_space_start_arrays:
@@ -9605,20 +9633,49 @@ class ModelBuilder:
             non_global_worlds = worlds[non_global_local_idx]
             _unique_worlds, world_starts = np.unique(non_global_worlds, return_index=True)
             world_ends = np.append(world_starts[1:], len(non_global_local_idx))
-            triu_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-            for start, end in zip(world_starts, world_ends, strict=True):
-                n_w = int(end - start)
-                if n_w < 2:
-                    continue
-                if n_w not in triu_cache:
-                    triu_cache[n_w] = np.triu_indices(n_w, k=1)
-                ii, jj = triu_cache[n_w]
-                w_local = non_global_local_idx[start:end]
-                valid = _group_valid(groups[w_local[ii]], groups[w_local[jj]])
-                sa = colliding_idx[w_local[ii[valid]]]
-                sb = colliding_idx[w_local[jj[valid]]]
-                all_sa.append(np.minimum(sa, sb))
-                all_sb.append(np.maximum(sa, sb))
+            n_unique = len(_unique_worlds)
+
+            # Fast path: replicate() with a uniform sub-builder produces identical worlds.
+            # Instead of an O(n_worlds) Python loop, compute valid pairs once for world 0,
+            # then broadcast across all worlds using a stride offset.
+            if (
+                self._shapes_per_world > 0
+                and n_unique > 1
+                and int(world_ends[0] - world_starts[0]) >= 2
+                and np.all(world_ends - world_starts == world_ends[0] - world_starts[0])
+            ):
+                n_w = int(world_ends[0] - world_starts[0])
+                ii, jj = np.triu_indices(n_w, k=1)
+                w_local_0 = non_global_local_idx[:n_w]
+                valid_0 = _group_valid(groups[w_local_0[ii]], groups[w_local_0[jj]])
+                if np.any(valid_0):
+                    ii_v, jj_v = ii[valid_0], jj[valid_0]
+                    # sa_0 <= sb_0 by construction (min/max already enforced by triu i<j
+                    # and colliding_idx being sorted, so colliding_idx[w_local_0[ii]] <=
+                    # colliding_idx[w_local_0[jj]]).
+                    sa_0 = colliding_idx[w_local_0[ii_v]]
+                    sb_0 = colliding_idx[w_local_0[jj_v]]
+                    stride = self._shapes_per_world
+                    # world_offsets shape: (n_unique, 1); sa_0/sb_0 shape: (n_valid,)
+                    # Broadcasting produces (n_unique, n_valid) → ravel to 1-D.
+                    offsets = np.arange(n_unique, dtype=np.int32)[:, None] * stride
+                    all_sa.append((sa_0[None, :] + offsets).ravel())
+                    all_sb.append((sb_0[None, :] + offsets).ravel())
+            else:
+                triu_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+                for start, end in zip(world_starts, world_ends, strict=True):
+                    n_w = int(end - start)
+                    if n_w < 2:
+                        continue
+                    if n_w not in triu_cache:
+                        triu_cache[n_w] = np.triu_indices(n_w, k=1)
+                    ii, jj = triu_cache[n_w]
+                    w_local = non_global_local_idx[start:end]
+                    valid = _group_valid(groups[w_local[ii]], groups[w_local[jj]])
+                    sa = colliding_idx[w_local[ii[valid]]]
+                    sb = colliding_idx[w_local[jj[valid]]]
+                    all_sa.append(np.minimum(sa, sb))
+                    all_sb.append(np.maximum(sa, sb))
 
         if all_sa:
             combined = np.stack([np.concatenate(all_sa), np.concatenate(all_sb)], axis=1)
