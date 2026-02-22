@@ -2953,6 +2953,8 @@ class ModelBuilder:
 
         Called by replicate() after all worlds are added to avoid building these
         lookup dicts incrementally (which has O(N x M) Python overhead per world).
+        Accesses _IntIndexList._data directly to bypass the per-element isinstance
+        slice check in __getitem__, reducing per-element overhead.
         """
         # body_shapes: ensure every body in the replicated range has an entry,
         # even bodies that have no shapes (so callers can safely do body_shapes[b]).
@@ -2960,28 +2962,31 @@ class ModelBuilder:
             if b_idx not in self.body_shapes:
                 self.body_shapes[b_idx] = []
 
-        # Populate shape lists by iterating over the flat shape_body array.
+        # Populate shape lists — use ._data for O(1)-overhead element access.
+        shape_body_data = self.shape_body._data
+        body_shapes = self.body_shapes
         for shape_idx in range(start_shape_idx, self.shape_count):
-            b = self.shape_body[shape_idx]
+            b = shape_body_data[shape_idx]
             if b == -1:
-                self.body_shapes[-1].append(shape_idx)
-            elif b not in self.body_shapes:
-                self.body_shapes[b] = [shape_idx]
+                body_shapes[-1].append(shape_idx)
+            elif b not in body_shapes:
+                body_shapes[b] = [shape_idx]
             else:
-                self.body_shapes[b].append(shape_idx)
+                body_shapes[b].append(shape_idx)
 
-        # joint_parents / joint_children: iterate flat joint arrays
-        # In the replicate case all child body indices are unique, so joint_parents[c]
-        # is always a fresh entry.  Joint children are also unique per non-root joint
-        # (root joints share parent=-1 and are handled with a plain append).
+        # joint_parents / joint_children: use ._data direct access.
+        joint_parent_data = self.joint_parent._data
+        joint_child_data = self.joint_child._data
+        joint_parents = self.joint_parents
+        joint_children = self.joint_children
         for joint_idx in range(start_joint_idx, self.joint_count):
-            p = self.joint_parent[joint_idx]
-            c = self.joint_child[joint_idx]
-            self.joint_parents[c] = [p]  # c is always a new key in the replicate case
-            if p not in self.joint_children:
-                self.joint_children[p] = [c]
+            p = joint_parent_data[joint_idx]
+            c = joint_child_data[joint_idx]
+            joint_parents[c] = [p]  # c is always a new key in the replicate case
+            if p not in joint_children:
+                joint_children[p] = [c]
             else:
-                self.joint_children[p].append(c)
+                joint_children[p].append(c)
 
     @staticmethod
     def _coerce_mat33(value: Any) -> wp.mat33:
@@ -8853,9 +8858,6 @@ class ModelBuilder:
 
             # ---------------------
             # Compute local AABBs and voxel resolutions for contact reduction
-            local_aabb_lower = []
-            local_aabb_upper = []
-            voxel_resolution = []
             voxel_budget = 100  # Maximum voxels per shape for contact reduction
 
             # Pre-compute numpy view of shape_scale for fast per-element access in the loops below.
@@ -8865,6 +8867,19 @@ class ModelBuilder:
             # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
             # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
             shape_aabb_cache = {}
+
+            # Fast path for uniform replicated models: only iterate world-0 shapes, then tile.
+            # For 512 worlds x 90 shapes this reduces 46080 iterations to 90, and replaces
+            # three wp.array(list_of_46080_arrays) calls (~20 ms each) with np.tile (~0.04 ms).
+            _n_shapes = self.shape_count
+            _spw = self._shapes_per_world
+            _do_aabb_tile = _spw > 0 and _n_shapes == _spw * self.world_count
+            _n_to_iter = _spw if _do_aabb_tile else _n_shapes
+
+            # Pre-allocate numpy arrays to avoid per-iteration Python list.append overhead
+            _iter_aabb_lower = np.empty((_n_to_iter, 3), dtype=np.float32)
+            _iter_aabb_upper = np.empty((_n_to_iter, 3), dtype=np.float32)
+            _iter_voxel_res = np.empty((_n_to_iter, 3), dtype=np.int32)
 
             def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget):
                 """Compute voxel resolution from AABB with given budget."""
@@ -8895,7 +8910,12 @@ class ModelBuilder:
                 return nx, ny, nz
 
             for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, _shape_scale_np, strict=True)
+                zip(
+                    self.shape_type[:_n_to_iter],
+                    self.shape_source[:_n_to_iter],
+                    _shape_scale_np[:_n_to_iter],
+                    strict=True,
+                )
             ):
                 # Create cache key based on shape type and parameters.
                 # Use tobytes() for the scale part: faster than tuple() and safe as a dict key.
@@ -8988,13 +9008,21 @@ class ModelBuilder:
                     # Cache the result for reuse by identical shapes
                     shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
 
-                local_aabb_lower.append(aabb_lower)
-                local_aabb_upper.append(aabb_upper)
-                voxel_resolution.append([nx, ny, nz])
+                _iter_aabb_lower[_shape_idx] = aabb_lower
+                _iter_aabb_upper[_shape_idx] = aabb_upper
+                _iter_voxel_res[_shape_idx] = (nx, ny, nz)
 
-            m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
-            m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
-            m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
+            if _do_aabb_tile:
+                _full_aabb_lower = np.tile(_iter_aabb_lower, (self.world_count, 1))
+                _full_aabb_upper = np.tile(_iter_aabb_upper, (self.world_count, 1))
+                _full_voxel_res = np.tile(_iter_voxel_res, (self.world_count, 1))
+            else:
+                _full_aabb_lower = _iter_aabb_lower
+                _full_aabb_upper = _iter_aabb_upper
+                _full_voxel_res = _iter_voxel_res
+            m.shape_collision_aabb_lower = wp.array(_full_aabb_lower, dtype=wp.vec3, device=device)
+            m.shape_collision_aabb_upper = wp.array(_full_aabb_upper, dtype=wp.vec3, device=device)
+            m._shape_voxel_resolution = wp.array(_full_voxel_res, dtype=wp.vec3i, device=device)
 
             # ---------------------
             # Compute and compact SDF resources (shared table + per-shape index indirection)
@@ -9003,16 +9031,22 @@ class ModelBuilder:
             current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
+            # For uniform replicated models, world-0 is representative: limit scan to _n_to_iter.
             has_mesh_sdf = any(
                 stype == GeoType.MESH
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
                 and getattr(ssrc, "sdf", None) is not None
-                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=True)
+                for stype, ssrc, sflags in zip(
+                    self.shape_type[:_n_to_iter],
+                    self.shape_source[:_n_to_iter],
+                    self.shape_flags[:_n_to_iter],
+                    strict=True,
+                )
             )
             has_hydroelastic_shapes = any(
                 (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
-                for sflags in self.shape_flags
+                for sflags in self.shape_flags[:_n_to_iter]
             )
             if (has_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
