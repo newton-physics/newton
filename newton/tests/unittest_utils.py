@@ -459,11 +459,14 @@ class ParallelJunitTestResult(unittest.TextTestResult):
         self.stream.flush()
 
     def _record_test(self, test, code, message=None, details=None):
-        # start_time may not exist for class-level skips (setUpClass raising SkipTest)
-        # because startTest is never called in that case.
+        # For class-level skips (setUpClass raising SkipTest), unittest passes an
+        # _ErrorHolder instead of a real test case, and startTest is never called.
+        # Guard against missing start_time and _testMethodName.
         start = getattr(self, "start_time", None)
         duration = round((time.perf_counter_ns() - start) * 1e-9, 3) if start is not None else 0.0
-        self.test_record.append((test.__class__.__name__, test._testMethodName, duration, code, message, details))
+        class_name = test.__class__.__name__
+        method_name = getattr(test, "_testMethodName", str(test))
+        self.test_record.append((class_name, method_name, duration, code, message, details))
 
     def addSuccess(self, test):
         super(unittest.TextTestResult, self).addSuccess(test)
