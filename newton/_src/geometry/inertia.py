@@ -30,7 +30,7 @@ from .types import (
 )
 
 
-def compute_sphere_inertia(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid sphere
 
     Args:
@@ -52,7 +52,7 @@ def compute_sphere_inertia(density: float, radius: float) -> tuple[float, wp.vec
     return (m, wp.vec3(), I)
 
 
-def compute_capsule_inertia(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_capsule(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid capsule extending along the z-axis
 
     Args:
@@ -85,7 +85,7 @@ def compute_capsule_inertia(density: float, radius: float, half_height: float) -
     return (m, wp.vec3(), I)
 
 
-def compute_cylinder_inertia(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_cylinder(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid cylinder extending along the z-axis
 
     Args:
@@ -111,7 +111,7 @@ def compute_cylinder_inertia(density: float, radius: float, half_height: float) 
     return (m, wp.vec3(), I)
 
 
-def compute_cone_inertia(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_cone(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid cone extending along the z-axis
 
     Args:
@@ -142,7 +142,7 @@ def compute_cone_inertia(density: float, radius: float, half_height: float) -> t
     return (m, com, I)
 
 
-def compute_ellipsoid_inertia(density: float, rx: float, ry: float, rz: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_ellipsoid(density: float, rx: float, ry: float, rz: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid ellipsoid
 
     The ellipsoid is centered at the origin with semi-axes rx, ry, rz along the x, y, z axes respectively.
@@ -174,7 +174,7 @@ def compute_ellipsoid_inertia(density: float, rx: float, ry: float, rz: float) -
     return (m, wp.vec3(), I)
 
 
-def compute_box_inertia_from_mass(mass: float, hx: float, hy: float, hz: float) -> wp.mat33:
+def compute_inertia_box_from_mass(mass: float, hx: float, hy: float, hz: float) -> wp.mat33:
     """Helper to compute 3x3 inertia matrix of a solid box with given mass and half-extents.
 
     Args:
@@ -196,7 +196,7 @@ def compute_box_inertia_from_mass(mass: float, hx: float, hy: float, hz: float) 
     return I
 
 
-def compute_box_inertia(density: float, hx: float, hy: float, hz: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_box(density: float, hx: float, hy: float, hz: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid box
 
     Args:
@@ -212,7 +212,7 @@ def compute_box_inertia(density: float, hx: float, hy: float, hz: float) -> tupl
 
     v = 8.0 * hx * hy * hz
     m = density * v
-    I = compute_box_inertia_from_mass(m, hx, hy, hz)
+    I = compute_inertia_box_from_mass(m, hx, hy, hz)
 
     return (m, wp.vec3(), I)
 
@@ -331,7 +331,7 @@ def compute_hollow_mesh_inertia(
     wp.atomic_add(second, 0, s_total)
 
 
-def compute_mesh_inertia(
+def compute_inertia_mesh(
     density: float,
     vertices: list,
     indices: list,
@@ -462,7 +462,7 @@ def transform_inertia(m: float, I: wp.mat33, p: wp.vec3, q: wp.quat) -> wp.mat33
     )
 
 
-def compute_shape_inertia(
+def compute_inertia_shape(
     type: int,
     scale: Vec3,
     src: Mesh | Heightfield | None,
@@ -487,48 +487,48 @@ def compute_shape_inertia(
         return 0.0, wp.vec3(), wp.mat33()
 
     if type == GeoType.SPHERE:
-        solid = compute_sphere_inertia(density, scale[0])
+        solid = compute_inertia_sphere(density, scale[0])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow sphere geom"
-            hollow = compute_sphere_inertia(density, scale[0] - thickness)
+            hollow = compute_inertia_sphere(density, scale[0] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.BOX:
         # scale stores half-extents (hx, hy, hz)
-        solid = compute_box_inertia(density, scale[0], scale[1], scale[2])
+        solid = compute_inertia_box(density, scale[0], scale[1], scale[2])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow box geom"
-            hollow = compute_box_inertia(density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness)
+            hollow = compute_inertia_box(density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CAPSULE:
         # scale[0] = radius, scale[1] = half_height
-        solid = compute_capsule_inertia(density, scale[0], scale[1])
+        solid = compute_inertia_capsule(density, scale[0], scale[1])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow capsule geom"
-            hollow = compute_capsule_inertia(density, scale[0] - thickness, scale[1] - thickness)
+            hollow = compute_inertia_capsule(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CYLINDER:
         # scale[0] = radius, scale[1] = half_height
-        solid = compute_cylinder_inertia(density, scale[0], scale[1])
+        solid = compute_inertia_cylinder(density, scale[0], scale[1])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow cylinder geom"
-            hollow = compute_cylinder_inertia(density, scale[0] - thickness, scale[1] - thickness)
+            hollow = compute_inertia_cylinder(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CONE:
         # scale[0] = radius, scale[1] = half_height
-        solid = compute_cone_inertia(density, scale[0], scale[1])
+        solid = compute_inertia_cone(density, scale[0], scale[1])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
-            hollow = compute_cone_inertia(density, scale[0] - thickness, scale[1] - thickness)
+            hollow = compute_inertia_cone(density, scale[0] - thickness, scale[1] - thickness)
             m_shell = solid[0] - hollow[0]
             if m_shell <= 0.0:
                 raise ValueError(
@@ -553,12 +553,12 @@ def compute_shape_inertia(
             return m_shell, wp.vec3(*com_shell), wp.mat33(*I_shell.flatten())
     elif type == GeoType.ELLIPSOID:
         # scale stores semi-axes (rx, ry, rz)
-        solid = compute_ellipsoid_inertia(density, scale[0], scale[1], scale[2])
+        solid = compute_inertia_ellipsoid(density, scale[0], scale[1], scale[2])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow ellipsoid geom"
-            hollow = compute_ellipsoid_inertia(
+            hollow = compute_inertia_ellipsoid(
                 density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness
             )
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
@@ -591,7 +591,7 @@ def compute_shape_inertia(
             assert isinstance(src, Mesh), "src must be a Mesh for mesh or convex hull shapes"
             # fall back to computing inertia from mesh geometry
             vertices = np.array(src.vertices) * np.array(scale)
-            m, c, I, _vol = compute_mesh_inertia(density, vertices, src.indices, is_solid, thickness)
+            m, c, I, _vol = compute_inertia_mesh(density, vertices, src.indices, is_solid, thickness)
             return m, c, I
     raise ValueError(f"Unsupported shape type: {type}")
 
