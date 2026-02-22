@@ -39,7 +39,7 @@ def compute_sphere_inertia(density: float, radius: float) -> tuple[float, wp.vec
 
     Returns:
 
-        A tuple of (mass, com, inertia) with inertia specified around the center of mass
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
 
     v = 4.0 / 3.0 * wp.pi * radius * radius * radius
@@ -58,11 +58,11 @@ def compute_capsule_inertia(density: float, radius: float, half_height: float) -
     Args:
         density: The capsule density [kg/m³]
         radius: The capsule radius [m]
-        half_height: The half-height of the interior cylindrical section [m]
+        half_height: Half-length of the cylindrical section (excluding hemispherical caps) [m]
 
     Returns:
 
-        A tuple of (mass, com, inertia) with inertia specified around the center of mass
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
 
     h = 2.0 * half_height  # full height of the cylindrical section
@@ -95,7 +95,7 @@ def compute_cylinder_inertia(density: float, radius: float, half_height: float) 
 
     Returns:
 
-        A tuple of (mass, com, inertia) with inertia specified around the center of mass
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
 
     h = 2.0 * half_height  # full height
@@ -207,7 +207,7 @@ def compute_box_inertia(density: float, hx: float, hy: float, hz: float) -> tupl
 
     Returns:
 
-        A tuple of (mass, com, inertia) with inertia specified around the center of mass
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
 
     v = 8.0 * hx * hy * hz
@@ -530,6 +530,12 @@ def compute_shape_inertia(
             assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
             hollow = compute_cone_inertia(density, scale[0] - thickness, scale[1] - thickness)
             m_shell = solid[0] - hollow[0]
+            if m_shell <= 0.0:
+                raise ValueError(
+                    f"Hollow cone shell has non-positive mass ({m_shell:.6g}). "
+                    f"The thickness ({thickness}) must be smaller than both the "
+                    f"radius ({scale[0]}) and half_height ({scale[1]})."
+                )
             # Cones have non-zero COM so outer and inner cones have different COMs;
             # compute the shell COM as the weighted difference, then shift both
             # inertia tensors to the shell COM before subtracting (parallel-axis theorem).

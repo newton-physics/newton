@@ -22,7 +22,9 @@ import newton
 from newton._src.core import quat_between_axes
 from newton._src.geometry.inertia import (
     compute_box_inertia,
+    compute_capsule_inertia,
     compute_cone_inertia,
+    compute_cylinder_inertia,
     compute_mesh_inertia,
     compute_shape_inertia,
     compute_sphere_inertia,
@@ -315,6 +317,49 @@ class TestInertia(unittest.TestCase):
         # Check volume
         vol_cone = np.pi * radius**2 * (2 * half_height) / 3
         self.assertAlmostEqual(vol_mesh, vol_cone, delta=vol_cone * 0.001)
+
+    def test_compute_shape_inertia_dispatcher(self):
+        """Test compute_shape_inertia for primitive shapes against analytical formulas.
+
+        Validates that the scale/half-extent conventions are consistently threaded
+        through the dispatcher (e.g. no erroneous factor-of-2 doubling).
+        """
+        density = 1000.0
+
+        # BOX: unit cube, half-extents = 0.5 → mass = 8 * 0.5^3 * 1000 = 1000 kg
+        m, com, I = compute_shape_inertia(GeoType.BOX, wp.vec3(0.5, 0.5, 0.5), None, density)
+        self.assertAlmostEqual(m, 1000.0, delta=1e-6)
+        assert_np_equal(np.array(com), np.zeros(3), tol=1e-6)
+        expected_I_box = 1.0 / 3.0 * 1000.0 * (0.25 + 0.25)  # 1/3 * m * (hy² + hz²) = 166.667
+        self.assertAlmostEqual(float(I[0, 0]), expected_I_box, delta=1e-3)
+        self.assertAlmostEqual(float(I[1, 1]), expected_I_box, delta=1e-3)
+        self.assertAlmostEqual(float(I[2, 2]), expected_I_box, delta=1e-3)
+
+        # SPHERE: radius = 1.0 → mass = 4/3 * pi * 1000 ≈ 4188.79 kg
+        radius = 1.0
+        m, com, I = compute_shape_inertia(GeoType.SPHERE, wp.vec3(radius, 0.0, 0.0), None, density)
+        mass_ref, _, I_ref = compute_sphere_inertia(density, radius)
+        self.assertAlmostEqual(m, mass_ref, delta=1e-6)
+        assert_np_equal(np.array(I), np.array(I_ref), tol=1e-6)
+
+        # CAPSULE: radius=0.5, half_height=1.0 → check axis symmetry and exact match
+        m, com, I = compute_shape_inertia(GeoType.CAPSULE, wp.vec3(0.5, 1.0, 0.0), None, density)
+        mass_ref, _, I_ref = compute_capsule_inertia(density, 0.5, 1.0)
+        self.assertAlmostEqual(m, mass_ref, delta=1e-6)
+        assert_np_equal(np.array(I), np.array(I_ref), tol=1e-6)
+
+        # CYLINDER: radius=0.5, half_height=1.0
+        m, com, I = compute_shape_inertia(GeoType.CYLINDER, wp.vec3(0.5, 1.0, 0.0), None, density)
+        mass_ref, _, I_ref = compute_cylinder_inertia(density, 0.5, 1.0)
+        self.assertAlmostEqual(m, mass_ref, delta=1e-6)
+        assert_np_equal(np.array(I), np.array(I_ref), tol=1e-6)
+
+        # CONE: radius=0.5, half_height=1.0
+        m, com, I = compute_shape_inertia(GeoType.CONE, wp.vec3(0.5, 1.0, 0.0), None, density)
+        mass_ref, com_ref, I_ref = compute_cone_inertia(density, 0.5, 1.0)
+        self.assertAlmostEqual(m, mass_ref, delta=1e-6)
+        assert_np_equal(np.array(com), np.array(com_ref), tol=1e-6)
+        assert_np_equal(np.array(I), np.array(I_ref), tol=1e-6)
 
     def test_hollow_cone_inertia(self):
         """Test hollow cone inertia via compute_shape_inertia against mesh subtraction.
