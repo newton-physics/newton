@@ -2273,7 +2273,7 @@ class ModelBuilder:
         if gravity is not None:
             self.world_gravity.append(tuple(gravity))
         else:
-            self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
+            self.world_gravity.append(tuple(g * self.gravity for g in self.up_axis.to_vector()))
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -2382,7 +2382,7 @@ class ModelBuilder:
         # Copy gravity from source builder
         if self.current_world >= 0 and self.current_world < len(self.world_gravity):
             # We're in a world context, update this world's gravity vector
-            self.world_gravity[self.current_world] = tuple(g * builder.gravity for g in builder.up_vector)
+            self.world_gravity[self.current_world] = tuple(g * builder.gravity for g in builder.up_axis.to_vector())
         elif self.current_world < 0:
             # No world context (add_builder called directly), copy scalar gravity
             self.gravity = builder.gravity
@@ -2493,14 +2493,13 @@ class ModelBuilder:
             # offset the indices
             self.articulation_start.extend_with_offset(builder.articulation_start, self.joint_count)
 
-            new_parents = remap_indices_except(builder.joint_parent, start_body_idx, sentinel=-1)
-            new_children = remap_indices(builder.joint_child, start_body_idx)
+            self.joint_parent.extend_with_offset_except(builder.joint_parent, start_body_idx, sentinel=-1)
+            self.joint_child.extend_with_offset(builder.joint_child, start_body_idx)
 
-            self.joint_parent.extend(new_parents)
-            self.joint_child.extend(new_children)
-
-            # Update parent/child lookups
-            for p, c in zip(new_parents, new_children, strict=True):
+            # Update parent/child lookups using inline-offset originals (avoids temp _IntIndexList objects)
+            for parent_orig, child_orig in zip(builder.joint_parent, builder.joint_child, strict=True):
+                p = parent_orig if parent_orig == -1 else parent_orig + start_body_idx
+                c = child_orig + start_body_idx
                 if c not in self.joint_parents:
                     self.joint_parents[c] = [p]
                 else:
