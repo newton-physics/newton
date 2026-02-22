@@ -1573,11 +1573,11 @@ class ModelBuilder:
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
         """
-        offsets = compute_world_offsets(world_count, spacing, self.up_axis)
         if all(s == 0.0 for s in spacing):
             for _ in range(world_count):
                 self.add_world(builder, xform=None)
         else:
+            offsets = compute_world_offsets(world_count, spacing, self.up_axis)
             xform = wp.transform_identity()
             for i in range(world_count):
                 xform[:3] = offsets[i]

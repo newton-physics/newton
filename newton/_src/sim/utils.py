@@ -24,7 +24,8 @@ from typing import SupportsIndex, overload
 import numpy as np
 
 # Below this element count, a Python loop is faster than np.frombuffer + vectorised add
-# (numpy has ~2 µs per-call overhead regardless of array size; Python loop breaks even ~n=22).
+# (numpy has ~2 µs per-call overhead regardless of array size; break-even measured ~n=22,
+# threshold set to 16 to leave headroom for variation across platforms).
 _NUMPY_THRESHOLD: int = 16
 
 
@@ -81,10 +82,10 @@ class _IntIndexList(MutableSequence):
         self._data[idx] = int(value)
 
     def __delitem__(self, idx: SupportsIndex | slice) -> None:
-        raise NotImplementedError("IntIndexList does not support item deletion")
+        raise NotImplementedError("_IntIndexList does not support item deletion")
 
     def insert(self, idx: SupportsIndex, value: int) -> None:
-        raise NotImplementedError("IntIndexList does not support insert; use append() or extend()")
+        raise NotImplementedError("_IntIndexList does not support insert; use append() or extend()")
 
     def __contains__(self, value: object) -> bool:
         if isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_)):
@@ -109,7 +110,9 @@ class _IntIndexList(MutableSequence):
         return out
 
     def __deepcopy__(self, memo):
-        return self.__copy__()
+        out = self.__copy__()
+        memo[id(self)] = out
+        return out
 
     def copy(self):
         return self.__copy__()
@@ -325,10 +328,10 @@ class _IntIndexList2D(MutableSequence):
         self._data[base_idx : base_idx + self._width] = array("i", row)
 
     def __delitem__(self, idx: SupportsIndex | slice) -> None:
-        raise NotImplementedError("IntIndexList2D does not support item deletion")
+        raise NotImplementedError("_IntIndexList2D does not support item deletion")
 
     def insert(self, idx: SupportsIndex, value: Iterable[int]) -> None:
-        raise NotImplementedError("IntIndexList2D does not support insert; use append() or extend()")
+        raise NotImplementedError("_IntIndexList2D does not support insert; use append() or extend()")
 
     def __contains__(self, row: object) -> bool:
         if not isinstance(row, tuple) or len(row) != self._width:
@@ -361,7 +364,9 @@ class _IntIndexList2D(MutableSequence):
         return out
 
     def __deepcopy__(self, memo):
-        return self.__copy__()
+        out = self.__copy__()
+        memo[id(self)] = out
+        return out
 
     def copy(self):
         return self.__copy__()
