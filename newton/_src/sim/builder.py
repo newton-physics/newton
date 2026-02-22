@@ -1574,10 +1574,14 @@ class ModelBuilder:
                 Defaults to (0.0, 0.0, 0.0).
         """
         offsets = compute_world_offsets(world_count, spacing, self.up_axis)
-        xform = wp.transform_identity()
-        for i in range(world_count):
-            xform[:3] = offsets[i]
-            self.add_world(builder, xform=xform)
+        if all(s == 0.0 for s in spacing):
+            for _ in range(world_count):
+                self.add_world(builder, xform=None)
+        else:
+            xform = wp.transform_identity()
+            for i in range(world_count):
+                xform[:3] = offsets[i]
+                self.add_world(builder, xform=xform)
 
     def add_articulation(
         self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
