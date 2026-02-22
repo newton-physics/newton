@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from array import array
 from collections.abc import Iterable, MutableSequence
-from typing import SupportsIndex, overload
+from typing import Any, SupportsIndex, overload
 
 import numpy as np
 
@@ -494,3 +494,168 @@ class _IntIndexList2D(MutableSequence):
             if len(values) != w:
                 raise ValueError(f"row must have width {w}, got {len(values)}")
             self._data.extend(values)
+
+
+class _StructList:
+    """Flat float32 storage for fixed-stride structured types.
+
+    Stores N elements, each consisting of ``stride`` consecutive float32 values
+    in an ``array.array('f')`` buffer.  This layout enables:
+
+    * **O(1) ``extend``** from another ``_StructList`` (direct buffer copy).
+    * **O(1) numpy view** via ``np.frombuffer``, so ``wp.array`` construction
+      at finalize time avoids the slow per-element Python conversion path.
+
+    The optional ``dtype`` parameter, when provided, is called with the element's
+    unpacked float components to produce the return value for ``__getitem__``.
+    Pass a warp constructor (e.g. ``wp.transform``, ``wp.vec3``) so that reads
+    return the correct Python/warp type for downstream arithmetic and API calls.
+
+    Args:
+        stride: Number of float32 values per element.
+        dtype: Callable that accepts ``stride`` float arguments and returns a
+            structured value (e.g. ``wp.transform``, ``wp.vec3``).  When
+            ``None``, ``__getitem__`` returns a plain ``tuple``.
+        values: Optional initial values to populate the list.
+    """
+
+    __slots__ = ("_data", "_dtype", "_stride")
+    __hash__ = None
+
+    def __init__(self, stride: int, dtype: Any = None, values: Any = None) -> None:
+        self._stride = int(stride)
+        self._dtype = dtype
+        self._data: array = array("f")
+        if values is not None:
+            self.extend(values)
+
+    # ------------------------------------------------------------------
+    # Sequence protocol
+    # ------------------------------------------------------------------
+
+    def __len__(self) -> int:
+        return len(self._data) // self._stride
+
+    def __iter__(self):
+        d = self._data
+        s = self._stride
+        dt = self._dtype
+        if dt is not None:
+            for i in range(0, len(d), s):
+                yield dt(*d[i : i + s])
+        else:
+            for i in range(0, len(d), s):
+                yield tuple(d[i : i + s])
+
+    def __getitem__(self, idx: SupportsIndex | slice) -> Any:
+        if isinstance(idx, slice):
+            return [self[i] for i in range(*idx.indices(len(self)))]
+        idx_int = int(idx)
+        if idx_int < 0:
+            idx_int += len(self)
+        base = idx_int * self._stride
+        floats = self._data[base : base + self._stride]
+        if self._dtype is not None:
+            return self._dtype(*floats)
+        return tuple(floats)
+
+    def __setitem__(self, idx: SupportsIndex, value: Any) -> None:
+        idx_int = int(idx)
+        if idx_int < 0:
+            idx_int += len(self)
+        base = idx_int * self._stride
+        flat = np.asarray(value, dtype=np.float32).ravel()
+        if len(flat) != self._stride:
+            raise ValueError(f"Expected {self._stride} elements, got {len(flat)}")
+        # Write directly into the underlying buffer via a numpy view.
+        np.frombuffer(self._data, dtype=np.float32)[base : base + self._stride] = flat
+
+    def __delitem__(self, idx: SupportsIndex | slice) -> None:
+        raise NotImplementedError("_StructList does not support item deletion")
+
+    def __repr__(self) -> str:
+        return f"_StructList(stride={self._stride}, len={len(self)})"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _StructList):
+            return self._stride == other._stride and self._data == other._data
+        if isinstance(other, list):
+            if len(self) != len(other):
+                return False
+            for a, b in zip(self, other, strict=True):
+                if not np.array_equal(
+                    np.asarray(a, dtype=np.float32).ravel(),
+                    np.asarray(b, dtype=np.float32).ravel(),
+                ):
+                    return False
+            return True
+        return NotImplemented
+
+    # ------------------------------------------------------------------
+    # Mutation helpers
+    # ------------------------------------------------------------------
+
+    def append(self, value: Any) -> None:
+        """Append one structured element.
+
+        ``value`` may be any type that ``np.asarray(value, dtype=np.float32)``
+        can convert to a 1-D array of length ``stride`` (warp built-in types,
+        tuples, lists, numpy arrays, …).
+        """
+        flat = np.asarray(value, dtype=np.float32).ravel()
+        if len(flat) != self._stride:
+            raise ValueError(f"Expected {self._stride} elements, got {len(flat)}")
+        self._data.frombytes(flat.tobytes())
+
+    def extend(self, values: Any) -> None:
+        """Extend with multiple structured elements.
+
+        When ``values`` is another ``_StructList`` with matching stride, the
+        underlying buffers are merged with a single C-level copy (O(1) per
+        world in replicate).  Otherwise, each element is appended individually.
+        """
+        if isinstance(values, _StructList):
+            if values._stride != self._stride:
+                raise ValueError(f"_StructList stride mismatch: expected {self._stride}, got {values._stride}")
+            self._data.extend(values._data)
+            return
+        for v in values:
+            self.append(v)
+
+    def clear(self) -> None:
+        self._data = array("f")
+
+    # ------------------------------------------------------------------
+    # NumPy / copy protocol
+    # ------------------------------------------------------------------
+
+    def __array__(self, dtype: Any = None, copy: Any = None) -> np.ndarray:
+        """Return a flat float32 view of the underlying buffer.
+
+        When ``wp.array(np.frombuffer(struct_list._data, dtype=np.float32), dtype=warp_type)``
+        is used in ``finalize()``, this avoids the O(N) Python-object iteration
+        that ``wp.array(list_of_warp_objects, dtype=warp_type)`` would require.
+        """
+        arr = np.frombuffer(self._data, dtype=np.float32)
+        if dtype is not None and np.dtype(dtype) != np.dtype(np.float32):
+            if copy is False:
+                raise ValueError(
+                    f"Cannot produce a non-copy array with dtype {dtype!r} from _StructList (stored as float32)"
+                )
+            return arr.astype(dtype)
+        if copy is False:
+            return arr
+        return arr.copy()
+
+    def __copy__(self) -> _StructList:
+        out = _StructList(self._stride, dtype=self._dtype)
+        out._data = self._data[:]
+        return out
+
+    def __deepcopy__(self, memo: dict) -> _StructList:
+        out = self.__copy__()
+        memo[id(self)] = out
+        return out
+
+    def copy(self) -> _StructList:
+        return self.__copy__()

@@ -72,7 +72,7 @@ from .joints import (
     JointType,
 )
 from .model import Model
-from .utils import _IntIndexList, _IntIndexList2D
+from .utils import _IntIndexList, _IntIndexList2D, _StructList
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -802,12 +802,12 @@ class ModelBuilder:
         # shapes (each shape has an entry in these arrays)
         self.shape_label = []  # shape labels
         # transform from shape to body
-        self.shape_transform = []
+        self.shape_transform: _StructList = _StructList(7, dtype=wp.transform)
         # maps from shape index to body index
         self.shape_body = _IntIndexList()
         self.shape_flags = []
         self.shape_type = []
-        self.shape_scale = []
+        self.shape_scale: _StructList = _StructList(3, dtype=wp.vec3)
         self.shape_source = []
         self.shape_is_solid = []
         self.shape_thickness = []
@@ -875,11 +875,11 @@ class ModelBuilder:
 
         # rigid bodies
         self.body_mass = []
-        self.body_inertia = []
+        self.body_inertia: _StructList = _StructList(9, dtype=wp.mat33)
         self.body_inv_mass = []
-        self.body_inv_inertia = []
-        self.body_com = []
-        self.body_q = []
+        self.body_inv_inertia: _StructList = _StructList(9, dtype=wp.mat33)
+        self.body_com: _StructList = _StructList(3, dtype=wp.vec3)
+        self.body_q: _StructList = _StructList(7, dtype=wp.transform)
         self.body_qd = []
         self.body_label = []
         self.body_lock_inertia = []
@@ -892,9 +892,15 @@ class ModelBuilder:
         self.joint_parents = {}  # mapping from child body to parent bodies
         self.joint_children = {}  # mapping from parent body to child bodies
         self.joint_child = _IntIndexList()  # index of the child body                       (constant)
-        self.joint_axis = []  # joint axis in joint parent anchor frame        (constant)
-        self.joint_X_p = []  # frame of joint in parent                      (constant)
-        self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
+        self.joint_axis: _StructList = _StructList(
+            3, dtype=wp.vec3
+        )  # joint axis in joint parent anchor frame        (constant)
+        self.joint_X_p: _StructList = _StructList(
+            7, dtype=wp.transform
+        )  # frame of joint in parent                      (constant)
+        self.joint_X_c: _StructList = _StructList(
+            7, dtype=wp.transform
+        )  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
         self.joint_qd = []
         self.joint_cts = []
@@ -8758,7 +8764,11 @@ class ModelBuilder:
             # collision geometry
 
             m.shape_label = self.shape_label
-            m.shape_transform = wp.array(self.shape_transform, dtype=wp.transform, requires_grad=requires_grad)
+            m.shape_transform = wp.array(
+                np.frombuffer(self.shape_transform._data, dtype=np.float32).copy(),
+                dtype=wp.transform,
+                requires_grad=requires_grad,
+            )
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
@@ -8781,7 +8791,11 @@ class ModelBuilder:
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
-            m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
+            m.shape_scale = wp.array(
+                np.frombuffer(self.shape_scale._data, dtype=np.float32).copy(),
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
             m.shape_thickness = wp.array(self.shape_thickness, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_collision_radius = wp.array(
@@ -8824,6 +8838,10 @@ class ModelBuilder:
             voxel_resolution = []
             voxel_budget = 100  # Maximum voxels per shape for contact reduction
 
+            # Pre-compute numpy view of shape_scale for fast per-element access in the loops below.
+            # Using _StructList.__iter__ would create a new wp.vec3 per element (slow for large N).
+            _shape_scale_np = np.frombuffer(self.shape_scale._data, dtype=np.float32).reshape(-1, 3)
+
             # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
             # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
             shape_aabb_cache = {}
@@ -8857,13 +8875,15 @@ class ModelBuilder:
                 return nx, ny, nz
 
             for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
+                zip(self.shape_type, self.shape_source, _shape_scale_np, strict=True)
             ):
-                # Create cache key based on shape type and parameters
+                # Create cache key based on shape type and parameters.
+                # Use tobytes() for the scale part: faster than tuple() and safe as a dict key.
+                scale_key = shape_scale.tobytes()
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
-                    cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                    cache_key = (shape_type, id(shape_src), scale_key)
                 else:
-                    cache_key = (shape_type, tuple(shape_scale))
+                    cache_key = (shape_type, scale_key)
 
                 # Check cache first
                 if cache_key in shape_aabb_cache:
@@ -8992,7 +9012,7 @@ class ModelBuilder:
                 shape_type = self.shape_type[i]
                 shape_src = self.shape_source[i]
                 shape_flags = self.shape_flags[i]
-                shape_scale = self.shape_scale[i]
+                shape_scale = _shape_scale_np[i]
                 shape_thickness = self.shape_thickness[i]
                 shape_contact_margin = self.shape_contact_margin[i]
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
@@ -9202,16 +9222,30 @@ class ModelBuilder:
                     # For detailed validation, create arrays from builder data (which were updated)
                     m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
                     m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    m.body_inertia = wp.array(
+                        np.frombuffer(self.body_inertia._data, dtype=np.float32).copy(),
+                        dtype=wp.mat33,
+                        requires_grad=requires_grad,
+                    )
+                    m.body_inv_inertia = wp.array(
+                        np.frombuffer(self.body_inv_inertia._data, dtype=np.float32).copy(),
+                        dtype=wp.mat33,
+                        requires_grad=requires_grad,
+                    )
                 else:
                     # Use fast Warp kernel validation
                     # First create arrays for the kernel
                     body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    body_inertia_array = wp.array(
+                        np.frombuffer(self.body_inertia._data, dtype=np.float32).copy(),
+                        dtype=wp.mat33,
+                        requires_grad=requires_grad,
+                    )
                     body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
                     body_inv_inertia_array = wp.array(
-                        self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
+                        np.frombuffer(self.body_inv_inertia._data, dtype=np.float32).copy(),
+                        dtype=wp.mat33,
+                        requires_grad=requires_grad,
                     )
                     correction_flags = wp.zeros(len(self.body_mass), dtype=wp.bool)
 
@@ -9250,12 +9284,28 @@ class ModelBuilder:
                 # No bodies, create empty arrays
                 m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
                 m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                m.body_inertia = wp.array(
+                    np.frombuffer(self.body_inertia._data, dtype=np.float32).copy(),
+                    dtype=wp.mat33,
+                    requires_grad=requires_grad,
+                )
+                m.body_inv_inertia = wp.array(
+                    np.frombuffer(self.body_inv_inertia._data, dtype=np.float32).copy(),
+                    dtype=wp.mat33,
+                    requires_grad=requires_grad,
+                )
 
-            m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
+            m.body_q = wp.array(
+                np.frombuffer(self.body_q._data, dtype=np.float32).copy(),
+                dtype=wp.transform,
+                requires_grad=requires_grad,
+            )
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
-            m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
+            m.body_com = wp.array(
+                np.frombuffer(self.body_com._data, dtype=np.float32).copy(),
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
             m.body_label = self.body_label
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
@@ -9271,10 +9321,22 @@ class ModelBuilder:
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
-            m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
+            m.joint_X_p = wp.array(
+                np.frombuffer(self.joint_X_p._data, dtype=np.float32).copy(),
+                dtype=wp.transform,
+                requires_grad=requires_grad,
+            )
+            m.joint_X_c = wp.array(
+                np.frombuffer(self.joint_X_c._data, dtype=np.float32).copy(),
+                dtype=wp.transform,
+                requires_grad=requires_grad,
+            )
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
-            m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
+            m.joint_axis = wp.array(
+                np.frombuffer(self.joint_axis._data, dtype=np.float32).copy(),
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_label = self.joint_label
