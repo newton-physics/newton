@@ -166,6 +166,9 @@ _AB_CACHE_KEY: str = "_ab_has_custom_vals"  # bool: any non-empty custom attr va
 _AB_SRCS_KEY: str = "_ab_attr_srcs"  # tuple of (attr_name, src_list) pairs for _ALL_BUILDER_ATTRS
 _AB_CUSTOM_DECL_KEY: str = "_ab_custom_decl_id"  # id(self) after schema declared into self
 _AB_GRAVITY_VEC_KEY: str = "_ab_gravity_vec"  # pre-computed (gx, gy, gz) gravity tuple for this builder
+# Cached default-gravity tuple stored on the *self* (main) builder by begin_world.
+# Avoids recomputing up_axis.to_vector() + genexpr on every begin_world(gravity=None) call.
+_BW_GRAVITY_VEC_KEY: str = "_bw_gravity_vec"
 
 
 class ModelBuilder:
@@ -2412,7 +2415,17 @@ class ModelBuilder:
         if gravity is not None:
             self.world_gravity.append(tuple(gravity))
         else:
-            self.world_gravity.append(tuple(g * self.gravity for g in self.up_axis.to_vector()))
+            # Cache the computed gravity tuple to avoid repeating up_axis.to_vector() on every
+            # begin_world(gravity=None) call (e.g. 256x inside replicate()).
+            # The cache stores (gravity_scalar, up_axis, gravity_vec) and is recomputed whenever
+            # self.gravity or self.up_axis changes.
+            _sd = self.__dict__
+            _bw = _sd.get(_BW_GRAVITY_VEC_KEY)
+            if _bw is None or _bw[0] != self.gravity or _bw[1] is not self.up_axis:
+                _g = self.gravity
+                _bw = (_g, self.up_axis, tuple(v * _g for v in self.up_axis.to_vector()))
+                _sd[_BW_GRAVITY_VEC_KEY] = _bw
+            self.world_gravity.append(_bw[2])
 
     def end_world(self):
         """End the current world context and return to global scope.
