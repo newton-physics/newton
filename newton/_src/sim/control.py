@@ -51,6 +51,13 @@ class Control:
         self.joint_target_vel: wp.array | None = None
         """Per-DOF velocity targets [m/s or rad/s, depending on joint type], shape ``(joint_dof_count,)``, type ``float`` (optional)."""
 
+        self.joint_act: wp.array | None = None
+        """Per-DOF feedforward actuation input, shape ``(joint_dof_count,)``, type ``float`` (optional).
+
+        This is an additive feedforward term used by actuators (e.g. :class:`ActuatorPD`) in their control law
+        before PD/PID correction is applied.
+        """
+
         self.tri_activations: wp.array | None = None
         """Array of triangle element activations [dimensionless] with shape ``(tri_count,)`` and type ``float``."""
 
@@ -80,6 +87,8 @@ class Control:
             self.joint_target_pos.zero_()
         if self.joint_target_vel is not None:
             self.joint_target_vel.zero_()
+        if self.joint_act is not None:
+            self.joint_act.zero_()
         self._clear_namespaced_arrays()
 
     def _clear_namespaced_arrays(self) -> None:

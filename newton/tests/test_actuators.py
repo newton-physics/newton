@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -314,7 +314,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         for _i in range(num_articulations_per_world):
             single_world_builder.add_builder(single_articulation_builder)
 
-        # Customise the articulation keys in single_world_builder
+        # Customise the articulation labels in single_world_builder
         single_world_builder.articulation_label[1] = "art1"
         if use_multiple_artics_per_view:
             single_world_builder.articulation_label[0] = "art1"
@@ -472,6 +472,185 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
     def test_actuator_selection_two_per_view_with_mask(self):
         self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
+
+
+class TestActuatorStepIntegration(unittest.TestCase):
+    """Tests for actuator.step() with real Model/State/Control objects.
+
+    Verifies the end-to-end flow: set targets on Control -> call actuator.step()
+    -> forces written to control.joint_f.
+
+    Uses add_link() (not add_body()) to avoid implicit free joints that would
+    cause DOF/coord index mismatch when the actuator indexes into joint_q.
+    """
+
+    def _build_chain_model(self, num_joints, actuator_cls, actuator_kwargs):
+        """Helper: build a revolute chain with add_link, add one actuator per joint, finalize."""
+        builder = newton.ModelBuilder()
+        links = [builder.add_link() for _ in range(num_joints)]
+        joints = []
+        for i, link in enumerate(links):
+            parent = -1 if i == 0 else links[i - 1]
+            joints.append(builder.add_joint_revolute(parent=parent, child=link, axis=newton.Axis.Z))
+        builder.add_articulation(joints)
+        dofs = [builder.joint_qd_start[j] for j in joints]
+        for dof in dofs:
+            builder.add_actuator(actuator_cls, input_indices=[dof], **actuator_kwargs)
+        return builder.finalize(), dofs
+
+    def _set_control_array(self, model, control_array, dof_indices, values):
+        """Write values into a control array at the given DOF indices."""
+        arr_np = control_array.numpy()
+        for dof, val in zip(dof_indices, values, strict=True):
+            arr_np[dof] = val
+        wp.copy(control_array, wp.array(arr_np, dtype=float, device=model.device))
+
+    def test_pd_step_position_error(self):
+        """ActuatorPD: force = kp * (target_pos - q) when kd=0, gear=1."""
+        model, dofs = self._build_chain_model(3, ActuatorPD, {"kp": 100.0})
+        state = model.state()
+        control = model.control()
+        control.joint_f.zero_()
+
+        self._set_control_array(model, control.joint_target_pos, dofs, [1.0, 2.0, 3.0])
+
+        actuator = model.actuators[0]
+        actuator.step(state, control)
+
+        forces = control.joint_f.numpy()
+        np.testing.assert_allclose(
+            [forces[d] for d in dofs],
+            [100.0, 200.0, 300.0],
+            rtol=1e-5,
+        )
+
+    def test_pd_step_velocity_error(self):
+        """ActuatorPD: force includes kd * (target_vel - qd)."""
+        model, dofs = self._build_chain_model(2, ActuatorPD, {"kp": 0.0, "kd": 10.0})
+        state = model.state()
+        control = model.control()
+        control.joint_f.zero_()
+
+        self._set_control_array(model, control.joint_target_vel, dofs, [5.0, -3.0])
+
+        actuator = model.actuators[0]
+        actuator.step(state, control)
+
+        forces = control.joint_f.numpy()
+        np.testing.assert_allclose(
+            [forces[d] for d in dofs],
+            [50.0, -30.0],
+            rtol=1e-5,
+        )
+
+    def test_pd_step_feedforward_joint_act(self):
+        """ActuatorPD: feedforward joint_act term is added to the output force."""
+        model, dofs = self._build_chain_model(2, ActuatorPD, {"kp": 0.0})
+        state = model.state()
+        control = model.control()
+        control.joint_f.zero_()
+
+        self._set_control_array(model, control.joint_act, dofs, [7.0, -3.0])
+
+        actuator = model.actuators[0]
+        actuator.step(state, control)
+
+        forces = control.joint_f.numpy()
+        np.testing.assert_allclose(
+            [forces[d] for d in dofs],
+            [7.0, -3.0],
+            rtol=1e-5,
+        )
+
+    def test_pd_step_gear_and_clamp(self):
+        """ActuatorPD: gear ratio scales error and force is clamped to max_force."""
+        model, dofs = self._build_chain_model(1, ActuatorPD, {"kp": 100.0, "gear": 2.0, "max_force": 50.0})
+        state = model.state()
+        control = model.control()
+        control.joint_f.zero_()
+
+        self._set_control_array(model, control.joint_target_pos, dofs, [1.0])
+
+        actuator = model.actuators[0]
+        actuator.step(state, control)
+
+        # gear=2, q=0: force = 2 * (100 * (1 - 2*0)) = 200, clamped to 50
+        forces = control.joint_f.numpy()
+        self.assertAlmostEqual(forces[dofs[0]], 50.0, places=5)
+
+    def test_pd_step_constant_force(self):
+        """ActuatorPD: constant_force offset is included in output."""
+        model, dofs = self._build_chain_model(1, ActuatorPD, {"kp": 0.0, "constant_force": 42.0})
+        state = model.state()
+        control = model.control()
+        control.joint_f.zero_()
+
+        actuator = model.actuators[0]
+        actuator.step(state, control)
+
+        forces = control.joint_f.numpy()
+        self.assertAlmostEqual(forces[dofs[0]], 42.0, places=5)
+
+    def test_pid_step_integral_accumulation(self):
+        """ActuatorPID: integral term accumulates over multiple steps."""
+        model, dofs = self._build_chain_model(1, ActuatorPID, {"kp": 0.0, "ki": 10.0, "kd": 0.0})
+        state = model.state()
+        control = model.control()
+
+        self._set_control_array(model, control.joint_target_pos, dofs, [1.0])
+
+        actuator = model.actuators[0]
+        state_a = actuator.state()
+        state_b = actuator.state()
+        dt = 0.01
+
+        forces_over_time = []
+        for step_i in range(3):
+            control.joint_f.zero_()
+            if step_i % 2 == 0:
+                current, nxt = state_a, state_b
+            else:
+                current, nxt = state_b, state_a
+            actuator.step(state, control, current, nxt, dt)
+            forces_over_time.append(control.joint_f.numpy()[dofs[0]])
+
+        # integral after step 0: 1.0 * 0.01 = 0.01, force = ki * integral = 0.1
+        # integral after step 1: 0.01 + 0.01 = 0.02, force = 0.2
+        # integral after step 2: 0.02 + 0.01 = 0.03, force = 0.3
+        np.testing.assert_allclose(forces_over_time, [0.1, 0.2, 0.3], rtol=1e-4)
+
+    def test_delayed_pd_step_delay_behavior(self):
+        """ActuatorDelayedPD: targets are delayed by N steps with real Model objects."""
+        delay = 2
+        model, dofs = self._build_chain_model(1, ActuatorDelayedPD, {"kp": 1.0, "delay": delay})
+        state = model.state()
+
+        actuator = model.actuators[0]
+        state_a = actuator.state()
+        state_b = actuator.state()
+        dt = 0.01
+
+        force_history = []
+        for step_i in range(delay + 2):
+            control = model.control()
+            control.joint_f.zero_()
+            target_val = float(step_i + 1) * 10.0
+            self._set_control_array(model, control.joint_target_pos, dofs, [target_val])
+
+            if step_i % 2 == 0:
+                current, nxt = state_a, state_b
+            else:
+                current, nxt = state_b, state_a
+            actuator.step(state, control, current, nxt, dt)
+            force_history.append(control.joint_f.numpy()[dofs[0]])
+
+        # Steps 0..(delay-1) produce zero (buffer filling)
+        for i in range(delay):
+            self.assertEqual(force_history[i], 0.0, f"Step {i}: expected 0 during fill phase")
+
+        # Step 2 uses target from step 0 (10.0), step 3 uses target from step 1 (20.0)
+        self.assertAlmostEqual(force_history[delay], 10.0, places=4)
+        self.assertAlmostEqual(force_history[delay + 1], 20.0, places=4)
 
 
 if __name__ == "__main__":

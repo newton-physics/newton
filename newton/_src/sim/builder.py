@@ -902,6 +902,7 @@ class ModelBuilder:
         self.joint_qd = []
         self.joint_cts = []
         self.joint_f = []
+        self.joint_act = []
 
         self.joint_type = []
         self.joint_label = []
@@ -2758,6 +2759,7 @@ class ModelBuilder:
             "joint_qd",
             "joint_cts",
             "joint_f",
+            "joint_act",
             "joint_target_pos",
             "joint_target_vel",
             "joint_limit_lower",
@@ -3285,6 +3287,7 @@ class ModelBuilder:
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
+            self.joint_act.append(0.0)
         for _ in range(cts_count):
             self.joint_cts.append(0.0)
 
@@ -9292,6 +9295,7 @@ class ModelBuilder:
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
