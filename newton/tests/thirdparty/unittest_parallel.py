@@ -281,33 +281,33 @@ def main(argv=None):
                 print(file=sys.stderr)
 
             # Create the shared index object used in Warp caches (NVIDIA Modification)
-            manager = multiprocessing.Manager()
-            shared_index = manager.Value("i", -1)
+            with multiprocessing.Manager() as manager:
+                shared_index = manager.Value("i", -1)
 
-            # Run the tests in parallel
-            start_time = time.perf_counter()
+                # Run the tests in parallel
+                start_time = time.perf_counter()
 
-            if args.disable_concurrent_futures:
-                multiprocessing_context = multiprocessing.get_context(method="spawn")
-                maxtasksperchild = 1 if args.disable_process_pooling else None
-                with multiprocessing_context.Pool(
-                    process_count,
-                    maxtasksperchild=maxtasksperchild,
-                    initializer=initialize_test_process,
-                    initargs=(manager.Lock(), shared_index, args, temp_dir),
-                ) as pool:
-                    test_manager = ParallelTestManager(manager, args, temp_dir)
-                    results = pool.map(test_manager.run_tests, test_suites)
-            else:
-                # NVIDIA Modification added concurrent.futures
-                with concurrent.futures.ProcessPoolExecutor(
-                    max_workers=process_count,
-                    mp_context=multiprocessing.get_context(method="spawn"),
-                    initializer=initialize_test_process,
-                    initargs=(manager.Lock(), shared_index, args, temp_dir),
-                ) as executor:
-                    test_manager = ParallelTestManager(manager, args, temp_dir)
-                    results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
+                if args.disable_concurrent_futures:
+                    multiprocessing_context = multiprocessing.get_context(method="spawn")
+                    maxtasksperchild = 1 if args.disable_process_pooling else None
+                    with multiprocessing_context.Pool(
+                        process_count,
+                        maxtasksperchild=maxtasksperchild,
+                        initializer=initialize_test_process,
+                        initargs=(manager.Lock(), shared_index, args, temp_dir),
+                    ) as pool:
+                        test_manager = ParallelTestManager(manager, args, temp_dir)
+                        results = pool.map(test_manager.run_tests, test_suites)
+                else:
+                    # NVIDIA Modification added concurrent.futures
+                    with concurrent.futures.ProcessPoolExecutor(
+                        max_workers=process_count,
+                        mp_context=multiprocessing.get_context(method="spawn"),
+                        initializer=initialize_test_process,
+                        initargs=(manager.Lock(), shared_index, args, temp_dir),
+                    ) as executor:
+                        test_manager = ParallelTestManager(manager, args, temp_dir)
+                        results = list(executor.map(test_manager.run_tests, test_suites, timeout=2400))
         else:
             # This entire path is an NVIDIA Modification
 
@@ -481,6 +481,13 @@ def _iter_test_cases(test_suite):
 
 
 class ParallelTestManager:
+    # Manager proxy calls can fail with ConnectionError, TypeError, or OSError
+    # due to a TOCTOU race in Connection.send() where GC can close the
+    # connection handle between the closed-check and the write call
+    # (see https://github.com/python/cpython/issues/84582). Since failfast
+    # is a best-effort optimization, we log a warning and continue.
+    _PROXY_ERRORS = (ConnectionError, TypeError, OSError)
+
     def __init__(self, manager, args, temp_dir):
         self.args = args
         self.temp_dir = temp_dir
@@ -488,8 +495,14 @@ class ParallelTestManager:
 
     def run_tests(self, test_suite):
         # Fail fast?
-        if self.failfast.is_set():
-            return [0, [], [], 0, 0, 0, []]  # NVIDIA Modification
+        try:
+            if self.failfast.is_set():
+                return [0, [], [], 0, 0, 0, []]  # NVIDIA Modification
+        except self._PROXY_ERRORS as exc:
+            print(
+                f"Warning: failfast proxy is_set() failed ({type(exc).__name__}), continuing test execution",
+                file=sys.stderr,
+            )
 
         # NVIDIA Modification for GitLab
         import newton.tests.unittest_utils  # noqa: PLC0415
@@ -516,7 +529,14 @@ class ParallelTestManager:
 
             # Set failfast, if necessary
             if result.shouldStop:
-                self.failfast.set()
+                try:
+                    self.failfast.set()
+                except self._PROXY_ERRORS as exc:
+                    print(
+                        f"Warning: failfast proxy set() failed ({type(exc).__name__}), "
+                        "other workers may not stop early",
+                        file=sys.stderr,
+                    )
 
             # Return (test_count, errors, failures, skipped_count, expected_failure_count, unexpected_success_count)
             return (
