@@ -712,6 +712,10 @@ class ModelBuilder:
         """
         self.world_count = 0
 
+        # Internal flag set by replicate() to defer body_shapes / joint lookup-dict
+        # construction until all worlds are added, then rebuild in bulk (faster).
+        self._deferred_lookup_rebuild: bool = False
+
         # region defaults
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
@@ -1574,8 +1578,17 @@ class ModelBuilder:
                 Defaults to (0.0, 0.0, 0.0).
         """
         if all(s == 0.0 for s in spacing):
-            for _ in range(world_count):
-                self.add_world(builder, xform=None)
+            # Defer body_shapes / joint_parents / joint_children construction
+            # until after all worlds are added; rebuild in a single bulk pass.
+            start_shape_idx = self.shape_count
+            start_joint_idx = self.joint_count
+            self._deferred_lookup_rebuild = True
+            try:
+                for _ in range(world_count):
+                    self.add_world(builder, xform=None)
+            finally:
+                self._deferred_lookup_rebuild = False
+            self._rebuild_lookup_dicts(start_shape_idx, start_joint_idx)
         else:
             offsets = compute_world_offsets(world_count, spacing, self.up_axis)
             xform = wp.transform_identity()
@@ -2468,12 +2481,13 @@ class ModelBuilder:
                     # apply offset transform to root bodies
                     self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
 
-        for b, shapes in builder.body_shapes.items():
-            remapped_shapes = [s + start_shape_idx for s in shapes]
-            if b == -1:
-                self.body_shapes[-1].extend(remapped_shapes)
-            else:
-                self.body_shapes[b + start_body_idx] = remapped_shapes
+        if not self._deferred_lookup_rebuild:
+            for b, shapes in builder.body_shapes.items():
+                remapped_shapes = [s + start_shape_idx for s in shapes]
+                if b == -1:
+                    self.body_shapes[-1].extend(remapped_shapes)
+                else:
+                    self.body_shapes[b + start_body_idx] = remapped_shapes
 
         if builder.joint_count:
             start_q = len(self.joint_q)
@@ -2497,19 +2511,20 @@ class ModelBuilder:
             self.joint_parent.extend_with_offset_except(builder.joint_parent, start_body_idx, sentinel=-1)
             self.joint_child.extend_with_offset(builder.joint_child, start_body_idx)
 
-            # Update parent/child lookups using inline-offset originals (avoids temp _IntIndexList objects)
-            for parent_orig, child_orig in zip(builder.joint_parent, builder.joint_child, strict=True):
-                p = parent_orig if parent_orig == -1 else parent_orig + start_body_idx
-                c = child_orig + start_body_idx
-                if c not in self.joint_parents:
-                    self.joint_parents[c] = [p]
-                else:
-                    self.joint_parents[c].append(p)
+            if not self._deferred_lookup_rebuild:
+                # Update parent/child lookups using inline-offset originals (avoids temp _IntIndexList objects)
+                for parent_orig, child_orig in zip(builder.joint_parent, builder.joint_child, strict=True):
+                    p = parent_orig if parent_orig == -1 else parent_orig + start_body_idx
+                    c = child_orig + start_body_idx
+                    if c not in self.joint_parents:
+                        self.joint_parents[c] = [p]
+                    else:
+                        self.joint_parents[c].append(p)
 
-                if p not in self.joint_children:
-                    self.joint_children[p] = [c]
-                elif c not in self.joint_children[p]:
-                    self.joint_children[p].append(c)
+                    if p not in self.joint_children:
+                        self.joint_children[p] = [c]
+                    elif c not in self.joint_children[p]:
+                        self.joint_children[p].append(c)
 
             self.joint_q_start.extend_with_offset(builder.joint_q_start, self.joint_coord_count)
             self.joint_qd_start.extend_with_offset(builder.joint_qd_start, self.joint_dof_count)
@@ -2896,6 +2911,35 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+
+    def _rebuild_lookup_dicts(self, start_shape_idx: int, start_joint_idx: int) -> None:
+        """Rebuild body_shapes and joint_parents/children from flat arrays.
+
+        Called by replicate() after all worlds are added to avoid building these
+        lookup dicts incrementally (which has O(N x M) Python overhead per world).
+        """
+        # body_shapes: group shape indices by body index
+        for shape_idx in range(start_shape_idx, self.shape_count):
+            b = self.shape_body[shape_idx]
+            if b == -1:
+                self.body_shapes[-1].append(shape_idx)
+            elif b not in self.body_shapes:
+                self.body_shapes[b] = [shape_idx]
+            else:
+                self.body_shapes[b].append(shape_idx)
+
+        # joint_parents / joint_children: iterate flat joint arrays
+        # In the replicate case all child body indices are unique, so joint_parents[c]
+        # is always a fresh entry.  Joint children are also unique per non-root joint
+        # (root joints share parent=-1 and are handled with a plain append).
+        for joint_idx in range(start_joint_idx, self.joint_count):
+            p = self.joint_parent[joint_idx]
+            c = self.joint_child[joint_idx]
+            self.joint_parents[c] = [p]  # c is always a new key in the replicate case
+            if p not in self.joint_children:
+                self.joint_children[p] = [c]
+            else:
+                self.joint_children[p].append(c)
 
     @staticmethod
     def _coerce_mat33(value: Any) -> wp.mat33:
