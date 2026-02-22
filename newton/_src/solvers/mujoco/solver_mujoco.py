@@ -2483,6 +2483,13 @@ class SolverMuJoCo(SolverBase):
                 act.set_to_position(**shortcut_args)
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
+            elif dampratio > 0:
+                if wp.config.verbose:
+                    print(
+                        f"Warning: actuator {mujoco_act_idx} has dampratio={dampratio} "
+                        f"but does not match position/velocity shortcut pattern. "
+                        f"dampratio will be ignored."
+                    )
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
