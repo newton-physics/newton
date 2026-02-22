@@ -161,6 +161,11 @@ _LABEL_ATTRS: tuple[str, ...] = (
 # Combined set for the common case (no label prefix): a single loop over all plain-extend attrs.
 _ALL_BUILDER_ATTRS: tuple[str, ...] = _MORE_BUILDER_ATTRS + _LABEL_ATTRS
 
+# Cache keys stored on builder.__dict__ to amortize cost across replicate() calls.
+_AB_CACHE_KEY: str = "_ab_has_custom_vals"  # bool: any non-empty custom attr values in builder
+_AB_SRCS_KEY: str = "_ab_attr_srcs"  # tuple of (attr_name, src_list) pairs for _ALL_BUILDER_ATTRS
+_AB_CUSTOM_DECL_KEY: str = "_ab_custom_decl_id"  # id(self) after schema declared into self
+
 
 class ModelBuilder:
     """A helper class for building simulation models at runtime.
@@ -2528,42 +2533,30 @@ class ModelBuilder:
         self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
-        # explicitly resolve the transform multiplication function to avoid
-        # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
+        # Cache builder counts once to bypass repeated property-descriptor overhead per call.
+        b_particle_count = len(builder_dict["particle_q"])
+        b_body_count = len(builder_dict["body_q"])
+        b_shape_count = len(builder_dict["shape_type"])
+        b_joint_count = len(builder_dict["joint_type"])
+        b_articulation_count = len(builder_dict["articulation_start"])
 
-        # dispatches two transform multiplies to the native implementation
-        def transform_mul(a, b):
-            out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-            transform_mul_cfunc(a, b, ctypes.byref(out))
-            return out
+        # Read start indices via __dict__ to bypass property descriptor overhead.
+        start_particle_idx = len(self_dict["particle_q"])
+        start_body_idx = len(self_dict["body_q"])
+        start_shape_idx = len(self_dict["shape_type"])
+        start_joint_idx = len(self_dict["joint_type"])
+        start_joint_dof_idx = self_dict["joint_dof_count"]
+        start_joint_coord_idx = self_dict["joint_coord_count"]
+        start_joint_constraint_idx = self_dict["joint_constraint_count"]
+        start_articulation_idx = len(self_dict["articulation_start"])
+        start_equality_constraint_idx = len(self_dict["equality_constraint_type"])
+        start_constraint_mimic_idx = len(self_dict["constraint_mimic_joint0"])
+        start_edge_idx = len(self_dict["edge_rest_angle"])
+        start_triangle_idx = len(self_dict["tri_poses"])
+        start_tetrahedron_idx = len(self_dict["tet_poses"])
+        start_spring_idx = len(self_dict["spring_rest_length"])
 
-        def remap_indices(values: Iterable[int], offset: int) -> _IntIndexList:
-            remapped = _IntIndexList()
-            remapped.extend_with_offset(values, offset)
-            return remapped
-
-        def remap_indices_except(values: Iterable[int], offset: int, sentinel: int = -1) -> _IntIndexList:
-            remapped = _IntIndexList()
-            remapped.extend_with_offset_except(values, offset, sentinel=sentinel)
-            return remapped
-
-        start_particle_idx = self.particle_count
-        start_body_idx = self.body_count
-        start_shape_idx = self.shape_count
-        start_joint_idx = self.joint_count
-        start_joint_dof_idx = self.joint_dof_count
-        start_joint_coord_idx = self.joint_coord_count
-        start_joint_constraint_idx = self.joint_constraint_count
-        start_articulation_idx = self.articulation_count
-        start_equality_constraint_idx = len(self.equality_constraint_type)
-        start_constraint_mimic_idx = len(self.constraint_mimic_joint0)
-        start_edge_idx = self.edge_count
-        start_triangle_idx = self.tri_count
-        start_tetrahedron_idx = self.tet_count
-        start_spring_idx = self.spring_count
-
-        if builder.particle_count:
+        if b_particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
             if xform is not None:
                 pos_offset = xform.p
@@ -2590,13 +2583,19 @@ class ModelBuilder:
             self.particle_color_groups, builder_coloring_translated
         )
 
-        start_body_idx = self.body_count
-        start_shape_idx = self.shape_count
         if xform is None:
             # Fast path: no transform to apply — extend in bulk
             self.shape_body.extend_with_offset_nonnegative(builder.shape_body, start_body_idx)
             self.shape_transform.extend(builder.shape_transform)
         else:
+            # Resolve transform multiply only when xform is given (avoids 5 attr lookups + def on hot path).
+            transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
+
+            def transform_mul(a, b):
+                out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
+                transform_mul_cfunc(a, b, ctypes.byref(out))
+                return out
+
             for s, b in enumerate(builder.shape_body):
                 if b > -1:
                     self.shape_body.append(b + start_body_idx)
@@ -2614,9 +2613,9 @@ class ModelBuilder:
                 else:
                     self.body_shapes[b + start_body_idx] = remapped_shapes
 
-        if builder.joint_count:
-            start_q = len(self.joint_q)
-            start_X_p = len(self.joint_X_p)
+        if b_joint_count:
+            start_q = start_joint_coord_idx
+            start_X_p = start_joint_idx
             self.joint_X_p.extend(builder.joint_X_p)
             self.joint_q.extend(builder.joint_q)
             if xform is not None:
@@ -2631,7 +2630,7 @@ class ModelBuilder:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
-            self.articulation_start.extend_with_offset(builder.articulation_start, self.joint_count)
+            self.articulation_start.extend_with_offset(builder.articulation_start, start_joint_idx)
 
             self.joint_parent.extend_with_offset_except(builder.joint_parent, start_body_idx, sentinel=-1)
             self.joint_child.extend_with_offset(builder.joint_child, start_body_idx)
@@ -2651,12 +2650,12 @@ class ModelBuilder:
                     elif c not in self.joint_children[p]:
                         self.joint_children[p].append(c)
 
-            self.joint_q_start.extend_with_offset(builder.joint_q_start, self.joint_coord_count)
-            self.joint_qd_start.extend_with_offset(builder.joint_qd_start, self.joint_dof_count)
-            self.joint_cts_start.extend_with_offset(builder.joint_cts_start, self.joint_constraint_count)
+            self.joint_q_start.extend_with_offset(builder.joint_q_start, start_joint_coord_idx)
+            self.joint_qd_start.extend_with_offset(builder.joint_qd_start, start_joint_dof_idx)
+            self.joint_cts_start.extend_with_offset(builder.joint_cts_start, start_joint_constraint_idx)
 
         if xform is not None:
-            for i in range(builder.body_count):
+            for i in range(b_body_count):
                 self.body_q.append(transform_mul(xform, builder.body_q[i]))
         else:
             self.body_q.extend(builder.body_q)
@@ -2667,29 +2666,29 @@ class ModelBuilder:
         # Copy collision filter pairs with offset
         self.shape_collision_filter_pairs.extend_with_offset(builder.shape_collision_filter_pairs, start_shape_idx)
 
-        # Handle world assignments
+        # Handle world assignments (use cached counts to avoid repeated property calls).
         # For particles
-        if builder.particle_count > 0:
+        if b_particle_count > 0:
             # Override all world indices with current world
-            self.particle_world.extend([cw] * builder.particle_count)
+            self.particle_world.extend([cw] * b_particle_count)
 
         # For bodies
-        if builder.body_count > 0:
-            self.body_world.extend([cw] * builder.body_count)
+        if b_body_count > 0:
+            self.body_world.extend([cw] * b_body_count)
 
         # For shapes
-        if builder.shape_count > 0:
-            self.shape_world.extend([cw] * builder.shape_count)
+        if b_shape_count > 0:
+            self.shape_world.extend([cw] * b_shape_count)
 
         # For joints
-        if builder.joint_count > 0:
-            self.joint_world.extend([cw] * builder.joint_count)
+        if b_joint_count > 0:
+            self.joint_world.extend([cw] * b_joint_count)
             # Offset articulation indices for joints (-1 stays -1)
             self.joint_articulation.extend_with_offset_nonnegative(builder.joint_articulation, start_articulation_idx)
 
         # For articulations
-        if builder.articulation_count > 0:
-            self.articulation_world.extend([cw] * builder.articulation_count)
+        if b_articulation_count > 0:
+            self.articulation_world.extend([cw] * b_articulation_count)
 
         # For equality constraints
         if len(builder.equality_constraint_type) > 0:
@@ -2734,11 +2733,16 @@ class ModelBuilder:
             else:
                 self.constraint_mimic_label.extend(builder.constraint_mimic_label)
 
+        # Pre-build or reuse (attr, src_list) pairs from builder — cached so the 68 dict lookups
+        # happen only on the first add_builder() call; reused cheaply on calls 2..N in replicate().
+        if _AB_SRCS_KEY not in builder_dict:
+            builder_dict[_AB_SRCS_KEY] = tuple((attr, builder_dict[attr]) for attr in _ALL_BUILDER_ATTRS)
+
         # Extend all plain-copy attributes using __dict__ access (faster than getattr for instance attrs).
         if label_prefix is None:
             # Fast path: no prefix — labels are plain extends, merged with _MORE_BUILDER_ATTRS.
-            for attr in _ALL_BUILDER_ATTRS:
-                self_dict[attr].extend(builder_dict[attr])
+            for attr, src in builder_dict[_AB_SRCS_KEY]:
+                self_dict[attr].extend(src)
         else:
             # Slow path: apply prefix to label attributes.
             for attr in _MORE_BUILDER_ATTRS:
@@ -2761,20 +2765,23 @@ class ModelBuilder:
         #
         # Cache the "any non-empty values?" answer on builder so it is computed once during
         # replicate() and reused for each subsequent add_builder() call.
-        _CACHE_KEY = "_ab_has_custom_vals"
-        if _CACHE_KEY not in builder_dict:
-            builder_dict[_CACHE_KEY] = any(bool(a.values) for a in builder.custom_attributes.values())
+        if _AB_CACHE_KEY not in builder_dict:
+            builder_dict[_AB_CACHE_KEY] = any(bool(a.values) for a in builder.custom_attributes.values())
 
-        if not builder_dict[_CACHE_KEY]:
+        if not builder_dict[_AB_CACHE_KEY]:
             # --- Fast path: declare new attrs (first call only) and update counts ---
-            for full_key, attr in builder.custom_attributes.items():
-                if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency
-                    mapped_values = [] if isinstance(freq_key, str) else {}
-                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
-            for freq_key, freq_obj in builder.custom_frequencies.items():
-                if freq_key not in self.custom_frequencies:
-                    self.custom_frequencies[freq_key] = freq_obj
+            # Skip schema-declaration loops after first call for this (self, builder) pair.
+            _self_id = id(self)
+            if builder_dict.get(_AB_CUSTOM_DECL_KEY) != _self_id:
+                builder_dict[_AB_CUSTOM_DECL_KEY] = _self_id
+                for full_key, attr in builder.custom_attributes.items():
+                    if full_key not in self.custom_attributes:
+                        freq_key = attr.frequency
+                        mapped_values = [] if isinstance(freq_key, str) else {}
+                        self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                for freq_key, freq_obj in builder.custom_frequencies.items():
+                    if freq_key not in self.custom_frequencies:
+                        self.custom_frequencies[freq_key] = freq_obj
             # No pre-snapshot needed: builder freq keys are disjoint per call, so reading
             # self._custom_frequency_counts in-place is safe.
             for freq_key, builder_count in builder._custom_frequency_counts.items():
@@ -2782,6 +2789,11 @@ class ModelBuilder:
                 self._custom_frequency_counts[freq_key] = old + builder_count
         else:
             # --- Full path: entity_offsets + closures + value merging ---
+            def remap_indices(values: Iterable[int], offset: int) -> _IntIndexList:
+                remapped = _IntIndexList()
+                remapped.extend_with_offset(values, offset)
+                return remapped
+
             # Shared offset map for both frequency and references
             # Note: "world" is NOT included here - WORLD frequency is handled specially
             entity_offsets = {
