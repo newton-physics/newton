@@ -2460,12 +2460,14 @@ class SolverMuJoCo(SolverBase):
                         shortcut_args["dampratio"] = dampratio
                     for key in ("biasprm", "biastype", "gainprm", "gaintype"):
                         general_args.pop(key, None)
-                # Velocity shortcut: biasprm = [0, 0, -kv]
+                # Velocity shortcut: biasprm = [0, 0, -kv] where kv = gainprm[0]
                 elif bp[0] == 0 and bp[1] == 0 and bp[2] != 0:
-                    shortcut = "velocity"
-                    shortcut_args["kv"] = general_args["gainprm"][0]
-                    for key in ("biasprm", "biastype", "gainprm", "gaintype"):
-                        general_args.pop(key, None)
+                    kv = general_args["gainprm"][0]
+                    if abs(bp[2] + kv) < 1e-8:
+                        shortcut = "velocity"
+                        shortcut_args["kv"] = kv
+                        for key in ("biasprm", "biastype", "gainprm", "gaintype"):
+                            general_args.pop(key, None)
 
             # Map trntype integer to MuJoCo enum and override default in general_args
             trntype_enum = {
