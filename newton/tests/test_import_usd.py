@@ -25,6 +25,7 @@ import newton
 import newton.examples
 import newton.usd as usd
 from newton import JointType
+from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
@@ -5946,6 +5947,104 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
         self.assertEqual(model.joint_dof_count, 3)  # 3 rotational axes
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collision_shape_visibility_flags(self):
+        """Collision shapes on bodies with visual shapes should not have the
+        VISIBLE flag so they are toggleable via the viewer's 'Show Collision'."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "BodyWithVisuals" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+    }
+}
+
+def Xform "BodyWithoutVisuals" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "CollisionSphere" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        # Default: collision shapes on bodies WITH visuals should NOT have VISIBLE
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        collision_with_visual = path_shape_map["/BodyWithVisuals/CollisionBox"]
+        flags_with_visual = builder.shape_flags[collision_with_visual]
+        self.assertTrue(flags_with_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_with_visual & ShapeFlags.VISIBLE)
+
+        # Collision shapes on bodies WITHOUT visuals should auto-get VISIBLE
+        collision_no_visual = path_shape_map["/BodyWithoutVisuals/CollisionSphere"]
+        flags_no_visual = builder.shape_flags[collision_no_visual]
+        self.assertTrue(flags_no_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_no_visual & ShapeFlags.VISIBLE)
+
+        # force_show_colliders=True: collision shapes always get VISIBLE
+        builder2 = newton.ModelBuilder()
+        result2 = builder2.add_usd(stage, force_show_colliders=True)
+        path_shape_map2 = result2["path_shape_map"]
+
+        collision_with_visual2 = path_shape_map2["/BodyWithVisuals/CollisionBox"]
+        flags_forced = builder2.shape_flags[collision_with_visual2]
+        self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
+
+        # hide_collision_shapes=True: no VISIBLE flag on any collision shape
+        builder3 = newton.ModelBuilder()
+        result3 = builder3.add_usd(stage, hide_collision_shapes=True)
+        path_shape_map3 = result3["path_shape_map"]
+
+        for path in ["/BodyWithVisuals/CollisionBox", "/BodyWithoutVisuals/CollisionSphere"]:
+            flags_hidden = builder3.shape_flags[path_shape_map3[path]]
+            self.assertFalse(flags_hidden & ShapeFlags.VISIBLE)
+
+        # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
+        builder4 = newton.ModelBuilder()
+        result4 = builder4.add_usd(stage, load_visual_shapes=False)
+        path_shape_map4 = result4["path_shape_map"]
+
+        collision_no_load = path_shape_map4["/BodyWithVisuals/CollisionBox"]
+        flags_no_load = builder4.shape_flags[collision_no_load]
+        self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
 
 if __name__ == "__main__":

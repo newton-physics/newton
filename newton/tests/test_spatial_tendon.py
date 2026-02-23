@@ -528,21 +528,23 @@ class TestMujocoSpatialTendon(unittest.TestCase):
 """
         builder = newton.ModelBuilder(gravity=0.0)
         SolverMuJoCo.register_custom_attributes(builder)
-        # The unknown site should produce a verbose warning during parsing
-        builder.add_mjcf(mjcf, parse_sites=True, verbose=True)
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            builder.add_mjcf(mjcf, parse_sites=True)
+
+            # Should have warned about the unknown site
+            site_warnings = [x for x in w if "unknown site" in str(x.message)]
+            self.assertGreater(len(site_warnings), 0, "Expected a warning about unknown site 'nonexistent_site'")
+
         model = builder.finalize()
 
-        # The tendon should have been skipped because one wrap element (the unknown site) was
-        # not resolved, leaving only one site which is below the minimum useful path length.
-        # Depending on how the parser handles it, there may be 0 tendons or 1 with 1 element.
-        mujoco_attrs = getattr(model, "mujoco", None)
-        if mujoco_attrs is not None and hasattr(mujoco_attrs, "tendon_type"):
-            tendon_type = mujoco_attrs.tendon_type.numpy()
-            # If a tendon was created, verify it has fewer wrap elements than expected
-            if len(tendon_type) > 0:
-                wrap_num = mujoco_attrs.tendon_wrap_num.numpy()
-                # Only the valid site should be in the wrap path (the unknown one was skipped)
-                self.assertLess(wrap_num[0], 2)
+        # The tendon was created with only 1 valid wrap element (s0), the unknown site was dropped.
+        mujoco_attrs = model.mujoco
+        tendon_type = mujoco_attrs.tendon_type.numpy()
+        self.assertEqual(len(tendon_type), 1)
+        wrap_num = mujoco_attrs.tendon_wrap_num.numpy()
+        self.assertEqual(wrap_num[0], 1)  # only the valid site
 
     def test_spatial_tendon_warning_out_of_bounds_wrap(self):
         """Verify that out-of-bounds wrap ranges produce a warning during solver init."""

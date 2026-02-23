@@ -696,7 +696,7 @@ def convert_mjw_contacts_to_newton_kernel(
     world = mj_contact_worldid[contact_idx]
     geoms_mjw = mj_contact_geom[contact_idx]
 
-    normal = wp.transpose(mj_contact_frame[contact_idx])[0]
+    normal = mj_contact_frame[contact_idx][0]
 
     rigid_contact_shape0[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[0]]
     rigid_contact_shape1[contact_idx] = mjc_geom_to_newton_shape[world, geoms_mjw[1]]

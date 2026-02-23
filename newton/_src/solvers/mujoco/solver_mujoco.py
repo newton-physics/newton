@@ -2214,6 +2214,15 @@ class SolverMuJoCo(SolverBase):
                         print(f"Warning: Skipping tendon {i} during MuJoCo export because it has no joint wraps.")
                     continue
 
+                if joint_start < 0 or joint_start + joint_num > joint_entry_count:
+                    warnings.warn(
+                        f"Skipping fixed tendon '{tendon_label}': joint range "
+                        f"[{joint_start}, {joint_start + joint_num}) "
+                        f"out of bounds for joint entries ({joint_entry_count}).",
+                        stacklevel=2,
+                    )
+                    continue
+
                 fixed_wraps: list[tuple[str, float]] = []
                 for j in range(joint_start, joint_start + joint_num):
                     if tendon_joint is None or tendon_coef is None:
@@ -2305,6 +2314,13 @@ class SolverMuJoCo(SolverBase):
                             )
                             spatial_wraps_valid = False
                             break
+                    else:
+                        warnings.warn(
+                            f"Skipping spatial tendon '{tendon_label}': unknown wrap type {wtype} at index {w}.",
+                            stacklevel=2,
+                        )
+                        spatial_wraps_valid = False
+                        break
                 if not spatial_wraps_valid:
                     continue
 
@@ -2394,6 +2410,7 @@ class SolverMuJoCo(SolverBase):
                         t.wrap_geom(geom_name, sidesite_name)
                     elif wtype == 2:
                         t.wrap_pulley(float(tendon_wrap_prm_np[w]))
+                    # else: unknown wtype — already rejected during pre-validation
 
         return selected_tendons, tendon_names
 
@@ -3850,20 +3867,38 @@ class SolverMuJoCo(SolverBase):
         selected_shapes_set = set(selected_shapes)
 
         # Compute shapes required by spatial tendons (sites, wrapping geoms, sidesites)
-        # so they are not skipped when skip_visual_only_geoms=True or include_sites=False
+        # so they are not skipped when skip_visual_only_geoms=True or include_sites=False.
+        # Only collect from template-world tendons to avoid inflating the count with
+        # shape indices from other worlds.
         tendon_required_shapes: set[int] = set()
         mujoco_attrs = getattr(model, "mujoco", None)
         if mujoco_attrs is not None:
             _wrap_shape = getattr(mujoco_attrs, "tendon_wrap_shape", None)
-            if _wrap_shape is not None:
-                for idx in _wrap_shape.numpy():
-                    if idx >= 0:
-                        tendon_required_shapes.add(int(idx))
             _wrap_sidesite = getattr(mujoco_attrs, "tendon_wrap_sidesite", None)
-            if _wrap_sidesite is not None:
-                for idx in _wrap_sidesite.numpy():
-                    if idx >= 0:
-                        tendon_required_shapes.add(int(idx))
+            _wrap_adr = getattr(mujoco_attrs, "tendon_wrap_adr", None)
+            _wrap_num = getattr(mujoco_attrs, "tendon_wrap_num", None)
+            _tendon_world = getattr(mujoco_attrs, "tendon_world", None)
+            if _wrap_shape is not None and _wrap_adr is not None and _wrap_num is not None:
+                wrap_shape_np = _wrap_shape.numpy()
+                wrap_sidesite_np = _wrap_sidesite.numpy() if _wrap_sidesite is not None else None
+                wrap_adr_np = _wrap_adr.numpy()
+                wrap_num_np = _wrap_num.numpy()
+                tendon_world_np = _tendon_world.numpy() if _tendon_world is not None else None
+                for ti in range(len(wrap_adr_np)):
+                    tw = int(tendon_world_np[ti]) if tendon_world_np is not None else 0
+                    if tw != first_world and tw >= 0:
+                        continue
+                    start = int(wrap_adr_np[ti])
+                    num = int(wrap_num_np[ti])
+                    for w in range(start, start + num):
+                        if w < len(wrap_shape_np):
+                            idx = int(wrap_shape_np[w])
+                            if idx >= 0:
+                                tendon_required_shapes.add(idx)
+                            if wrap_sidesite_np is not None and w < len(wrap_sidesite_np):
+                                ss = int(wrap_sidesite_np[w])
+                                if ss >= 0:
+                                    tendon_required_shapes.add(ss)
 
         def add_geoms(newton_body_id: int):
             body = mj_bodies[body_mapping[newton_body_id]]

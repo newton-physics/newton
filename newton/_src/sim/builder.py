@@ -50,7 +50,7 @@ from ..geometry import (
     Mesh,
     ParticleFlags,
     ShapeFlags,
-    compute_shape_inertia,
+    compute_inertia_shape,
     compute_shape_radius,
     transform_inertia,
 )
@@ -1839,6 +1839,7 @@ class ModelBuilder:
         load_sites: bool = True,
         load_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
+        force_show_colliders: bool = False,
         parse_mujoco_options: bool = True,
         mesh_maxhullvert: int | None = None,
         schema_resolvers: list[SchemaResolver] | None = None,
@@ -1934,6 +1935,10 @@ class ModelBuilder:
             load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
+            force_show_colliders (bool): If True, collision shapes get the VISIBLE flag
+                regardless of whether visual shapes exist on the same body. Note that
+                ``hide_collision_shapes=True`` still takes precedence and will suppress
+                the VISIBLE flag even when this option is set. Default is False.
             parse_mujoco_options (bool): Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
             schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -2016,6 +2021,7 @@ class ModelBuilder:
             load_sites=load_sites,
             load_visual_shapes=load_visual_shapes,
             hide_collision_shapes=hide_collision_shapes,
+            force_show_colliders=force_show_colliders,
             parse_mujoco_options=parse_mujoco_options,
             mesh_maxhullvert=mesh_maxhullvert,
             schema_resolvers=schema_resolvers,
@@ -4716,7 +4722,7 @@ class ModelBuilder:
                     self.add_shape_collision_filter_pair(shape, child_shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
-            (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
+            (m, c, I) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, I, com_body, xform.q)
 

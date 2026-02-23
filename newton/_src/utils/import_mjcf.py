@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any
@@ -34,7 +35,13 @@ from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
-from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
+from .import_utils import (
+    is_xml_content,
+    parse_custom_attributes,
+    sanitize_name,
+    sanitize_xml_content,
+    should_show_collider,
+)
 from .mesh import load_meshes_from_file
 
 
@@ -1032,12 +1039,11 @@ def parse_mjcf(
             )
             visual_shape_indices.extend(s)
 
-        show_colliders = force_show_colliders
-        if parse_visuals_as_colliders:
-            show_colliders = True
-        elif len(visuals) == 0 or not parse_visuals:
-            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
-            show_colliders = True
+        show_colliders = should_show_collider(
+            force_show_colliders,
+            has_visual_shapes=len(visuals) > 0 and parse_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+        )
 
         parse_shapes(
             defaults,
@@ -2099,11 +2105,10 @@ def parse_mjcf(
                         site_name = sanitize_name(site_name)
                     site_idx = find_shape_by_name(site_name, want_site=True) if site_name else -1
                     if site_idx < 0:
-                        if verbose:
-                            print(
-                                f"Warning: Spatial tendon '{tendon_name}' references "
-                                f"unknown site '{site_name}', skipping element"
-                            )
+                        warnings.warn(
+                            f"Spatial tendon '{tendon_name}' references unknown site '{site_name}', skipping element.",
+                            stacklevel=2,
+                        )
                         continue
                     wrap_entries.append((0, site_idx, -1, 0.0))
 
@@ -2113,11 +2118,10 @@ def parse_mjcf(
                         geom_name = sanitize_name(geom_name)
                     geom_idx = find_shape_by_name(geom_name, want_site=False) if geom_name else -1
                     if geom_idx < 0:
-                        if verbose:
-                            print(
-                                f"Warning: Spatial tendon '{tendon_name}' references "
-                                f"unknown geom '{geom_name}', skipping element"
-                            )
+                        warnings.warn(
+                            f"Spatial tendon '{tendon_name}' references unknown geom '{geom_name}', skipping element.",
+                            stacklevel=2,
+                        )
                         continue
 
                     sidesite_name = child.attrib.get("sidesite", "")
@@ -2125,8 +2129,11 @@ def parse_mjcf(
                     if sidesite_name:
                         sidesite_name = sanitize_name(sidesite_name)
                         sidesite_idx = find_shape_by_name(sidesite_name, want_site=True)
-                        if sidesite_idx < 0 and verbose:
-                            print(f"Warning: Spatial tendon '{tendon_name}' sidesite '{sidesite_name}' not found")
+                        if sidesite_idx < 0:
+                            warnings.warn(
+                                f"Spatial tendon '{tendon_name}' sidesite '{sidesite_name}' not found.",
+                                stacklevel=2,
+                            )
                     wrap_entries.append((1, geom_idx, sidesite_idx, 0.0))
 
                 elif child.tag == "pulley":
@@ -2134,8 +2141,10 @@ def parse_mjcf(
                     wrap_entries.append((2, -1, -1, divisor))
 
             if not wrap_entries:
-                if verbose:
-                    print(f"Warning: Spatial tendon '{tendon_name}' has no valid wrap elements, skipping")
+                warnings.warn(
+                    f"Spatial tendon '{tendon_name}' has no valid wrap elements, skipping.",
+                    stacklevel=2,
+                )
                 continue
 
             # Parse tendon-level attributes using the standard custom attribute parsing
