@@ -836,13 +836,16 @@
 <tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.usd.get_transform.html#newton.usd.get_transform" title="newton.usd.get_transform"><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_transform</span></code></a>(prim[, local, xform_cache])</p></td>
 <td><p>Extract the transform (position and rotation) from a USD Xform prim.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.usd.has_attribute.html#newton.usd.has_attribute" title="newton.usd.has_attribute"><code class="xref py py-obj docutils literal notranslate"><span class="pre">has_attribute</span></code></a>(prim, name)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.usd.has_applied_api_schema.html#newton.usd.has_applied_api_schema" title="newton.usd.has_applied_api_schema"><code class="xref py py-obj docutils literal notranslate"><span class="pre">has_applied_api_schema</span></code></a>(prim, schema_name)</p></td>
+<td><p>Check if a USD prim has an applied API schema, even if the schema is not registered with USD's schema registry.</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.usd.has_attribute.html#newton.usd.has_attribute" title="newton.usd.has_attribute"><code class="xref py py-obj docutils literal notranslate"><span class="pre">has_attribute</span></code></a>(prim, name)</p></td>
 <td><p>Check if a USD prim has a valid and authored attribute.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.usd.type_to_warp.html#newton.usd.type_to_warp" title="newton.usd.type_to_warp"><code class="xref py py-obj docutils literal notranslate"><span class="pre">type_to_warp</span></code></a>(v)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.usd.type_to_warp.html#newton.usd.type_to_warp" title="newton.usd.type_to_warp"><code class="xref py py-obj docutils literal notranslate"><span class="pre">type_to_warp</span></code></a>(v)</p></td>
 <td><p>Determine the Warp type, e.g. wp.quat, wp.vec3, or wp.float32, from a USD value.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="_generated/newton.usd.value_to_warp.html#newton.usd.value_to_warp" title="newton.usd.value_to_warp"><code class="xref py py-obj docutils literal notranslate"><span class="pre">value_to_warp</span></code></a>(v[, warp_dtype])</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="_generated/newton.usd.value_to_warp.html#newton.usd.value_to_warp" title="newton.usd.value_to_warp"><code class="xref py py-obj docutils literal notranslate"><span class="pre">value_to_warp</span></code></a>(v[, warp_dtype])</p></td>
 <td><p>Convert a USD value (such as Gf.Quat, Gf.Vec3, or float) to a Warp value.</p></td>
 </tr>
 </tbody>
