@@ -1365,7 +1365,14 @@ def update_ctrl_direct_actuator_properties_kernel(
 
     world_newton_idx = world * actuators_per_world + newton_idx
     actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
-    actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
+
+    bias = newton_actuator_biasprm[world_newton_idx]
+    # biasprm[2] is resolved by the MuJoCo compiler from dampratio via mj_setConst.
+    # _sync_compiled_actuator_params writes the resolved value to world 0's Newton
+    # custom attrs, but not to other worlds. Always read [2] from world 0 so all
+    # worlds get the compiler-resolved damping value.
+    bias[2] = newton_actuator_biasprm[newton_idx][2]
+    actuator_bias[world, actuator] = bias
 
 
 @wp.kernel
