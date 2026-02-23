@@ -71,6 +71,7 @@ from .rigid_vbd_kernels import (
     build_body_body_contact_lists,  # Body-body (rigid-rigid) contact adjacency
     build_body_particle_contact_lists,  # Body-particle (rigid-particle) soft-contact adjacency
     compute_cable_dahl_parameters,  # Cable bending plasticity
+    compute_rigid_contact_forces,
     copy_rigid_body_transforms_back,
     # Pre-iteration kernels (rigid AVBD)
     forward_step_rigid_bodies,
@@ -316,6 +317,9 @@ class SolverVBD(SolverBase):
 
         # Cached empty arrays for kernels that require wp.array arguments even when counts are zero.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
+
+        # Optional per-body forward-step skip mask (1 => skip rigid forward integration).
+        self._body_skip_forward_mask = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
 
     def _init_particle_system(
         self,
@@ -1144,6 +1148,19 @@ class SolverVBD(SolverBase):
         """
         self.update_rigid_history = update
 
+    def set_rigid_forward_skip_body_ids(self, body_ids: list[int] | np.ndarray):
+        """Skip rigid forward integration for selected body IDs.
+
+        Masked bodies keep their current pose/velocity during the AVBD forward step,
+        while still participating in contact solve and coupling.
+        """
+        mask = np.zeros(self.model.body_count, dtype=np.int32)
+        ids = np.asarray(body_ids, dtype=np.int32).reshape(-1)
+        if ids.size > 0:
+            valid = ids[(ids >= 0) & (ids < self.model.body_count)]
+            mask[valid] = 1
+        self._body_skip_forward_mask = wp.array(mask, dtype=wp.int32, device=self.device)
+
     @override
     def step(
         self,
@@ -1320,11 +1337,11 @@ class SolverVBD(SolverBase):
                     model.body_inertia,
                     model.body_inv_mass,
                     model.body_inv_inertia,
+                    self._body_skip_forward_mask,
                     state_in.body_q,  # input/output
                     state_in.body_qd,  # input/output
                 ],
                 outputs=[
-                    self.body_q_prev,
                     self.body_inertia_q,
                 ],
                 dim=model.body_count,
@@ -1925,6 +1942,79 @@ class SolverVBD(SolverBase):
                 self.joint_penalty_k,  # input/output
             ],
             device=self.device,
+        )
+
+    def collect_rigid_contact_forces(
+        self, state: State, contacts: Contacts, dt: float
+    ) -> tuple[wp.array, wp.array, wp.array, wp.array, wp.array, wp.array]:
+        """Collect per-contact rigid contact forces and world-space application points.
+
+        This produces a **contact-specific** buffer that coupling code can filter (e.g., proxy contacts only).
+
+        Returns:
+            Tuple of:
+            - body0: wp.array(int32) body index for shape0
+            - body1: wp.array(int32) body index for shape1
+            - point0_world: wp.array(wp.vec3) world-space contact point on body0
+            - point1_world: wp.array(wp.vec3) world-space contact point on body1
+            - force_on_body1: wp.array(wp.vec3) contact force (world) applied to body1
+            - rigid_contact_count: wp.array(int32) length-1 array with active contact count
+        """
+        if contacts is None:
+            raise ValueError("collect_rigid_contact_forces() requires a Contacts instance.")
+
+        # Allocate/resize persistent buffers to match contact capacity.
+        max_contacts = int(contacts.rigid_contact_shape0.shape[0])
+        if not hasattr(self, "_rigid_contact_body0") or self._rigid_contact_body0 is None:
+            self._rigid_contact_body0 = None
+
+        if self._rigid_contact_body0 is None or int(self._rigid_contact_body0.shape[0]) != max_contacts:
+            self._rigid_contact_body0 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
+            self._rigid_contact_body1 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
+            self._rigid_contact_point0_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+            self._rigid_contact_point1_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+
+        # Reuse the existing per-contact force buffer in Contacts (allocated by default).
+        # Force convention: force is applied to body1, and -force is applied to body0.
+        wp.launch(
+            kernel=compute_rigid_contact_forces,
+            dim=max_contacts,
+            inputs=[
+                float(dt),
+                contacts.rigid_contact_count,
+                contacts.rigid_contact_shape0,
+                contacts.rigid_contact_shape1,
+                contacts.rigid_contact_point0,
+                contacts.rigid_contact_point1,
+                contacts.rigid_contact_normal,
+                contacts.rigid_contact_thickness0,
+                contacts.rigid_contact_thickness1,
+                self.model.shape_body,
+                state.body_q,
+                self.body_q_prev,
+                self.model.body_com,
+                self.body_body_contact_penalty_k,
+                self.body_body_contact_material_kd,
+                self.body_body_contact_material_mu,
+                float(self.friction_epsilon),
+            ],
+            outputs=[
+                self._rigid_contact_body0,
+                self._rigid_contact_body1,
+                self._rigid_contact_point0_world,
+                self._rigid_contact_point1_world,
+                contacts.rigid_contact_force,
+            ],
+            device=self.device,
+        )
+
+        return (
+            self._rigid_contact_body0,
+            self._rigid_contact_body1,
+            self._rigid_contact_point0_world,
+            self._rigid_contact_point1_world,
+            contacts.rigid_contact_force,
+            contacts.rigid_contact_count,
         )
 
     def finalize_particles(self, state_out: State, dt: float):
