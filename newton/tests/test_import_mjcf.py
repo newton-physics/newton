@@ -6906,3 +6906,65 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 2)
+
+
+class TestFromtoCapsuleOrientation(unittest.TestCase):
+    """Verify fromto capsules/cylinders get the correct position and orientation.
+
+    MuJoCo computes fromto orientation by aligning Z with (start - end) via
+    mjuu_z2quat. Position is the midpoint and half_height is half the length.
+    """
+
+    MJCF = """<mujoco>
+        <worldbody>
+            <body name="b" pos="0 0 1">
+                <freejoint/>
+                <geom type="sphere" size="0.1" mass="1"/>
+                <geom name="cap_diag" type="capsule" size="0.03"
+                      fromto="0.02 0 -0.4 -0.02 0 0.02"/>
+                <geom name="cap_down" type="capsule" size="0.03"
+                      fromto="0 0 0 0 0 -0.4"/>
+                <geom name="cap_up" type="capsule" size="0.03"
+                      fromto="0 0 -0.4 0 0 0"/>
+            </body>
+        </worldbody>
+    </mujoco>"""
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(cls.MJCF)
+        cls.model = builder.finalize()
+
+    def _get_shape_transform(self, substring):
+        for i in range(self.model.shape_count):
+            if substring in self.model.shape_label[i]:
+                tf = self.model.shape_transform.numpy()[i]
+                pos = wp.vec3(tf[0], tf[1], tf[2])
+                quat = wp.quat(tf[3], tf[4], tf[5], tf[6])
+                return pos, quat
+        self.fail(f"No shape matching '{substring}'")
+
+    def _assert_z_aligned(self, quat, expected_dir, msg=""):
+        """Assert the shape's Z axis (long axis) aligns with expected direction."""
+        rotated_z = wp.quat_rotate(quat, wp.vec3(0.0, 0.0, 1.0))
+        np.testing.assert_allclose([*rotated_z], [*expected_dir], atol=1e-4, err_msg=msg)
+
+    def test_diagonal_capsule(self):
+        """Diagonal fromto: pos = midpoint, Z aligned with start - end."""
+        pos, quat = self._get_shape_transform("cap_diag")
+        np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
+        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        self._assert_z_aligned(quat, expected)
+
+    def test_downward_capsule(self):
+        """Downward fromto: start - end = +Z, identity rotation."""
+        pos, quat = self._get_shape_transform("cap_down")
+        np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
+        self._assert_z_aligned(quat, wp.vec3(0, 0, 1))
+
+    def test_upward_capsule(self):
+        """Upward fromto: start - end = -Z, 180 deg rotation (anti-parallel case)."""
+        pos, quat = self._get_shape_transform("cap_up")
+        np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
+        self._assert_z_aligned(quat, wp.vec3(0, 0, -1))

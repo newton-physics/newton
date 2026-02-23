@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import math
 import os
 import re
 import warnings
@@ -744,26 +743,24 @@ def parse_mjcf(
                         start = wp.transform_point(incoming_xform, start)
                         end = wp.transform_point(incoming_xform, end)
 
-                    # compute rotation to align the Warp capsule (along x-axis), with mjcf fromto direction
-                    axis = wp.normalize(end - start)
-                    angle = math.acos(wp.dot(axis, wp.vec3(0.0, 1.0, 0.0)))
-                    axis = wp.normalize(wp.cross(axis, wp.vec3(0.0, 1.0, 0.0)))
-
+                    # Compute pos and quat matching MuJoCo's fromto convention:
+                    # direction = start - end, align Z axis with it (mjuu_z2quat).
+                    # quat_between_vectors degenerates for anti-parallel vectors,
+                    # so handle that case with an explicit 180° rotation around X.
                     geom_pos = (start + end) * 0.5
-                    geom_rot = wp.quat_from_axis_angle(axis, -angle)
+                    direction = wp.normalize(start - end)
+                    if float(direction[2]) < -0.999999:
+                        geom_rot = wp.quat(1.0, 0.0, 0.0, 0.0)  # 180° around X
+                    else:
+                        geom_rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
                     tf = wp.transform(geom_pos, geom_rot)
 
                     geom_radius = geom_size[0]
                     geom_height = wp.length(end - start) * 0.5
-                    geom_up_axis = Axis.Y
 
                 else:
                     geom_radius = geom_size[0]
                     geom_height = geom_size[1]
-                    geom_up_axis = up_axis
-
-                # Apply axis rotation to transform
-                tf = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, geom_up_axis))
 
                 if geom_type == "cylinder":
                     s = builder.add_shape_cylinder(
