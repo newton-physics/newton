@@ -32,6 +32,12 @@ _NUMPY_THRESHOLD: int = 16
 # Cached at module level so extend_with_offset* can use count+offset frombuffer without
 # recomputing the constant on every call.
 _INTC_ITEMSIZE: int = np.dtype(np.intc).itemsize
+# Guard the shared-memory assumption: array.array('i') and np.intc must have the same
+# itemsize for np.frombuffer(..., dtype=np.intc) over array.array('i') data to be correct.
+assert array("i").itemsize == _INTC_ITEMSIZE, (
+    f"array 'i' itemsize ({array('i').itemsize}) != np.intc itemsize ({_INTC_ITEMSIZE}); "
+    "np.frombuffer on array.array('i') data with dtype=np.intc is unsafe on this platform"
+)
 
 
 class _IntIndexList(MutableSequence):
