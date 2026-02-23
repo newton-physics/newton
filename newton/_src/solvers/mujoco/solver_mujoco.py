@@ -56,6 +56,7 @@ from .kernels import (
     create_inverse_shape_mapping_kernel,
     eval_articulation_fk,
     repeat_array_kernel,
+    sync_compiled_actuator_params_kernel,
     sync_qpos0_kernel,
     update_axis_properties_kernel,
     update_body_inertia_kernel,
@@ -4463,30 +4464,11 @@ class SolverMuJoCo(SolverBase):
             # create the MuJoCo Warp model
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
-            # Sync compiler-computed actuator params back to custom attributes.
-            # MuJoCo's mj_setConst computes biasprm[2] (damping) from dampratio
-            # for position/velocity shortcuts. The custom attribute has the pre-
-            # compilation value (kv=0 when dampratio was used instead). Copy the
-            # compiled values so update_actuator_properties uses correct ones.
-            # Must use the index mapping because MuJoCo actuator order may differ
-            # from Newton custom attribute order (e.g. when ctrl_direct=False,
-            # JOINT_TARGET actuators precede CTRL_DIRECT ones in the MuJoCo spec).
-            if hasattr(model, "mujoco") and self.mj_model.nu > 0:
-                nu = self.mj_model.nu
-                for field in ("actuator_biasprm", "actuator_gainprm"):
-                    custom_arr = getattr(model.mujoco, field, None)
-                    if custom_arr is None:
-                        continue
-                    mj_arr = getattr(self.mj_model, field)
-                    custom_np = custom_arr.numpy()
-                    nworlds = max(1, len(custom_np) // nu) if nu > 0 else 1
-                    for mj_idx in range(nu):
-                        if mjc_actuator_ctrl_source_list[mj_idx] != 1:
-                            continue  # skip JOINT_TARGET actuators
-                        newton_idx = mjc_actuator_to_newton_idx_list[mj_idx]
-                        for w in range(nworlds):
-                            custom_np[w * nu + newton_idx] = mj_arr[mj_idx]
-                    custom_arr.assign(wp.array(custom_np, dtype=custom_arr.dtype, device=model.device))
+            # Sync compiler-resolved actuator params back to Newton custom
+            # attributes. MuJoCo's compiler resolves dampratio into biasprm[2]
+            # during compilation; without this sync, update_actuator_properties
+            # would overwrite the resolved values with the unresolved originals.
+            self._sync_compiled_actuator_params()
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
@@ -5518,6 +5500,45 @@ class SolverMuJoCo(SolverBase):
             outputs=[
                 self.mjw_model.actuator_gainprm,
                 self.mjw_model.actuator_biasprm,
+            ],
+            device=self.model.device,
+        )
+
+    def _sync_compiled_actuator_params(self):
+        """Sync compiler-resolved actuator biasprm/gainprm back to Newton custom attributes.
+
+        MuJoCo's compiler resolves dampratio into biasprm[2] during model compilation.
+        This launches a kernel to copy the compiled values from mjw_model into Newton's
+        custom attributes so that update_actuator_properties writes the correct values.
+        """
+        if self.mjc_actuator_ctrl_source is None or self.mjc_actuator_to_newton_idx is None:
+            return
+
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        if mujoco_attrs is None:
+            return
+
+        newton_biasprm = getattr(mujoco_attrs, "actuator_biasprm", None)
+        newton_gainprm = getattr(mujoco_attrs, "actuator_gainprm", None)
+        if newton_biasprm is None or newton_gainprm is None:
+            return
+
+        nu = self.mjc_actuator_ctrl_source.shape[0]
+        if nu == 0:
+            return
+
+        wp.launch(
+            sync_compiled_actuator_params_kernel,
+            dim=nu,
+            inputs=[
+                self.mjc_actuator_ctrl_source,
+                self.mjc_actuator_to_newton_idx,
+                self.mjw_model.actuator_gainprm,
+                self.mjw_model.actuator_biasprm,
+            ],
+            outputs=[
+                newton_gainprm,
+                newton_biasprm,
             ],
             device=self.model.device,
         )

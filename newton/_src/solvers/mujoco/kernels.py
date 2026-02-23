@@ -1369,6 +1369,35 @@ def update_ctrl_direct_actuator_properties_kernel(
 
 
 @wp.kernel
+def sync_compiled_actuator_params_kernel(
+    mjc_actuator_ctrl_source: wp.array(dtype=wp.int32),
+    mjc_actuator_to_newton_idx: wp.array(dtype=wp.int32),
+    compiled_gainprm: wp.array2d(dtype=vec10),
+    compiled_biasprm: wp.array2d(dtype=vec10),
+    # outputs
+    newton_actuator_gainprm: wp.array(dtype=vec10),
+    newton_actuator_biasprm: wp.array(dtype=vec10),
+):
+    """Copy compiler-resolved gainprm/biasprm back to Newton custom attributes.
+
+    Runs once after put_model to ensure Newton's custom attributes contain the
+    compiler-resolved values (e.g. dampratio → damping). This prevents
+    update_actuator_properties from overwriting resolved values.
+    """
+    actuator = wp.tid()
+
+    if mjc_actuator_ctrl_source[actuator] != CTRL_SOURCE_CTRL_DIRECT:
+        return
+
+    newton_idx = mjc_actuator_to_newton_idx[actuator]
+    if newton_idx < 0:
+        return
+
+    newton_actuator_gainprm[newton_idx] = compiled_gainprm[0, actuator]
+    newton_actuator_biasprm[newton_idx] = compiled_biasprm[0, actuator]
+
+
+@wp.kernel
 def update_dof_properties_kernel(
     mjc_dof_to_newton_dof: wp.array2d(dtype=wp.int32),
     joint_armature: wp.array(dtype=float),
