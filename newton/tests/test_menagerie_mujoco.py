@@ -2032,6 +2032,9 @@ class TestMenagerieBase(unittest.TestCase):
         assert _mujoco_warp is not None
         assert self.control_strategy is not None
 
+        if self.debug_visual:
+            self.num_worlds = 1
+
         # Create models and solvers
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
