@@ -2807,6 +2807,7 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
     """
 
     robot_folder = "apptronik_apollo"
+    control_strategy = StructuredControlStrategy(seed=42)
     backfill_model = True
     use_cuda_graph = True
     num_steps = 100
