@@ -83,8 +83,8 @@ def main(argv=None):
         python -m newton.tests -k 'mgpu' -k 'cuda'
         """,
     )
-    # parser.add_argument("-v", "--verbose", action="store_const", const=2, default=1, help="Verbose output")
-    parser.add_argument("-q", "--quiet", dest="verbose", action="store_const", const=0, default=2, help="Quiet output")
+    parser.add_argument("-v", "--verbose", action="store_const", const=2, default=1, help="Verbose output")
+    parser.add_argument("-q", "--quiet", dest="verbose", action="store_const", const=0, default=1, help="Quiet output")
     parser.add_argument("-f", "--failfast", action="store_true", default=False, help="Stop on first fail or error")
     parser.add_argument(
         "-b", "--buffer", action="store_true", default=False, help="Buffer stdout and stderr during tests"
@@ -571,38 +571,41 @@ class ParallelTextTestResult(unittest.TextTestResult):
         if self.showAll:
             self.stream.writeln(f"{self.getDescription(test)} ...")
             self.stream.flush()
+        elif self.dots:
+            self.stream.writeln(f"{test} ...")
+            self.stream.flush()
         super(unittest.TextTestResult, self).startTest(test)
 
-    def _add_helper(self, test, dots_message, show_all_message):
+    def _add_helper(self, test, show_all_message):
         if self.showAll:
             self.stream.writeln(f"{self.getDescription(test)} ... {show_all_message}")
         elif self.dots:
-            self.stream.write(dots_message)
+            self.stream.writeln(f"{test} ... {show_all_message}")
         self.stream.flush()
 
     def addSuccess(self, test):
         super(unittest.TextTestResult, self).addSuccess(test)
-        self._add_helper(test, ".", "ok")
+        self._add_helper(test, "ok")
 
     def addError(self, test, err):
         super(unittest.TextTestResult, self).addError(test, err)
-        self._add_helper(test, "E", "ERROR")
+        self._add_helper(test, "ERROR")
 
     def addFailure(self, test, err):
         super(unittest.TextTestResult, self).addFailure(test, err)
-        self._add_helper(test, "F", "FAIL")
+        self._add_helper(test, "FAIL")
 
     def addSkip(self, test, reason):
         super(unittest.TextTestResult, self).addSkip(test, reason)
-        self._add_helper(test, "s", f"skipped {reason!r}")
+        self._add_helper(test, f"skipped {reason!r}")
 
     def addExpectedFailure(self, test, err):
         super(unittest.TextTestResult, self).addExpectedFailure(test, err)
-        self._add_helper(test, "x", "expected failure")
+        self._add_helper(test, "expected failure")
 
     def addUnexpectedSuccess(self, test):
         super(unittest.TextTestResult, self).addUnexpectedSuccess(test)
-        self._add_helper(test, "u", "unexpected success")
+        self._add_helper(test, "unexpected success")
 
     def printErrors(self):
         pass

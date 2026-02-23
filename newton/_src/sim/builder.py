@@ -50,7 +50,7 @@ from ..geometry import (
     Mesh,
     ParticleFlags,
     ShapeFlags,
-    compute_shape_inertia,
+    compute_inertia_shape,
     compute_shape_radius,
     transform_inertia,
 )
@@ -4722,7 +4722,7 @@ class ModelBuilder:
                     self.add_shape_collision_filter_pair(shape, child_shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
-            (m, c, I) = compute_shape_inertia(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
+            (m, c, I) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, I, com_body, xform.q)
 

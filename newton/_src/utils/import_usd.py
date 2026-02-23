@@ -28,7 +28,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import GeoType, Mesh, ShapeFlags, compute_shape_inertia, compute_sphere_inertia
+from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
 from ..sim.joints import ActuatorMode
 from ..sim.model import Model
@@ -1691,7 +1691,7 @@ def parse_usd(
             )
             return None
 
-        shape_volume, _, _ = compute_shape_inertia(shape_geo_type, shape_scale, shape_src, density=1.0)
+        shape_volume, _, _ = compute_inertia_shape(shape_geo_type, shape_scale, shape_src, density=1.0)
         if shape_volume <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: unable to derive positive collider volume from authored shape parameters.",
@@ -1776,7 +1776,7 @@ def parse_usd(
         geometry (box/sphere/capsule/cylinder/cone/mesh) when collider-authored MassAPI mass
         properties are not available.
         """
-        shape_mass, shape_com, shape_inertia = compute_shape_inertia(
+        shape_mass, shape_com, shape_inertia = compute_inertia_shape(
             shape_geo_type, shape_scale, shape_src, density=1.0
         )
         if shape_mass <= 0.0:
@@ -2181,7 +2181,7 @@ def parse_usd(
                     density = default_shape_density  # kg/m³
                     volume = mass / density
                     radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0 / 3.0)
-                    _, _, I_default = compute_sphere_inertia(density, radius)
+                    _, _, I_default = compute_inertia_sphere(density, radius)
 
                     # Apply parallel axis theorem if center of mass is offset
                     com = builder.body_com[body_id]
