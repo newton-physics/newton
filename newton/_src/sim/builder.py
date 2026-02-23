@@ -8892,16 +8892,21 @@ class ModelBuilder:
 
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
-            finalized_geos = {}  # do not duplicate geometry
+            # Use id() for deduplication: in replicate() the same Python object is
+            # referenced by every world, so identity is sufficient.  Avoids calling
+            # Mesh.__hash__() (which converts vertex arrays to Python tuples) for
+            # each shape instance across all worlds — an O(V) cost per unique mesh
+            # that dominates finalize() for large replicated models.
+            finalized_geos = {}  # id(geo) -> finalized ptr
             for geo in self.shape_source:
-                geo_hash = hash(geo)  # avoid repeated hash computations
+                geo_key = id(geo)
                 if geo:
-                    if geo_hash not in finalized_geos:
+                    if geo_key not in finalized_geos:
                         if isinstance(geo, Mesh):
-                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                            finalized_geos[geo_key] = geo.finalize(device=device)
                         else:
-                            finalized_geos[geo_hash] = geo.finalize()
-                    geo_sources.append(finalized_geos[geo_hash])
+                            finalized_geos[geo_key] = geo.finalize()
+                    geo_sources.append(finalized_geos[geo_key])
                 else:
                     # add null pointer
                     geo_sources.append(0)
