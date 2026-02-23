@@ -511,27 +511,54 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
 
 
 def get_custom_attribute_values(
-    prim: Usd.Prim, custom_attributes: Sequence[ModelBuilder.CustomAttribute]
+    prim: Usd.Prim,
+    custom_attributes: Sequence[ModelBuilder.CustomAttribute],
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Get custom attribute values from a USD prim and a set of known custom attributes.
     Returns a dictionary mapping from :attr:`ModelBuilder.CustomAttribute.key` to the converted Warp value.
     The conversion is performed by :meth:`ModelBuilder.CustomAttribute.usd_value_transformer`.
 
+    The context dictionary passed to the transformer function always contains:
+    - ``"prim"``: The USD prim to query.
+    - ``"attr"``: The :class:`~newton.ModelBuilder.CustomAttribute` object to get the value for.
+    It may additionally include caller-provided keys from the ``context`` argument.
+
     Args:
         prim: The USD prim to query.
-        custom_attributes: The custom attributes to get values for.
+        custom_attributes: The :class:`~newton.ModelBuilder.CustomAttribute` objects to get values for.
+        context: Optional extra context keys to forward to transformers.
 
     Returns:
         A dictionary of found custom attribute values mapping from attribute name to value.
     """
     out: dict[str, Any] = {}
     for attr in custom_attributes:
+        transformer_context: dict[str, Any] = {}
+        if context:
+            transformer_context.update(context)
+        # Keep builtin keys authoritative even if caller passes same names.
+        transformer_context["prim"] = prim
+        transformer_context["attr"] = attr
         usd_attr_name = attr.usd_attribute_name
+        if usd_attr_name == "*":
+            # Just apply the transformer to all prims of this frequency
+            if attr.usd_value_transformer is not None:
+                value = attr.usd_value_transformer(None, transformer_context)
+                if value is None:
+                    # Treat None as "undefined" to allow defaults to be applied later.
+                    continue
+                out[attr.key] = value
+            continue
         usd_attr = prim.GetAttribute(usd_attr_name)
         if usd_attr is not None and usd_attr.HasAuthoredValue():
             if attr.usd_value_transformer is not None:
-                out[attr.key] = attr.usd_value_transformer(usd_attr.Get())
+                value = attr.usd_value_transformer(usd_attr.Get(), transformer_context)
+                if value is None:
+                    # Treat None as "undefined" to allow defaults to be applied later.
+                    continue
+                out[attr.key] = value
             else:
                 out[attr.key] = value_to_warp(usd_attr.Get(), attr.dtype)
     return out

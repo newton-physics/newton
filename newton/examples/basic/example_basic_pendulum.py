@@ -73,7 +73,7 @@ class Example:
         )
 
         # Create articulation from joints
-        builder.add_articulation([j0, j1], key="pendulum")
+        builder.add_articulation([j0, j1], label="pendulum")
 
         # add ground plane
         builder.add_ground_plane()

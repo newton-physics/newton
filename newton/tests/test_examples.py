@@ -697,7 +697,14 @@ class TestContactsExamples(unittest.TestCase):
 
 add_example_test(
     TestContactsExamples,
-    name="contacts.example_sdf",
+    name="contacts.example_nut_bolt_sdf",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 120, "world-count": 1, "scene": "nut_bolt"},
+    use_viewer=True,
+)
+add_example_test(
+    TestContactsExamples,
+    name="contacts.example_nut_bolt_hydro",
     devices=cuda_test_devices,
     test_options={"num-frames": 120, "world-count": 1, "scene": "nut_bolt"},
     use_viewer=True,

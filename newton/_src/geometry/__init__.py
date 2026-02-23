@@ -31,7 +31,7 @@ from .collision_primitive import (
     collide_sphere_sphere,
 )
 from .flags import ParticleFlags, ShapeFlags
-from .inertia import compute_shape_inertia, compute_sphere_inertia, transform_inertia
+from .inertia import compute_inertia_shape, compute_inertia_sphere, transform_inertia
 from .sdf_utils import SDF
 from .terrain_generator import create_mesh_heightfield, create_mesh_terrain
 from .types import (
@@ -63,9 +63,9 @@ __all__ = [
     "collide_sphere_capsule",
     "collide_sphere_cylinder",
     "collide_sphere_sphere",
-    "compute_shape_inertia",
+    "compute_inertia_shape",
+    "compute_inertia_sphere",
     "compute_shape_radius",
-    "compute_sphere_inertia",
     "create_mesh_heightfield",
     "create_mesh_terrain",
     "test_group_pair",

@@ -18,8 +18,8 @@ from collections.abc import Sequence
 import numpy as np
 import warp as wp
 
-from ..core.types import MAXVAL, nparray
-from ..geometry.kernels import box_sdf, capsule_sdf, cone_sdf, cylinder_sdf, ellipsoid_sdf, sphere_sdf
+from ..core.types import MAXVAL, Axis, nparray
+from .kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_ellipsoid, sdf_sphere
 from .sdf_mc import get_mc_tables, int_to_vec3f, mc_calc_face, vec8f
 from .types import GeoType, Mesh
 
@@ -351,17 +351,17 @@ def sdf_from_primitive_kernel(
     sample_pos = wp.volume_index_to_world(sdf, int_to_vec3f(x_id, y_id, z_id))
     signed_distance = float(1.0e6)
     if shape_type == GeoType.SPHERE:
-        signed_distance = sphere_sdf(wp.vec3(0.0, 0.0, 0.0), shape_scale[0], sample_pos)
+        signed_distance = sdf_sphere(sample_pos, shape_scale[0])
     elif shape_type == GeoType.BOX:
-        signed_distance = box_sdf(shape_scale, sample_pos)
+        signed_distance = sdf_box(sample_pos, shape_scale[0], shape_scale[1], shape_scale[2])
     elif shape_type == GeoType.CAPSULE:
-        signed_distance = capsule_sdf(shape_scale[0], shape_scale[1], sample_pos)
+        signed_distance = sdf_capsule(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.CYLINDER:
-        signed_distance = cylinder_sdf(shape_scale[0], shape_scale[1], sample_pos)
+        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.ELLIPSOID:
-        signed_distance = ellipsoid_sdf(shape_scale, sample_pos)
+        signed_distance = sdf_ellipsoid(sample_pos, shape_scale)
     elif shape_type == GeoType.CONE:
-        signed_distance = cone_sdf(shape_scale[0], shape_scale[1], sample_pos)
+        signed_distance = sdf_cone(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     signed_distance -= thickness
     wp.volume_store(sdf, x_id, y_id, z_id, signed_distance)
 
@@ -399,17 +399,17 @@ def check_tile_occupied_primitive_kernel(
 
     signed_distance = float(1.0e6)
     if shape_type == GeoType.SPHERE:
-        signed_distance = sphere_sdf(wp.vec3(0.0, 0.0, 0.0), shape_scale[0], sample_pos)
+        signed_distance = sdf_sphere(sample_pos, shape_scale[0])
     elif shape_type == GeoType.BOX:
-        signed_distance = box_sdf(shape_scale, sample_pos)
+        signed_distance = sdf_box(sample_pos, shape_scale[0], shape_scale[1], shape_scale[2])
     elif shape_type == GeoType.CAPSULE:
-        signed_distance = capsule_sdf(shape_scale[0], shape_scale[1], sample_pos)
+        signed_distance = sdf_capsule(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.CYLINDER:
-        signed_distance = cylinder_sdf(shape_scale[0], shape_scale[1], sample_pos)
+        signed_distance = sdf_cylinder(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
     elif shape_type == GeoType.ELLIPSOID:
-        signed_distance = ellipsoid_sdf(shape_scale, sample_pos)
+        signed_distance = sdf_ellipsoid(sample_pos, shape_scale)
     elif shape_type == GeoType.CONE:
-        signed_distance = cone_sdf(shape_scale[0], shape_scale[1], sample_pos)
+        signed_distance = sdf_cone(sample_pos, shape_scale[0], shape_scale[1], int(Axis.Z))
 
     is_occupied = wp.bool(False)
     if wp.sign(signed_distance) > 0.0:

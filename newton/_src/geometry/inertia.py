@@ -30,103 +30,111 @@ from .types import (
 )
 
 
-def compute_sphere_inertia(density: float, r: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid sphere
 
     Args:
-        density: The sphere density
-        r: The sphere radius
-
-    Returns:
-
-        A tuple of (mass, inertia) with inertia specified around the origin
-    """
-
-    v = 4.0 / 3.0 * wp.pi * r * r * r
-
-    m = density * v
-    Ia = 2.0 / 5.0 * m * r * r
-
-    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ia]])
-
-    return (m, wp.vec3(), I)
-
-
-def compute_capsule_inertia(density: float, r: float, h: float) -> tuple[float, wp.vec3, wp.mat33]:
-    """Helper to compute mass and inertia of a solid capsule extending along the z-axis
-
-    Args:
-        density: The capsule density
-        r: The capsule radius
-        h: The capsule height (full height of the interior cylinder)
-
-    Returns:
-
-        A tuple of (mass, inertia) with inertia specified around the origin
-    """
-
-    ms = density * (4.0 / 3.0) * wp.pi * r * r * r
-    mc = density * wp.pi * r * r * h
-
-    # total mass
-    m = ms + mc
-
-    # adapted from ODE
-    Ia = mc * (0.25 * r * r + (1.0 / 12.0) * h * h) + ms * (0.4 * r * r + 0.375 * r * h + 0.25 * h * h)
-    Ib = (mc * 0.5 + ms * 0.4) * r * r
-
-    # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
-    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
-
-    return (m, wp.vec3(), I)
-
-
-def compute_cylinder_inertia(density: float, r: float, h: float) -> tuple[float, wp.vec3, wp.mat33]:
-    """Helper to compute mass and inertia of a solid cylinder extending along the z-axis
-
-    Args:
-        density: The cylinder density
-        r: The cylinder radius
-        h: The cylinder height (extent along the z-axis)
-
-    Returns:
-
-        A tuple of (mass, inertia) with inertia specified around the origin
-    """
-
-    m = density * wp.pi * r * r * h
-
-    Ia = 1 / 12 * m * (3 * r * r + h * h)
-    Ib = 1 / 2 * m * r * r
-
-    # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
-    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
-
-    return (m, wp.vec3(), I)
-
-
-def compute_cone_inertia(density: float, r: float, h: float) -> tuple[float, wp.vec3, wp.mat33]:
-    """Helper to compute mass and inertia of a solid cone extending along the z-axis
-
-    Args:
-        density: The cone density
-        r: The cone radius
-        h: The cone height (extent along the z-axis)
+        density: The sphere density [kg/m³]
+        radius: The sphere radius [m]
 
     Returns:
 
         A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
 
-    m = density * wp.pi * r * r * h / 3.0
+    v = 4.0 / 3.0 * wp.pi * radius * radius * radius
+
+    m = density * v
+    Ia = 2.0 / 5.0 * m * radius * radius
+
+    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ia]])
+
+    return (m, wp.vec3(), I)
+
+
+def compute_inertia_capsule(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
+    """Helper to compute mass and inertia of a solid capsule extending along the z-axis
+
+    Args:
+        density: The capsule density [kg/m³]
+        radius: The capsule radius [m]
+        half_height: Half-length of the cylindrical section (excluding hemispherical caps) [m]
+
+    Returns:
+
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
+    """
+
+    h = 2.0 * half_height  # full height of the cylindrical section
+
+    ms = density * (4.0 / 3.0) * wp.pi * radius * radius * radius
+    mc = density * wp.pi * radius * radius * h
+
+    # total mass
+    m = ms + mc
+
+    # adapted from ODE
+    Ia = mc * (0.25 * radius * radius + (1.0 / 12.0) * h * h) + ms * (
+        0.4 * radius * radius + 0.375 * radius * h + 0.25 * h * h
+    )
+    Ib = (mc * 0.5 + ms * 0.4) * radius * radius
+
+    # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
+    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
+
+    return (m, wp.vec3(), I)
+
+
+def compute_inertia_cylinder(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
+    """Helper to compute mass and inertia of a solid cylinder extending along the z-axis
+
+    Args:
+        density: The cylinder density [kg/m³]
+        radius: The cylinder radius [m]
+        half_height: The half-height of the cylinder along the z-axis [m]
+
+    Returns:
+
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
+    """
+
+    h = 2.0 * half_height  # full height
+
+    m = density * wp.pi * radius * radius * h
+
+    Ia = 1 / 12 * m * (3 * radius * radius + h * h)
+    Ib = 1 / 2 * m * radius * radius
+
+    # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
+    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
+
+    return (m, wp.vec3(), I)
+
+
+def compute_inertia_cone(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
+    """Helper to compute mass and inertia of a solid cone extending along the z-axis
+
+    Args:
+        density: The cone density [kg/m³]
+        radius: The cone base radius [m]
+        half_height: The half-height of the cone (distance from geometric center to base or apex) [m]
+
+    Returns:
+
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
+    """
+
+    h = 2.0 * half_height  # full height
+
+    m = density * wp.pi * radius * radius * h / 3.0
 
     # Center of mass is at -h/4 from the geometric center
     # Since the cone has base at -h/2 and apex at +h/2, the COM is 1/4 of the height from base toward apex
     com = wp.vec3(0.0, 0.0, -h / 4.0)
 
     # Inertia about the center of mass
-    Ia = 3 / 20 * m * r * r + 3 / 80 * m * h * h
-    Ib = 3 / 10 * m * r * r
+    Ia = 3 / 20 * m * radius * radius + 3 / 80 * m * h * h
+    Ib = 3 / 10 * m * radius * radius
 
     # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
     I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
@@ -134,78 +142,77 @@ def compute_cone_inertia(density: float, r: float, h: float) -> tuple[float, wp.
     return (m, com, I)
 
 
-def compute_ellipsoid_inertia(density: float, a: float, b: float, c: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_ellipsoid(density: float, rx: float, ry: float, rz: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid ellipsoid
 
-    The ellipsoid is centered at the origin with semi-axes a, b, c along the x, y, z axes respectively.
+    The ellipsoid is centered at the origin with semi-axes rx, ry, rz along the x, y, z axes respectively.
 
     Args:
-        density: The ellipsoid density
-        a: The semi-axis along the x-axis
-        b: The semi-axis along the y-axis
-        c: The semi-axis along the z-axis
+        density: The ellipsoid density [kg/m³]
+        rx: The semi-axis along the x-axis [m]
+        ry: The semi-axis along the y-axis [m]
+        rz: The semi-axis along the z-axis [m]
 
     Returns:
 
         A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
-    # Volume of ellipsoid: V = (4/3) * pi * a * b * c
-    v = (4.0 / 3.0) * wp.pi * a * b * c
+    # Volume of ellipsoid: V = (4/3) * pi * rx * ry * rz
+    v = (4.0 / 3.0) * wp.pi * rx * ry * rz
     m = density * v
 
     # Inertia tensor for a solid ellipsoid about its center of mass:
-    # Ixx = (1/5) * m * (b² + c²)
-    # Iyy = (1/5) * m * (a² + c²)
-    # Izz = (1/5) * m * (a² + b²)
-    Ixx = (1.0 / 5.0) * m * (b * b + c * c)
-    Iyy = (1.0 / 5.0) * m * (a * a + c * c)
-    Izz = (1.0 / 5.0) * m * (a * a + b * b)
+    # Ixx = (1/5) * m * (ry² + rz²)
+    # Iyy = (1/5) * m * (rx² + rz²)
+    # Izz = (1/5) * m * (rx² + ry²)
+    Ixx = (1.0 / 5.0) * m * (ry * ry + rz * rz)
+    Iyy = (1.0 / 5.0) * m * (rx * rx + rz * rz)
+    Izz = (1.0 / 5.0) * m * (rx * rx + ry * ry)
 
     I = wp.mat33([[Ixx, 0.0, 0.0], [0.0, Iyy, 0.0], [0.0, 0.0, Izz]])
 
     return (m, wp.vec3(), I)
 
 
-def compute_box_inertia_from_mass(mass: float, w: float, h: float, d: float) -> wp.mat33:
-    """Helper to compute 3x3 inertia matrix of a solid box with given mass
-    and dimensions.
+def compute_inertia_box_from_mass(mass: float, hx: float, hy: float, hz: float) -> wp.mat33:
+    """Helper to compute 3x3 inertia matrix of a solid box with given mass and half-extents.
 
     Args:
-        mass: The box mass
-        w: The box width along the x-axis
-        h: The box height along the y-axis
-        d: The box depth along the z-axis
+        mass: The box mass [kg]
+        hx: The box half-extent along the x-axis [m]
+        hy: The box half-extent along the y-axis [m]
+        hz: The box half-extent along the z-axis [m]
 
     Returns:
 
-        A 3x3 inertia matrix with inertia specified around the origin
+        A 3x3 inertia matrix with inertia specified around the center of mass
     """
-    Ia = 1.0 / 12.0 * mass * (h * h + d * d)
-    Ib = 1.0 / 12.0 * mass * (w * w + d * d)
-    Ic = 1.0 / 12.0 * mass * (w * w + h * h)
+    Ia = 1.0 / 3.0 * mass * (hy * hy + hz * hz)
+    Ib = 1.0 / 3.0 * mass * (hx * hx + hz * hz)
+    Ic = 1.0 / 3.0 * mass * (hx * hx + hy * hy)
 
     I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ib, 0.0], [0.0, 0.0, Ic]])
 
     return I
 
 
-def compute_box_inertia(density: float, w: float, h: float, d: float) -> tuple[float, wp.vec3, wp.mat33]:
+def compute_inertia_box(density: float, hx: float, hy: float, hz: float) -> tuple[float, wp.vec3, wp.mat33]:
     """Helper to compute mass and inertia of a solid box
 
     Args:
-        density: The box density
-        w: The box width along the x-axis
-        h: The box height along the y-axis
-        d: The box depth along the z-axis
+        density: The box density [kg/m³]
+        hx: The box half-extent along the x-axis [m]
+        hy: The box half-extent along the y-axis [m]
+        hz: The box half-extent along the z-axis [m]
 
     Returns:
 
-        A tuple of (mass, inertia) with inertia specified around the origin
+        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
     """
 
-    v = w * h * d
+    v = 8.0 * hx * hy * hz
     m = density * v
-    I = compute_box_inertia_from_mass(m, w, h, d)
+    I = compute_inertia_box_from_mass(m, hx, hy, hz)
 
     return (m, wp.vec3(), I)
 
@@ -324,7 +331,7 @@ def compute_hollow_mesh_inertia(
     wp.atomic_add(second, 0, s_total)
 
 
-def compute_mesh_inertia(
+def compute_inertia_mesh(
     density: float,
     vertices: list,
     indices: list,
@@ -455,7 +462,7 @@ def transform_inertia(m: float, I: wp.mat33, p: wp.vec3, q: wp.quat) -> wp.mat33
     )
 
 
-def compute_shape_inertia(
+def compute_inertia_shape(
     type: int,
     scale: Vec3,
     src: Mesh | Heightfield | None,
@@ -480,57 +487,80 @@ def compute_shape_inertia(
         return 0.0, wp.vec3(), wp.mat33()
 
     if type == GeoType.SPHERE:
-        solid = compute_sphere_inertia(density, scale[0])
+        solid = compute_inertia_sphere(density, scale[0])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow sphere geom"
-            hollow = compute_sphere_inertia(density, scale[0] - thickness)
+            hollow = compute_inertia_sphere(density, scale[0] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.BOX:
-        w, h, d = scale[0] * 2.0, scale[1] * 2.0, scale[2] * 2.0
-        solid = compute_box_inertia(density, w, h, d)
+        # scale stores half-extents (hx, hy, hz)
+        solid = compute_inertia_box(density, scale[0], scale[1], scale[2])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow box geom"
-            hollow = compute_box_inertia(density, w - thickness, h - thickness, d - thickness)
+            hollow = compute_inertia_box(density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CAPSULE:
-        r, h = scale[0], scale[1] * 2.0
-        solid = compute_capsule_inertia(density, r, h)
+        # scale[0] = radius, scale[1] = half_height
+        solid = compute_inertia_capsule(density, scale[0], scale[1])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow capsule geom"
-            hollow = compute_capsule_inertia(density, r - thickness, h - 2.0 * thickness)
+            hollow = compute_inertia_capsule(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CYLINDER:
-        r, h = scale[0], scale[1] * 2.0
-        solid = compute_cylinder_inertia(density, r, h)
+        # scale[0] = radius, scale[1] = half_height
+        solid = compute_inertia_cylinder(density, scale[0], scale[1])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow cylinder geom"
-            hollow = compute_cylinder_inertia(density, r - thickness, h - 2.0 * thickness)
+            hollow = compute_inertia_cylinder(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CONE:
-        r, h = scale[0], scale[1] * 2.0
-        solid = compute_cone_inertia(density, r, h)
+        # scale[0] = radius, scale[1] = half_height
+        solid = compute_inertia_cone(density, scale[0], scale[1])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
-            hollow = compute_cone_inertia(density, r - thickness, h - 2.0 * thickness)
-            return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
+            hollow = compute_inertia_cone(density, scale[0] - thickness, scale[1] - thickness)
+            m_shell = solid[0] - hollow[0]
+            if m_shell <= 0.0:
+                raise ValueError(
+                    f"Hollow cone shell has non-positive mass ({m_shell:.6g}). "
+                    f"The thickness ({thickness}) must be smaller than both the "
+                    f"radius ({scale[0]}) and half_height ({scale[1]})."
+                )
+            # Cones have non-zero COM so outer and inner cones have different COMs;
+            # compute the shell COM as the weighted difference, then shift both
+            # inertia tensors to the shell COM before subtracting (parallel-axis theorem).
+            com_s = np.array(solid[1])
+            com_i = np.array(hollow[1])
+            com_shell = (solid[0] * com_s - hollow[0] * com_i) / m_shell
+
+            def _shift_inertia(mass, I_mat, com_from, com_to):
+                d = com_to - np.array(com_from)
+                return np.array(I_mat).reshape(3, 3) + mass * (np.dot(d, d) * np.eye(3) - np.outer(d, d))
+
+            I_shell = _shift_inertia(solid[0], solid[2], com_s, com_shell) - _shift_inertia(
+                hollow[0], hollow[2], com_i, com_shell
+            )
+            return m_shell, wp.vec3(*com_shell), wp.mat33(*I_shell.flatten())
     elif type == GeoType.ELLIPSOID:
-        a, b, c = scale[0], scale[1], scale[2]
-        solid = compute_ellipsoid_inertia(density, a, b, c)
+        # scale stores semi-axes (rx, ry, rz)
+        solid = compute_inertia_ellipsoid(density, scale[0], scale[1], scale[2])
         if is_solid:
             return solid
         else:
             assert isinstance(thickness, float), "thickness must be a float for a hollow ellipsoid geom"
-            hollow = compute_ellipsoid_inertia(density, a - thickness, b - thickness, c - thickness)
+            hollow = compute_inertia_ellipsoid(
+                density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness
+            )
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.HFIELD:
         # Heightfields are always static terrain (zero mass, zero inertia)
@@ -561,7 +591,7 @@ def compute_shape_inertia(
             assert isinstance(src, Mesh), "src must be a Mesh for mesh or convex hull shapes"
             # fall back to computing inertia from mesh geometry
             vertices = np.array(src.vertices) * np.array(scale)
-            m, c, I, _vol = compute_mesh_inertia(density, vertices, src.indices, is_solid, thickness)
+            m, c, I, _vol = compute_inertia_mesh(density, vertices, src.indices, is_solid, thickness)
             return m, c, I
     raise ValueError(f"Unsupported shape type: {type}")
 
@@ -572,7 +602,7 @@ def verify_and_correct_inertia(
     balance_inertia: bool = True,
     bound_mass: float | None = None,
     bound_inertia: float | None = None,
-    body_key: str | None = None,
+    body_label: str | None = None,
 ) -> tuple[float, wp.mat33, bool]:
     """Verify and correct inertia values similar to MuJoCo's balanceinertia compiler setting.
 
@@ -589,7 +619,7 @@ def verify_and_correct_inertia(
         balance_inertia: If True, adjust inertia to exactly satisfy triangle inequality (like MuJoCo's balanceinertia)
         bound_mass: If specified, clamp mass to be at least this value
         bound_inertia: If specified, clamp inertia diagonal elements to be at least this value
-        body_key: Optional key/name of the body for more informative warnings
+        body_label: Optional label/name of the body for more informative warnings
 
     Returns:
         A tuple of (corrected_mass, corrected_inertia, was_corrected) where was_corrected
@@ -601,7 +631,7 @@ def verify_and_correct_inertia(
     corrected_inertia = inertia_array.copy()
 
     # Format body identifier for warnings
-    body_id = f" for body '{body_key}'" if body_key else ""
+    body_id = f" for body '{body_label}'" if body_label else ""
 
     # Check and correct mass
     if mass < 0:

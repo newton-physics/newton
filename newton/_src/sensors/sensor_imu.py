@@ -20,6 +20,7 @@ import warp as wp
 from ..geometry.flags import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
+from ..utils.selection import match_labels
 
 
 @wp.kernel
@@ -85,6 +86,8 @@ class SensorIMU:
     a solver that supports computing ``body_qdd``, and requesting ``body_qdd`` from the model before calling
     ``model.state()``. Instantiating the SensorIMU will automatically request ``body_qdd`` from the model by default.
 
+    The ``sites`` parameter accepts label patterns -- see :ref:`label-matching`.
+
     Example:
         Create a SensorIMU for a model with a list of site indices::
 
@@ -106,7 +109,12 @@ class SensorIMU:
     """Angular velocity readings in sensor frame, shape (n_sensors,)."""
 
     def __init__(
-        self, model: Model, sites: list[int], verbose: bool | None = None, request_state_attributes: bool = True
+        self,
+        model: Model,
+        sites: str | list[str] | list[int],
+        *,
+        verbose: bool | None = None,
+        request_state_attributes: bool = True,
     ):
         """Initialize SensorIMU.
 
@@ -115,19 +123,24 @@ class SensorIMU:
 
         Args:
             model: The model to use.
-            sites: List of site indices where IMU sensors are attached.
+            sites: List of shape indices, single pattern to match against shape
+                labels, or list of patterns where any one matches.
             verbose: If True, print details. If None, uses ``wp.config.verbose``.
             request_state_attributes: If True (default), transparently request the extended state attribute ``body_qdd`` from the model.
                 If False, ``model`` is not modified and the attribute must be requested elsewhere before calling ``model.state()``.
         Raises:
-            ValueError: If invalid sites are passed.
+            ValueError: If no labels match or invalid sites are passed.
         """
 
         self.model = model
         self.verbose = verbose if verbose is not None else wp.config.verbose
 
+        original_sites = sites
+        sites = match_labels(model.shape_label, sites)
         if not sites:
-            raise ValueError("sites must not be empty")
+            if isinstance(original_sites, list) and len(original_sites) == 0:
+                raise ValueError("'sites' must not be empty")
+            raise ValueError(f"No sites matched the given pattern {original_sites!r}")
 
         # request acceleration state attribute
         if request_state_attributes:

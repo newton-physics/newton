@@ -150,7 +150,7 @@ class Mesh:
             texture: Optional texture path/URL or image data (H, W, C).
             sdf: Optional prebuilt SDF object owned by this mesh.
         """
-        from .inertia import compute_mesh_inertia  # noqa: PLC0415
+        from .inertia import compute_inertia_mesh  # noqa: PLC0415
 
         self._vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
         self._indices = np.array(indices, dtype=np.int32).flatten()
@@ -173,7 +173,7 @@ class Mesh:
         self.sdf = sdf
 
         if compute_inertia:
-            self.mass, self.com, self.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=is_solid)
+            self.mass, self.com, self.I, _ = compute_inertia_mesh(1.0, vertices, indices, is_solid=is_solid)
         else:
             self.I = wp.mat33(np.eye(3))
             self.mass = 1.0

@@ -17,6 +17,7 @@
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 from newton._src.geometry.contact_data import ContactData
@@ -24,6 +25,8 @@ from newton._src.geometry.contact_reduction_global import (
     GlobalContactReducer,
     GlobalContactReducerData,
     create_export_reduced_contacts_kernel,
+    decode_oct,
+    encode_oct,
     export_and_reduce_contact,
     make_contact_key,
 )
@@ -614,6 +617,45 @@ def test_key_uniqueness(test, device):
     test.assertEqual(keys_np[0], keys_np[4])
 
 
+def test_oct_encode_decode_roundtrip(test, device):
+    """Validate octahedral normal encode/decode round-trip accuracy.
+
+    Args:
+        test: Unittest-style assertion helper.
+        device: Warp device under test.
+    """
+
+    @wp.kernel
+    def roundtrip_error_kernel(normals: wp.array(dtype=wp.vec3), errors: wp.array(dtype=wp.float32)):
+        tid = wp.tid()
+        n = wp.normalize(normals[tid])
+        decoded = decode_oct(encode_oct(n))
+        errors[tid] = wp.length(decoded - n)
+
+    normals_np = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [1.0, 1.0, 1.0],
+            [-1.0, 1.0, 0.5],
+            [0.2, -0.7, -0.68],
+            [-0.35, -0.12, -0.93],
+            [0.0001, 1.0, -0.0002],
+            [-0.9, 0.3, -0.3],
+        ],
+        dtype=np.float32,
+    )
+
+    normals = wp.array(normals_np, dtype=wp.vec3, device=device)
+    errors = wp.empty(normals.shape[0], dtype=wp.float32, device=device)
+    wp.launch(roundtrip_error_kernel, dim=normals.shape[0], inputs=[normals, errors], device=device)
+
+    max_error = float(np.max(errors.numpy()))
+    test.assertLess(max_error, 1.0e-5, f"Expected oct encode/decode max error < 1e-5, got {max_error:.3e}")
+
+
 # =============================================================================
 # Test registration
 # =============================================================================
@@ -636,6 +678,12 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestKeyConstruction, "test_key_uniqueness", test_key_uniqueness, devices=devices)
+add_function_test(
+    TestKeyConstruction,
+    "test_oct_encode_decode_roundtrip",
+    test_oct_encode_decode_roundtrip,
+    devices=devices,
+)
 
 
 if __name__ == "__main__":

@@ -230,15 +230,23 @@ class FrequencyLayout:
         return f"FrequencyLayout(\n    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n)"
 
 
-def get_name_from_key(key: str):
-    return key.split("/")[-1]
+def get_name_from_label(label: str):
+    """Return the leaf component of a hierarchical label.
+
+    Args:
+        label: Slash-delimited label string (e.g. ``"robot/link1"``).
+
+    Returns:
+        The final path component of the label.
+    """
+    return label.split("/")[-1]
 
 
-def find_matching_ids(pattern: str, keys: list[str], world_ids, world_count: int):
+def find_matching_ids(pattern: str, labels: list[str], world_ids, world_count: int):
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
-    for id, key in enumerate(keys):
-        if fnmatch(key, pattern):
+    for id, label in enumerate(labels):
+        if fnmatch(label, pattern):
             world = world_ids[id]
             if world == -1:
                 global_ids.append(id)
@@ -247,6 +255,35 @@ def find_matching_ids(pattern: str, keys: list[str], world_ids, world_count: int
             else:
                 raise ValueError(f"World index out of range: {world}")
     return grouped_ids, global_ids
+
+
+def match_labels(labels: list[str], pattern: str | list[str] | list[int]) -> list[int]:
+    """Find indices of elements in ``labels`` that match ``pattern``.
+
+    See :ref:`label-matching` for the pattern syntax accepted across Newton APIs.
+
+    Args:
+        labels: List of label strings to match against.
+        pattern: A ``str`` is matched via :func:`fnmatch.fnmatch` against each label.
+            A ``list[str]`` matches any pattern.
+            A ``list[int]`` is returned as-is (indices used directly).
+            Mixing ``str`` and ``int`` in the same list is not allowed.
+
+    Returns:
+        Unique list of matching indices, or ``pattern`` itself for ``list[int]``.
+
+    Raises:
+        TypeError: If list elements are not all ``str`` or all ``int``.
+    """
+    if isinstance(pattern, str):
+        return [idx for idx, label in enumerate(labels) if fnmatch(label, pattern)]
+
+    if all(isinstance(item, int) for item in pattern):
+        return pattern
+    if all(isinstance(item, str) for item in pattern):
+        return [idx for idx, label in enumerate(labels) if any(fnmatch(label, p) for p in pattern)]
+    types = {type(item).__name__ for item in pattern}
+    raise TypeError(f"Expected a list of str patterns or a list of int indices, got: {', '.join(sorted(types))}")
 
 
 def all_equal(values):
@@ -295,13 +332,16 @@ class ArticulationView:
         q_np[..., 0] = 0.0
         view.set_dof_positions(state, q_np)
 
+    The ``pattern``, ``include_joints``, ``exclude_joints``, ``include_links``,
+    and ``exclude_links`` parameters accept label patterns — see :ref:`label-matching`.
+
     Args:
         model (Model): The model containing the articulations.
-        pattern (str): Pattern to match articulation keys.
-        include_joints (list[str | int] | None): List of joint names, patterns, or indices to include.
-        exclude_joints (list[str | int] | None): List of joint names, patterns, or indices to exclude.
-        include_links (list[str | int] | None): List of link names, patterns, or indices to include.
-        exclude_links (list[str | int] | None): List of link names, patterns, or indices to exclude.
+        pattern (str): Pattern to match articulation labels.
+        include_joints (list[str] | list[int] | None): List of joint names, patterns, or indices to include.
+        exclude_joints (list[str] | list[int] | None): List of joint names, patterns, or indices to exclude.
+        include_links (list[str] | list[int] | None): List of link names, patterns, or indices to include.
+        exclude_links (list[str] | list[int] | None): List of link names, patterns, or indices to exclude.
         include_joint_types (list[int] | None): List of joint types to include.
         exclude_joint_types (list[int] | None): List of joint types to exclude.
         verbose (bool | None): If True, prints selection summary.
@@ -311,10 +351,10 @@ class ArticulationView:
         self,
         model: Model,
         pattern: str,
-        include_joints: list[str | int] | None = None,
-        exclude_joints: list[str | int] | None = None,
-        include_links: list[str | int] | None = None,
-        exclude_links: list[str | int] | None = None,
+        include_joints: list[str] | list[int] | None = None,
+        exclude_joints: list[str] | list[int] | None = None,
+        include_links: list[str] | list[int] | None = None,
+        exclude_links: list[str] | list[int] | None = None,
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         verbose: bool | None = None,
@@ -335,7 +375,7 @@ class ArticulationView:
 
         # get articulation ids grouped by world
         articulation_ids, global_articulation_ids = find_matching_ids(
-            pattern, model.articulation_key, model_articulation_world, model.world_count
+            pattern, model.articulation_label, model_articulation_world, model.world_count
         )
 
         # determine articulation counts per world
@@ -392,7 +432,7 @@ class ArticulationView:
         for joint_id in range(arti_joint_begin, arti_joint_end):
             # joint_id = arti_joint_begin + idx
             arti_joint_ids.append(joint_id)
-            arti_joint_names.append(get_name_from_key(model.joint_key[joint_id]))
+            arti_joint_names.append(get_name_from_label(model.joint_label[joint_id]))
             arti_joint_types.append(model_joint_type[joint_id])
             link_id = int(model_joint_child[joint_id])
             arti_link_ids.append(link_id)
@@ -401,14 +441,14 @@ class ArticulationView:
         arti_link_ids = sorted(arti_link_ids)
         arti_link_count = len(arti_link_ids)
         for link_id in arti_link_ids:
-            arti_link_names.append(get_name_from_key(model.body_key[link_id]))
+            arti_link_names.append(get_name_from_label(model.body_label[link_id]))
             arti_shape_ids.extend(model.body_shapes[link_id])
 
         # use shape order as they appear in the model
         arti_shape_ids = sorted(arti_shape_ids)
         arti_shape_count = len(arti_shape_ids)
         for shape_id in arti_shape_ids:
-            arti_shape_names.append(get_name_from_key(model.shape_key[shape_id]))
+            arti_shape_names.append(get_name_from_label(model.shape_label[shape_id]))
 
         # compute counts and offsets of joints, links, etc.
         joint_starts = list_of_lists(world_count)
@@ -566,16 +606,9 @@ class ArticulationView:
         else:
             joint_include_indices = set()
             if include_joints is not None:
-                for id in include_joints:
-                    if isinstance(id, str):
-                        for idx, name in enumerate(arti_joint_names):
-                            if fnmatch(name, id):
-                                joint_include_indices.add(idx)
-                    elif isinstance(id, int):
-                        if id >= 0 and id < arti_joint_count:
-                            joint_include_indices.add(id)
-                    else:
-                        raise TypeError(f"Joint ids must be strings or integers, got {id} of type {type(id)}")
+                joint_include_indices.update(
+                    idx for idx in match_labels(arti_joint_names, include_joints) if 0 <= idx < arti_joint_count
+                )
             if include_joint_types is not None:
                 for idx in range(arti_joint_count):
                     if arti_joint_types[idx] in include_joint_types:
@@ -584,16 +617,9 @@ class ArticulationView:
         # create joint exclusion set
         joint_exclude_indices = set()
         if exclude_joints is not None:
-            for id in exclude_joints:
-                if isinstance(id, str):
-                    for idx, name in enumerate(arti_joint_names):
-                        if fnmatch(name, id):
-                            joint_exclude_indices.add(idx)
-                elif isinstance(id, int):
-                    if id >= 0 and id < arti_joint_count:
-                        joint_exclude_indices.add(id)
-                else:
-                    raise TypeError(f"Joint ids must be strings or integers, got {id} of type {type(id)}")
+            joint_exclude_indices.update(
+                idx for idx in match_labels(arti_joint_names, exclude_joints) if 0 <= idx < arti_joint_count
+            )
         if exclude_joint_types is not None:
             for idx in range(arti_joint_count):
                 if arti_joint_types[idx] in exclude_joint_types:
@@ -603,32 +629,16 @@ class ArticulationView:
         if include_links is None:
             link_include_indices = set(range(arti_link_count))
         else:
-            link_include_indices = set()
-            if include_links is not None:
-                for id in include_links:
-                    if isinstance(id, str):
-                        for idx, name in enumerate(arti_link_names):
-                            if fnmatch(name, id):
-                                link_include_indices.add(idx)
-                    elif isinstance(id, int):
-                        if id >= 0 and id < arti_link_count:
-                            link_include_indices.add(id)
-                    else:
-                        raise TypeError(f"Link ids must be strings or integers, got {id} of type {type(id)}")
+            link_include_indices = {
+                idx for idx in match_labels(arti_link_names, include_links) if 0 <= idx < arti_link_count
+            }
 
         # create link exclusion set
         link_exclude_indices = set()
         if exclude_links is not None:
-            for id in exclude_links:
-                if isinstance(id, str):
-                    for idx, name in enumerate(arti_link_names):
-                        if fnmatch(name, id):
-                            link_exclude_indices.add(idx)
-                elif isinstance(id, int):
-                    if id >= 0 and id < arti_link_count:
-                        link_exclude_indices.add(id)
-                else:
-                    raise TypeError(f"Link ids must be strings or integers, got {id} of type {type(id)}")
+            link_exclude_indices.update(
+                idx for idx in match_labels(arti_link_names, exclude_links) if 0 <= idx < arti_link_count
+            )
 
         # compute selected indices
         selected_joint_indices = sorted(joint_include_indices - joint_exclude_indices)
@@ -890,11 +900,11 @@ class ArticulationView:
 
                     self.tendon_count = arti_tendon_count
 
-                    # Populate tendon_names from model.mujoco.tendon_key if available
-                    if hasattr(mujoco_attrs, "tendon_key"):
+                    # Populate tendon_names from model.mujoco.tendon_label if available
+                    if hasattr(mujoco_attrs, "tendon_label"):
                         for tendon_idx in arti_tendon_ids:
-                            if tendon_idx < len(mujoco_attrs.tendon_key):
-                                self.tendon_names.append(mujoco_attrs.tendon_key[tendon_idx])
+                            if tendon_idx < len(mujoco_attrs.tendon_label):
+                                self.tendon_names.append(get_name_from_label(mujoco_attrs.tendon_label[tendon_idx]))
                             else:
                                 self.tendon_names.append(f"tendon_{tendon_idx}")
 

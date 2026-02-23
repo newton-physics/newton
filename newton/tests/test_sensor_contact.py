@@ -77,7 +77,7 @@ class TestSensorContact(unittest.TestCase):
         entity_B = (2,)
 
         model = MockModel()
-        model.body_key = ["A", "B"]
+        model.body_label = ["A", "B"]
         model.body_shapes = [entity_A, entity_B]
 
         contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
@@ -99,50 +99,50 @@ class TestSensorContact(unittest.TestCase):
                 "pairs": [],
                 "normals": [],
                 "forces": [],
-                "force_A_vs_B": (0.0, 0.0, 0.0),
-                "force_B_vs_A": (0.0, 0.0, 0.0),
-                "force_A_vs_All": (0.0, 0.0, 0.0),
-                "force_B_vs_All": (0.0, 0.0, 0.0),
+                "force_on_A_from_B": (0.0, 0.0, 0.0),
+                "force_on_B_from_A": (0.0, 0.0, 0.0),
+                "force_on_A_from_all": (0.0, 0.0, 0.0),
+                "force_on_B_from_all": (0.0, 0.0, 0.0),
             },
             {
                 "name": "only_contact_0",
                 "pairs": pairs[:1],
                 "normals": normals[:1],
                 "forces": forces[:1],
-                "force_A_vs_B": (0.0, 0.0, 1.0),
-                "force_B_vs_A": (0.0, 0.0, -1.0),
-                "force_A_vs_All": (0.0, 0.0, 1.0),
-                "force_B_vs_All": (0.0, 0.0, -1.0),
+                "force_on_A_from_B": (0.0, 0.0, -1.0),
+                "force_on_B_from_A": (0.0, 0.0, 1.0),
+                "force_on_A_from_all": (0.0, 0.0, -1.0),
+                "force_on_B_from_all": (0.0, 0.0, 1.0),
             },
             {
                 "name": "only 1",
                 "pairs": pairs[1:2],
                 "normals": normals[1:2],
                 "forces": forces[1:2],
-                "force_A_vs_B": (2.0, 0.0, 0.0),
-                "force_B_vs_A": (-2.0, 0.0, 0.0),
-                "force_A_vs_All": (2.0, 0.0, 0.0),
-                "force_B_vs_All": (-2.0, 0.0, 0.0),
+                "force_on_A_from_B": (-2.0, 0.0, 0.0),
+                "force_on_B_from_A": (2.0, 0.0, 0.0),
+                "force_on_A_from_all": (-2.0, 0.0, 0.0),
+                "force_on_B_from_all": (2.0, 0.0, 0.0),
             },
             {
                 "name": "only 2",
                 "pairs": pairs[2:3],
                 "normals": normals[2:3],
                 "forces": forces[2:3],
-                "force_A_vs_B": (0.0, -1.5, 0.0),
-                "force_B_vs_A": (0.0, 1.5, 0.0),
-                "force_A_vs_All": (0.0, -1.5, 0.0),
-                "force_B_vs_All": (0.0, 1.5, 0.0),
+                "force_on_A_from_B": (0.0, 1.5, 0.0),
+                "force_on_B_from_A": (0.0, -1.5, 0.0),
+                "force_on_A_from_all": (0.0, 1.5, 0.0),
+                "force_on_B_from_all": (0.0, -1.5, 0.0),
             },
             {
                 "name": "all_contacts",
                 "pairs": pairs,
                 "normals": normals,
                 "forces": forces,
-                "force_A_vs_B": (2.0, -1.5, 1.0),
-                "force_B_vs_A": (-2.0, 1.5, -1.0),
-                "force_A_vs_All": (2.0, -1.5, 0.5),
-                "force_B_vs_All": (-2.0, 1.5, -1.0),
+                "force_on_A_from_B": (-2.0, 1.5, -1.0),
+                "force_on_B_from_A": (2.0, -1.5, 1.0),
+                "force_on_A_from_all": (-2.0, 1.5, -0.5),
+                "force_on_B_from_all": (2.0, -1.5, 1.0),
             },
         ]
 
@@ -156,7 +156,7 @@ class TestSensorContact(unittest.TestCase):
                     forces=scenario["forces"],
                 )
 
-                contact_sensor.eval(contacts)
+                contact_sensor.update(contacts)
 
                 self.assertIsNotNone(contact_sensor.net_force)
                 self.assertEqual(contact_sensor.net_force.shape, contact_sensor.shape)
@@ -165,10 +165,10 @@ class TestSensorContact(unittest.TestCase):
 
                 net_forces = contact_sensor.net_force.numpy()
 
-                assert_np_equal(net_forces[0, 2], scenario["force_A_vs_B"])
-                assert_np_equal(net_forces[1, 1], scenario["force_B_vs_A"])
-                assert_np_equal(net_forces[0, 0], scenario["force_A_vs_All"])
-                assert_np_equal(net_forces[1, 0], scenario["force_B_vs_All"])
+                assert_np_equal(net_forces[0, 2], scenario["force_on_A_from_B"])
+                assert_np_equal(net_forces[1, 1], scenario["force_on_B_from_A"])
+                assert_np_equal(net_forces[0, 0], scenario["force_on_A_from_all"])
+                assert_np_equal(net_forces[1, 0], scenario["force_on_B_from_all"])
 
 
 class TestSensorContactMuJoCo(unittest.TestCase):
@@ -181,10 +181,10 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
 
-        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, key="base")
-        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), key="a")
+        builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=0.25, label="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()), label="a")
         builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
-        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 1.15), wp.quat_identity()), key="b")
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 1.15), wp.quat_identity()), label="b")
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
 
         model = builder.finalize()
@@ -230,7 +230,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
-        sensor.eval(contacts)
+        sensor.update(contacts)
 
         forces = sensor.net_force.numpy()
         g = 9.81
@@ -244,12 +244,12 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.density = 1000.0
 
-        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, key="base")
-        body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), key="a")
+        builder.add_shape_box(body=-1, hx=2.0, hy=2.0, hz=0.25, label="base")
+        body_a = builder.add_body(xform=wp.transform(wp.vec3(-0.5, 0, 0.8), wp.quat_identity()), label="a")
         builder.add_shape_box(body_a, hx=0.15, hy=0.15, hz=0.25)
-        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.6), wp.quat_identity()), key="b")
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 0.6), wp.quat_identity()), label="b")
         builder.add_shape_box(body_b, hx=0.1, hy=0.1, hz=0.05)
-        body_c = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0, 0.8), wp.quat_identity()), key="c")
+        body_c = builder.add_body(xform=wp.transform(wp.vec3(0.5, 0, 0.8), wp.quat_identity()), label="c")
         builder.add_shape_box(body_c, hx=0.1, hy=0.1, hz=0.25)
 
         model = builder.finalize()
@@ -296,8 +296,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
-        sensor_abc.eval(contacts)
-        sensor_base.eval(contacts)
+        sensor_abc.update(contacts)
+        sensor_base.update(contacts)
 
         forces = sensor_abc.net_force.numpy()
         g = 9.81

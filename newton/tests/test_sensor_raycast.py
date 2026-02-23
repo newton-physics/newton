@@ -164,7 +164,7 @@ def test_sensor_raycast_cubemap(test: unittest.TestCase, device, export_images: 
         sensor.update_camera_pose(position=position, direction=direction, up=up)
 
         # Evaluate the sensor
-        sensor.eval(state)
+        sensor.update(state)
 
         # Get depth image
         depth_image = sensor.get_depth_image_numpy()
@@ -201,7 +201,7 @@ def test_sensor_raycast_particles_hit(test: unittest.TestCase, device: str):
         max_distance=10.0,
     )
 
-    sensor.eval(state, include_particles=True)
+    sensor.update(state, include_particles=True)
     depth = sensor.get_depth_image_numpy()
 
     test.assertEqual(depth.shape, (1, 1))
@@ -231,7 +231,7 @@ def test_sensor_raycast_particles_requires_positive_step(test: unittest.TestCase
     )
 
     with test.assertRaises(ValueError):
-        sensor.eval(state, include_particles=True, particle_march_step=0.0)
+        sensor.update(state, include_particles=True, particle_march_step=0.0)
 
 
 def test_sensor_raycast_include_particles_without_particles(test: unittest.TestCase, device: str):
@@ -254,7 +254,7 @@ def test_sensor_raycast_include_particles_without_particles(test: unittest.TestC
         max_distance=5.0,
     )
 
-    sensor.eval(state, include_particles=True)
+    sensor.update(state, include_particles=True)
     depth = sensor.get_depth_image_numpy()
 
     test.assertEqual(depth.shape, (1, 1))
@@ -286,7 +286,7 @@ def test_sensor_raycast_mixed_hits_prefers_closest_shape(test: unittest.TestCase
         max_distance=10.0,
     )
 
-    sensor.eval(state, include_particles=True)
+    sensor.update(state, include_particles=True)
     depth = sensor.get_depth_image_numpy()
 
     test.assertEqual(depth.shape, (1, 1))
@@ -318,11 +318,11 @@ def test_sensor_raycast_mixed_hits_prefers_closest_particle(test: unittest.TestC
         max_distance=10.0,
     )
 
-    sensor.eval(state, include_particles=False)
+    sensor.update(state, include_particles=False)
     shape_only_depth = sensor.get_depth_image_numpy()[0, 0]
     test.assertAlmostEqual(shape_only_depth, 5.5, delta=1e-3)
 
-    sensor.eval(state, include_particles=True)
+    sensor.update(state, include_particles=True)
     depth = sensor.get_depth_image_numpy()
     test.assertEqual(depth.shape, (1, 1))
     test.assertAlmostEqual(depth[0, 0], 2.5, delta=1e-3)
@@ -350,7 +350,7 @@ def test_sensor_raycast_particle_step_truncation_warns(test: unittest.TestCase, 
     )
 
     with test.assertWarns(RuntimeWarning):
-        sensor.eval(state, include_particles=True, particle_march_step=1.0e-9)
+        sensor.update(state, include_particles=True, particle_march_step=1.0e-9)
 
 
 def test_sensor_raycast_single_pixel_hit(test: unittest.TestCase, device):
@@ -388,7 +388,7 @@ def test_sensor_raycast_single_pixel_hit(test: unittest.TestCase, device):
 
     sensor.point_camera_at(target=sphere_center, position=camera_position, up=camera_up)
 
-    sensor.eval(state)
+    sensor.update(state)
     depth_image = sensor.get_depth_image_numpy()
 
     hits = np.argwhere(depth_image > 0.0)

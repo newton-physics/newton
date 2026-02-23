@@ -25,6 +25,7 @@ import newton
 import newton.examples
 import newton.usd as usd
 from newton import JointType
+from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
@@ -64,9 +65,9 @@ def Xform "Root" (
         )
         self.assertEqual(builder.body_count, 9)
         self.assertEqual(builder.shape_count, 26)
-        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
-        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
-        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
+        self.assertEqual(len(builder.shape_label), len(set(builder.shape_label)))
+        self.assertEqual(len(builder.body_label), len(set(builder.body_label)))
+        self.assertEqual(len(builder.joint_label), len(set(builder.joint_label)))
         # 8 joints + 1 free joint for the root body
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
@@ -222,11 +223,11 @@ def Xform "Root" (
         self.assertIn("PhysicsArticulationRootAPI", warn_msg)
         self.assertIn("skip_validation_joints=True", warn_msg)
 
-        self.assertIn("/World/Arm/RevoluteJoint", builder.joint_key)
-        self.assertIn("/World/OrphanJoint", builder.joint_key)
+        self.assertIn("/World/Arm/RevoluteJoint", builder.joint_label)
+        self.assertIn("/World/OrphanJoint", builder.joint_label)
 
-        art_idx = builder.joint_key.index("/World/Arm/RevoluteJoint")
-        orphan_idx = builder.joint_key.index("/World/OrphanJoint")
+        art_idx = builder.joint_label.index("/World/Arm/RevoluteJoint")
+        orphan_idx = builder.joint_label.index("/World/OrphanJoint")
         self.assertEqual(builder.joint_type[art_idx], newton.JointType.REVOLUTE)
         self.assertEqual(builder.joint_type[orphan_idx], newton.JointType.REVOLUTE)
 
@@ -236,6 +237,64 @@ def Xform "Root" (
         # finalize requires skip_validation_joints=True for orphan joints
         model = builder.finalize(skip_validation_joints=True)
         self.assertEqual(model.body_count, 4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collapse_fixed_joints_preserves_orphan_joints(self):
+        """collapse_fixed_joints must not drop orphan joints or their bodies."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Three bodies connected by revolute joints, NO articulation root
+        body_a = UsdGeom.Xform.Define(stage, "/World/BodyA")
+        UsdPhysics.RigidBodyAPI.Apply(body_a.GetPrim())
+        body_a.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+        col_a = UsdGeom.Cube.Define(stage, "/World/BodyA/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_a.GetPrim())
+
+        body_b = UsdGeom.Xform.Define(stage, "/World/BodyB")
+        UsdPhysics.RigidBodyAPI.Apply(body_b.GetPrim())
+        body_b.AddTranslateOp().Set(Gf.Vec3d(1, 0, 0))
+        col_b = UsdGeom.Cube.Define(stage, "/World/BodyB/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_b.GetPrim())
+
+        body_c = UsdGeom.Xform.Define(stage, "/World/BodyC")
+        UsdPhysics.RigidBodyAPI.Apply(body_c.GetPrim())
+        body_c.AddTranslateOp().Set(Gf.Vec3d(2, 0, 0))
+        col_c = UsdGeom.Cube.Define(stage, "/World/BodyC/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_c.GetPrim())
+
+        # Revolute: BodyA -> BodyB (body-to-body, no world connection)
+        rev1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/RevJoint1")
+        rev1.CreateBody0Rel().SetTargets([body_a.GetPath()])
+        rev1.CreateBody1Rel().SetTargets([body_b.GetPath()])
+        rev1.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev1.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev1.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev1.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev1.CreateAxisAttr().Set("Z")
+
+        # Revolute: BodyB -> BodyC
+        rev2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/RevJoint2")
+        rev2.CreateBody0Rel().SetTargets([body_b.GetPath()])
+        rev2.CreateBody1Rel().SetTargets([body_c.GetPath()])
+        rev2.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev2.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev2.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev2.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev2.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarns(UserWarning):
+            builder.add_usd(stage, collapse_fixed_joints=True)
+
+        # All three bodies and both revolute joints must survive collapse
+        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.joint_count, 2)
+        self.assertIn("/World/RevJoint1", builder.joint_label)
+        self.assertIn("/World/RevJoint2", builder.joint_label)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
@@ -403,9 +462,9 @@ def Xform "World"
         )
         self.assertEqual(builder.body_count, 9)
         self.assertEqual(builder.shape_count, 13)
-        self.assertEqual(len(builder.shape_key), len(set(builder.shape_key)))
-        self.assertEqual(len(builder.body_key), len(set(builder.body_key)))
-        self.assertEqual(len(builder.joint_key), len(set(builder.joint_key)))
+        self.assertEqual(len(builder.shape_label), len(set(builder.shape_label)))
+        self.assertEqual(len(builder.body_label), len(set(builder.body_label)))
+        self.assertEqual(len(builder.joint_label), len(set(builder.joint_label)))
         # 8 joints + 1 free joint for the root body
         self.assertEqual(builder.joint_count, 9)
         self.assertEqual(builder.joint_dof_count, 14)
@@ -449,7 +508,7 @@ def Xform "World"
 
         # The articulation has 2 bodies
         self.assertEqual(builder.body_count, 2)
-        self.assertEqual(set(builder.body_key), {"/Articulation/Arm", "/Articulation/CenterPivot"})
+        self.assertEqual(set(builder.body_label), {"/Articulation/Arm", "/Articulation/CenterPivot"})
 
         # Should have 2 joints:
         # 1. Fixed joint with only body0 specified (CenterPivot to world)
@@ -457,8 +516,8 @@ def Xform "World"
         self.assertEqual(builder.joint_count, 2)
 
         # Find joints by their keys to make test robust to ordering changes
-        fixed_joint_idx = builder.joint_key.index("/Articulation/CenterPivot/FixedJoint")
-        revolute_joint_idx = builder.joint_key.index("/Articulation/Arm/RevoluteJoint")
+        fixed_joint_idx = builder.joint_label.index("/Articulation/CenterPivot/FixedJoint")
+        revolute_joint_idx = builder.joint_label.index("/Articulation/Arm/RevoluteJoint")
 
         # Verify joint types
         self.assertEqual(builder.joint_type[revolute_joint_idx], newton.JointType.REVOLUTE)
@@ -468,7 +527,7 @@ def Xform "World"
         # because body1 was missing in the USD file
         self.assertEqual(builder.joint_parent[fixed_joint_idx], -1)  # Parent is world (-1)
         # Child should be CenterPivot (which was body0 in the USD)
-        center_pivot_idx = builder.body_key.index("/Articulation/CenterPivot")
+        center_pivot_idx = builder.body_label.index("/Articulation/CenterPivot")
         self.assertEqual(builder.joint_child[fixed_joint_idx], center_pivot_idx)
 
         # Verify the import results mapping
@@ -496,7 +555,7 @@ class TestImportUsdJoints(unittest.TestCase):
             "right_back_foot",
         ]
         for i in range(8):
-            self.assertTrue(builder_dfs.joint_key[i + 1].endswith(expected[i]))
+            self.assertTrue(builder_dfs.joint_label[i + 1].endswith(expected[i]))
 
         builder_bfs = newton.ModelBuilder()
         builder_bfs.add_usd(
@@ -515,7 +574,7 @@ class TestImportUsdJoints(unittest.TestCase):
             "right_back_foot",
         ]
         for i in range(8):
-            self.assertTrue(builder_bfs.joint_key[i + 1].endswith(expected[i]))
+            self.assertTrue(builder_bfs.joint_label[i + 1].endswith(expected[i]))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_reversed_joints_in_articulation_raise(self):
@@ -623,8 +682,8 @@ class TestImportUsdJoints(unittest.TestCase):
         self.assertEqual(builder.body_count, 3)
         self.assertEqual(builder.joint_count, 3)
 
-        fixed_idx = builder.joint_key.index("/World/Articulation/RootToWorld")
-        root_idx = builder.body_key.index("/World/Articulation/Root")
+        fixed_idx = builder.joint_label.index("/World/Articulation/RootToWorld")
+        root_idx = builder.body_label.index("/World/Articulation/Root")
         self.assertEqual(builder.joint_parent[fixed_idx], -1)
         self.assertEqual(builder.joint_child[fixed_idx], root_idx)
 
@@ -749,14 +808,14 @@ class TestImportUsdJoints(unittest.TestCase):
                 f"Expected {expected_joint_types} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_type}",
             )
             self.assertEqual(
-                builder.body_key,
+                builder.body_label,
                 expected_body_keys,
-                f"Expected {expected_body_keys} bodies after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.body_key}",
+                f"Expected {expected_body_keys} bodies after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.body_label}",
             )
             self.assertEqual(
-                builder.joint_key,
+                builder.joint_label,
                 expected_joint_keys,
-                f"Expected {expected_joint_keys} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_key}",
+                f"Expected {expected_joint_keys} joints after filtering ({msg}; {bodies_follow_joint_ordering!s}), got {builder.joint_label}",
             )
 
         for bodies_follow_joint_ordering in [True, False]:
@@ -951,8 +1010,10 @@ def Xform "Articulation" (
         self.assertEqual(
             builder.joint_type, [newton.JointType.REVOLUTE, newton.JointType.REVOLUTE, newton.JointType.FIXED]
         )
-        self.assertEqual(builder.body_key, ["/Articulation/Body1", "/Articulation/Body2"])
-        self.assertEqual(builder.joint_key, ["/Articulation/Joint1", "/Articulation/Joint2", "/Articulation/LoopJoint"])
+        self.assertEqual(builder.body_label, ["/Articulation/Body1", "/Articulation/Body2"])
+        self.assertEqual(
+            builder.joint_label, ["/Articulation/Joint1", "/Articulation/Joint2", "/Articulation/LoopJoint"]
+        )
         self.assertEqual(builder.joint_articulation, [0, 0, -1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1220,13 +1281,13 @@ class TestImportUsdPhysics(unittest.TestCase):
         builder.add_usd(newton.examples.get_asset("humanoid.usda"))
         self.assertEqual(builder.shape_count, 38)
         self.assertEqual(builder.body_count, 16)
-        visual_shape_keys = [k for k in builder.shape_key if "visuals" in k]
-        collision_shape_keys = [k for k in builder.shape_key if "collisions" in k]
+        visual_shape_keys = [k for k in builder.shape_label if "visuals" in k]
+        collision_shape_keys = [k for k in builder.shape_label if "collisions" in k]
         self.assertEqual(len(visual_shape_keys), 19)
         self.assertEqual(len(collision_shape_keys), 19)
-        visual_shapes = [i for i, k in enumerate(builder.shape_key) if "visuals" in k]
+        visual_shapes = [i for i, k in enumerate(builder.shape_label) if "visuals" in k]
         # corresponding collision shapes
-        collision_shapes = [builder.shape_key.index(k.replace("visuals", "collisions")) for k in visual_shape_keys]
+        collision_shapes = [builder.shape_label.index(k.replace("visuals", "collisions")) for k in visual_shape_keys]
         # ensure that the visual and collision shapes match
         for i in range(len(visual_shapes)):
             vi = visual_shapes[i]
@@ -1277,8 +1338,8 @@ class TestImportUsdPhysics(unittest.TestCase):
         self.assertEqual(builder.body_count, 1)
         self.assertEqual(builder.shape_count, 1)
         self.assertAlmostEqual(builder.body_mass[0], 1.0, places=6)
-        self.assertEqual(builder.body_key[0], "/World/Box")
-        self.assertEqual(builder.shape_key[0], "/World/Box")
+        self.assertEqual(builder.body_label[0], "/World/Box")
+        self.assertEqual(builder.shape_label[0], "/World/Box")
 
         # Ensure the body has a free joint assigned and is in an articulation
         self.assertEqual(builder.joint_count, 1)
@@ -1286,7 +1347,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         self.assertEqual(builder.joint_parent[0], -1)
         self.assertEqual(builder.joint_child[0], 0)
         self.assertEqual(builder.articulation_count, 1)
-        self.assertEqual(builder.articulation_key[0], "/World/Box")
+        self.assertEqual(builder.articulation_label[0], "/World/Box")
 
         # Get parsed inertia tensor
         inertia_parsed = np.array(builder.body_inertia[0])
@@ -1379,19 +1440,19 @@ class TestImportUsdPhysics(unittest.TestCase):
         model = builder.finalize()
 
         # Test revolute joint (A-B)
-        joint_idx = model.joint_key.index("/joint_AB")
+        joint_idx = model.joint_label.index("/joint_AB")
         self.assertEqual(model.joint_type.numpy()[joint_idx], newton.JointType.REVOLUTE)
         joint_dof_idx = model.joint_qd_start.numpy()[joint_idx]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx], 24.0)
 
         # Test prismatic joint (A-C)
-        joint_idx_AC = model.joint_key.index("/joint_AC")
+        joint_idx_AC = model.joint_label.index("/joint_AC")
         self.assertEqual(model.joint_type.numpy()[joint_idx_AC], newton.JointType.PRISMATIC)
         joint_dof_idx_AC = model.joint_qd_start.numpy()[joint_idx_AC]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AC], 15.0)
 
         # Test D6 joint (A-D) - check transX DOF
-        joint_idx_AD = model.joint_key.index("/joint_AD")
+        joint_idx_AD = model.joint_label.index("/joint_AD")
         self.assertEqual(model.joint_type.numpy()[joint_idx_AD], newton.JointType.D6)
         joint_dof_idx_AD = model.joint_qd_start.numpy()[joint_idx_AD]
         self.assertEqual(model.joint_effort_limit.numpy()[joint_dof_idx_AD], 30.0)
@@ -2203,7 +2264,7 @@ def Xform "Root" (
         builder.add_usd(stage)
 
         def get_qd_start(b, joint_name):
-            joint_idx = b.joint_key.index(joint_name)
+            joint_idx = b.joint_label.index(joint_name)
             return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
 
         self.assertEqual(
@@ -2438,16 +2499,16 @@ def Xform "Root" (
         self.assertEqual(builder.joint_child[joint_id], body0)
         self.assertEqual(builder.joint_parent[joint_id], -1)
 
-    def test_add_base_joint_custom_key(self):
-        """Test add_base_joint with custom key."""
+    def test_add_base_joint_custom_label(self):
+        """Test add_base_joint with custom label."""
         builder = newton.ModelBuilder()
         body0 = builder.add_link(xform=wp.transform((1.0, 2.0, 3.0), wp.quat_identity()))
         builder.body_mass[body0] = 1.0
 
-        joint_id = builder._add_base_joint(body0, key="my_custom_joint")
+        joint_id = builder._add_base_joint(body0, label="my_custom_joint")
 
         self.assertEqual(builder.joint_count, 1)
-        self.assertEqual(builder.joint_key[joint_id], "my_custom_joint")
+        self.assertEqual(builder.joint_label[joint_id], "my_custom_joint")
 
 
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
@@ -2458,8 +2519,8 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
     stage = Usd.Stage.Open(file)
     parsed = UsdPhysics.LoadUsdPhysicsFromRange(stage, ["/"])
     # since the key is generated from USD paths we can assume that keys are unique
-    body_key_to_idx = dict(zip(model.body_key, range(model.body_count), strict=False))
-    shape_key_to_idx = dict(zip(model.shape_key, range(model.shape_count), strict=False))
+    body_key_to_idx = dict(zip(model.body_label, range(model.body_count), strict=False))
+    shape_key_to_idx = dict(zip(model.shape_label, range(model.shape_count), strict=False))
 
     parsed_bodies = list(zip(*parsed.get(UsdPhysics.ObjectType.RigidBody, ()), strict=False))
 
@@ -2473,7 +2534,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
     for body_path, body_desc in parsed_bodies:
         body_idx = body_key_to_idx.get(str(body_path), None)
 
-        model_collisions = {model.shape_key[sk] for sk in model.body_shapes[body_idx]}
+        model_collisions = {model.shape_label[sk] for sk in model.body_shapes[body_idx]}
         parsed_collisions = {str(collider) for collider in body_desc.collisions}
         test.assertEqual(parsed_collisions, model_collisions)
 
@@ -2509,7 +2570,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
         JointType.D6: UsdPhysics.ObjectType.D6Joint,
     }
 
-    joint_key_to_idx = dict(zip(model.joint_key, range(model.joint_count), strict=False))
+    joint_key_to_idx = dict(zip(model.joint_label, range(model.joint_count), strict=False))
     model_joint_type = model.joint_type.numpy()
     joints_found = []
 
@@ -2537,15 +2598,15 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
         jt = int(model_joint_type[j])
 
         if jt == JointType.REVOLUTE:
-            test.assertEqual((lin, ang), (0, 1), f"{model.joint_key[j]} DOF dim mismatch")
+            test.assertEqual((lin, ang), (0, 1), f"{model.joint_label[j]} DOF dim mismatch")
         elif jt == JointType.FIXED:
-            test.assertEqual((lin, ang), (0, 0), f"{model.joint_key[j]} DOF dim mismatch")
+            test.assertEqual((lin, ang), (0, 0), f"{model.joint_label[j]} DOF dim mismatch")
         elif jt == JointType.FREE:
-            test.assertGreater(lin + ang, 0, f"{model.joint_key[j]} expected nonzero DOFs for free joint")
+            test.assertGreater(lin + ang, 0, f"{model.joint_label[j]} expected nonzero DOFs for free joint")
         elif jt == JointType.PRISMATIC:
-            test.assertEqual((lin, ang), (1, 0), f"{model.joint_key[j]} DOF dim mismatch")
+            test.assertEqual((lin, ang), (1, 0), f"{model.joint_label[j]} DOF dim mismatch")
         elif jt == JointType.BALL:
-            test.assertEqual((lin, ang), (0, 3), f"{model.joint_key[j]} DOF dim mismatch")
+            test.assertEqual((lin, ang), (0, 3), f"{model.joint_label[j]} DOF dim mismatch")
 
     test.assertEqual(int(total_dofs), int(model.joint_axis.numpy().shape[0]))
     joint_enabled = model.joint_enabled.numpy()
@@ -2564,7 +2625,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
         if attr and attr.HasAuthoredValue():
             drive_gain_scale = float(attr.Get())
 
-    for j, key in enumerate(model.joint_key):
+    for j, key in enumerate(model.joint_label):
         prim = stage.GetPrimAtPath(key)
         if not prim:
             continue
@@ -2669,7 +2730,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
 
             test.assertTrue(
                 all(abs(lhs_p[i] - rhs_p[i]) < 1e-6 for i in range(3)),
-                f"Joint {j} ({model.joint_key[j]}) position mismatch: expected={rhs_p}, Newton={lhs_p}",
+                f"Joint {j} ({model.joint_label[j]}) position mismatch: expected={rhs_p}, Newton={lhs_p}",
             )
 
             q_diff = lhs_q * wp.quat_inverse(rhs_q)
@@ -2677,7 +2738,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
             test.assertLessEqual(
                 angle_diff,
                 3e-3,
-                f"Joint {j} ({model.joint_key[j]}) rotation mismatch: expected={rhs_q}, Newton={lhs_q}, angle_diff={math.degrees(angle_diff)}°",
+                f"Joint {j} ({model.joint_label[j]}) rotation mismatch: expected={rhs_q}, Newton={lhs_q}, angle_diff={math.degrees(angle_diff)}°",
             )
 
     model.shape_body.numpy()
@@ -3224,7 +3285,7 @@ def Xform "Articulation" (
         self.assertTrue(hasattr(model.mujoco, "dof_passive_stiffness"))
         self.assertTrue(hasattr(model.mujoco, "dof_passive_damping"))
 
-        joint_names = model.joint_key
+        joint_names = model.joint_label
         joint_qd_start = model.joint_qd_start.numpy()
         joint_stiffness = model.mujoco.dof_passive_stiffness.numpy()
         joint_damping = model.mujoco.dof_passive_damping.numpy()
@@ -3845,7 +3906,7 @@ def Xform "Articulation" (
         dof_ref = model.mujoco.dof_ref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
         self.assertAlmostEqual(dof_ref[qd_start[revolute_joint_idx]], 90.0, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -3939,10 +4000,10 @@ def Xform "Articulation" (
         springref = model.mujoco.dof_springref.numpy()
         qd_start = model.joint_qd_start.numpy()
 
-        revolute_joint_idx = model.joint_key.index("/Articulation/revolute_joint")
+        revolute_joint_idx = model.joint_label.index("/Articulation/revolute_joint")
         self.assertAlmostEqual(springref[qd_start[revolute_joint_idx]], 30.0, places=4)
 
-        prismatic_joint_idx = model.joint_key.index("/Articulation/prismatic_joint")
+        prismatic_joint_idx = model.joint_label.index("/Articulation/prismatic_joint")
         self.assertAlmostEqual(springref[qd_start[prismatic_joint_idx]], 0.25, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -4621,10 +4682,156 @@ def Xform "Articulation" (
 
 class TestImportSampleAssetsComposition(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_floating_true_creates_free_joint(self):
-        """Test that floating=True creates a free joint for the root body."""
+    def test_custom_frequency_usd_defaults_when_no_authored_attrs(self):
+        """Test that custom frequency counts increment for prims with no authored custom attributes.
+
+        Regression test: when a usd_prim_filter returns True for prims that have no authored custom attributes,
+        the frequency count should still increment for each prim, and default values should be applied.
+        """
         from pxr import Usd, UsdGeom, UsdPhysics
 
+        # Create a minimal USD stage with physics scene and two custom prims
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Define two Xform prims that will be matched by our custom filter
+        # These prims have NO authored custom attributes
+        UsdGeom.Xform.Define(stage, "/World/CustomItem0")
+        UsdGeom.Xform.Define(stage, "/World/CustomItem1")
+
+        # Define a prim filter that matches these custom items
+        def is_custom_item(prim, context):
+            return prim.GetPath().pathString.startswith("/World/CustomItem")
+
+        builder = newton.ModelBuilder()
+
+        # Register custom frequency with the prim filter
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_filter=is_custom_item,
+            )
+        )
+
+        # Add a custom attribute with a non-zero default value
+        default_value = 42.0
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=default_value,
+                namespace="test",
+            )
+        )
+
+        # Parse the USD stage - this should find the 2 prims and increment count
+        builder.add_usd(stage)
+
+        # Finalize and verify
+        model = builder.finalize()
+
+        # Verify the custom frequency count equals the number of prims found
+        self.assertEqual(model.get_custom_frequency_count("test:item"), 2)
+
+        # Verify the attribute array has the correct length and default values
+        self.assertTrue(hasattr(model, "test"), "Model should have 'test' namespace")
+        self.assertTrue(hasattr(model.test, "item_value"), "Model should have 'item_value' attribute")
+
+        item_values = model.test.item_value.numpy()
+        self.assertEqual(len(item_values), 2)
+        self.assertAlmostEqual(item_values[0], default_value, places=5)
+        self.assertAlmostEqual(item_values[1], default_value, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_instance_proxy_traversal(self):
+        """Test that custom frequency parsing traverses instance proxy prims.
+
+        Regression test: prims under instanceable prims should be visited during
+        custom frequency USD parsing via TraverseInstanceProxies predicate.
+        """
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_floating_true_creates_free_joint(self):
+        """Test that floating=True creates a free joint for the root body."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create a prototype prim with a child that will be matched by our filter
+        _proto_root = UsdGeom.Xform.Define(stage, "/Prototypes/MyProto")
+        proto_child = UsdGeom.Xform.Define(stage, "/Prototypes/MyProto/CustomChild")
+        proto_child_prim = proto_child.GetPrim()
+        # Author a custom attribute on the prototype child
+        # The USD attribute name defaults to "newton:<namespace>:<name>" = "newton:test:child_value"
+        proto_child_prim.CreateAttribute("newton:test:child_value", Sdf.ValueTypeNames.Float).Set(99.0)
+
+        # Create two instanceable prims that reference the prototype
+        for i in range(2):
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{i}")
+            instance_prim = instance.GetPrim()
+            instance_prim.GetReferences().AddInternalReference("/Prototypes/MyProto")
+            instance_prim.SetInstanceable(True)
+
+        # Define a filter that matches prims named "CustomChild" (excluding the prototype)
+        def is_custom_child(prim, context):
+            path = prim.GetPath().pathString
+            return prim.GetName() == "CustomChild" and not path.startswith("/Prototypes")
+
+        builder = newton.ModelBuilder()
+
+        # Register custom frequency with the prim filter
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="child",
+                namespace="test",
+                usd_prim_filter=is_custom_child,
+            )
+        )
+
+        # Add a custom attribute
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="child_value",
+                frequency="test:child",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        # Parse the USD stage - should find CustomChild under each instance proxy
+        builder.add_usd(stage)
+
+        # Finalize and verify
+        model = builder.finalize()
+
+        # Should have 2 entries (one per instance proxy)
+        self.assertEqual(model.get_custom_frequency_count("test:child"), 2)
+
+        child_values = model.test.child_value.numpy()
+        self.assertEqual(len(child_values), 2)
+        # Both should have the authored value from the prototype
+        self.assertAlmostEqual(child_values[0], 99.0, places=5)
+        self.assertAlmostEqual(child_values[1], 99.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_wildcard_usd_attribute(self):
+        """Test that usd_attribute_name='*' calls the usd_value_transformer for every matching prim.
+
+        Registers a CustomFrequency that selects prims of a custom type, then uses
+        usd_attribute_name='*' with a usd_value_transformer to derive CustomAttribute
+        values from arbitrary prim data (not from a specific USD attribute).
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        # Create a USD stage with a physics scene and three "sensor" prims.
+        # Each sensor has a different "position" attribute that we will read
+        # through the wildcard transformer (not through the normal attribute path).
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -4644,6 +4851,124 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_false_creates_fixed_joint(self):
         """Test that floating=False creates a fixed joint for the root body."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        sensor_positions = [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), (7.0, 8.0, 9.0)]
+        for i, pos in enumerate(sensor_positions):
+            xform = UsdGeom.Xform.Define(stage, f"/World/Sensor{i}")
+            prim = xform.GetPrim()
+            # Store the position as a custom (non-newton) attribute on the prim
+            attr = prim.CreateAttribute("sensor:position", Sdf.ValueTypeNames.Float3)
+            attr.Set(pos)
+
+        # Filter that matches our sensor prims
+        def is_sensor_prim(prim, context):
+            return prim.GetName().startswith("Sensor")
+
+        builder = newton.ModelBuilder()
+
+        # Register the custom frequency
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="sensor",
+                namespace="test",
+                usd_prim_filter=is_sensor_prim,
+            )
+        )
+
+        # Transformer that reads the prim's "sensor:position" attribute and computes
+        # the Euclidean distance from the origin
+        def compute_distance_from_origin(value, context):
+            prim = context["prim"]
+            pos = prim.GetAttribute("sensor:position").Get()
+            return wp.float32(float(np.sqrt(pos[0] ** 2 + pos[1] ** 2 + pos[2] ** 2)))
+
+        # Register a wildcard custom attribute: no specific USD attribute name,
+        # the transformer is called for every prim matching this frequency
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="distance",
+                frequency="test:sensor",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+                usd_attribute_name="*",
+                usd_value_transformer=compute_distance_from_origin,
+            )
+        )
+
+        # Also add a second wildcard attribute that extracts the raw position
+        def extract_position(value, context):
+            prim = context["prim"]
+            pos = prim.GetAttribute("sensor:position").Get()
+            return wp.vec3(float(pos[0]), float(pos[1]), float(pos[2]))
+
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="position",
+                frequency="test:sensor",
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="test",
+                usd_attribute_name="*",
+                usd_value_transformer=extract_position,
+            )
+        )
+
+        # Parse the USD stage
+        builder.add_usd(stage)
+
+        # Finalize and verify
+        model = builder.finalize()
+
+        # Should have found all 3 sensor prims
+        self.assertEqual(model.get_custom_frequency_count("test:sensor"), 3)
+
+        # Verify the distance attribute
+        distances = model.test.distance.numpy()
+        self.assertEqual(len(distances), 3)
+        for i, pos in enumerate(sensor_positions):
+            expected = np.sqrt(pos[0] ** 2 + pos[1] ** 2 + pos[2] ** 2)
+            self.assertAlmostEqual(float(distances[i]), expected, places=4)
+
+        # Verify the position attribute
+        positions = model.test.position.numpy()
+        self.assertEqual(len(positions), 3)
+        for i, pos in enumerate(sensor_positions):
+            assert_np_equal(positions[i], np.array(pos, dtype=np.float32), tol=1e-5)
+
+    def test_custom_frequency_wildcard_without_transformer_raises(self):
+        """Test that usd_attribute_name='*' without a usd_value_transformer raises ValueError."""
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="sensor",
+                namespace="test",
+            )
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name="bad_attr",
+                    frequency="test:sensor",
+                    dtype=wp.float32,
+                    default=0.0,
+                    namespace="test",
+                    usd_attribute_name="*",
+                    # No usd_value_transformer provided
+                )
+            )
+        self.assertIn("usd_attribute_name='*'", str(ctx.exception))
+        self.assertIn("usd_value_transformer", str(ctx.exception))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_entry_expander_multiple_rows(self):
+        """Test that usd_entry_expander can emit multiple rows per matched prim."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -4775,6 +5100,54 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
             - Position should reflect import position + rotated offset
             - Orientation should reflect import rotation
         """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        item_counts = [2, 1]
+        for i, count in enumerate(item_counts):
+            prim = UsdGeom.Xform.Define(stage, f"/World/Emitter{i}").GetPrim()
+            prim.CreateAttribute("test:count", Sdf.ValueTypeNames.Int).Set(count)
+
+        def is_emitter(prim, context):
+            return prim.GetPath().pathString.startswith("/World/Emitter")
+
+        def expand_rows(prim, context):
+            count = int(prim.GetAttribute("test:count").Get())
+            return [{"test:item_value": float(i + 1)} for i in range(count)]
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_filter=is_emitter,
+                usd_entry_expander=expand_rows,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:item"), sum(item_counts))
+        values = model.test.item_value.numpy()
+        self.assertEqual(len(values), 3)
+        assert_np_equal(values, np.array([1.0, 2.0, 1.0], dtype=np.float32), tol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_filter_and_expander_context_unified(self):
+        """Test that usd_prim_filter and usd_entry_expander receive the same context contract."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -4818,7 +5191,8 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
-        body_idx = next(i for i, name in enumerate(model.body_key) if "FloatingBody" in name)
+        body_idx = next((i for i, name in enumerate(model.body_label) if "FloatingBody" in name), None)
+        self.assertIsNotNone(body_idx, "Expected a body with 'FloatingBody' in its label")
         body_q = state.body_q.numpy()[body_idx]
 
         # Expected position: import_pos + rotate_90z(body_pos)
@@ -5093,7 +5467,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         model = builder.finalize()
 
         # Verify it worked - gripper should be attached with FIXED joint
-        self.assertTrue(any("GripperBase" in key for key in builder.body_key))
+        self.assertTrue(any("GripperBase" in key for key in builder.body_label))
         self.assertEqual(len(model.articulation_start.numpy()) - 1, 1)  # Single articulation
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -5197,12 +5571,16 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         # Level 1: Add arm (3 links)
         arm_stage = create_simple_articulation("Arm", 3)
         builder.add_usd(arm_stage, floating=False)
-        ee_idx = next(i for i, name in enumerate(builder.body_key) if "Link2" in name)
+        ee_idx = next((i for i, name in enumerate(builder.body_label) if "Link2" in name), None)
+        self.assertIsNotNone(ee_idx, "Expected a body with 'Link2' in its label")
 
         # Level 2: Attach gripper to end effector (2 links)
         gripper_stage = create_simple_articulation("Gripper", 2)
         builder.add_usd(gripper_stage, parent_body=ee_idx, floating=False)
-        finger_idx = next(i for i, name in enumerate(builder.body_key) if "Gripper" in name and "Link1" in name)
+        finger_idx = next(
+            (i for i, name in enumerate(builder.body_label) if "Gripper" in name and "Link1" in name), None
+        )
+        self.assertIsNotNone(finger_idx, "Expected a Gripper body with 'Link1' in its label")
 
         # Level 3: Attach sensor to gripper finger (1 link)
         sensor_stage = create_simple_articulation("Sensor", 1)
@@ -5241,7 +5619,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         parent_stage = create_simple_body_stage("parent")
         builder.add_usd(parent_stage, xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()), floating=False)
 
-        parent_body_idx = builder.body_key.index("/parent")
+        parent_body_idx = builder.body_label.index("/parent")
 
         # Attach child to parent with xform (0, 0, 0.5) - interpreted as parent-relative offset
         child_stage = create_simple_body_stage("child")
@@ -5249,7 +5627,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
             child_stage, parent_body=parent_body_idx, xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity())
         )
 
-        child_body_idx = builder.body_key.index("/child")
+        child_body_idx = builder.body_label.index("/child")
 
         # Finalize and compute forward kinematics to get world-space positions
         model = builder.finalize()
@@ -5326,11 +5704,136 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_conflicting_keys_fails(self):
         """Test that base_joint dict with conflicting keys raises ValueError."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        prim = UsdGeom.Xform.Define(stage, "/World/Emitter0").GetPrim()
+        prim.CreateAttribute("test:count", Sdf.ValueTypeNames.Int).Set(1)
+
+        captured_filter_contexts = []
+        captured_expander_contexts = []
+
+        def is_emitter(prim, context):
+            if not prim.GetPath().pathString.startswith("/World/Emitter"):
+                return False
+            captured_filter_contexts.append(context)
+            return True
+
+        def expand_rows(prim, context):
+            captured_expander_contexts.append(context)
+            count = int(prim.GetAttribute("test:count").Get())
+            return [{"test:item_value": float(i + 1)} for i in range(count)]
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_filter=is_emitter,
+                usd_entry_expander=expand_rows,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        import_result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:item"), 1)
+        self.assertEqual(len(captured_filter_contexts), 1)
+        self.assertEqual(len(captured_expander_contexts), 1)
+
+        filter_ctx = captured_filter_contexts[0]
+        expander_ctx = captured_expander_contexts[0]
+
+        self.assertIs(filter_ctx["builder"], builder)
+        self.assertIs(expander_ctx["builder"], builder)
+        self.assertIs(filter_ctx["result"], import_result)
+        self.assertIs(expander_ctx["result"], import_result)
+        self.assertEqual(filter_ctx["prim"].GetPath(), prim.GetPath())
+        self.assertEqual(expander_ctx["prim"].GetPath(), prim.GetPath())
+        self.assertEqual(set(filter_ctx.keys()), {"prim", "builder", "result"})
+        self.assertEqual(set(expander_ctx.keys()), {"prim", "builder", "result"})
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_ordering_producer_before_consumer(self):
+        """Test deterministic custom-frequency ordering for producer/consumer dependencies."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
+        UsdGeom.Xform.Define(stage, "/World/Item0")
+        UsdGeom.Xform.Define(stage, "/World/Item1")
+        UsdGeom.Xform.Define(stage, "/World/Item2")
+
+        def is_item(prim, context):
+            return prim.GetPath().pathString.startswith("/World/Item")
+
+        def expand_producer_rows(prim, context):
+            return [{"test:producer_value": 1.0}]
+
+        def read_producer_count(_value, context):
+            builder = context["builder"]
+            producer_attr = builder.custom_attributes["test:producer_value"]
+            if not isinstance(producer_attr.values, list):
+                return 0
+            return int(len(producer_attr.values))
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="producer",
+                namespace="test",
+                usd_prim_filter=is_item,
+                usd_entry_expander=expand_producer_rows,
+            )
+        )
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="consumer",
+                namespace="test",
+                usd_prim_filter=is_item,
+            )
+        )
+
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="producer_value",
+                frequency="test:producer",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="consumer_seen_producer_count",
+                frequency="test:consumer",
+                dtype=wp.int32,
+                default=0,
+                namespace="test",
+                usd_attribute_name="*",
+                usd_value_transformer=read_producer_count,
+            )
+        )
+
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:producer"), 3)
+        self.assertEqual(model.get_custom_frequency_count("test:consumer"), 3)
+        seen_counts = model.test.consumer_seen_producer_count.numpy()
+        assert_np_equal(seen_counts, np.array([1, 2, 3], dtype=np.int32), tol=0)
 
         body = UsdGeom.Cube.Define(stage, "/Body")
         body_prim = body.GetPrim()
@@ -5444,6 +5947,104 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
         self.assertEqual(model.joint_dof_count, 3)  # 3 rotational axes
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collision_shape_visibility_flags(self):
+        """Collision shapes on bodies with visual shapes should not have the
+        VISIBLE flag so they are toggleable via the viewer's 'Show Collision'."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "BodyWithVisuals" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+    }
+}
+
+def Xform "BodyWithoutVisuals" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "CollisionSphere" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        # Default: collision shapes on bodies WITH visuals should NOT have VISIBLE
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        collision_with_visual = path_shape_map["/BodyWithVisuals/CollisionBox"]
+        flags_with_visual = builder.shape_flags[collision_with_visual]
+        self.assertTrue(flags_with_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_with_visual & ShapeFlags.VISIBLE)
+
+        # Collision shapes on bodies WITHOUT visuals should auto-get VISIBLE
+        collision_no_visual = path_shape_map["/BodyWithoutVisuals/CollisionSphere"]
+        flags_no_visual = builder.shape_flags[collision_no_visual]
+        self.assertTrue(flags_no_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_no_visual & ShapeFlags.VISIBLE)
+
+        # force_show_colliders=True: collision shapes always get VISIBLE
+        builder2 = newton.ModelBuilder()
+        result2 = builder2.add_usd(stage, force_show_colliders=True)
+        path_shape_map2 = result2["path_shape_map"]
+
+        collision_with_visual2 = path_shape_map2["/BodyWithVisuals/CollisionBox"]
+        flags_forced = builder2.shape_flags[collision_with_visual2]
+        self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
+
+        # hide_collision_shapes=True: no VISIBLE flag on any collision shape
+        builder3 = newton.ModelBuilder()
+        result3 = builder3.add_usd(stage, hide_collision_shapes=True)
+        path_shape_map3 = result3["path_shape_map"]
+
+        for path in ["/BodyWithVisuals/CollisionBox", "/BodyWithoutVisuals/CollisionSphere"]:
+            flags_hidden = builder3.shape_flags[path_shape_map3[path]]
+            self.assertFalse(flags_hidden & ShapeFlags.VISIBLE)
+
+        # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
+        builder4 = newton.ModelBuilder()
+        result4 = builder4.add_usd(stage, load_visual_shapes=False)
+        path_shape_map4 = result4["path_shape_map"]
+
+        collision_no_load = path_shape_map4["/BodyWithVisuals/CollisionBox"]
+        flags_no_load = builder4.shape_flags[collision_no_load]
+        self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
 
 if __name__ == "__main__":

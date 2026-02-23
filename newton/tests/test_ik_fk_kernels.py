@@ -79,7 +79,7 @@ def _add_single_joint(builder: newton.ModelBuilder, jt: int) -> None:
     child = builder.add_link(
         xform=wp.transform_identity(),
         mass=0.1,
-        key=f"body_{jt}",
+        label=f"body_{jt}",
     )
     builder.add_shape_box(
         body=child,

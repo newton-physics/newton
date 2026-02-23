@@ -35,6 +35,12 @@ def get_asset(filename: str) -> str:
     return os.path.join(get_asset_directory(), filename)
 
 
+def download_external_git_folder(git_url: str, folder_path: str, force_refresh: bool = False):
+    from newton._src.utils.download_assets import download_git_folder  # noqa: PLC0415
+
+    return download_git_folder(git_url, folder_path, force_refresh=force_refresh)
+
+
 def test_body_state(
     model: newton.Model,
     state: newton.State,
@@ -94,13 +100,13 @@ def test_body_state(
         )
         failures_np = failures.numpy()
         if np.any(failures_np):
-            body_key = np.array(model.body_key)[indices]
+            body_label = np.array(model.body_label)[indices]
             body_q = body_q.numpy()[indices]
             body_qd = body_qd.numpy()[indices]
             failed_indices = np.where(failures_np)[0]
             failed_details = []
             for index in failed_indices:
-                detail = body_key[index]
+                detail = body_label[index]
                 extras = []
                 if show_body_q:
                     extras.append(f"q={body_q[index]}")

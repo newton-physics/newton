@@ -37,7 +37,7 @@ class TestSelection(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_link()
         joint = builder.add_joint_free(child=body)
-        builder.add_articulation([joint], key="my_articulation")
+        builder.add_articulation([joint], label="my_articulation")
         model = builder.finalize()
         control = model.control()
         selection = ArticulationView(model, pattern="my_articulation", exclude_joint_types=[newton.JointType.FREE])
@@ -178,37 +178,37 @@ class TestSelection(unittest.TestCase):
 
         thicknesses = [0.001, 0.002, 0.003]
 
-        base = robot.add_link(xform=wp.transform([0, 0, 0], wp.quat_identity()), mass=1.0, key="base")
+        base = robot.add_link(xform=wp.transform([0, 0, 0], wp.quat_identity()), mass=1.0, label="base")
         robot.add_shape_box(
             base,
             hx=0.1,
             hy=0.1,
             hz=0.1,
             cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[0]),
-            key="shape_base",
+            label="shape_base",
         )
 
-        link1 = robot.add_link(xform=wp.transform([0, 0, 0.5], wp.quat_identity()), mass=0.5, key="link1")
+        link1 = robot.add_link(xform=wp.transform([0, 0, 0.5], wp.quat_identity()), mass=0.5, label="link1")
         robot.add_shape_capsule(
             link1,
             radius=0.05,
             half_height=0.2,
             cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[1]),
-            key="shape_link1",
+            label="shape_link1",
         )
 
-        link2 = robot.add_link(xform=wp.transform([0, 0, 1.0], wp.quat_identity()), mass=0.3, key="link2")
+        link2 = robot.add_link(xform=wp.transform([0, 0, 1.0], wp.quat_identity()), mass=0.3, label="link2")
         robot.add_shape_sphere(
             link2,
             radius=0.05,
             cfg=newton.ModelBuilder.ShapeConfig(thickness=thicknesses[2]),
-            key="shape_link2",
+            label="shape_link2",
         )
 
         j0 = robot.add_joint_free(child=base)
         j1 = robot.add_joint_revolute(parent=base, child=link1, axis=[0, 1, 0])
         j2 = robot.add_joint_revolute(parent=link1, child=link2, axis=[0, 1, 0])
-        robot.add_articulation([j0, j1, j2], key="robot")
+        robot.add_articulation([j0, j1, j2], label="robot")
 
         W = 3
         scene = newton.ModelBuilder()
@@ -329,11 +329,11 @@ class TestSelection(unittest.TestCase):
             single_world_builder.add_builder(single_articuation_builder)
 
         # Customise the articulation keys in single_world_builder
-        single_world_builder.articulation_key[1] = "art1"
+        single_world_builder.articulation_label[1] = "art1"
         if use_multiple_artics_per_view:
-            single_world_builder.articulation_key[0] = "art1"
+            single_world_builder.articulation_label[0] = "art1"
         else:
-            single_world_builder.articulation_key[0] = "art0"
+            single_world_builder.articulation_label[0] = "art0"
 
         # Create 3 worlds with two articulations per world and 3 joints per articulation.
         builder = newton.ModelBuilder()
@@ -732,11 +732,11 @@ class TestSelection(unittest.TestCase):
             single_world_builder.add_builder(single_articulation_builder)
 
         # Customise the articulation keys in single_world_builder
-        single_world_builder.articulation_key[0] = "art0"
+        single_world_builder.articulation_label[0] = "art0"
         if use_multiple_artics_per_view:
-            single_world_builder.articulation_key[1] = "art0"
+            single_world_builder.articulation_label[1] = "art0"
         else:
-            single_world_builder.articulation_key[1] = "art1"
+            single_world_builder.articulation_label[1] = "art1"
 
         # Create 3 worlds with 2 articulations per world and 4 links per articulation.
         builder = newton.ModelBuilder()
