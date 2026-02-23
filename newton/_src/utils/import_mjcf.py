@@ -2157,7 +2157,7 @@ def parse_mjcf(
                 if inheritrange > 0 and joint_name and qd_start >= 0:
                     lower = builder.joint_limit_lower[qd_start]
                     upper = builder.joint_limit_upper[qd_start]
-                    if lower != upper:
+                    if lower < upper:
                         mean = (upper + lower) / 2.0
                         radius = (upper - lower) / 2.0 * inheritrange
                         merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
