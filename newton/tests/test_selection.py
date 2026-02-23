@@ -47,6 +47,26 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(selection.get_dof_velocities(model).shape, (1, 1, 0))
         self.assertEqual(selection.get_dof_forces(control).shape, (1, 1, 0))
 
+    def test_fixed_joint_only_articulation(self):
+        """Regression test for issue #920: ArticulationView with only fixed joints."""
+        builder = newton.ModelBuilder()
+        parent = builder.add_link()
+        child = builder.add_link()
+        j0 = builder.add_joint_fixed(parent=-1, child=parent)
+        j1 = builder.add_joint_fixed(parent=parent, child=child)
+        builder.add_articulation([j0, j1], label="fixed_only")
+        model = builder.finalize()
+        state = model.state()
+        control = model.control()
+        view = ArticulationView(model, pattern="fixed_only")
+        self.assertEqual(view.count, 1)
+        self.assertEqual(view.joint_dof_count, 0)
+        self.assertEqual(view.joint_coord_count, 0)
+        self.assertEqual(view.get_root_transforms(model).shape, (1, 1))
+        self.assertEqual(view.get_dof_positions(state).shape, (1, 1, 0))
+        self.assertEqual(view.get_dof_velocities(state).shape, (1, 1, 0))
+        self.assertEqual(view.get_dof_forces(control).shape, (1, 1, 0))
+
     def _test_selection_shapes(self, floating: bool):
         # load articulation
         ant = newton.ModelBuilder()

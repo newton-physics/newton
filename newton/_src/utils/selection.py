@@ -1039,6 +1039,12 @@ class ArticulationView:
         )
         slices = (slice(self.world_count), slice(self.count_per_world), value_slice, *trailing_slices)
 
+        # early out for empty source arrays (e.g. articulations with only fixed joints)
+        if attrib.ptr is None:
+            result = wp.empty(shape, dtype=attrib.dtype, device=attrib.device)
+            result.ptr = None
+            return result
+
         # construct reshaped attribute array
         attrib = wp.array(
             ptr=int(attrib.ptr) + layout.offset * value_stride,
