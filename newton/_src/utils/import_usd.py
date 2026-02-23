@@ -2261,6 +2261,81 @@ def parse_usd(
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {label: idx for idx, label in enumerate(builder.joint_label)}
 
+    # Parse PhysxMimicJointAPI constraints from joint prims and create mimic constraints.
+    # PhysxMimicJointAPI is an instance-applied API schema (e.g. PhysxMimicJointAPI:rotZ)
+    # that couples a follower joint to a leader (reference) joint with a gearing ratio.
+    for joint_path in path_joint_map:
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if not joint_prim or not joint_prim.IsValid():
+            continue
+
+        schemas_listop = joint_prim.GetMetadata("apiSchemas")
+        if not schemas_listop:
+            continue
+
+        all_schemas = (
+            list(schemas_listop.prependedItems)
+            + list(schemas_listop.appendedItems)
+            + list(schemas_listop.explicitItems)
+        )
+
+        for schema in all_schemas:
+            schema_str = str(schema)
+            if not schema_str.startswith("PhysxMimicJointAPI"):
+                continue
+
+            # Extract the axis instance name (e.g. "rotZ" from "PhysxMimicJointAPI:rotZ")
+            parts = schema_str.split(":")
+            if len(parts) < 2:
+                continue
+            axis_instance = parts[1]
+
+            # Get the reference (leader) joint relationship
+            ref_joint_rel = joint_prim.GetRelationship(f"physxMimicJoint:{axis_instance}:referenceJoint")
+            if not ref_joint_rel:
+                continue
+            targets = ref_joint_rel.GetTargets()
+            if not targets:
+                continue
+            leader_path = str(targets[0])
+
+            # Get gearing and offset attributes.
+            # PhysX convention: jointPos + gearing * refJointPos + offset = 0
+            # Newton/URDF convention: joint0 = coef0 + coef1 * joint1
+            # Therefore: coef1 = -gearing, coef0 = -offset
+            gearing_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:gearing")
+            gearing = float(gearing_attr.Get()) if gearing_attr and gearing_attr.HasValue() else 1.0
+
+            offset_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:offset")
+            offset = float(offset_attr.Get()) if offset_attr and offset_attr.HasValue() else 0.0
+
+            # Look up joint indices
+            follower_idx = path_joint_map.get(joint_path)
+            leader_idx = path_joint_map.get(leader_path)
+
+            if follower_idx is None or leader_idx is None:
+                warnings.warn(
+                    f"PhysxMimicJointAPI on '{joint_path}' references '{leader_path}' "
+                    f"but one or both joints were not found, skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            builder.add_constraint_mimic(
+                joint0=follower_idx,
+                joint1=leader_idx,
+                coef0=-offset,
+                coef1=-gearing,
+                label=f"mimic_{joint_path}",
+            )
+
+            if verbose:
+                print(
+                    f"Added mimic constraint: '{joint_path}' follows '{leader_path}' "
+                    f"with gearing={gearing}, offset={offset} -> coef1={-gearing}, coef0={-offset} "
+                    f"(PhysxMimicJointAPI:{axis_instance})"
+                )
+
     # Build result dict early so we can pass it as context to custom frequency prim finders
     result = {
         "fps": stage.GetFramesPerSecond(),
