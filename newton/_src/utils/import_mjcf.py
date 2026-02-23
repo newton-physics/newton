@@ -852,61 +852,58 @@ def parse_mjcf(
 
             # Handle explicit mass: compute inertia using existing functions, add to body
             if geom_mass_explicit is not None and link >= 0 and not just_visual:
-                from ..geometry import GeoType  # noqa: PLC0415
-                from ..geometry.inertia import compute_inertia_shape  # noqa: PLC0415
+                from ..geometry.inertia import (  # noqa: PLC0415
+                    compute_box_inertia_from_mass,
+                    compute_capsule_inertia,
+                    compute_cylinder_inertia,
+                    compute_ellipsoid_inertia,
+                    compute_sphere_inertia,
+                )
 
-                # Map MJCF geom type to GeoType and compute volume for equivalent density
-                geom_type_to_geotype = {
-                    "sphere": GeoType.SPHERE,
-                    "box": GeoType.BOX,
-                    "capsule": GeoType.CAPSULE,
-                    "cylinder": GeoType.CYLINDER,
-                    "ellipsoid": GeoType.ELLIPSOID,
-                }
-                geo_type = geom_type_to_geotype.get(geom_type)
-                if geo_type is not None:
-                    # Compute volume to derive equivalent density for inertia computation
-                    vol = 0.0
-                    if geom_type == "sphere":
-                        vol = (4.0 / 3.0) * math.pi * geom_size[0] ** 3
-                    elif geom_type == "box":
-                        vol = 8.0 * geom_size[0] * geom_size[1] * geom_size[2]
-                    elif geom_type in ("capsule", "cylinder"):
-                        r = geom_size[0]
-                        if "fromto" in geom_attrib:
-                            ft = np.fromstring(geom_attrib["fromto"], sep=" ")
-                            h = np.linalg.norm(ft[:3] - ft[3:]) * scale
-                        else:
-                            h = 2.0 * geom_size[1]  # full height
-                        if geom_type == "cylinder":
-                            vol = math.pi * r * r * h
-                        else:  # capsule
-                            vol = math.pi * r * r * (4.0 / 3.0 * r + h)
-                    elif geom_type == "ellipsoid":
-                        vol = (4.0 / 3.0) * math.pi * geom_size[0] * geom_size[1] * geom_size[2]
+                # Compute inertia by calling functions with density=1.0, then scale by mass ratio
+                # This avoids manual volume computation - functions handle it internally
+                c = wp.vec3()  # center of mass (at origin for primitives)
+                I = wp.mat33()
 
-                    if vol > 1e-30:
-                        # Compute equivalent density for inertia computation
-                        equiv_density = geom_mass_explicit / vol
-                        # Convert geom_size to Newton's scale format
-                        if geom_type == "sphere":
-                            scale_vec = wp.vec3(geom_size[0], 0.0, 0.0)
-                        elif geom_type == "box":
-                            scale_vec = wp.vec3(geom_size[0], geom_size[1], geom_size[2])
-                        elif geom_type in ("capsule", "cylinder"):
-                            scale_vec = wp.vec3(geom_size[0], geom_size[1], 0.0)
-                        elif geom_type == "ellipsoid":
-                            scale_vec = wp.vec3(geom_size[0], geom_size[1], geom_size[2])
-                        else:
-                            scale_vec = wp.vec3(geom_size[0], geom_size[1], geom_size[2])
+                if geom_type == "sphere":
+                    r = geom_size[0]
+                    m_computed, c, I = compute_sphere_inertia(1.0, r)
+                    if m_computed > 1e-30:
+                        I = I * (geom_mass_explicit / m_computed)
+                elif geom_type == "box":
+                    # Box has a direct mass-based function - no scaling needed
+                    w, h, d = geom_size[0] * 2.0, geom_size[1] * 2.0, geom_size[2] * 2.0
+                    I = compute_box_inertia_from_mass(geom_mass_explicit, w, h, d)
+                elif geom_type == "cylinder":
+                    r = geom_size[0]
+                    if "fromto" in geom_attrib:
+                        ft = np.fromstring(geom_attrib["fromto"], sep=" ")
+                        h = np.linalg.norm(ft[:3] - ft[3:]) * scale
+                    else:
+                        h = 2.0 * geom_size[1]  # full height
+                    m_computed, c, I = compute_cylinder_inertia(1.0, r, h)
+                    if m_computed > 1e-30:
+                        I = I * (geom_mass_explicit / m_computed)
+                elif geom_type == "capsule":
+                    r = geom_size[0]
+                    if "fromto" in geom_attrib:
+                        ft = np.fromstring(geom_attrib["fromto"], sep=" ")
+                        h = np.linalg.norm(ft[:3] - ft[3:]) * scale
+                    else:
+                        h = 2.0 * geom_size[1]  # full height
+                    m_computed, c, I = compute_capsule_inertia(1.0, r, h)
+                    if m_computed > 1e-30:
+                        I = I * (geom_mass_explicit / m_computed)
+                elif geom_type == "ellipsoid":
+                    a, b, c = geom_size[0], geom_size[1], geom_size[2]
+                    m_computed, c, I = compute_ellipsoid_inertia(1.0, a, b, c)
+                    if m_computed > 1e-30:
+                        I = I * (geom_mass_explicit / m_computed)
 
-                        # Use existing compute_inertia_shape to get inertia (reuses all formulas)
-                        _, c, I = compute_inertia_shape(
-                            geo_type, scale_vec, None, equiv_density, is_solid=True, thickness=0.001
-                        )
-                        # Add explicit mass (not computed mass) and computed inertia to body
-                        com_body = wp.transform_point(tf, c)
-                        builder._update_body_mass(link, geom_mass_explicit, I, com_body, tf.q)
+                # Add explicit mass and computed inertia to body
+                if I[0, 0] != 0.0 or I[1, 1] != 0.0 or I[2, 2] != 0.0:  # Check if inertia was computed
+                    com_body = wp.transform_point(tf, c)
+                    builder._update_body_mass(link, geom_mass_explicit, I, com_body, tf.q)
 
         return shapes
 

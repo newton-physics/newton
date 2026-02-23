@@ -734,35 +734,35 @@ class TestImportMjcfGeometry(unittest.TestCase):
         # Get body masses
         body_mass = model.body_mass.numpy()
 
-        # Body 0 is the world body (mass 0), actual bodies start at index 1
-        # Body 1: single sphere with mass=2.5
-        self.assertAlmostEqual(body_mass[1], 2.5, places=6, msg="Body 1 mass should be 2.5")
+        # Bodies with freejoint start at index 0 (no separate world body)
+        # Body 0: single sphere with mass=2.5
+        self.assertAlmostEqual(body_mass[0], 2.5, places=6, msg="Body 0 mass should be 2.5")
 
-        # Body 2: single box with mass=1.0
-        self.assertAlmostEqual(body_mass[2], 1.0, places=6, msg="Body 2 mass should be 1.0")
+        # Body 1: single box with mass=1.0
+        self.assertAlmostEqual(body_mass[1], 1.0, places=6, msg="Body 1 mass should be 1.0")
 
-        # Body 3: single cylinder with mass=0.5
-        self.assertAlmostEqual(body_mass[3], 0.5, places=6, msg="Body 3 mass should be 0.5")
+        # Body 2: single cylinder with mass=0.5
+        self.assertAlmostEqual(body_mass[2], 0.5, places=6, msg="Body 2 mass should be 0.5")
 
-        # Body 4: single capsule with mass=0.75
-        self.assertAlmostEqual(body_mass[4], 0.75, places=6, msg="Body 4 mass should be 0.75")
+        # Body 3: single capsule with mass=0.75
+        self.assertAlmostEqual(body_mass[3], 0.75, places=6, msg="Body 3 mass should be 0.75")
 
-        # Body 5: two geoms with explicit masses (0.3 + 0.2 = 0.5)
-        self.assertAlmostEqual(body_mass[5], 0.5, places=6, msg="Body 5 mass should be 0.5 (sum of explicit masses)")
+        # Body 4: two geoms with explicit masses (0.3 + 0.2 = 0.5)
+        self.assertAlmostEqual(body_mass[4], 0.5, places=6, msg="Body 4 mass should be 0.5 (sum of explicit masses)")
 
-        # Body 6: one explicit mass (1.5) + one density-based mass
+        # Body 5: one explicit mass (1.5) + one density-based mass
         # Box volume = 8 * 0.1 * 0.1 * 0.1 = 0.008 m³
         # Density-based mass = 1000 * 0.008 = 8.0 kg
         # Total = 1.5 + 8.0 = 9.5 kg
-        expected_body6_mass = 1.5 + (1000.0 * 8.0 * 0.1 * 0.1 * 0.1)
+        expected_body5_mass = 1.5 + (1000.0 * 8.0 * 0.1 * 0.1 * 0.1)
         self.assertAlmostEqual(
-            body_mass[6], expected_body6_mass, places=4, msg="Body 6 mass should combine explicit and density-based"
+            body_mass[5], expected_body5_mass, places=4, msg="Body 5 mass should combine explicit and density-based"
         )
 
         # Verify that bodies with explicit mass have non-zero inertia
         # (inertia should be computed from the explicit mass, not zero)
         body_inertia = model.body_inertia.numpy()
-        for i in range(1, 6):  # Bodies 1-5 have only explicit mass (skip world body at index 0)
+        for i in range(5):  # Bodies 0-4 have only explicit mass
             inertia_trace = np.trace(body_inertia[i])
             self.assertGreater(inertia_trace, 0.0, msg=f"Body {i} should have non-zero inertia from explicit mass")
 
