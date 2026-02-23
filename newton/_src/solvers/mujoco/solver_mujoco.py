@@ -4918,7 +4918,9 @@ class SolverMuJoCo(SolverBase):
         # - body_subtreemass: mass of body and all descendants (depends on body_mass)
         # - dof_invweight0, body_invweight0, tendon_invweight0: inverse inertias
         # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
-        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
+        # Note: set_const removed in newer mujoco-warp, derived quantities computed automatically
+        if hasattr(self._mujoco_warp, "set_const"):
+            self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
 
     def _update_joint_dof_properties(self):
         """Update all joint DOF properties including effort limits, friction, armature, solimplimit, solref, passive stiffness and damping, and joint limit ranges in the MuJoCo model."""
@@ -5043,7 +5045,9 @@ class SolverMuJoCo(SolverBase):
         # - dof_invweight0, body_invweight0, tendon_invweight0: inverse inertias
         # - body_subtreemass: mass of body and all descendants
         # - cam_pos0, light_pos0, actuator_acc0: other derived quantities
-        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
+        # Note: set_const removed in newer mujoco-warp, derived quantities computed automatically
+        if hasattr(self._mujoco_warp, "set_const"):
+            self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
 
     def _update_joint_properties(self):
         """Update joint properties including joint positions, joint axes, and relative body transforms in the MuJoCo model."""

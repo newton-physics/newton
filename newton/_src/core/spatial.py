@@ -13,9 +13,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from enum import Enum
+
 import warp as wp
 
 from .types import Axis, AxisType
+
+
+class SpatialVectorForm(Enum):
+    """Component ordering in 6D spatial vectors."""
+
+    LINEAR_ANGULAR = "linear_angular"  # [fx, fy, fz, τx, τy, τz] - Newton/Warp, ROS
+    ANGULAR_LINEAR = "angular_linear"  # [τx, τy, τz, fx, fy, fz] - MuJoCo, Featherstone
+
+
+class ReferenceFrame(Enum):
+    """Reference frame for spatial quantities."""
+
+    WORLD_AT_COM = "world_at_com"  # World orientation, body COM origin
+    WORLD_AT_ORIGIN = "world_at_origin"  # World frame at world origin
+    BODY_LOCAL = "body_local"  # Body-fixed frame
 
 
 @wp.func
@@ -371,6 +388,30 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector):
     tau = wp.quat_rotate(q, tau) + wp.cross(p, f)
 
     return wp.spatial_vector(f, tau)
+
+
+@wp.func
+def swap_spatial_halves(x: wp.spatial_vector) -> wp.spatial_vector:
+    """Swap [a, b] ↔ [b, a] in a spatial vector.
+
+    Converts between component orderings:
+    - [linear, angular] ↔ [angular, linear]
+    - Newton/Warp [f, τ] ↔ MuJoCo [τ, f]
+
+    This is a symmetric operation (its own inverse):
+    swap_spatial_halves(swap_spatial_halves(x)) = x
+
+    Args:
+        x: Spatial vector in either convention
+
+    Returns:
+        Spatial vector with halves swapped
+
+    Example:
+        # MuJoCo cfrc_int [τ, f] → Newton/Warp [f, τ]
+        newton_wrench = swap_spatial_halves(mujoco_wrench)
+    """
+    return wp.spatial_vector(wp.spatial_bottom(x), wp.spatial_top(x))
 
 
 __axis_rotations = {}

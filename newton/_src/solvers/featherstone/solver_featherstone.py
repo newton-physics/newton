@@ -263,8 +263,17 @@ class SolverFeatherstone(SolverBase):
             )
 
             # derived rigid body data (maximal coordinates)
-            target.body_q_com = wp.empty_like(model.body_q, requires_grad=requires_grad)
-            target.body_I_s = wp.empty(
+            # Identity transforms avoid NaN in transform_spatial_inertia if body_q_com
+            # is read before eval_rigid_fk writes it (uninitialized wp.empty causes flakiness)
+            target.body_q_com = wp.full(
+                (model.body_count,),
+                wp.transform_identity(),
+                dtype=wp.transform,
+                device=model.device,
+                requires_grad=requires_grad,
+            )
+            # Use wp.zeros to avoid uninitialized garbage; eval_rigid_id populates immediately
+            target.body_I_s = wp.zeros(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=requires_grad
             )
             target.body_v_s = wp.empty(
