@@ -7140,7 +7140,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
 
 class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
     def test_duplicated_body_names(self):
-        """Test what we properly manage duplicated body names."""
+        """Test that duplicated body names resolve correctly for BODY actuators."""
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="duplication_test">
    <worldbody>
