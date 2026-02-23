@@ -2152,7 +2152,9 @@ def parse_mjcf(
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                # Resolve inheritrange: copy target joint's range to ctrlrange
+                # Resolve inheritrange: copy target joint's range to ctrlrange.
+                # Uses only the first DOF (qd_start) since inheritrange is only
+                # meaningful for single-DOF joints (hinge, slide).
                 inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
                 if inheritrange > 0 and joint_name and qd_start >= 0:
                     lower = builder.joint_limit_lower[qd_start]
