@@ -2152,6 +2152,16 @@ def parse_mjcf(
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                # Resolve inheritrange: copy target joint's range to ctrlrange
+                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
+                if inheritrange > 0 and joint_name and qd_start >= 0:
+                    lower = builder.joint_limit_lower[qd_start]
+                    upper = builder.joint_limit_upper[qd_start]
+                    if lower != upper:
+                        mean = (upper + lower) / 2.0
+                        radius = (upper - lower) / 2.0 * inheritrange
+                        merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
+                        merged_attrib["ctrllimited"] = "true"
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
                 if trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT

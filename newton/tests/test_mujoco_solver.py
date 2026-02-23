@@ -7138,5 +7138,43 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
         self.assertLess(quat_dist, 0.01)
 
 
+class TestActuatorInheritrange(unittest.TestCase):
+    """Verify inheritrange on position actuators copies joint range to ctrlrange."""
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <compiler angle="radian"/>
+        <worldbody>
+            <body name="base" pos="0 0 1">
+                <freejoint/>
+                <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+                <body name="child" pos="0 0 0.5">
+                    <joint name="j1" type="hinge" axis="0 1 0" range="-1.57 1.57"/>
+                    <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="pos_inherit" joint="j1" kp="100" inheritrange="1"/>
+        </actuator>
+    </mujoco>"""
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        cls.model = builder.finalize()
+        cls.solver = SolverMuJoCo(cls.model)
+
+    def test_ctrlrange_matches_joint_range(self):
+        """ctrlrange should match joint range when inheritrange=1."""
+        cr = self.solver.mj_model.actuator_ctrlrange[0]
+        np.testing.assert_allclose(cr, [-1.57, 1.57], atol=1e-6)
+
+    def test_ctrllimited_set(self):
+        """ctrllimited should be 1 when inheritrange resolves a range."""
+        self.assertEqual(self.solver.mj_model.actuator_ctrllimited[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
