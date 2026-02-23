@@ -594,6 +594,15 @@ def parse_mjcf(
                 tf = incoming_xform * tf
 
             geom_density = parse_float(geom_attrib, "density", density)
+            geom_mass_explicit = None
+
+            # MuJoCo: explicit mass attribute (from <geom mass="..."> or class defaults).
+            # Skip density-based mass contribution and compute inertia directly from mass.
+            if "mass" in geom_attrib:
+                geom_mass_explicit = parse_float(geom_attrib, "mass", 0.0)
+                # Set density to 0 to skip density-based mass contribution
+                # We'll add the explicit mass to the body separately
+                geom_density = 0.0
 
             shape_cfg = builder.default_shape_cfg.copy()
             shape_cfg.is_visible = visible
@@ -840,6 +849,64 @@ def parse_mjcf(
             else:
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
+
+            # Handle explicit mass: compute inertia using existing functions, add to body
+            if geom_mass_explicit is not None and link >= 0 and not just_visual:
+                from ..geometry import GeoType  # noqa: PLC0415
+                from ..geometry.inertia import compute_inertia_shape  # noqa: PLC0415
+
+                # Map MJCF geom type to GeoType and compute volume for equivalent density
+                geom_type_to_geotype = {
+                    "sphere": GeoType.SPHERE,
+                    "box": GeoType.BOX,
+                    "capsule": GeoType.CAPSULE,
+                    "cylinder": GeoType.CYLINDER,
+                    "ellipsoid": GeoType.ELLIPSOID,
+                }
+                geo_type = geom_type_to_geotype.get(geom_type)
+                if geo_type is not None:
+                    # Compute volume to derive equivalent density for inertia computation
+                    vol = 0.0
+                    if geom_type == "sphere":
+                        vol = (4.0 / 3.0) * math.pi * geom_size[0] ** 3
+                    elif geom_type == "box":
+                        vol = 8.0 * geom_size[0] * geom_size[1] * geom_size[2]
+                    elif geom_type in ("capsule", "cylinder"):
+                        r = geom_size[0]
+                        if "fromto" in geom_attrib:
+                            ft = np.fromstring(geom_attrib["fromto"], sep=" ")
+                            h = np.linalg.norm(ft[:3] - ft[3:]) * scale
+                        else:
+                            h = 2.0 * geom_size[1]  # full height
+                        if geom_type == "cylinder":
+                            vol = math.pi * r * r * h
+                        else:  # capsule
+                            vol = math.pi * r * r * (4.0 / 3.0 * r + h)
+                    elif geom_type == "ellipsoid":
+                        vol = (4.0 / 3.0) * math.pi * geom_size[0] * geom_size[1] * geom_size[2]
+
+                    if vol > 1e-30:
+                        # Compute equivalent density for inertia computation
+                        equiv_density = geom_mass_explicit / vol
+                        # Convert geom_size to Newton's scale format
+                        if geom_type == "sphere":
+                            scale_vec = wp.vec3(geom_size[0], 0.0, 0.0)
+                        elif geom_type == "box":
+                            scale_vec = wp.vec3(geom_size[0], geom_size[1], geom_size[2])
+                        elif geom_type in ("capsule", "cylinder"):
+                            scale_vec = wp.vec3(geom_size[0], geom_size[1], 0.0)
+                        elif geom_type == "ellipsoid":
+                            scale_vec = wp.vec3(geom_size[0], geom_size[1], geom_size[2])
+                        else:
+                            scale_vec = wp.vec3(geom_size[0], geom_size[1], geom_size[2])
+
+                        # Use existing compute_inertia_shape to get inertia (reuses all formulas)
+                        _, c, I = compute_inertia_shape(
+                            geo_type, scale_vec, None, equiv_density, is_solid=True, thickness=0.001
+                        )
+                        # Add explicit mass (not computed mass) and computed inertia to body
+                        com_body = wp.transform_point(tf, c)
+                        builder._update_body_mass(link, geom_mass_explicit, I, com_body, tf.q)
 
         return shapes
 
