@@ -9287,10 +9287,11 @@ class ModelBuilder:
                     # Safety fallback: use max observed length
                     custom_frequency_counts[freq_key] = max_len
 
-            # Relaxed validation: warn about attributes with fewer values than frequency count
+            # Warn about MODEL attributes with fewer values than expected (non-MODEL
+            # attributes are filled at runtime via _add_custom_attributes).
             for full_key, custom_attr in self.custom_attributes.items():
                 freq_key = custom_attr.frequency
-                if isinstance(freq_key, str):
+                if isinstance(freq_key, str) and custom_attr.assignment == Model.AttributeAssignment.MODEL:
                     attr_count = len(custom_attr.values) if custom_attr.values else 0
                     expected_count = custom_frequency_counts[freq_key]
                     if attr_count < expected_count:
