@@ -4468,12 +4468,25 @@ class SolverMuJoCo(SolverBase):
             # for position/velocity shortcuts. The custom attribute has the pre-
             # compilation value (kv=0 when dampratio was used instead). Copy the
             # compiled values so update_actuator_properties uses correct ones.
+            # Must use the index mapping because MuJoCo actuator order may differ
+            # from Newton custom attribute order (e.g. when ctrl_direct=False,
+            # JOINT_TARGET actuators precede CTRL_DIRECT ones in the MuJoCo spec).
             if hasattr(model, "mujoco") and self.mj_model.nu > 0:
+                nu = self.mj_model.nu
                 for field in ("actuator_biasprm", "actuator_gainprm"):
                     custom_arr = getattr(model.mujoco, field, None)
                     if custom_arr is None:
                         continue
-                    custom_arr.assign(getattr(self.mjw_model, field))
+                    mj_arr = getattr(self.mj_model, field)
+                    custom_np = custom_arr.numpy()
+                    nworlds = max(1, len(custom_np) // nu) if nu > 0 else 1
+                    for mj_idx in range(nu):
+                        if mjc_actuator_ctrl_source_list[mj_idx] != 1:
+                            continue  # skip JOINT_TARGET actuators
+                        newton_idx = mjc_actuator_to_newton_idx_list[mj_idx]
+                        for w in range(nworlds):
+                            custom_np[w * nu + newton_idx] = mj_arr[mj_idx]
+                    custom_arr.assign(wp.array(custom_np, dtype=custom_arr.dtype, device=model.device))
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):

@@ -29,6 +29,7 @@
   - For compound arrays list per-component units, e.g. `[0] k_mu [Pa], [1] k_lambda [Pa], ...`.
   - When a parameter's interpretation varies across solvers, document each solver's convention instead of a single unit.
   - Skip non-physical fields (indices, keys, counts, flags).
+  - This rule applies to **public API docstrings only**, not test docstrings.
 - **Keep the documentation up-to-date.**
   - When adding new files or symbols that are part of the public-facing API, make sure to keep the auto-generated documentation updated by running `docs/generate_api.py`.
 - **Add examples to README.md**
