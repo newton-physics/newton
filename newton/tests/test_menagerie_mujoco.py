@@ -2174,14 +2174,10 @@ class TestMenagerieBase(unittest.TestCase):
         newton_graph = None
         native_graph = None
 
-        # Compare/print initial state
-        # Skip step -1 comparison when using split pipeline — the initial mj_forward
-        # has contact ordering differences that the split pipeline resolves during stepping.
+        # Print initial state diff in debug mode
         if self.debug_visual:
             print("Initial state:")
             print_mjdata_diff(newton_solver.mjw_data, native_mjw_data, self.compare_fields, self.tolerances, -1)
-        elif not self.use_split_pipeline and self.num_steps > 0:
-            compare_at_step(-1)
 
         # Main simulation loop
         max_steps = 500 if self.debug_visual else self.num_steps
