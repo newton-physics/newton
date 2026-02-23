@@ -6047,5 +6047,67 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
 
+class TestHasAppliedApiSchema(unittest.TestCase):
+    """Test the has_applied_api_schema helper in newton.usd.utils."""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unregistered_schema_via_metadata(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Sphere "WithSiteAPI" (
+    prepend apiSchemas = ["MjcSiteAPI"]
+)
+{
+    double radius = 0.1
+}
+
+def Sphere "WithoutSiteAPI"
+{
+    double radius = 0.1
+}
+"""
+        )
+
+        prim_with = stage.GetPrimAtPath("/WithSiteAPI")
+        prim_without = stage.GetPrimAtPath("/WithoutSiteAPI")
+
+        self.assertTrue(usd.has_applied_api_schema(prim_with, "MjcSiteAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim_without, "MjcSiteAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim_with, "NonExistentAPI"))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_registered_schema_via_has_api(self):
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/Body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+
+        self.assertTrue(usd.has_applied_api_schema(prim, "PhysicsRigidBodyAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim, "PhysicsMassAPI"))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_appended_and_explicit_items(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Sphere "AppendedSchema" (
+    append apiSchemas = ["MjcSiteAPI"]
+)
+{
+    double radius = 0.1
+}
+"""
+        )
+
+        prim = stage.GetPrimAtPath("/AppendedSchema")
+        self.assertTrue(usd.has_applied_api_schema(prim, "MjcSiteAPI"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
