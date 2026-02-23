@@ -28,6 +28,11 @@ import numpy as np
 # threshold set to 16 to leave headroom for variation across platforms).
 _NUMPY_THRESHOLD: int = 16
 
+# itemsize of the 'i' typecode used by _IntIndexList._data (== np.dtype(np.intc).itemsize).
+# Cached at module level so extend_with_offset* can use count+offset frombuffer without
+# recomputing the constant on every call.
+_INTC_ITEMSIZE: int = np.dtype(np.intc).itemsize
+
 
 class _IntIndexList(MutableSequence):
     """Compact array-backed storage for 1D integer indices.
@@ -164,7 +169,8 @@ class _IntIndexList(MutableSequence):
                     for i in range(start, start + n):
                         data[i] += off
                 else:
-                    np.frombuffer(self._data, dtype=np.intc)[start:] += int(offset)
+                    _v = np.frombuffer(self._data, dtype=np.intc, count=n, offset=start * _INTC_ITEMSIZE)
+                    _v += int(offset)
             return
 
         offset = int(offset)
@@ -194,7 +200,7 @@ class _IntIndexList(MutableSequence):
                         if data[i] != sent:
                             data[i] += off
                 else:
-                    new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
+                    new_data = np.frombuffer(self._data, dtype=np.intc, count=n, offset=start * _INTC_ITEMSIZE)
                     new_data[new_data != int(sentinel)] += int(offset)
             return
 
@@ -226,7 +232,7 @@ class _IntIndexList(MutableSequence):
                         if data[i] >= 0:
                             data[i] += off
                 else:
-                    new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
+                    new_data = np.frombuffer(self._data, dtype=np.intc, count=n, offset=start * _INTC_ITEMSIZE)
                     new_data[new_data >= 0] += int(offset)
             return
 
@@ -410,7 +416,8 @@ class _IntIndexList2D(MutableSequence):
                     for i in range(start, start + n):
                         data[i] += off
                 else:
-                    np.frombuffer(self._data, dtype=np.intc)[start:] += int(offset)
+                    _v = np.frombuffer(self._data, dtype=np.intc, count=n, offset=start * _INTC_ITEMSIZE)
+                    _v += int(offset)
             return
 
         offset = int(offset)
@@ -444,7 +451,7 @@ class _IntIndexList2D(MutableSequence):
                         if data[i] != sent:
                             data[i] += off
                 else:
-                    new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
+                    new_data = np.frombuffer(self._data, dtype=np.intc, count=n, offset=start * _INTC_ITEMSIZE)
                     new_data[new_data != int(sentinel)] += int(offset)
             return
 
@@ -479,7 +486,7 @@ class _IntIndexList2D(MutableSequence):
                         if data[i] >= 0:
                             data[i] += off
                 else:
-                    new_data = np.frombuffer(self._data, dtype=np.intc)[start:]
+                    new_data = np.frombuffer(self._data, dtype=np.intc, count=n, offset=start * _INTC_ITEMSIZE)
                     new_data[new_data >= 0] += int(offset)
             return
 
