@@ -1290,6 +1290,7 @@ class SolverMuJoCo(SolverBase):
                 usd_value_transformer=resolve_actuator_transmission_type,
             )
         )
+
         def usd_parse_dyntype(value: Any, _context: dict[str, Any]) -> int:
             return parse_dyntype(str(value))
 
@@ -1307,6 +1308,7 @@ class SolverMuJoCo(SolverBase):
                 usd_value_transformer=usd_parse_dyntype,
             )
         )
+
         def usd_parse_gaintype(value: Any, _context: dict[str, Any]) -> int:
             return parse_gaintype(str(value))
 
@@ -2680,10 +2682,14 @@ class SolverMuJoCo(SolverBase):
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
                 # Position shortcut: biasprm = [0, -kp, -kv]
+                # A positive biasprm[2] indicates a dampratio placeholder
+                # (USD converter convention) rather than a resolved -kv.
                 if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
                     shortcut = "position"
                     shortcut_args["kp"] = kp
-                    kv = -bp[2] if bp[2] != 0 else 0.0
+                    if bp[2] > 0 and dampratio == 0.0:
+                        dampratio = bp[2]
+                    kv = -bp[2] if bp[2] < 0 else 0.0
                     if kv > 0:
                         shortcut_args["kv"] = kv
                     if dampratio > 0:
@@ -2712,8 +2718,12 @@ class SolverMuJoCo(SolverBase):
             act = spec.add_actuator(target=target_name, **general_args)
             if shortcut == "position":
                 act.set_to_position(**shortcut_args)
+                if "inheritrange" in general_args:
+                    act.inheritrange = general_args["inheritrange"]
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
+                if "inheritrange" in general_args:
+                    act.inheritrange = general_args["inheritrange"]
             elif dampratio > 0:
                 if wp.config.verbose:
                     print(
@@ -4773,7 +4783,7 @@ class SolverMuJoCo(SolverBase):
                 nw = total // per_world if per_world > 0 else 1
                 modified = False
                 for mjc_act_idx, (src, newton_idx) in enumerate(
-                    zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list)
+                    zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list, strict=True)
                 ):
                     if src != 1 or newton_idx < 0 or mjc_act_idx >= self.mj_model.nu:
                         continue
@@ -4818,12 +4828,6 @@ class SolverMuJoCo(SolverBase):
         with wp.ScopedDevice(model.device):
             # create the MuJoCo Warp model
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
-
-            # Sync compiler-resolved actuator params back to Newton custom
-            # attributes. MuJoCo's compiler resolves dampratio into biasprm[2]
-            # during compilation; without this sync, update_actuator_properties
-            # would overwrite the resolved values with the unresolved originals.
-            self._sync_compiled_actuator_params()
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
@@ -5067,6 +5071,12 @@ class SolverMuJoCo(SolverBase):
                 nconmax=nconmax,
                 njmax=njmax,
             )
+
+            # Sync compiler-resolved actuator params back to Newton custom
+            # attributes. MuJoCo's compiler resolves dampratio into biasprm[2]
+            # during compilation; without this sync, update_actuator_properties
+            # would overwrite the resolved values with the unresolved originals.
+            self._sync_compiled_actuator_params()
 
             # expand model fields that can be expanded:
             self._expand_model_fields(self.mjw_model, nworld)
@@ -5897,12 +5907,7 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
-        # Resolve biasprm[2] dampratio → -kv via set_const. The kernel above
-        # writes raw biasprm from Newton's custom attributes, which may contain
-        # a positive biasprm[2] (dampratio placeholder). set_const resolves it
-        # to -kv = -2*dampratio*sqrt(kp*actuator_acc0) using the current model
-        # mass properties.
-        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
+
     def _validate_model_for_separate_worlds(self, model: Model) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.
 
