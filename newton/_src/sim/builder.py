@@ -164,7 +164,7 @@ _ALL_BUILDER_ATTRS: tuple[str, ...] = _MORE_BUILDER_ATTRS + _LABEL_ATTRS
 # Cache keys stored on builder.__dict__ to amortize cost across replicate() calls.
 _AB_CACHE_KEY: str = "_ab_has_custom_vals"  # bool: any non-empty custom attr values in builder
 _AB_SRCS_KEY: str = "_ab_attr_srcs"  # tuple of (attr_name, src_list) pairs for _ALL_BUILDER_ATTRS
-_AB_DST_SRCS_KEY: str = "_ab_dst_srcs"  # part of tuple key for (dst, src) pairs cached on builder
+_AB_DST_SRCS_KEY: str = "_ab_dst_srcs"  # key for {id(builder): (dst_srcs, builder_dict)} cache on self
 _AB_CUSTOM_DECL_KEY: str = "_ab_custom_decl_id"  # id(self) after schema declared into self
 _AB_GRAVITY_VEC_KEY: str = "_ab_gravity_vec"  # pre-computed (gx, gy, gz) gravity tuple for this builder
 # Cached default-gravity tuple stored on the *self* (main) builder by begin_world.
@@ -2766,15 +2766,22 @@ class ModelBuilder:
 
         # Extend all plain-copy attributes using __dict__ access (faster than getattr for instance attrs).
         if label_prefix is None:
-            # Fast path: no prefix — cache (dst_list, src_list) pairs on builder keyed by id(self)
-            # to avoid per-attribute self_dict lookup on worlds 2..N in replicate().
+            # Fast path: no prefix — cache (dst_list, src_list) pairs on *self* keyed by id(builder)
+            # to avoid per-attribute self_dict lookup on worlds 2..N in replicate().  Stored on self
+            # (not on builder) so that dst list references don't prevent GC if self outlives builder.
+            # Validate the cached builder_dict identity to guard against id() reuse.
             # The dst list objects are only ever extended during replicate (never replaced), so the
             # cached references remain valid for the duration of a replicate() call.
-            _dsk = (_AB_DST_SRCS_KEY, id(self))
-            _dst_srcs = builder_dict.get(_dsk)
-            if _dst_srcs is None:
+            _bid = id(builder)
+            _cached = self_dict.get(_AB_DST_SRCS_KEY)
+            if _cached is None:
+                self_dict[_AB_DST_SRCS_KEY] = _cached = {}
+            _entry = _cached.get(_bid)
+            if _entry is None or _entry[1] is not builder_dict:
                 _dst_srcs = tuple((self_dict[attr], src) for attr, src in builder_dict[_AB_SRCS_KEY])
-                builder_dict[_dsk] = _dst_srcs
+                _cached[_bid] = (_dst_srcs, builder_dict)
+            else:
+                _dst_srcs = _entry[0]
             for dst, src in _dst_srcs:
                 dst.extend(src)
         else:
