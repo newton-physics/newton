@@ -6047,5 +6047,123 @@ def Xform "BodyWithoutVisuals" (
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
 
 
+class TestXformIgnoresAncestorTransforms(unittest.TestCase):
+    """Regression tests for issue #1601: xform should control absolute placement,
+    not compound with ancestor transforms from the USD hierarchy."""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_xform_not_affected_by_ancestor_transform(self):
+        """An articulation nested under a translated Xform ancestor should
+        be placed at the xform position, not at xform * ancestor."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Ancestor Xform with a large offset — this should NOT affect placement
+        env = UsdGeom.Xform.Define(stage, "/World/envs/env_4")
+        env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+
+        # Articulation root under the ancestor
+        root = UsdGeom.Xform.Define(stage, "/World/envs/env_4/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/envs/env_4/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        link = UsdGeom.Xform.Define(stage, "/World/envs/env_4/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/envs/env_4/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets(["/World/envs/env_4/Robot/Base"])
+        joint.CreateBody1Rel().SetTargets(["/World/envs/env_4/Robot/Link"])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+
+        # Place the articulation at (5, 0, 0) — the ancestor offset (100, 200, 0)
+        # must NOT be included.
+        target_pos = (5.0, 0.0, 0.0)
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage, xform=wp.transform(target_pos, wp.quat_identity()), floating=False)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        base_idx = builder.body_label.index("/World/envs/env_4/Robot/Base")
+        link_idx = builder.body_label.index("/World/envs/env_4/Robot/Link")
+
+        base_pos = body_q[base_idx, :3]
+        link_pos = body_q[link_idx, :3]
+
+        # Base should be at the target position, not at target + ancestor offset
+        assert_np_equal(base_pos, np.array(target_pos, dtype=np.float32), tol=1e-4)
+
+        # Link should be 1 unit above the base (preserving internal structure)
+        assert_np_equal(link_pos, np.array([5.0, 0.0, 1.0], dtype=np.float32), tol=1e-4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_cloning_at_different_positions(self):
+        """Cloning the same articulation at multiple positions should place each
+        clone at exactly the specified xform, regardless of USD hierarchy."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Source articulation under an offset ancestor
+        env = UsdGeom.Xform.Define(stage, "/World/envs/env_0")
+        env.AddTranslateOp().Set(Gf.Vec3d(50.0, 50.0, 0.0))
+
+        root = UsdGeom.Xform.Define(stage, "/World/envs/env_0/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        base = UsdGeom.Xform.Define(stage, "/World/envs/env_0/Robot/Base")
+        UsdPhysics.RigidBodyAPI.Apply(base.GetPrim())
+        UsdPhysics.MassAPI.Apply(base.GetPrim()).GetMassAttr().Set(1.0)
+
+        link = UsdGeom.Xform.Define(stage, "/World/envs/env_0/Robot/Link")
+        link.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 1.0))
+        UsdPhysics.RigidBodyAPI.Apply(link.GetPrim())
+        UsdPhysics.MassAPI.Apply(link.GetPrim()).GetMassAttr().Set(0.5)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/envs/env_0/Robot/Joint")
+        joint.CreateBody0Rel().SetTargets(["/World/envs/env_0/Robot/Base"])
+        joint.CreateBody1Rel().SetTargets(["/World/envs/env_0/Robot/Link"])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+        joint.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+
+        clone_positions = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (4.0, 0.0, 0.0)]
+        for pos in clone_positions:
+            builder.add_usd(stage, xform=wp.transform(pos, wp.quat_identity()), floating=False)
+
+        model = builder.finalize()
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+        body_q = state.body_q.numpy()
+        for i, expected_pos in enumerate(clone_positions):
+            base_pos = body_q[i * 2, :3]
+            assert_np_equal(
+                base_pos,
+                np.array(expected_pos, dtype=np.float32),
+                tol=1e-4,
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)

@@ -1276,8 +1276,6 @@ def parse_usd(
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
             articulation_root_xform = usd.get_transform(articulation_prim, local=False, xform_cache=xform_cache)
-            # Joints are authored in the articulation-root frame, so always compose with it.
-            articulation_incoming_xform = incoming_world_xform * articulation_root_xform
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
                 R.collect_prim_attrs(articulation_prim)
@@ -1334,7 +1332,11 @@ def parse_usd(
                     body_desc = body_specs[key]
                     desc_xform = wp.transform(body_desc.position, usd.from_gfquat(body_desc.rotation))
                     body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
-                    desired_world = incoming_world_xform * body_world
+                    if xform is not None:
+                        body_in_root_frame = wp.transform_inverse(articulation_root_xform) * body_world
+                        desired_world = incoming_world_xform * body_in_root_frame
+                    else:
+                        desired_world = incoming_world_xform * body_world
                     body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
                     if bodies_follow_joint_ordering:
                         # we just parse the body information without yet adding it to the builder
@@ -1545,9 +1547,14 @@ def parse_usd(
                             )
                             articulation_joint_indices.append(base_joint_id)
                             continue  # Skip parsing the USD's root joint
+                        root_joint_xform = (
+                            incoming_world_xform
+                            if xform is not None
+                            else incoming_world_xform * articulation_root_xform
+                        )
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
-                            incoming_xform=articulation_incoming_xform,
+                            incoming_xform=root_joint_xform,
                         )
                     else:
                         joint = parse_joint(
@@ -1559,12 +1566,17 @@ def parse_usd(
 
                 # insert loop joints
                 for joint_path in joint_excluded:
+                    root_joint_xform = (
+                        incoming_world_xform
+                        if xform is not None
+                        else incoming_world_xform * articulation_root_xform
+                    )
                     joint = parse_joint(
                         joint_descriptions[joint_path],
-                        incoming_xform=articulation_incoming_xform,
+                        incoming_xform=root_joint_xform,
                     )
-                    if joint is not None:
-                        processed_joints.add(joint_path)
+                if joint is not None:
+                    processed_joints.add(joint_path)
 
             # Create the articulation from all collected joints
             if articulation_joint_indices:
