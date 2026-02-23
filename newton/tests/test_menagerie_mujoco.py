@@ -524,10 +524,66 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_",
     "pair_geom",  # geom indices depend on geom ordering
     "nxn_",  # broadphase pairs depend on geom ordering
-    # Actuator acc0: derived from mass matrix + actuator moment, differs due to
-    # inertia re-diagonalization float32 round-trip
+    # Compilation-dependent fields: validated at 1e-3 by compare_compiled_model_fields()
+    "body_invweight0",
+    "dof_invweight0",
+    "body_pos",
+    "body_quat",
+    "body_subtreemass",
     "actuator_acc0",
+    "stat",  # meaninertia derived from invweight0
 }
+
+
+def compare_compiled_model_fields(
+    newton_mjw: Any,
+    native_mjw: Any,
+    fields: list[str] | None = None,
+    tol: float = 1e-3,
+) -> None:
+    """Compare model fields that depend on compilation (mj_setConst).
+
+    These fields (invweight0, body_pos, body_quat, etc.) may have small
+    numerical differences between Newton's and MuJoCo's model compilation.
+    A 1e-3 tolerance catches real parser bugs while allowing expected
+    compilation differences.
+
+    Fields already validated by compare_inertia_tensors (body_inertia,
+    body_iquat) are skipped.
+
+    Args:
+        newton_mjw: Newton's MjWarpModel
+        native_mjw: Native MuJoCo's MjWarpModel
+        fields: Field names to compare (defaults to MODEL_BACKFILL_FIELDS)
+        tol: Maximum allowed absolute difference (default 1e-3)
+    """
+    if fields is None:
+        fields = MODEL_BACKFILL_FIELDS
+
+    # Validated by compare_inertia_tensors() with physics-equivalence check
+    skip_fields = {"body_inertia", "body_iquat"}
+
+    for field in fields:
+        if field in skip_fields:
+            continue
+
+        native_arr = getattr(native_mjw, field, None)
+        newton_arr = getattr(newton_mjw, field, None)
+
+        if native_arr is None or newton_arr is None:
+            continue
+        if not hasattr(native_arr, "numpy") or not hasattr(newton_arr, "numpy"):
+            continue
+
+        assert native_arr.shape == newton_arr.shape, (
+            f"Compiled field '{field}' shape mismatch: {newton_arr.shape} vs {native_arr.shape}"
+        )
+
+        diff = float(np.max(np.abs(native_arr.numpy().astype(float) - newton_arr.numpy().astype(float))))
+        assert diff <= tol, (
+            f"Compiled field '{field}' has diff {diff:.6e} > tol {tol:.0e}. "
+            f"This likely indicates a parser bug, not a compilation difference."
+        )
 
 
 def compare_inertia_tensors(
@@ -1523,7 +1579,6 @@ def backfill_model_from_native(
     newton_mjw: Any,
     native_mjw: Any,
     fields: list[str] | None = None,
-    tol: float = 1e-3,
 ) -> None:
     """Copy computed model fields from native MuJoCo to Newton's mjw_model.
 
@@ -1531,29 +1586,15 @@ def backfill_model_from_native(
     differing from MuJoCo's mj_setConst(). Useful for isolating simulation
     differences from model compilation differences during testing.
 
-    Before copying, each field is verified to be within ``tol`` of the native value.
-    Fields that are expected to have large relative differences (body_inertia,
-    body_iquat — verified separately via compare_inertia_tensors) are exempt.
-    This catches real parser bugs (e.g. body_pos off by 1.0) while allowing
-    expected small compilation differences (e.g. body_pos off by 3e-8).
+    Validation of these fields is handled by compare_compiled_model_fields().
 
     Args:
         newton_mjw: Newton's MjWarpModel to update
         native_mjw: Native MuJoCo's MjWarpModel to copy from
         fields: List of field names to copy (defaults to MODEL_BACKFILL_FIELDS)
-        tol: Maximum allowed absolute difference before backfill (default 1e-3)
     """
     if fields is None:
         fields = MODEL_BACKFILL_FIELDS
-
-    # Fields verified separately (inertia re-diag gives large but physics-equivalent diffs)
-    skip_verification = {
-        "body_inertia",
-        "body_iquat",
-        "body_invweight0",
-        "dof_invweight0",
-        "actuator_acc0",
-    }
 
     for field in fields:
         native_arr = getattr(native_mjw, field, None)
@@ -1564,15 +1605,7 @@ def backfill_model_from_native(
         if not hasattr(native_arr, "numpy") or not hasattr(newton_arr, "numpy"):
             continue
 
-        # Only copy if shapes match exactly
         if native_arr.shape == newton_arr.shape:
-            # Verify diff is within tolerance (catch parser bugs)
-            if field not in skip_verification:
-                diff = float(np.max(np.abs(native_arr.numpy().astype(float) - newton_arr.numpy().astype(float))))
-                assert diff <= tol, (
-                    f"Backfill field '{field}' has diff {diff:.6e} > tol {tol:.0e}. "
-                    f"This likely indicates a parser bug, not a compilation difference."
-                )
             newton_arr.assign(native_arr)
 
     wp.synchronize()
@@ -2014,6 +2047,9 @@ class TestMenagerieBase(unittest.TestCase):
 
         # Compare joint ranges only for limited joints (unlimited joints may differ in representation)
         compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
+
+        # Compare compilation-dependent fields (invweight0, body_pos, etc.) at 1e-3 tolerance
+        compare_compiled_model_fields(newton_solver.mjw_model, native_mjw_model, self.backfill_fields)
 
         # Disable sensor_rne_postconstraint on native — Newton doesn't support
         # sensors, so rne_postconstraint would compute cacc/cfrc_int on native
@@ -2483,15 +2519,6 @@ class TestMenagerie_UniversalRobotsUr5e(TestMenagerieMJCF):
     backfill_model = True
     use_split_pipeline = True
 
-    # invweight0 fields are derived from mass matrix factorization (mj_setConst)
-    # and have small numerical diffs (~1e-5) between Newton and native compilation.
-    # They are backfilled before dynamics, so skipping model comparison is safe.
-    model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "body_invweight0",
-        "dof_invweight0",
-        "stat",  # meaninertia derived from invweight0
-    }
-
 
 class TestMenagerie_UniversalRobotsUr5e_USD(TestMenagerieUSD):
     """Universal Robots UR5e arm (USD)."""
@@ -2801,13 +2828,10 @@ class TestMenagerie_ApptronikApollo(TestMenagerieMJCF):
         "actuator_length": 5e-4,
         "actuator_velocity": 2e-2,
     }
+    # Apollo has 44 mesh assets but many geoms share the same mesh. Without
+    # include_mesh_materials dedup, Newton creates 60 meshes (one per geom).
+    # Also, trimesh deduplicates vertices on load, changing per-mesh counts.
     model_skip_fields = DEFAULT_MODEL_SKIP_FIELDS | {
-        "body_invweight0",  # derived from mass matrix factorization; small residual diff (~1.5e-4)
-        "dof_invweight0",
-        "stat",  # meaninertia computed from invweight0
-        # Apollo has 44 mesh assets but many geoms share the same mesh. Without
-        # include_mesh_materials dedup, Newton creates 60 meshes (one per geom).
-        # Also, trimesh deduplicates vertices on load, changing per-mesh counts.
         "nmesh",
         "nmeshvert",
         "nmeshnormal",
