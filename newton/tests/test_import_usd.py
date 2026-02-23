@@ -4358,10 +4358,10 @@ def Xform "Articulation" (
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
         """Authored mass without inertia should produce inertia consistent with a uniform-density body.
 
-        Two identical 10 cm cube bodies that should both end up with 8 kg
-        mass and inertia I_diag = (1/6) * m * s^2:
-          A - density 8000 kg/m^3 on the collider shape
-          B - mass 8 kg on the body only, inertia via scaling
+        Two identical 0.1 [m] cube bodies that should both end up with 8 [kg]
+        mass and inertia I_diag = (1/6) * m * s^2 [kg*m^2]:
+          A - density 8000 [kg/m^3] on the collider shape
+          B - mass 8 [kg] on the body only, inertia via scaling
         """
         from pxr import Usd, UsdGeom, UsdPhysics
 

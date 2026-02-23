@@ -2152,7 +2152,16 @@ def parse_usd(
             # inertia, which may already reflect the authored mass.
             if has_authored_inertia:
                 i_diag_np = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
-                if mass_api.GetPrincipalAxesAttr().HasAuthoredValue():
+                if np.any(i_diag_np < 0.0):
+                    warnings.warn(
+                        f"Body {body_path}: authored diagonal inertia contains negative values. "
+                        "Falling back to mass-computer result.",
+                        stacklevel=2,
+                    )
+                    has_authored_inertia = False
+                    i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
+                    principal_axes = cmp_principal_axes
+                elif mass_api.GetPrincipalAxesAttr().HasAuthoredValue():
                     principal_axes = mass_api.GetPrincipalAxesAttr().Get()
                 else:
                     principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
