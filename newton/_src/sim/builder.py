@@ -72,9 +72,104 @@ from .joints import (
     JointType,
 )
 from .model import Model
+from .utils import _IntIndexList, _IntIndexList2D, _StructList
 
 if TYPE_CHECKING:
     from pxr import Usd
+
+# Attributes that are unconditionally extended (no index offset needed) in add_builder().
+# Defined at module level to avoid rebuilding the list on every add_builder() call.
+# LABEL_ATTRS are handled separately (need optional prefix) but consolidated here for the fast path.
+_MORE_BUILDER_ATTRS: tuple[str, ...] = (
+    "body_inertia",
+    "body_mass",
+    "body_inv_inertia",
+    "body_inv_mass",
+    "body_com",
+    "body_lock_inertia",
+    "body_qd",
+    "joint_type",
+    "joint_enabled",
+    "joint_X_c",
+    "joint_armature",
+    "joint_axis",
+    "joint_dof_dim",
+    "joint_qd",
+    "joint_cts",
+    "joint_f",
+    "joint_target_pos",
+    "joint_target_vel",
+    "joint_limit_lower",
+    "joint_limit_upper",
+    "joint_limit_ke",
+    "joint_limit_kd",
+    "joint_target_ke",
+    "joint_target_kd",
+    "joint_act_mode",
+    "joint_effort_limit",
+    "joint_velocity_limit",
+    "joint_friction",
+    "shape_flags",
+    "shape_type",
+    "shape_scale",
+    "shape_source",
+    "shape_is_solid",
+    "shape_thickness",
+    "shape_material_ke",
+    "shape_material_kd",
+    "shape_material_kf",
+    "shape_material_ka",
+    "shape_material_mu",
+    "shape_material_restitution",
+    "shape_material_mu_torsional",
+    "shape_material_mu_rolling",
+    "shape_material_kh",
+    "shape_collision_radius",
+    "shape_contact_margin",
+    "shape_sdf_narrow_band_range",
+    "shape_sdf_max_resolution",
+    "shape_sdf_target_voxel_size",
+    "particle_qd",
+    "particle_mass",
+    "particle_radius",
+    "particle_flags",
+    "edge_rest_angle",
+    "edge_rest_length",
+    "edge_bending_properties",
+    "spring_rest_length",
+    "spring_stiffness",
+    "spring_damping",
+    "spring_control",
+    "tri_poses",
+    "tri_activations",
+    "tri_materials",
+    "tri_areas",
+    "tet_poses",
+    "tet_activations",
+    "tet_materials",
+)
+
+# Label attributes require special handling when a prefix is given, but in the common no-prefix
+# case they can be extended identically to _MORE_BUILDER_ATTRS.
+_LABEL_ATTRS: tuple[str, ...] = (
+    "articulation_label",
+    "body_label",
+    "joint_label",
+    "shape_label",
+)
+
+# Combined set for the common case (no label prefix): a single loop over all plain-extend attrs.
+_ALL_BUILDER_ATTRS: tuple[str, ...] = _MORE_BUILDER_ATTRS + _LABEL_ATTRS
+
+# Cache keys stored on builder.__dict__ to amortize cost across replicate() calls.
+_AB_CACHE_KEY: str = "_ab_has_custom_vals"  # bool: any non-empty custom attr values in builder
+_AB_SRCS_KEY: str = "_ab_attr_srcs"  # tuple of (attr_name, src_list) pairs for _ALL_BUILDER_ATTRS
+_AB_DST_SRCS_KEY: str = "_ab_dst_srcs"  # key for {id(builder): (dst_srcs, builder_dict)} cache on self
+_AB_CUSTOM_DECL_KEY: str = "_ab_custom_decl_id"  # id(self) after schema declared into self
+_AB_GRAVITY_VEC_KEY: str = "_ab_gravity_vec"  # pre-computed (gx, gy, gz) gravity tuple for this builder
+# Cached default-gravity tuple stored on the *self* (main) builder by begin_world.
+# Avoids recomputing up_axis.to_vector() + genexpr on every begin_world(gravity=None) call.
+_BW_GRAVITY_VEC_KEY: str = "_bw_gravity_vec"
 
 
 class ModelBuilder:
@@ -583,8 +678,24 @@ class ModelBuilder:
             For string dtype, returns a Python list[str] instead of a Warp array.
             """
             if self.values is None or len(self.values) == 0:
-                # No values provided, use default for all
-                arr = [self.default] * count
+                # String dtype: return as Python list instead of warp array
+                if self.dtype is str:
+                    return [self.default] * count
+                # Fast path: build a numpy array directly instead of a Python list of
+                # ``count`` Python objects.  For large counts (e.g. 23 040 joints across
+                # 512 worlds) this is ~100x faster than ``[default] * count`` because
+                # warp's array constructor avoids iterating over Python objects.
+                try:
+                    # Scalar warp types (float32, int32, bool, …): dtype_to_numpy succeeds.
+                    import warp._src.types as _wt  # noqa: PLC0415
+
+                    np_dtype = _wt.dtype_to_numpy(self.dtype)
+                    arr_np = np.full(count, self.default, dtype=np_dtype)
+                except Exception:
+                    # Vector/matrix types (vec2f, vec3f, …): tile flat components.
+                    default_np = np.asarray(self.default, dtype=np.float32)
+                    arr_np = np.tile(default_np, count)
+                return wp.array(arr_np, dtype=self.dtype, requires_grad=requires_grad, device=device)
             elif self.is_custom_frequency:
                 # Custom frequency: vals is a list, replace None with defaults and pad/truncate as needed
                 arr = [val if val is not None else self.default for val in self.values]
@@ -711,6 +822,16 @@ class ModelBuilder:
         """
         self.world_count = 0
 
+        # Internal flag set by replicate() to defer body_shapes / joint lookup-dict
+        # construction until all worlds are added, then rebuild in bulk (faster).
+        self._deferred_lookup_rebuild: bool = False
+
+        # Set by replicate() when building from an empty builder so that
+        # find_shape_contact_pairs() can vectorize across uniform worlds instead of
+        # iterating per-world.  Reset to 0 whenever the builder is non-uniform
+        # (e.g. if replicate() is called on a non-empty builder).
+        self._shapes_per_world: int = 0
+
         # region defaults
         self.default_shape_cfg = ModelBuilder.ShapeConfig()
         """Default shape configuration used when shape-creation methods are called with ``cfg=None``.
@@ -791,12 +912,12 @@ class ModelBuilder:
         # shapes (each shape has an entry in these arrays)
         self.shape_label = []  # shape labels
         # transform from shape to body
-        self.shape_transform = []
+        self.shape_transform: _StructList = _StructList(7, dtype=wp.transform)
         # maps from shape index to body index
-        self.shape_body = []
+        self.shape_body = _IntIndexList()
         self.shape_flags = []
         self.shape_type = []
-        self.shape_scale = []
+        self.shape_scale: _StructList = _StructList(3, dtype=wp.vec3)
         self.shape_source = []
         self.shape_is_solid = []
         self.shape_thickness = []
@@ -824,7 +945,7 @@ class ModelBuilder:
         # Mesh SDF storage (volumes kept for reference counting, SDFData array created at finalize)
 
         # filtering to ignore certain collision pairs
-        self.shape_collision_filter_pairs: list[tuple[int, int]] = []
+        self.shape_collision_filter_pairs: _IntIndexList2D = _IntIndexList2D()
 
         self._requested_contact_attributes: set[str] = set()
         self._requested_state_attributes: set[str] = set()
@@ -864,11 +985,11 @@ class ModelBuilder:
 
         # rigid bodies
         self.body_mass = []
-        self.body_inertia = []
+        self.body_inertia: _StructList = _StructList(9, dtype=wp.mat33)
         self.body_inv_mass = []
-        self.body_inv_inertia = []
-        self.body_com = []
-        self.body_q = []
+        self.body_inv_inertia: _StructList = _StructList(9, dtype=wp.mat33)
+        self.body_com: _StructList = _StructList(3, dtype=wp.vec3)
+        self.body_q: _StructList = _StructList(7, dtype=wp.transform)
         self.body_qd = []
         self.body_label = []
         self.body_lock_inertia = []
@@ -877,13 +998,19 @@ class ModelBuilder:
         self.body_color_groups: list[nparray] = []
 
         # rigid joints
-        self.joint_parent = []  # index of the parent body                      (constant)
+        self.joint_parent = _IntIndexList()  # index of the parent body                      (constant)
         self.joint_parents = {}  # mapping from child body to parent bodies
         self.joint_children = {}  # mapping from parent body to child bodies
-        self.joint_child = []  # index of the child body                       (constant)
-        self.joint_axis = []  # joint axis in joint parent anchor frame        (constant)
-        self.joint_X_p = []  # frame of joint in parent                      (constant)
-        self.joint_X_c = []  # frame of child com (in child coordinates)     (constant)
+        self.joint_child = _IntIndexList()  # index of the child body                       (constant)
+        self.joint_axis: _StructList = _StructList(
+            3, dtype=wp.vec3
+        )  # joint axis in joint parent anchor frame        (constant)
+        self.joint_X_p: _StructList = _StructList(
+            7, dtype=wp.transform
+        )  # frame of joint in parent                      (constant)
+        self.joint_X_c: _StructList = _StructList(
+            7, dtype=wp.transform
+        )  # frame of child com (in child coordinates)     (constant)
         self.joint_q = []
         self.joint_qd = []
         self.joint_cts = []
@@ -910,14 +1037,14 @@ class ModelBuilder:
 
         self.joint_enabled = []
 
-        self.joint_q_start = []
-        self.joint_qd_start = []
-        self.joint_cts_start = []
+        self.joint_q_start = _IntIndexList()
+        self.joint_qd_start = _IntIndexList()
+        self.joint_cts_start = _IntIndexList()
         self.joint_dof_dim = []
         self.joint_world = []  # world index for each joint
-        self.joint_articulation = []  # articulation index for each joint, -1 if not in any articulation
+        self.joint_articulation = _IntIndexList()  # articulation index for each joint, -1 if not in any articulation
 
-        self.articulation_start = []
+        self.articulation_start = _IntIndexList()
         self.articulation_label = []
         self.articulation_world = []  # world index for each articulation
 
@@ -946,21 +1073,21 @@ class ModelBuilder:
 
         # equality constraints
         self.equality_constraint_type = []
-        self.equality_constraint_body1 = []
-        self.equality_constraint_body2 = []
+        self.equality_constraint_body1 = _IntIndexList()
+        self.equality_constraint_body2 = _IntIndexList()
         self.equality_constraint_anchor = []
         self.equality_constraint_relpose = []
         self.equality_constraint_torquescale = []
-        self.equality_constraint_joint1 = []
-        self.equality_constraint_joint2 = []
+        self.equality_constraint_joint1 = _IntIndexList()
+        self.equality_constraint_joint2 = _IntIndexList()
         self.equality_constraint_polycoef = []
         self.equality_constraint_label = []
         self.equality_constraint_enabled = []
         self.equality_constraint_world = []
 
         # mimic constraints
-        self.constraint_mimic_joint0 = []
-        self.constraint_mimic_joint1 = []
+        self.constraint_mimic_joint0 = _IntIndexList()
+        self.constraint_mimic_joint1 = _IntIndexList()
         self.constraint_mimic_coef0 = []
         self.constraint_mimic_coef1 = []
         self.constraint_mimic_enabled = []
@@ -1572,11 +1699,32 @@ class ModelBuilder:
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
         """
-        offsets = compute_world_offsets(world_count, spacing, self.up_axis)
-        xform = wp.transform_identity()
-        for i in range(world_count):
-            xform[:3] = offsets[i]
-            self.add_world(builder, xform=xform)
+        # If the builder is empty, record the shapes-per-world stride so
+        # find_shape_contact_pairs() can vectorize across uniform worlds.
+        if self.shape_count == 0:
+            self._shapes_per_world = builder.shape_count
+        else:
+            self._shapes_per_world = 0  # non-uniform; disable fast path
+
+        if all(s == 0.0 for s in spacing):
+            # Defer body_shapes / joint_parents / joint_children construction
+            # until after all worlds are added; rebuild in a single bulk pass.
+            start_shape_idx = self.shape_count
+            start_body_idx = self.body_count
+            start_joint_idx = self.joint_count
+            self._deferred_lookup_rebuild = True
+            try:
+                for _ in range(world_count):
+                    self.add_world(builder, xform=None)
+            finally:
+                self._deferred_lookup_rebuild = False
+            self._rebuild_lookup_dicts(start_shape_idx, start_body_idx, start_joint_idx)
+        else:
+            offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+            xform = wp.transform_identity()
+            for i in range(world_count):
+                xform[:3] = offsets[i]
+                self.add_world(builder, xform=xform)
 
     def add_articulation(
         self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
@@ -2268,7 +2416,17 @@ class ModelBuilder:
         if gravity is not None:
             self.world_gravity.append(tuple(gravity))
         else:
-            self.world_gravity.append(tuple(g * self.gravity for g in self.up_vector))
+            # Cache the computed gravity tuple to avoid repeating up_axis.to_vector() on every
+            # begin_world(gravity=None) call (e.g. 256x inside replicate()).
+            # The cache stores (gravity_scalar, up_axis, gravity_vec) and is recomputed whenever
+            # self.gravity or self.up_axis changes.
+            _sd = self.__dict__
+            _bw = _sd.get(_BW_GRAVITY_VEC_KEY)
+            if _bw is None or _bw[0] != self.gravity or _bw[1] is not self.up_axis:
+                _g = self.gravity
+                _bw = (_g, self.up_axis, tuple(v * _g for v in self.up_axis.to_vector()))
+                _sd[_BW_GRAVITY_VEC_KEY] = _bw
+            self.world_gravity.append(_bw[2])
 
     def end_world(self):
         """End the current world context and return to global scope.
@@ -2374,43 +2532,53 @@ class ModelBuilder:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
 
+        # Cache frequently accessed attributes as locals to reduce repeated attribute lookups.
+        cw = self.current_world
+        self_dict = self.__dict__
+        builder_dict = builder.__dict__
+
         # Copy gravity from source builder
-        if self.current_world >= 0 and self.current_world < len(self.world_gravity):
-            # We're in a world context, update this world's gravity vector
-            self.world_gravity[self.current_world] = tuple(g * builder.gravity for g in builder.up_vector)
-        elif self.current_world < 0:
+        if cw >= 0 and cw < len(self.world_gravity):
+            # We're in a world context, update this world's gravity vector.
+            # Cache the computed tuple on builder so it is only created once per replicate() call.
+            if _AB_GRAVITY_VEC_KEY not in builder_dict:
+                builder_dict[_AB_GRAVITY_VEC_KEY] = tuple(g * builder.gravity for g in builder.up_axis.to_vector())
+            self.world_gravity[cw] = builder_dict[_AB_GRAVITY_VEC_KEY]
+        elif cw < 0:
             # No world context (add_builder called directly), copy scalar gravity
             self.gravity = builder.gravity
 
         self._requested_contact_attributes.update(builder._requested_contact_attributes)
         self._requested_state_attributes.update(builder._requested_state_attributes)
 
-        # explicitly resolve the transform multiplication function to avoid
-        # repeatedly resolving builtin overloads during shape transformation
-        transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
+        # Cache builder counts once to bypass repeated property-descriptor overhead per call.
+        b_particle_count = len(builder_dict["particle_q"])
+        b_body_count = len(builder_dict["body_q"])
+        b_shape_count = len(builder_dict["shape_type"])
+        b_joint_count = len(builder_dict["joint_type"])
+        b_articulation_count = len(builder_dict["articulation_start"])
+        b_spring_count = len(builder_dict["spring_rest_length"])
+        b_edge_count = len(builder_dict["edge_rest_angle"])
+        b_tri_count = len(builder_dict["tri_poses"])
+        b_tet_count = len(builder_dict["tet_poses"])
 
-        # dispatches two transform multiplies to the native implementation
-        def transform_mul(a, b):
-            out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-            transform_mul_cfunc(a, b, ctypes.byref(out))
-            return out
+        # Read start indices via __dict__ to bypass property descriptor overhead.
+        start_particle_idx = len(self_dict["particle_q"])
+        start_body_idx = len(self_dict["body_q"])
+        start_shape_idx = len(self_dict["shape_type"])
+        start_joint_idx = len(self_dict["joint_type"])
+        start_joint_dof_idx = self_dict["joint_dof_count"]
+        start_joint_coord_idx = self_dict["joint_coord_count"]
+        start_joint_constraint_idx = self_dict["joint_constraint_count"]
+        start_articulation_idx = len(self_dict["articulation_start"])
+        start_equality_constraint_idx = len(self_dict["equality_constraint_type"])
+        start_constraint_mimic_idx = len(self_dict["constraint_mimic_joint0"])
+        start_edge_idx = len(self_dict["edge_rest_angle"])
+        start_triangle_idx = len(self_dict["tri_poses"])
+        start_tetrahedron_idx = len(self_dict["tet_poses"])
+        start_spring_idx = len(self_dict["spring_rest_length"])
 
-        start_particle_idx = self.particle_count
-        start_body_idx = self.body_count
-        start_shape_idx = self.shape_count
-        start_joint_idx = self.joint_count
-        start_joint_dof_idx = self.joint_dof_count
-        start_joint_coord_idx = self.joint_coord_count
-        start_joint_constraint_idx = self.joint_constraint_count
-        start_articulation_idx = self.articulation_count
-        start_equality_constraint_idx = len(self.equality_constraint_type)
-        start_constraint_mimic_idx = len(self.constraint_mimic_joint0)
-        start_edge_idx = self.edge_count
-        start_triangle_idx = self.tri_count
-        start_tetrahedron_idx = self.tet_count
-        start_spring_idx = self.spring_count
-
-        if builder.particle_count:
+        if b_particle_count:
             self.particle_max_velocity = builder.particle_max_velocity
             if xform is not None:
                 pos_offset = xform.p
@@ -2419,17 +2587,17 @@ class ModelBuilder:
             self.particle_q.extend((np.array(builder.particle_q) + pos_offset).tolist())
             # other particle attributes are added below
 
-        if builder.spring_count:
+        if b_spring_count:
             self.spring_indices.extend((np.array(builder.spring_indices, dtype=np.int32) + start_particle_idx).tolist())
-        if builder.edge_count:
+        if b_edge_count:
             # Update edge indices by adding offset, preserving -1 values
             edge_indices = np.array(builder.edge_indices, dtype=np.int32)
             mask = edge_indices != -1
             edge_indices[mask] += start_particle_idx
             self.edge_indices.extend(edge_indices.tolist())
-        if builder.tri_count:
+        if b_tri_count:
             self.tri_indices.extend((np.array(builder.tri_indices, dtype=np.int32) + start_particle_idx).tolist())
-        if builder.tet_count:
+        if b_tet_count:
             self.tet_indices.extend((np.array(builder.tet_indices, dtype=np.int32) + start_particle_idx).tolist())
 
         builder_coloring_translated = [group + start_particle_idx for group in builder.particle_color_groups]
@@ -2437,30 +2605,39 @@ class ModelBuilder:
             self.particle_color_groups, builder_coloring_translated
         )
 
-        start_body_idx = self.body_count
-        start_shape_idx = self.shape_count
-        for s, b in enumerate(builder.shape_body):
-            if b > -1:
-                new_b = b + start_body_idx
-                self.shape_body.append(new_b)
-                self.shape_transform.append(builder.shape_transform[s])
-            else:
-                self.shape_body.append(-1)
-                # apply offset transform to root bodies
-                if xform is not None:
-                    self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
-                else:
+        if xform is None:
+            # Fast path: no transform to apply — extend in bulk
+            self.shape_body.extend_with_offset_nonnegative(builder.shape_body, start_body_idx)
+            self.shape_transform.extend(builder.shape_transform)
+        else:
+            # Resolve transform multiply only when xform is given (avoids 5 attr lookups + def on hot path).
+            transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
+
+            def transform_mul(a, b):
+                out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
+                transform_mul_cfunc(a, b, ctypes.byref(out))
+                return out
+
+            for s, b in enumerate(builder.shape_body):
+                if b > -1:
+                    self.shape_body.append(b + start_body_idx)
                     self.shape_transform.append(builder.shape_transform[s])
+                else:
+                    self.shape_body.append(-1)
+                    # apply offset transform to root bodies
+                    self.shape_transform.append(transform_mul(xform, builder.shape_transform[s]))
 
-        for b, shapes in builder.body_shapes.items():
-            if b == -1:
-                self.body_shapes[-1].extend([s + start_shape_idx for s in shapes])
-            else:
-                self.body_shapes[b + start_body_idx] = [s + start_shape_idx for s in shapes]
+        if not self._deferred_lookup_rebuild:
+            for b, shapes in builder.body_shapes.items():
+                remapped_shapes = [s + start_shape_idx for s in shapes]
+                if b == -1:
+                    self.body_shapes[-1].extend(remapped_shapes)
+                else:
+                    self.body_shapes[b + start_body_idx] = remapped_shapes
 
-        if builder.joint_count:
-            start_q = len(self.joint_q)
-            start_X_p = len(self.joint_X_p)
+        if b_joint_count:
+            start_q = start_joint_coord_idx
+            start_X_p = start_joint_idx
             self.joint_X_p.extend(builder.joint_X_p)
             self.joint_q.extend(builder.joint_q)
             if xform is not None:
@@ -2475,32 +2652,32 @@ class ModelBuilder:
                         self.joint_X_p[start_X_p + i] = transform_mul(xform, builder.joint_X_p[i])
 
             # offset the indices
-            self.articulation_start.extend([a + self.joint_count for a in builder.articulation_start])
+            self.articulation_start.extend_with_offset(builder.articulation_start, start_joint_idx)
 
-            new_parents = [p + start_body_idx if p != -1 else -1 for p in builder.joint_parent]
-            new_children = [c + start_body_idx for c in builder.joint_child]
+            self.joint_parent.extend_with_offset_except(builder.joint_parent, start_body_idx, sentinel=-1)
+            self.joint_child.extend_with_offset(builder.joint_child, start_body_idx)
 
-            self.joint_parent.extend(new_parents)
-            self.joint_child.extend(new_children)
+            if not self._deferred_lookup_rebuild:
+                # Update parent/child lookups using inline-offset originals (avoids temp _IntIndexList objects)
+                for parent_orig, child_orig in zip(builder.joint_parent, builder.joint_child, strict=True):
+                    p = parent_orig if parent_orig == -1 else parent_orig + start_body_idx
+                    c = child_orig + start_body_idx
+                    if c not in self.joint_parents:
+                        self.joint_parents[c] = [p]
+                    else:
+                        self.joint_parents[c].append(p)
 
-            # Update parent/child lookups
-            for p, c in zip(new_parents, new_children, strict=True):
-                if c not in self.joint_parents:
-                    self.joint_parents[c] = [p]
-                else:
-                    self.joint_parents[c].append(p)
+                    if p not in self.joint_children:
+                        self.joint_children[p] = [c]
+                    elif c not in self.joint_children[p]:
+                        self.joint_children[p].append(c)
 
-                if p not in self.joint_children:
-                    self.joint_children[p] = [c]
-                elif c not in self.joint_children[p]:
-                    self.joint_children[p].append(c)
-
-            self.joint_q_start.extend([c + self.joint_coord_count for c in builder.joint_q_start])
-            self.joint_qd_start.extend([c + self.joint_dof_count for c in builder.joint_qd_start])
-            self.joint_cts_start.extend([c + self.joint_constraint_count for c in builder.joint_cts_start])
+            self.joint_q_start.extend_with_offset(builder.joint_q_start, start_joint_coord_idx)
+            self.joint_qd_start.extend_with_offset(builder.joint_qd_start, start_joint_dof_idx)
+            self.joint_cts_start.extend_with_offset(builder.joint_cts_start, start_joint_constraint_idx)
 
         if xform is not None:
-            for i in range(builder.body_count):
+            for i in range(b_body_count):
                 self.body_q.append(transform_mul(xform, builder.body_q[i]))
         else:
             self.body_q.extend(builder.body_q)
@@ -2509,62 +2686,48 @@ class ModelBuilder:
         self.shape_collision_group.extend(builder.shape_collision_group)
 
         # Copy collision filter pairs with offset
-        self.shape_collision_filter_pairs.extend(
-            [(i + start_shape_idx, j + start_shape_idx) for i, j in builder.shape_collision_filter_pairs]
-        )
+        self.shape_collision_filter_pairs.extend_with_offset(builder.shape_collision_filter_pairs, start_shape_idx)
 
-        # Handle world assignments
+        # Handle world assignments (use cached counts to avoid repeated property calls).
         # For particles
-        if builder.particle_count > 0:
+        if b_particle_count > 0:
             # Override all world indices with current world
-            particle_groups = [self.current_world] * builder.particle_count
-            self.particle_world.extend(particle_groups)
+            self.particle_world.extend([cw] * b_particle_count)
 
         # For bodies
-        if builder.body_count > 0:
-            body_groups = [self.current_world] * builder.body_count
-            self.body_world.extend(body_groups)
+        if b_body_count > 0:
+            self.body_world.extend([cw] * b_body_count)
 
         # For shapes
-        if builder.shape_count > 0:
-            shape_worlds = [self.current_world] * builder.shape_count
-            self.shape_world.extend(shape_worlds)
+        if b_shape_count > 0:
+            self.shape_world.extend([cw] * b_shape_count)
 
         # For joints
-        if builder.joint_count > 0:
-            s = [self.current_world] * builder.joint_count
-            self.joint_world.extend(s)
+        if b_joint_count > 0:
+            self.joint_world.extend([cw] * b_joint_count)
             # Offset articulation indices for joints (-1 stays -1)
-            self.joint_articulation.extend(
-                [a + start_articulation_idx if a >= 0 else -1 for a in builder.joint_articulation]
-            )
+            self.joint_articulation.extend_with_offset_nonnegative(builder.joint_articulation, start_articulation_idx)
 
         # For articulations
-        if builder.articulation_count > 0:
-            articulation_groups = [self.current_world] * builder.articulation_count
-            self.articulation_world.extend(articulation_groups)
+        if b_articulation_count > 0:
+            self.articulation_world.extend([cw] * b_articulation_count)
 
         # For equality constraints
         if len(builder.equality_constraint_type) > 0:
-            constraint_worlds = [self.current_world] * len(builder.equality_constraint_type)
-            self.equality_constraint_world.extend(constraint_worlds)
+            self.equality_constraint_world.extend([cw] * len(builder.equality_constraint_type))
 
             # Remap body and joint indices in equality constraints
             self.equality_constraint_type.extend(builder.equality_constraint_type)
-            self.equality_constraint_body1.extend(
-                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body1]
-            )
-            self.equality_constraint_body2.extend(
-                [b + start_body_idx if b != -1 else -1 for b in builder.equality_constraint_body2]
-            )
+            self.equality_constraint_body1.extend_with_offset_except(builder.equality_constraint_body1, start_body_idx)
+            self.equality_constraint_body2.extend_with_offset_except(builder.equality_constraint_body2, start_body_idx)
             self.equality_constraint_anchor.extend(builder.equality_constraint_anchor)
             self.equality_constraint_torquescale.extend(builder.equality_constraint_torquescale)
             self.equality_constraint_relpose.extend(builder.equality_constraint_relpose)
-            self.equality_constraint_joint1.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint1]
+            self.equality_constraint_joint1.extend_with_offset_except(
+                builder.equality_constraint_joint1, start_joint_idx
             )
-            self.equality_constraint_joint2.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.equality_constraint_joint2]
+            self.equality_constraint_joint2.extend_with_offset_except(
+                builder.equality_constraint_joint2, start_joint_idx
             )
             self.equality_constraint_polycoef.extend(builder.equality_constraint_polycoef)
             if label_prefix:
@@ -2577,16 +2740,11 @@ class ModelBuilder:
 
         # For mimic constraints
         if len(builder.constraint_mimic_joint0) > 0:
-            constraint_worlds = [self.current_world] * len(builder.constraint_mimic_joint0)
-            self.constraint_mimic_world.extend(constraint_worlds)
+            self.constraint_mimic_world.extend([cw] * len(builder.constraint_mimic_joint0))
 
             # Remap joint indices in mimic constraints
-            self.constraint_mimic_joint0.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint0]
-            )
-            self.constraint_mimic_joint1.extend(
-                [j + start_joint_idx if j != -1 else -1 for j in builder.constraint_mimic_joint1]
-            )
+            self.constraint_mimic_joint0.extend_with_offset_except(builder.constraint_mimic_joint0, start_joint_idx)
+            self.constraint_mimic_joint1.extend_with_offset_except(builder.constraint_mimic_joint1, start_joint_idx)
             self.constraint_mimic_coef0.extend(builder.constraint_mimic_coef0)
             self.constraint_mimic_coef1.extend(builder.constraint_mimic_coef1)
             self.constraint_mimic_enabled.extend(builder.constraint_mimic_enabled)
@@ -2597,229 +2755,334 @@ class ModelBuilder:
             else:
                 self.constraint_mimic_label.extend(builder.constraint_mimic_label)
 
-        # Handle label attributes specially to support label_prefix
-        label_attrs = ["articulation_label", "body_label", "joint_label", "shape_label"]
-        for attr in label_attrs:
-            src = getattr(builder, attr)
-            dst = getattr(self, attr)
-            if label_prefix:
-                dst.extend(f"{label_prefix}/{lbl}" if lbl else lbl for lbl in src)
+        # Pre-build or reuse (attr, src_list) pairs from builder — cached so the 68 dict lookups
+        # happen only on the first add_builder() call; reused cheaply on calls 2..N in replicate().
+        # Empty attrs are filtered out so the extend loop skips no-op calls (e.g. particle/soft-body
+        # attrs for a rigid-body-only builder).
+        if _AB_SRCS_KEY not in builder_dict:
+            builder_dict[_AB_SRCS_KEY] = tuple(
+                (attr, src) for attr in _ALL_BUILDER_ATTRS if (src := builder_dict[attr])
+            )
+
+        # Extend all plain-copy attributes using __dict__ access (faster than getattr for instance attrs).
+        if label_prefix is None:
+            # Fast path: no prefix — cache (dst_list, src_list) pairs on *self* keyed by id(builder)
+            # to avoid per-attribute self_dict lookup on worlds 2..N in replicate().  Stored on self
+            # (not on builder) so that dst list references don't prevent GC if self outlives builder.
+            # Validate the cached builder_dict identity to guard against id() reuse.
+            # The dst list objects are only ever extended during replicate (never replaced), so the
+            # cached references remain valid for the duration of a replicate() call.
+            _bid = id(builder)
+            _cached = self_dict.get(_AB_DST_SRCS_KEY)
+            if _cached is None:
+                self_dict[_AB_DST_SRCS_KEY] = _cached = {}
+            _entry = _cached.get(_bid)
+            if _entry is None or _entry[1] is not builder_dict:
+                _dst_srcs = tuple((self_dict[attr], src) for attr, src in builder_dict[_AB_SRCS_KEY])
+                _cached[_bid] = (_dst_srcs, builder_dict)
             else:
+                _dst_srcs = _entry[0]
+            for dst, src in _dst_srcs:
                 dst.extend(src)
-
-        more_builder_attrs = [
-            "body_inertia",
-            "body_mass",
-            "body_inv_inertia",
-            "body_inv_mass",
-            "body_com",
-            "body_lock_inertia",
-            "body_qd",
-            "joint_type",
-            "joint_enabled",
-            "joint_X_c",
-            "joint_armature",
-            "joint_axis",
-            "joint_dof_dim",
-            "joint_qd",
-            "joint_cts",
-            "joint_f",
-            "joint_target_pos",
-            "joint_target_vel",
-            "joint_limit_lower",
-            "joint_limit_upper",
-            "joint_limit_ke",
-            "joint_limit_kd",
-            "joint_target_ke",
-            "joint_target_kd",
-            "joint_act_mode",
-            "joint_effort_limit",
-            "joint_velocity_limit",
-            "joint_friction",
-            "shape_flags",
-            "shape_type",
-            "shape_scale",
-            "shape_source",
-            "shape_is_solid",
-            "shape_thickness",
-            "shape_material_ke",
-            "shape_material_kd",
-            "shape_material_kf",
-            "shape_material_ka",
-            "shape_material_mu",
-            "shape_material_restitution",
-            "shape_material_mu_torsional",
-            "shape_material_mu_rolling",
-            "shape_material_kh",
-            "shape_collision_radius",
-            "shape_contact_margin",
-            "shape_sdf_narrow_band_range",
-            "shape_sdf_max_resolution",
-            "shape_sdf_target_voxel_size",
-            "particle_qd",
-            "particle_mass",
-            "particle_radius",
-            "particle_flags",
-            "edge_rest_angle",
-            "edge_rest_length",
-            "edge_bending_properties",
-            "spring_rest_length",
-            "spring_stiffness",
-            "spring_damping",
-            "spring_control",
-            "tri_poses",
-            "tri_activations",
-            "tri_materials",
-            "tri_areas",
-            "tet_poses",
-            "tet_activations",
-            "tet_materials",
-        ]
-
-        for attr in more_builder_attrs:
-            getattr(self, attr).extend(getattr(builder, attr))
+        else:
+            # Slow path: apply prefix to label attributes.
+            for attr in _MORE_BUILDER_ATTRS:
+                self_dict[attr].extend(builder_dict[attr])
+            for attr in _LABEL_ATTRS:
+                src = builder_dict[attr]
+                dst = self_dict[attr]
+                dst.extend(f"{label_prefix}/{lbl}" if lbl else lbl for lbl in src)
 
         self.joint_dof_count += builder.joint_dof_count
         self.joint_coord_count += builder.joint_coord_count
         self.joint_constraint_count += builder.joint_constraint_count
 
-        # Merge custom attributes from the sub-builder
-        # Shared offset map for both frequency and references
-        # Note: "world" is NOT included here - WORLD frequency is handled specially
-        entity_offsets = {
-            "body": start_body_idx,
-            "shape": start_shape_idx,
-            "joint": start_joint_idx,
-            "joint_dof": start_joint_dof_idx,
-            "joint_coord": start_joint_coord_idx,
-            "joint_constraint": start_joint_constraint_idx,
-            "articulation": start_articulation_idx,
-            "equality_constraint": start_equality_constraint_idx,
-            "constraint_mimic": start_constraint_mimic_idx,
-            "particle": start_particle_idx,
-            "edge": start_edge_idx,
-            "triangle": start_triangle_idx,
-            "tetrahedron": start_tetrahedron_idx,
-            "spring": start_spring_idx,
-        }
+        # Merge custom attributes from the sub-builder.
+        #
+        # Fast path: when all custom attributes have empty values (the common case for builders
+        # that have registered attribute schemas but not set any values, e.g. via
+        # SolverMuJoCo.register_custom_attributes), skip the expensive entity_offsets dict,
+        # custom_frequency_offsets snapshot, and four closure definitions.
+        #
+        # Cache the "any non-empty values?" answer on builder so it is computed once during
+        # replicate() and reused for each subsequent add_builder() call.
+        if _AB_CACHE_KEY not in builder_dict:
+            builder_dict[_AB_CACHE_KEY] = any(bool(a.values) for a in builder.custom_attributes.values())
 
-        # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
-        custom_frequency_offsets = dict(self._custom_frequency_counts)
+        if not builder_dict[_AB_CACHE_KEY]:
+            # --- Fast path: declare new attrs (first call only) and update counts ---
+            # Skip schema-declaration loops after first call for this (self, builder) pair.
+            _self_id = id(self)
+            if builder_dict.get(_AB_CUSTOM_DECL_KEY) != _self_id:
+                builder_dict[_AB_CUSTOM_DECL_KEY] = _self_id
+                for full_key, attr in builder.custom_attributes.items():
+                    if full_key not in self.custom_attributes:
+                        freq_key = attr.frequency
+                        mapped_values = [] if isinstance(freq_key, str) else {}
+                        self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                for freq_key, freq_obj in builder.custom_frequencies.items():
+                    if freq_key not in self.custom_frequencies:
+                        self.custom_frequencies[freq_key] = freq_obj
+            # No pre-snapshot needed: builder freq keys are disjoint per call, so reading
+            # self._custom_frequency_counts in-place is safe.
+            for freq_key, builder_count in builder._custom_frequency_counts.items():
+                old = self._custom_frequency_counts.get(freq_key, 0)
+                self._custom_frequency_counts[freq_key] = old + builder_count
+        else:
+            # --- Full path: entity_offsets + closures + value merging ---
+            def remap_indices(values: Iterable[int], offset: int) -> _IntIndexList:
+                remapped = _IntIndexList()
+                remapped.extend_with_offset(values, offset)
+                return remapped
 
-        def get_offset(entity_or_key: str | None) -> int:
-            """Get offset for an entity type or custom frequency."""
-            if entity_or_key is None:
-                return 0
-            if entity_or_key in entity_offsets:
-                return entity_offsets[entity_or_key]
-            if entity_or_key in custom_frequency_offsets:
-                return custom_frequency_offsets[entity_or_key]
-            if entity_or_key in builder._custom_frequency_counts:
-                return 0
-            raise ValueError(
-                f"Unknown references value '{entity_or_key}'. "
-                f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
-            )
+            # Shared offset map for both frequency and references
+            # Note: "world" is NOT included here - WORLD frequency is handled specially
+            entity_offsets = {
+                "body": start_body_idx,
+                "shape": start_shape_idx,
+                "joint": start_joint_idx,
+                "joint_dof": start_joint_dof_idx,
+                "joint_coord": start_joint_coord_idx,
+                "joint_constraint": start_joint_constraint_idx,
+                "articulation": start_articulation_idx,
+                "equality_constraint": start_equality_constraint_idx,
+                "constraint_mimic": start_constraint_mimic_idx,
+                "particle": start_particle_idx,
+                "edge": start_edge_idx,
+                "triangle": start_triangle_idx,
+                "tetrahedron": start_tetrahedron_idx,
+                "spring": start_spring_idx,
+            }
 
-        for full_key, attr in builder.custom_attributes.items():
-            # Fast path: skip attributes with no values (avoids computing offsets/closures)
-            if not attr.values:
-                # Still need to declare empty attribute on first merge
-                if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency
-                    mapped_values = [] if isinstance(freq_key, str) else {}
-                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
-                continue
+            # Snapshot custom frequency counts BEFORE iteration (they get updated during merge)
+            custom_frequency_offsets = dict(self._custom_frequency_counts)
 
-            # Index offset based on frequency
-            freq_key = attr.frequency
-            if isinstance(freq_key, str):
-                # Custom frequency: offset by pre-merge count
-                index_offset = custom_frequency_offsets.get(freq_key, 0)
-            elif attr.frequency == Model.AttributeFrequency.ONCE:
-                index_offset = 0
-            elif attr.frequency == Model.AttributeFrequency.WORLD:
-                # WORLD frequency: indices are keyed by world index, not by offset
-                # When called via add_world(), current_world is the world being added
-                index_offset = 0 if self.current_world == -1 else self.current_world
-            else:
-                index_offset = get_offset(attr.frequency.name.lower())
-
-            # Value transformation based on references
-            use_current_world = attr.references == "world"
-            value_offset = 0 if use_current_world else get_offset(attr.references)
-
-            def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
-                if replace_with_world:
-                    return self.current_world
-                if offset == 0:
-                    return v
-                # Handle integers, preserving negative sentinels (e.g., -1 means "invalid")
-                if isinstance(v, int):
-                    return v + offset if v >= 0 else v
-                # Handle list/tuple explicitly, preserving negative sentinels in elements
-                if isinstance(v, (list, tuple)):
-                    transformed = [x + offset if isinstance(x, int) and x >= 0 else x for x in v]
-                    return type(v)(transformed)
-                # For other types (numpy, warp, etc.), try arithmetic offset
-                try:
-                    return v + offset
-                except TypeError:
-                    return v
-
-            # Declare the attribute if it doesn't exist in the main builder
-            merged = self.custom_attributes.get(full_key)
-            if merged is None:
-                if isinstance(freq_key, str):
-                    # String frequency: copy list as-is (no offset for sequential data)
-                    mapped_values = [transform_value(value) for value in attr.values]
-                else:
-                    # Enum frequency: remap dict indices with offset
-                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
-                self.custom_attributes[full_key] = replace(attr, values=mapped_values)
-                continue
-
-            # Prevent silent divergence if defaults differ
-            # Handle array/vector types by converting to comparable format
-            try:
-                defaults_match = merged.default == attr.default
-                # Handle array-like comparisons
-                if hasattr(defaults_match, "__iter__") and not isinstance(defaults_match, (str, bytes)):
-                    defaults_match = all(defaults_match)
-            except (ValueError, TypeError):
-                # If comparison fails, assume they're different
-                defaults_match = False
-
-            if not defaults_match:
+            def get_offset(entity_or_key: str | None) -> int:
+                """Get offset for an entity type or custom frequency."""
+                if entity_or_key is None:
+                    return 0
+                if entity_or_key in entity_offsets:
+                    return entity_offsets[entity_or_key]
+                if entity_or_key in custom_frequency_offsets:
+                    return custom_frequency_offsets[entity_or_key]
+                if entity_or_key in builder._custom_frequency_counts:
+                    return 0
                 raise ValueError(
-                    f"Custom attribute '{full_key}' default mismatch when merging builders: "
-                    f"existing={merged.default}, incoming={attr.default}"
+                    f"Unknown references value '{entity_or_key}'. "
+                    f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
                 )
 
-            # Remap indices and copy values
-            if merged.values is None:
-                merged.values = [] if isinstance(freq_key, str) else {}
+            def is_scalar_int_dtype(dtype: object) -> bool:
+                if dtype in (bool, wp.bool):
+                    return False
+                if dtype is int:
+                    return True
+                try:
+                    return (
+                        wp.types.type_is_int(dtype)
+                        and not wp.types.type_is_vector(dtype)
+                        and not wp.types.type_is_matrix(dtype)
+                    )
+                except TypeError:
+                    return False
 
-            if isinstance(freq_key, str):
-                # String frequency: extend list with transformed values
-                new_values = [transform_value(value) for value in attr.values]
-                merged.values.extend(new_values)
+            def remap_scalar_int_values(values: Iterable[Any], offset: int) -> list[int]:
+                remapped = _IntIndexList()
+                remapped.extend_with_offset_nonnegative(values, offset)
+                return remapped.tolist()
+
+            def remap_scalar_int_dict(
+                values: dict[int, Any], index_offset: int, value_offset: int, replace_with_world: bool
+            ) -> dict[int, int]:
+                if not values:
+                    return {}
+                raw_keys = list(values.keys())
+                if index_offset != 0:
+                    remapped_keys = (np.array(raw_keys, dtype=np.intc) + index_offset).tolist()
+                else:
+                    remapped_keys = raw_keys
+                if replace_with_world:
+                    remapped_values = [cw] * len(values)
+                elif value_offset == 0:
+                    remapped_values = [int(v) for v in values.values()]
+                else:
+                    remapped_values = remap_scalar_int_values(values.values(), value_offset)
+                return dict(zip(remapped_keys, remapped_values, strict=True))
+
+            for full_key, attr in builder.custom_attributes.items():
+                # Fast path: skip attributes with no values (avoids computing offsets/closures)
+                if not attr.values:
+                    # Still need to declare empty attribute on first merge
+                    if full_key not in self.custom_attributes:
+                        freq_key = attr.frequency
+                        mapped_values = [] if isinstance(freq_key, str) else {}
+                        self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                    continue
+
+                # Index offset based on frequency
+                freq_key = attr.frequency
+                if isinstance(freq_key, str):
+                    # Custom frequency: offset by pre-merge count
+                    index_offset = custom_frequency_offsets.get(freq_key, 0)
+                elif attr.frequency == Model.AttributeFrequency.ONCE:
+                    index_offset = 0
+                elif attr.frequency == Model.AttributeFrequency.WORLD:
+                    # WORLD frequency: indices are keyed by world index, not by offset
+                    # When called via add_world(), current_world is the world being added
+                    index_offset = 0 if self.current_world == -1 else self.current_world
+                else:
+                    index_offset = get_offset(freq_key.name.lower())
+
+                # Value transformation based on references
+                use_current_world = attr.references == "world"
+                value_offset = 0 if use_current_world else get_offset(attr.references)
+                scalar_int_fast_path = is_scalar_int_dtype(attr.dtype)
+
+                def transform_value(v, offset=value_offset, replace_with_world=use_current_world):
+                    if replace_with_world:
+                        return self.current_world
+                    if offset == 0:
+                        return v
+                    # Handle integers, preserving negative sentinels (e.g., -1 means "invalid")
+                    if isinstance(v, int):
+                        return v + offset if v >= 0 else v
+                    # Handle list/tuple explicitly, preserving negative sentinels in elements
+                    if isinstance(v, (list, tuple)):
+                        transformed = [x + offset if isinstance(x, int) and x >= 0 else x for x in v]
+                        return type(v)(transformed)
+                    # For other types (numpy, warp, etc.), try arithmetic offset
+                    try:
+                        return v + offset
+                    except TypeError:
+                        return v
+
+                # Declare the attribute if it doesn't exist in the main builder
+                merged = self.custom_attributes.get(full_key)
+                if merged is None:
+                    if isinstance(freq_key, str):
+                        # String frequency: copy list as-is (no offset for sequential data)
+                        if scalar_int_fast_path and isinstance(attr.values, list) and None not in attr.values:
+                            if use_current_world:
+                                mapped_values = [self.current_world] * len(attr.values)
+                            elif value_offset == 0:
+                                mapped_values = [int(value) for value in attr.values]
+                            else:
+                                mapped_values = remap_scalar_int_values(attr.values, value_offset)
+                        else:
+                            mapped_values = [transform_value(value) for value in attr.values]
+                    else:
+                        # Enum frequency: remap dict indices with offset
+                        enum_values = attr.values if isinstance(attr.values, dict) else {}
+                        if scalar_int_fast_path and None not in enum_values.values():
+                            mapped_values = remap_scalar_int_dict(
+                                enum_values, index_offset, value_offset, use_current_world
+                            )
+                        else:
+                            remapped_indices = remap_indices(enum_values.keys(), index_offset)
+                            transformed_values = [transform_value(value) for value in enum_values.values()]
+                            mapped_values = dict(zip(remapped_indices, transformed_values, strict=True))
+                    self.custom_attributes[full_key] = replace(attr, values=mapped_values)
+                    continue
+
+                # Prevent silent divergence if defaults differ
+                # Handle array/vector types by converting to comparable format
+                try:
+                    defaults_match = merged.default == attr.default
+                    # Handle array-like comparisons
+                    if hasattr(defaults_match, "__iter__") and not isinstance(defaults_match, (str, bytes)):
+                        defaults_match = all(defaults_match)
+                except (ValueError, TypeError):
+                    # If comparison fails, assume they're different
+                    defaults_match = False
+
+                if not defaults_match:
+                    raise ValueError(
+                        f"Custom attribute '{full_key}' default mismatch when merging builders: "
+                        f"existing={merged.default}, incoming={attr.default}"
+                    )
+
+                # Remap indices and copy values
+                if merged.values is None:
+                    merged.values = [] if isinstance(freq_key, str) else {}
+
+                if isinstance(freq_key, str):
+                    if not isinstance(merged.values, list):
+                        merged.values = []
+                    # String frequency: extend list with transformed values
+                    if scalar_int_fast_path and isinstance(attr.values, list) and None not in attr.values:
+                        if use_current_world:
+                            new_values = [self.current_world] * len(attr.values)
+                        elif value_offset == 0:
+                            new_values = [int(value) for value in attr.values]
+                        else:
+                            new_values = remap_scalar_int_values(attr.values, value_offset)
+                    else:
+                        new_values = [transform_value(value) for value in attr.values]
+                    merged.values.extend(new_values)
+                else:
+                    if not isinstance(merged.values, dict):
+                        merged.values = {}
+                    enum_values = attr.values if isinstance(attr.values, dict) else {}
+                    # Enum frequency: update dict with remapped indices
+                    if scalar_int_fast_path and None not in enum_values.values():
+                        new_indices = remap_scalar_int_dict(enum_values, index_offset, value_offset, use_current_world)
+                    else:
+                        remapped_indices = remap_indices(enum_values.keys(), index_offset)
+                        transformed_values = [transform_value(value) for value in enum_values.values()]
+                        new_indices = dict(zip(remapped_indices, transformed_values, strict=True))
+                    merged.values.update(new_indices)
+
+            # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
+            # This must happen before updating counts so that the destination builder has the full
+            # frequency metadata for USD parsing and future attribute additions.
+            for freq_key, freq_obj in builder.custom_frequencies.items():
+                if freq_key not in self.custom_frequencies:
+                    self.custom_frequencies[freq_key] = freq_obj
+
+            # Update custom frequency counts once per unique frequency (not per attribute)
+            for freq_key, builder_count in builder._custom_frequency_counts.items():
+                offset = custom_frequency_offsets.get(freq_key, 0)
+                self._custom_frequency_counts[freq_key] = offset + builder_count
+
+    def _rebuild_lookup_dicts(self, start_shape_idx: int, start_body_idx: int, start_joint_idx: int) -> None:
+        """Rebuild body_shapes and joint_parents/children from flat arrays.
+
+        Called by replicate() after all worlds are added to avoid building these
+        lookup dicts incrementally (which has O(N x M) Python overhead per world).
+        Accesses _IntIndexList._data directly to bypass the per-element isinstance
+        slice check in __getitem__, reducing per-element overhead.
+        """
+        # body_shapes: ensure every body in the replicated range has an entry,
+        # even bodies that have no shapes (so callers can safely do body_shapes[b]).
+        for b_idx in range(start_body_idx, self.body_count):
+            if b_idx not in self.body_shapes:
+                self.body_shapes[b_idx] = []
+
+        # Populate shape lists — use ._data for O(1)-overhead element access.
+        shape_body_data = self.shape_body._data
+        body_shapes = self.body_shapes
+        for shape_idx in range(start_shape_idx, self.shape_count):
+            b = shape_body_data[shape_idx]
+            if b == -1:
+                body_shapes[-1].append(shape_idx)
+            elif b not in body_shapes:
+                body_shapes[b] = [shape_idx]
             else:
-                # Enum frequency: update dict with remapped indices
-                new_indices = {index_offset + idx: transform_value(value) for idx, value in attr.values.items()}
-                merged.values.update(new_indices)
+                body_shapes[b].append(shape_idx)
 
-        # Carry over custom frequency registrations (including usd_prim_filter) from the source builder.
-        # This must happen before updating counts so that the destination builder has the full
-        # frequency metadata for USD parsing and future attribute additions.
-        for freq_key, freq_obj in builder.custom_frequencies.items():
-            if freq_key not in self.custom_frequencies:
-                self.custom_frequencies[freq_key] = freq_obj
-
-        # Update custom frequency counts once per unique frequency (not per attribute)
-        for freq_key, builder_count in builder._custom_frequency_counts.items():
-            offset = custom_frequency_offsets.get(freq_key, 0)
-            self._custom_frequency_counts[freq_key] = offset + builder_count
+        # joint_parents / joint_children: use ._data direct access.
+        joint_parent_data = self.joint_parent._data
+        joint_child_data = self.joint_child._data
+        joint_parents = self.joint_parents
+        joint_children = self.joint_children
+        for joint_idx in range(start_joint_idx, self.joint_count):
+            p = joint_parent_data[joint_idx]
+            c = joint_child_data[joint_idx]
+            joint_parents[c] = [p]  # c is always a new key in the replicate case
+            if p not in joint_children:
+                joint_children[p] = [c]
+            else:
+                joint_children[p].append(c)
 
     @staticmethod
     def _coerce_mat33(value: Any) -> wp.mat33:
@@ -4375,7 +4638,7 @@ class ModelBuilder:
                     break
             self.articulation_start[i] = joint_remap.get(start_i, start_i)
         # remove empty articulation starts, i.e. where the start and end are the same
-        self.articulation_start = list(set(self.articulation_start))
+        self.articulation_start = _IntIndexList(list(dict.fromkeys(self.articulation_start)))
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
@@ -8426,34 +8689,42 @@ class ModelBuilder:
                     f"expected {self.joint_count}, found {len(joint_space_start)}."
                 )
 
-            # Initialize world_space_start with zeros
+            # Vectorized implementation using numpy (replaces two O(N_joints) Python loops).
+            jss_arr = np.asarray(joint_space_start, dtype=np.int64)
+            per_joint = np.empty(self.joint_count, dtype=np.int64)
+            if self.joint_count > 0:
+                per_joint[:-1] = jss_arr[1:] - jss_arr[:-1]
+                per_joint[-1] = space_count - jss_arr[-1]
+
+            jw_arr = np.asarray(self.joint_world, dtype=np.int32)
+
+            # Front-global count: joints at the head of joint_world with world == -1.
+            if self.joint_count > 0:
+                front_end = int(np.searchsorted(jw_arr, 0))  # first non-global joint index
+                front_global_space_count = int(np.sum(per_joint[:front_end]))
+            else:
+                front_global_space_count = 0
+
+            # Per-world DOF/coord/constraint counts via bincount.
+            non_global_mask = jw_arr >= 0
+            if np.any(non_global_mask):
+                per_world_counts = np.bincount(
+                    jw_arr[non_global_mask],
+                    weights=per_joint[non_global_mask].astype(np.float64),
+                    minlength=self.world_count,
+                ).astype(np.int64)
+            else:
+                per_world_counts = np.zeros(self.world_count, dtype=np.int64)
+
+            # Build cumulative world_space_start array of length world_count + 2.
+            wss = np.empty(self.world_count + 2, dtype=np.int64)
+            wss[0] = front_global_space_count
+            np.cumsum(per_world_counts, out=wss[1 : self.world_count + 1])
+            wss[1 : self.world_count + 1] += front_global_space_count
+            wss[-1] = space_count
+
             world_space_start.clear()
-            world_space_start.extend([0] * (self.world_count + 2))
-
-            # Extend joint_space_start with total count to enable computing per-world counts
-            joint_space_start_ext = copy.copy(joint_space_start)
-            joint_space_start_ext.append(space_count)
-
-            # Count global entities at the front of the entity_world array
-            front_global_space_count = 0
-            for j, w in enumerate(self.joint_world):
-                if w == -1:
-                    front_global_space_count += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
-                else:
-                    break
-
-            # Compute per-world cumulative joint space counts to initialize world_space_start
-            for j, w in enumerate(self.joint_world):
-                if w >= 0:
-                    world_space_start[w + 1] += joint_space_start_ext[j + 1] - joint_space_start_ext[j]
-
-            # Convert per-world counts to cumulative start indices
-            world_space_start[0] += front_global_space_count
-            for w in range(self.world_count):
-                world_space_start[w + 1] += world_space_start[w]
-
-            # Add total (i.e. final) entity counts to the per-world start indices
-            world_space_start[-1] = space_count
+            world_space_start.extend(wss.tolist())
 
         # Check that all world offset indices are cumulative and match counts
         for world_start_array, space_start_array, total_count, name in world_joint_space_start_arrays:
@@ -8610,30 +8881,43 @@ class ModelBuilder:
             # collision geometry
 
             m.shape_label = self.shape_label
-            m.shape_transform = wp.array(self.shape_transform, dtype=wp.transform, requires_grad=requires_grad)
+            m.shape_transform = wp.array(
+                np.frombuffer(self.shape_transform._data, dtype=np.float32).copy(),
+                dtype=wp.transform,
+                requires_grad=requires_grad,
+            )
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
 
             # build list of ids for geometry sources (meshes, sdfs)
             geo_sources = []
-            finalized_geos = {}  # do not duplicate geometry
+            # Use id() for deduplication: in replicate() the same Python object is
+            # referenced by every world, so identity is sufficient.  Avoids calling
+            # Mesh.__hash__() (which converts vertex arrays to Python tuples) for
+            # each shape instance across all worlds — an O(V) cost per unique mesh
+            # that dominates finalize() for large replicated models.
+            finalized_geos = {}  # id(geo) -> finalized ptr
             for geo in self.shape_source:
-                geo_hash = hash(geo)  # avoid repeated hash computations
+                geo_key = id(geo)
                 if geo:
-                    if geo_hash not in finalized_geos:
+                    if geo_key not in finalized_geos:
                         if isinstance(geo, Mesh):
-                            finalized_geos[geo_hash] = geo.finalize(device=device)
+                            finalized_geos[geo_key] = geo.finalize(device=device)
                         else:
-                            finalized_geos[geo_hash] = geo.finalize()
-                    geo_sources.append(finalized_geos[geo_hash])
+                            finalized_geos[geo_key] = geo.finalize()
+                    geo_sources.append(finalized_geos[geo_key])
                 else:
                     # add null pointer
                     geo_sources.append(0)
 
             m.shape_type = wp.array(self.shape_type, dtype=wp.int32)
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
-            m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
+            m.shape_scale = wp.array(
+                np.frombuffer(self.shape_scale._data, dtype=np.float32).copy(),
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
             m.shape_thickness = wp.array(self.shape_thickness, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_collision_radius = wp.array(
@@ -8660,21 +8944,43 @@ class ModelBuilder:
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
 
-            m.shape_collision_filter_pairs = {
-                (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
-            }
+            if self.shape_collision_filter_pairs:
+                fp = np.frombuffer(self.shape_collision_filter_pairs._data, dtype=np.intc).reshape(-1, 2)
+                sa = np.minimum(fp[:, 0], fp[:, 1])
+                sb = np.maximum(fp[:, 0], fp[:, 1])
+                m.shape_collision_filter_pairs = set(zip(sa.tolist(), sb.tolist(), strict=True))
+                # Pre-compute sorted int64 keys so find_shape_contact_pairs() can skip the
+                # expensive np.array(list(filters)) conversion (≈150 ms for 512 worlds).
+                m._shape_collision_filter_keys = np.sort(sa.astype(np.int64) << 32 | sb.astype(np.int64))
+            else:
+                m.shape_collision_filter_pairs = set()
+                m._shape_collision_filter_keys = np.empty(0, dtype=np.int64)
             m.shape_collision_group = wp.array(self.shape_collision_group, dtype=wp.int32)
 
             # ---------------------
             # Compute local AABBs and voxel resolutions for contact reduction
-            local_aabb_lower = []
-            local_aabb_upper = []
-            voxel_resolution = []
             voxel_budget = 100  # Maximum voxels per shape for contact reduction
+
+            # Pre-compute numpy view of shape_scale for fast per-element access in the loops below.
+            # Using _StructList.__iter__ would create a new wp.vec3 per element (slow for large N).
+            _shape_scale_np = np.frombuffer(self.shape_scale._data, dtype=np.float32).reshape(-1, 3)
 
             # Cache per unique (shape_type, shape_params, margin) to avoid redundant AABB computation
             # for instanced shapes (e.g., 256 robots sharing the same shape parameters)
             shape_aabb_cache = {}
+
+            # Fast path for uniform replicated models: only iterate world-0 shapes, then tile.
+            # For 512 worlds x 90 shapes this reduces 46080 iterations to 90, and replaces
+            # three wp.array(list_of_46080_arrays) calls (~20 ms each) with np.tile (~0.04 ms).
+            _n_shapes = self.shape_count
+            _spw = self._shapes_per_world
+            _do_aabb_tile = _spw > 0 and _n_shapes == _spw * self.world_count
+            _n_to_iter = _spw if _do_aabb_tile else _n_shapes
+
+            # Pre-allocate numpy arrays to avoid per-iteration Python list.append overhead
+            _iter_aabb_lower = np.empty((_n_to_iter, 3), dtype=np.float32)
+            _iter_aabb_upper = np.empty((_n_to_iter, 3), dtype=np.float32)
+            _iter_voxel_res = np.empty((_n_to_iter, 3), dtype=np.int32)
 
             def compute_voxel_resolution_from_aabb(aabb_lower, aabb_upper, voxel_budget):
                 """Compute voxel resolution from AABB with given budget."""
@@ -8705,13 +9011,20 @@ class ModelBuilder:
                 return nx, ny, nz
 
             for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, self.shape_scale, strict=True)
+                zip(
+                    self.shape_type[:_n_to_iter],
+                    self.shape_source[:_n_to_iter],
+                    _shape_scale_np[:_n_to_iter],
+                    strict=True,
+                )
             ):
-                # Create cache key based on shape type and parameters
+                # Create cache key based on shape type and parameters.
+                # Use tobytes() for the scale part: faster than tuple() and safe as a dict key.
+                scale_key = shape_scale.tobytes()
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
-                    cache_key = (shape_type, id(shape_src), tuple(shape_scale))
+                    cache_key = (shape_type, id(shape_src), scale_key)
                 else:
-                    cache_key = (shape_type, tuple(shape_scale))
+                    cache_key = (shape_type, scale_key)
 
                 # Check cache first
                 if cache_key in shape_aabb_cache:
@@ -8796,13 +9109,21 @@ class ModelBuilder:
                     # Cache the result for reuse by identical shapes
                     shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
 
-                local_aabb_lower.append(aabb_lower)
-                local_aabb_upper.append(aabb_upper)
-                voxel_resolution.append([nx, ny, nz])
+                _iter_aabb_lower[_shape_idx] = aabb_lower
+                _iter_aabb_upper[_shape_idx] = aabb_upper
+                _iter_voxel_res[_shape_idx] = (nx, ny, nz)
 
-            m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
-            m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
-            m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
+            if _do_aabb_tile:
+                _full_aabb_lower = np.tile(_iter_aabb_lower, (self.world_count, 1))
+                _full_aabb_upper = np.tile(_iter_aabb_upper, (self.world_count, 1))
+                _full_voxel_res = np.tile(_iter_voxel_res, (self.world_count, 1))
+            else:
+                _full_aabb_lower = _iter_aabb_lower
+                _full_aabb_upper = _iter_aabb_upper
+                _full_voxel_res = _iter_voxel_res
+            m.shape_collision_aabb_lower = wp.array(_full_aabb_lower, dtype=wp.vec3, device=device)
+            m.shape_collision_aabb_upper = wp.array(_full_aabb_upper, dtype=wp.vec3, device=device)
+            m._shape_voxel_resolution = wp.array(_full_voxel_res, dtype=wp.vec3i, device=device)
 
             # ---------------------
             # Compute and compact SDF resources (shared table + per-shape index indirection)
@@ -8811,16 +9132,22 @@ class ModelBuilder:
             current_device = wp.get_device(device)
             is_gpu = current_device.is_cuda
 
+            # For uniform replicated models, world-0 is representative: limit scan to _n_to_iter.
             has_mesh_sdf = any(
                 stype == GeoType.MESH
                 and ssrc is not None
                 and sflags & ShapeFlags.COLLIDE_SHAPES
                 and getattr(ssrc, "sdf", None) is not None
-                for stype, ssrc, sflags in zip(self.shape_type, self.shape_source, self.shape_flags, strict=True)
+                for stype, ssrc, sflags in zip(
+                    self.shape_type[:_n_to_iter],
+                    self.shape_source[:_n_to_iter],
+                    self.shape_flags[:_n_to_iter],
+                    strict=True,
+                )
             )
             has_hydroelastic_shapes = any(
                 (sflags & ShapeFlags.HYDROELASTIC) and (sflags & ShapeFlags.COLLIDE_SHAPES)
-                for sflags in self.shape_flags
+                for sflags in self.shape_flags[:_n_to_iter]
             )
             if (has_mesh_sdf or has_hydroelastic_shapes) and not is_gpu:
                 raise ValueError(
@@ -8840,7 +9167,7 @@ class ModelBuilder:
                 shape_type = self.shape_type[i]
                 shape_src = self.shape_source[i]
                 shape_flags = self.shape_flags[i]
-                shape_scale = self.shape_scale[i]
+                shape_scale = _shape_scale_np[i]
                 shape_thickness = self.shape_thickness[i]
                 shape_contact_margin = self.shape_contact_margin[i]
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
@@ -9050,16 +9377,30 @@ class ModelBuilder:
                     # For detailed validation, create arrays from builder data (which were updated)
                     m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
                     m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                    m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    m.body_inertia = wp.array(
+                        np.frombuffer(self.body_inertia._data, dtype=np.float32).copy(),
+                        dtype=wp.mat33,
+                        requires_grad=requires_grad,
+                    )
+                    m.body_inv_inertia = wp.array(
+                        np.frombuffer(self.body_inv_inertia._data, dtype=np.float32).copy(),
+                        dtype=wp.mat33,
+                        requires_grad=requires_grad,
+                    )
                 else:
                     # Use fast Warp kernel validation
                     # First create arrays for the kernel
                     body_mass_array = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
-                    body_inertia_array = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                    body_inertia_array = wp.array(
+                        np.frombuffer(self.body_inertia._data, dtype=np.float32).copy(),
+                        dtype=wp.mat33,
+                        requires_grad=requires_grad,
+                    )
                     body_inv_mass_array = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
                     body_inv_inertia_array = wp.array(
-                        self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad
+                        np.frombuffer(self.body_inv_inertia._data, dtype=np.float32).copy(),
+                        dtype=wp.mat33,
+                        requires_grad=requires_grad,
                     )
                     correction_flags = wp.zeros(len(self.body_mass), dtype=wp.bool)
 
@@ -9098,12 +9439,28 @@ class ModelBuilder:
                 # No bodies, create empty arrays
                 m.body_mass = wp.array(self.body_mass, dtype=wp.float32, requires_grad=requires_grad)
                 m.body_inv_mass = wp.array(self.body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-                m.body_inertia = wp.array(self.body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-                m.body_inv_inertia = wp.array(self.body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+                m.body_inertia = wp.array(
+                    np.frombuffer(self.body_inertia._data, dtype=np.float32).copy(),
+                    dtype=wp.mat33,
+                    requires_grad=requires_grad,
+                )
+                m.body_inv_inertia = wp.array(
+                    np.frombuffer(self.body_inv_inertia._data, dtype=np.float32).copy(),
+                    dtype=wp.mat33,
+                    requires_grad=requires_grad,
+                )
 
-            m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
+            m.body_q = wp.array(
+                np.frombuffer(self.body_q._data, dtype=np.float32).copy(),
+                dtype=wp.transform,
+                requires_grad=requires_grad,
+            )
             m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
-            m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
+            m.body_com = wp.array(
+                np.frombuffer(self.body_com._data, dtype=np.float32).copy(),
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
             m.body_label = self.body_label
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
 
@@ -9119,10 +9476,22 @@ class ModelBuilder:
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(self.joint_parent, dtype=wp.int32)
             m.joint_child = wp.array(self.joint_child, dtype=wp.int32)
-            m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
+            m.joint_X_p = wp.array(
+                np.frombuffer(self.joint_X_p._data, dtype=np.float32).copy(),
+                dtype=wp.transform,
+                requires_grad=requires_grad,
+            )
+            m.joint_X_c = wp.array(
+                np.frombuffer(self.joint_X_c._data, dtype=np.float32).copy(),
+                dtype=wp.transform,
+                requires_grad=requires_grad,
+            )
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
-            m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
+            m.joint_axis = wp.array(
+                np.frombuffer(self.joint_axis._data, dtype=np.float32).copy(),
+                dtype=wp.vec3,
+                requires_grad=requires_grad,
+            )
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_label = self.joint_label
@@ -9421,41 +9790,171 @@ class ModelBuilder:
             - Sets `model.shape_contact_pair_count` to the number of contact pairs found.
         """
         filters: set[tuple[int, int]] = model.shape_collision_filter_pairs
-        contact_pairs: list[tuple[int, int]] = []
 
-        # Keep only colliding shapes (those with COLLIDE_SHAPES flag) and sort by world for optimization
-        colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
-        sorted_indices = sorted(colliding_indices, key=lambda i: self.shape_world[i])
+        # Build numpy arrays for vectorized pair generation.
+        shape_flags_arr = np.array(self.shape_flags, dtype=np.int32)
+        shape_world_arr = np.array(self.shape_world, dtype=np.int32)
+        shape_group_arr = np.array(self.shape_collision_group, dtype=np.int32)
 
-        # Iterate over all pairs of colliding shapes
-        for i1 in range(len(sorted_indices)):
-            s1 = sorted_indices[i1]
-            world1 = self.shape_world[s1]
-            collision_group1 = self.shape_collision_group[s1]
+        colliding_mask = (shape_flags_arr & ShapeFlags.COLLIDE_SHAPES) != 0
+        colliding_idx = np.where(colliding_mask)[0].astype(np.int32)
 
-            for i2 in range(i1 + 1, len(sorted_indices)):
-                s2 = sorted_indices[i2]
-                world2 = self.shape_world[s2]
-                collision_group2 = self.shape_collision_group[s2]
+        if len(colliding_idx) == 0:
+            model.shape_contact_pairs = wp.array(np.empty((0, 2), dtype=np.int32), dtype=wp.vec2i, device=model.device)
+            model.shape_contact_pair_count = 0
+            return
 
-                # Early break optimization: if both shapes are in non-global worlds and different worlds,
-                # they can never collide. Since shapes are sorted by world, all remaining shapes will also
-                # be in different worlds, so we can break early.
-                if world1 != -1 and world2 != -1 and world1 != world2:
-                    break
+        worlds = shape_world_arr[colliding_idx]
+        groups = shape_group_arr[colliding_idx]
 
-                # Apply the exact same filtering logic as test_world_and_group_pair kernel
-                if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
-                    continue
+        all_sa: list[np.ndarray] = []
+        all_sb: list[np.ndarray] = []
 
-                if s1 > s2:
-                    shape_a, shape_b = s2, s1
-                else:
-                    shape_a, shape_b = s1, s2
+        global_mask = worlds == -1
+        non_global_local_idx = np.where(~global_mask)[0]
+        global_local_idx = np.where(global_mask)[0]
 
-                # Skip if explicitly filtered
-                if (shape_a, shape_b) not in filters:
-                    contact_pairs.append((shape_a, shape_b))
+        # Helper: vectorized test_group_pair for numpy arrays.
+        def _group_valid(ga: np.ndarray, gb: np.ndarray) -> np.ndarray:
+            not_zero = (ga != 0) & (gb != 0)
+            pos_a = (ga > 0) & ((ga == gb) | (gb < 0))
+            neg_a = (ga < 0) & (ga != gb)
+            return not_zero & (pos_a | neg_a)
 
-        model.shape_contact_pairs = wp.array(np.array(contact_pairs), dtype=wp.vec2i, device=model.device)
-        model.shape_contact_pair_count = len(contact_pairs)
+        # Global shapes pair with all non-global shapes.
+        if len(global_local_idx) > 0 and len(non_global_local_idx) > 0:
+            g_shapes = colliding_idx[global_local_idx]
+            g_groups = groups[global_local_idx]
+            ng_shapes = colliding_idx[non_global_local_idx]
+            ng_groups = groups[non_global_local_idx]
+            # Broadcast (n_global, 1) vs (1, n_non_global) for vectorized pair test.
+            valid = _group_valid(g_groups[:, None], ng_groups[None, :])
+            gi_valid, ngi_valid = np.where(valid)
+            if len(gi_valid) > 0:
+                sa = g_shapes[gi_valid]
+                sb = ng_shapes[ngi_valid]
+                all_sa.append(np.minimum(sa, sb))
+                all_sb.append(np.maximum(sa, sb))
+
+        # Global-global pairs.
+        if len(global_local_idx) >= 2:
+            ii, jj = np.triu_indices(len(global_local_idx), k=1)
+            valid = _group_valid(groups[global_local_idx[ii]], groups[global_local_idx[jj]])
+            if np.any(valid):
+                sa = colliding_idx[global_local_idx[ii[valid]]]
+                sb = colliding_idx[global_local_idx[jj[valid]]]
+                all_sa.append(np.minimum(sa, sb))
+                all_sb.append(np.maximum(sa, sb))
+
+        # Per-world pairs: loop over worlds, cache triu_indices by world size.
+        # fast_path_already_filtered is set to True when the fast broadcast path applies
+        # collision filters to world-0 pairs before broadcasting, eliminating the need for
+        # the expensive post-hoc filter step on the full (n_worlds * n_pairs) combined array.
+        fast_path_already_filtered = False
+        if len(non_global_local_idx) > 0:
+            non_global_worlds = worlds[non_global_local_idx]
+            _unique_worlds, world_starts = np.unique(non_global_worlds, return_index=True)
+            world_ends = np.append(world_starts[1:], len(non_global_local_idx))
+            n_unique = len(_unique_worlds)
+
+            # Fast path: replicate() with a uniform sub-builder produces identical worlds.
+            # Instead of an O(n_worlds) Python loop, compute valid pairs once for world 0,
+            # then broadcast across all worlds using a stride offset.
+            if (
+                self._shapes_per_world > 0
+                and n_unique > 1
+                and int(world_ends[0] - world_starts[0]) >= 2
+                and np.all(world_ends - world_starts == world_ends[0] - world_starts[0])
+            ):
+                n_w = int(world_ends[0] - world_starts[0])
+                ii, jj = np.triu_indices(n_w, k=1)
+                w_local_0 = non_global_local_idx[:n_w]
+                valid_0 = _group_valid(groups[w_local_0[ii]], groups[w_local_0[jj]])
+                if np.any(valid_0):
+                    ii_v, jj_v = ii[valid_0], jj[valid_0]
+                    # sa_0 <= sb_0 by construction (min/max already enforced by triu i<j
+                    # and colliding_idx being sorted, so colliding_idx[w_local_0[ii]] <=
+                    # colliding_idx[w_local_0[jj]]).
+                    sa_0 = colliding_idx[w_local_0[ii_v]]
+                    sb_0 = colliding_idx[w_local_0[jj_v]]
+                    stride = self._shapes_per_world
+
+                    # Filter-before-broadcast: for uniformly replicated models, every
+                    # collision-filter pair for world i is the world-0 pair offset by
+                    # i*stride.  Filtering world-0 candidates (≤ n_w*(n_w-1)/2 pairs)
+                    # against world-0 filters is O(world-0 pairs) instead of
+                    # O(n_worlds * world-0 pairs), giving a large speedup for large n_worlds.
+                    precomputed_keys = getattr(model, "_shape_collision_filter_keys", None)
+                    if precomputed_keys is not None and len(precomputed_keys) > 0:
+                        # World-0 filter keys: both shapes in [0, stride) → key >> 32 < stride
+                        world_0_keys = precomputed_keys[precomputed_keys < (np.int64(stride) << 32)]
+                        # Verify all filter pairs are within-world replicas of world-0
+                        # (i.e. len(filter_keys) == world_0_count * n_unique).  This check
+                        # is O(1) and guards against models with cross-world filter pairs.
+                        if len(world_0_keys) * n_unique == len(precomputed_keys):
+                            if len(world_0_keys) > 0:
+                                ck0 = sa_0.astype(np.int64) << 32 | sb_0.astype(np.int64)
+                                p0 = np.searchsorted(world_0_keys, ck0)
+                                v0 = p0 < len(world_0_keys)
+                                keep0 = ~v0 | (world_0_keys[np.minimum(p0, len(world_0_keys) - 1)] != ck0)
+                                sa_0 = sa_0[keep0]
+                                sb_0 = sb_0[keep0]
+                            fast_path_already_filtered = True
+
+                    # world_offsets shape: (n_unique, 1); sa_0/sb_0 shape: (n_valid,)
+                    # Broadcasting produces (n_unique, n_valid) → ravel to 1-D.
+                    offsets = np.arange(n_unique, dtype=np.int32)[:, None] * stride
+                    all_sa.append((sa_0[None, :] + offsets).ravel())
+                    all_sb.append((sb_0[None, :] + offsets).ravel())
+            else:
+                triu_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+                for start, end in zip(world_starts, world_ends, strict=True):
+                    n_w = int(end - start)
+                    if n_w < 2:
+                        continue
+                    if n_w not in triu_cache:
+                        triu_cache[n_w] = np.triu_indices(n_w, k=1)
+                    ii, jj = triu_cache[n_w]
+                    w_local = non_global_local_idx[start:end]
+                    valid = _group_valid(groups[w_local[ii]], groups[w_local[jj]])
+                    sa = colliding_idx[w_local[ii[valid]]]
+                    sb = colliding_idx[w_local[jj[valid]]]
+                    all_sa.append(np.minimum(sa, sb))
+                    all_sb.append(np.maximum(sa, sb))
+
+        if all_sa:
+            # Avoid np.stack + np.concatenate overhead: assign directly into a pre-allocated array.
+            if len(all_sa) == 1:
+                sa_all, sb_all = all_sa[0], all_sb[0]
+            else:
+                sa_all = np.concatenate(all_sa)
+                sb_all = np.concatenate(all_sb)
+            combined = np.empty((len(sa_all), 2), dtype=np.int32)
+            combined[:, 0] = sa_all
+            combined[:, 1] = sb_all
+        else:
+            combined = np.empty((0, 2), dtype=np.int32)
+
+        # Apply post-hoc filter unless the fast broadcast path already handled it.
+        # fast_path_already_filtered is True when all filter pairs are within-world replicas
+        # (checked above) and no global shapes are present in the collision pairs.
+        need_postfilter = (
+            filters and len(combined) > 0 and not (fast_path_already_filtered and len(global_local_idx) == 0)
+        )
+        if need_postfilter:
+            # Encode each (a, b) pair as a single int64 key for vectorized membership test.
+            # Both a and b are non-negative shape indices that fit in 32 bits.
+            combined_key = combined[:, 0].astype(np.int64) << 32 | combined[:, 1].astype(np.int64)
+            # Use pre-computed sorted keys from finalize() if available (avoids the expensive
+            # np.array(list(filters)) call which iterates over a large Python set of tuples).
+            filter_keys = getattr(model, "_shape_collision_filter_keys", None)
+            if filter_keys is None:
+                filter_arr = np.array(list(filters), dtype=np.int64)
+                filter_keys = np.sort(filter_arr[:, 0] << 32 | filter_arr[:, 1])
+            pos = np.searchsorted(filter_keys, combined_key)
+            pos = np.clip(pos, 0, len(filter_keys) - 1)
+            keep = filter_keys[pos] != combined_key
+            combined = combined[keep]
+
+        model.shape_contact_pairs = wp.array(combined, dtype=wp.vec2i, device=model.device)
+        model.shape_contact_pair_count = len(combined)
