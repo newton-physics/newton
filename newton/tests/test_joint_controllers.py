@@ -283,7 +283,7 @@ def test_qfrc_actuator(
     device,
     solver_fn,
 ):
-    """Test that qfrc_actuator extended state attribute is populated correctly by MuJoCo solver."""
+    """Test that mujoco.qfrc_actuator extended state attribute is populated correctly by MuJoCo solver."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=0.0)
 
     box_mass = 1.0
@@ -314,8 +314,7 @@ def test_qfrc_actuator(
     )
     builder.add_articulation([j])
 
-    # Request qfrc_actuator extended attribute
-    builder.request_state_attributes("qfrc_actuator")
+    builder.request_state_attributes("mujoco:qfrc_actuator")
 
     model = builder.finalize(device=device)
     model.ground = False
@@ -324,9 +323,10 @@ def test_qfrc_actuator(
     state_0 = model.state()
     state_1 = model.state()
 
-    # Verify that qfrc_actuator is allocated
-    test.assertIsNotNone(state_1.qfrc_actuator, "qfrc_actuator should be allocated when requested")
-    test.assertEqual(len(state_1.qfrc_actuator), model.joint_dof_count)
+    # Verify that qfrc_actuator is allocated under the mujoco namespace
+    test.assertTrue(hasattr(state_1, "mujoco"), "state should have mujoco namespace")
+    test.assertIsNotNone(state_1.mujoco.qfrc_actuator, "mujoco.qfrc_actuator should be allocated")
+    test.assertEqual(len(state_1.mujoco.qfrc_actuator), model.joint_dof_count)
 
     initial_q = 1.0
     initial_qd = 0.0
@@ -345,7 +345,7 @@ def test_qfrc_actuator(
 
     solver.step(state_0, state_1, control, None, dt=dt)
 
-    qfrc = state_1.qfrc_actuator.numpy()
+    qfrc = state_1.mujoco.qfrc_actuator.numpy()
     test.assertEqual(len(qfrc), 1, "Should have one DOF")
     test.assertAlmostEqual(
         float(qfrc[0]),
@@ -369,7 +369,10 @@ def test_qfrc_actuator(
     builder2.add_articulation([j2])
     model2 = builder2.finalize(device=device)
     state_not_requested = model2.state()
-    test.assertIsNone(state_not_requested.qfrc_actuator, "qfrc_actuator should be None when not requested")
+    test.assertFalse(
+        hasattr(state_not_requested, "mujoco") and hasattr(state_not_requested.mujoco, "qfrc_actuator"),
+        "mujoco.qfrc_actuator should not exist when not requested",
+    )
 
 
 def test_free_joint_qfrc_actuator_frame(
@@ -377,7 +380,7 @@ def test_free_joint_qfrc_actuator_frame(
     device,
     solver_fn,
 ):
-    """Test free joint qfrc_actuator frame conversion with actuators.
+    """Test free joint mujoco.qfrc_actuator frame conversion with actuators.
 
     A free-joint body is rotated 90deg around X (body-z -> world-(-y)).
     Two motor actuators are attached:
@@ -408,7 +411,7 @@ def test_free_joint_qfrc_actuator_frame(
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=0.0)
     newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
     parse_mjcf(builder, mjcf, ctrl_direct=True, ignore_inertial_definitions=False)
-    builder.request_state_attributes("qfrc_actuator")
+    builder.request_state_attributes("mujoco:qfrc_actuator")
 
     model = builder.finalize(device=device)
     model.ground = False
@@ -428,7 +431,7 @@ def test_free_joint_qfrc_actuator_frame(
     dt = 0.01
     solver.step(state_0, state_1, control, None, dt=dt)
 
-    qfrc = state_1.qfrc_actuator.numpy()
+    qfrc = state_1.mujoco.qfrc_actuator.numpy()
 
     # --- Thrust check: linear force along world-z ---
     # Linear DOFs (0,1,2) = (fx, fy, fz) in world frame

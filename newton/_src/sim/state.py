@@ -33,7 +33,7 @@ class State:
         (
             "body_qdd",
             "body_parent_f",
-            "qfrc_actuator",
+            "mujoco:qfrc_actuator",
         )
     )
     """
@@ -125,15 +125,6 @@ class State:
 
         self.joint_qd: wp.array | None = None
         """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float."""
-
-        self.qfrc_actuator: wp.array | None = None
-        """Actuator forces in generalized (joint DOF) coordinates, shape (joint_dof_count,), dtype float.
-
-        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
-
-        .. note::
-            Currently only populated by :class:`~newton.solvers.SolverMuJoCo`.
-        """
 
     def clear_forces(self) -> None:
         """

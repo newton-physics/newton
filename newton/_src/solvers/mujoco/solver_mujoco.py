@@ -3024,7 +3024,8 @@ class SolverMuJoCo(SolverBase):
             )
 
         # Update actuator forces in joint DOF space.
-        if state.qfrc_actuator is not None:
+        qfrc_actuator = getattr(getattr(state, "mujoco", None), "qfrc_actuator", None)
+        if qfrc_actuator is not None:
             if is_mjwarp:
                 mjw_qfrc = mj_data.qfrc_actuator
                 mjw_qpos = mj_data.qpos
@@ -3045,7 +3046,7 @@ class SolverMuJoCo(SolverBase):
                     model.joint_child,
                     model.body_com,
                 ],
-                outputs=[state.qfrc_actuator],
+                outputs=[qfrc_actuator],
                 device=model.device,
             )
 
