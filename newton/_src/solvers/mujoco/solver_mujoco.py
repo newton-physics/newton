@@ -2481,6 +2481,7 @@ class SolverMuJoCo(SolverBase):
         ls_parallel: bool = False,
         use_mujoco_contacts: bool = True,
         include_sites: bool = True,
+        skip_visual_only_geoms: bool = True,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -2523,6 +2524,7 @@ class SolverMuJoCo(SolverBase):
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
             use_mujoco_contacts (bool): If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             include_sites (bool): If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
+            skip_visual_only_geoms (bool): If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
         """
         super().__init__(model)
 
@@ -2641,6 +2643,7 @@ class SolverMuJoCo(SolverBase):
                     target_filename=save_to_mjcf,
                     ls_parallel=ls_parallel,
                     include_sites=include_sites,
+                    skip_visual_only_geoms=skip_visual_only_geoms,
                 )
         self.update_data_interval = update_data_interval
         self._step = 0
