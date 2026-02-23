@@ -141,12 +141,6 @@ def create_newton_model_from_mjcf(
     robot_builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(robot_builder)
 
-    # Use MuJoCo's default friction values for comparison testing
-    # MuJoCo defaults: [slide=1.0, torsion=0.005, roll=0.0001]
-    robot_builder.default_shape_cfg.mu = 1.0
-    robot_builder.default_shape_cfg.mu_torsional = 0.005
-    robot_builder.default_shape_cfg.mu_rolling = 0.0001
-
     # floating defaults to None, which honors the MJCF's explicit joint definitions.
     # Menagerie models define their own <freejoint> tags for floating-base robots.
     robot_builder.add_mjcf(
