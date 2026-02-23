@@ -2218,7 +2218,7 @@ class SolverMuJoCo(SolverBase):
         mjc_joint_names: list[str],
         selected_tendons: list[int],
         mjc_tendon_names: list[str],
-        body_name_mapping: list[str],
+        body_name_mapping: dict[int, str],
     ) -> int:
         """Initialize MuJoCo general actuators from custom attributes.
 
@@ -2376,6 +2376,13 @@ class SolverMuJoCo(SolverBase):
                         print(f"Warning: MuJoCo actuator {mujoco_act_idx} has invalid body target {target_idx}")
                     continue
                 target_name = body_name_mapping.get(target_idx)
+                if target_name is None:
+                    if wp.config.verbose:
+                        print(
+                            f"Warning: MuJoCo actuator {mujoco_act_idx} references body {target_idx} "
+                            "not present in the MuJoCo export."
+                        )
+                    continue
             else:
                 # TODO: Support site, slidercrank, and jointinparent transmission types
                 if wp.config.verbose:
