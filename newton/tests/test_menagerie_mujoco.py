@@ -56,7 +56,6 @@ Per-robot configuration (override in subclass):
 
 from __future__ import annotations
 
-import re
 import time
 import unittest
 from abc import abstractmethod
@@ -509,7 +508,7 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "tendon_solref_lim",
     # RGBA: Newton uses different default color for geoms without explicit rgba
     "geom_rgba",
-    # Size: Compared via compare_geom_sizes() which understands type-specific semantics
+    # Size: Compared via compare_geom_fields_unordered() which understands type-specific semantics
     "geom_size",
     # Range: Compared via compare_jnt_range() which only checks limited joints
     # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
@@ -754,100 +753,6 @@ def compare_solref_physics(
         atol=0,
         err_msg=f"{field_name} kd mismatch (physics-equivalent)",
     )
-
-
-def compare_geom_sizes(
-    newton_mjw: Any,
-    native_mjw: Any,
-    tol: float = 1e-6,
-) -> None:
-    """Compare geom_size arrays accounting for type-specific semantics.
-
-    MuJoCo geom size interpretation varies by type:
-    - PLANE (0): [visual_x, visual_y, spacing] - purely decorative, skip
-    - SPHERE (2): [radius, -, -] - only first component matters
-    - CAPSULE (3): [radius, half_length, -] - first two components matter
-    - ELLIPSOID (4): [x, y, z radii] - all three matter
-    - CYLINDER (5): [radius, half_length, -] - first two components matter
-    - BOX (6): [x, y, z half-sizes] - all three matter
-    - MESH (7): [scale_x, scale_y, scale_z] - all three matter
-
-    Newton fills zero components with first nonzero value for visualization,
-    but this doesn't affect physics. This function compares only the
-    physics-relevant components for each geom type.
-    """
-    # MuJoCo geom type constants
-    GEOM_PLANE = 0
-    GEOM_SPHERE = 2
-    GEOM_CAPSULE = 3
-    GEOM_ELLIPSOID = 4
-    GEOM_CYLINDER = 5
-    GEOM_BOX = 6
-    GEOM_MESH = 7
-
-    newton_size = newton_mjw.geom_size.numpy()  # (nworld, ngeom, 3)
-    native_size = native_mjw.geom_size.numpy()
-    newton_type = newton_mjw.geom_type.numpy()  # (ngeom,) - shared across worlds
-    native_type = native_mjw.geom_type.numpy()
-
-    assert newton_size.shape == native_size.shape, (
-        f"geom_size shape mismatch: {newton_size.shape} vs {native_size.shape}"
-    )
-    assert newton_type.shape == native_type.shape, (
-        f"geom_type shape mismatch: {newton_type.shape} vs {native_type.shape}"
-    )
-
-    # Geom types must match
-    np.testing.assert_array_equal(newton_type, native_type, err_msg="geom_type mismatch")
-
-    nworld, ngeom, _ = newton_size.shape
-
-    for world in range(nworld):
-        for geom in range(ngeom):
-            gtype = newton_type[geom]  # geom_type is (ngeom,), not (nworld, ngeom)
-            n_size = newton_size[world, geom]
-            nat_size = native_size[world, geom]
-
-            if gtype == GEOM_PLANE:
-                # Plane size is purely visual (Newton hardcodes [5,5,5], native uses MJCF value)
-                # Both are infinite for collision - skip comparison
-                continue
-            elif gtype == GEOM_SPHERE:
-                # Only radius (first component) matters
-                np.testing.assert_allclose(
-                    n_size[0],
-                    nat_size[0],
-                    atol=tol,
-                    rtol=0,
-                    err_msg=f"geom_size[{world},{geom}] (SPHERE) radius mismatch",
-                )
-            elif gtype in (GEOM_CAPSULE, GEOM_CYLINDER):
-                # Radius and half-length (first two components) matter
-                np.testing.assert_allclose(
-                    n_size[:2],
-                    nat_size[:2],
-                    atol=tol,
-                    rtol=0,
-                    err_msg=f"geom_size[{world},{geom}] (CAPSULE/CYLINDER) mismatch",
-                )
-            elif gtype in (GEOM_ELLIPSOID, GEOM_BOX, GEOM_MESH):
-                # All three components matter
-                np.testing.assert_allclose(
-                    n_size,
-                    nat_size,
-                    atol=tol,
-                    rtol=0,
-                    err_msg=f"geom_size[{world},{geom}] (ELLIPSOID/BOX/MESH) mismatch",
-                )
-            else:
-                # Unknown type - compare all (fail if different)
-                np.testing.assert_allclose(
-                    n_size,
-                    nat_size,
-                    atol=tol,
-                    rtol=0,
-                    err_msg=f"geom_size[{world},{geom}] (type={gtype}) mismatch",
-                )
 
 
 def compare_geom_fields_unordered(
@@ -1319,14 +1224,11 @@ def compare_constraints_sorted(
         if n == 0:
             continue
 
-        # Build sort keys: (type, id, J-hash) for each row.
-        # Multiple friction cone rows share the same (type, id), so J-hash
+        # Build sort keys: (type, id, J_bytes) for each row.
+        # Multiple friction cone rows share the same (type, id), so J_bytes
         # is needed to disambiguate them for deterministic ordering.
-        def _j_sort_key(J_row):
-            return hash(J_row.tobytes())
-
-        newton_keys = [(int(newton_type[w, i]), int(newton_id[w, i]), _j_sort_key(newton_J[w, i])) for i in range(n)]
-        native_keys = [(int(native_type[w, i]), int(native_id[w, i]), _j_sort_key(native_J[w, i])) for i in range(n)]
+        newton_keys = [(int(newton_type[w, i]), int(newton_id[w, i]), newton_J[w, i].tobytes()) for i in range(n)]
+        native_keys = [(int(native_type[w, i]), int(native_id[w, i]), native_J[w, i].tobytes()) for i in range(n)]
 
         newton_order = sorted(range(n), key=lambda i: newton_keys[i])
         native_order = sorted(range(n), key=lambda i: native_keys[i])
@@ -1801,11 +1703,9 @@ def apply_randomization(
     if all(x is None for x in [mass_scale, friction_range, damping_scale, armature_scale]):
         return
 
-    # TODO: Implement randomization using SolverMuJoCo remappings
-    # This requires careful coordination between Newton arrays and MuJoCo arrays
-    # The remappings in SolverMuJoCo (e.g., body indices, joint indices) must be used
-    # to ensure both sides receive identical randomized values
-    _ = newton_model, mj_solver, seed  # Suppress unused warnings for now
+    raise NotImplementedError(
+        "Randomization requires SolverMuJoCo remappings to ensure both sides receive identical randomized values"
+    )
 
 
 # =============================================================================
@@ -1837,7 +1737,7 @@ class TestMenagerieBase(unittest.TestCase):
     robot_xml: str = "scene.xml"  # Default; most menagerie robots use scene.xml
 
     # Configurable defaults
-    num_worlds: int = 34
+    num_worlds: int = 34  # One warp per GPU warp lane (32) + 2 extra to test non-power-of-2
     num_steps: int = 100
     dt: float = 0.002  # Fallback; actual dt extracted from native model in test
 
@@ -1963,30 +1863,11 @@ class TestMenagerieBase(unittest.TestCase):
         xml_content = ET.tostring(root, encoding="unicode")
 
         if self.discard_visual:
-            # Check if there's already a <compiler> tag
-            if "<compiler" in xml_content:
-                # Check if it's self-closing: <compiler ... />
-                if re.search(r"<compiler[^>]*/\s*>", xml_content):
-                    # Self-closing tag: insert attribute before />
-                    xml_content = re.sub(
-                        r"<compiler([^>]*)/\s*>",
-                        r'<compiler\1 discardvisual="true"/>',
-                        xml_content,
-                    )
-                else:
-                    # Non-self-closing tag: insert attribute before >
-                    xml_content = re.sub(
-                        r"<compiler([^>]*)>",
-                        r'<compiler\1 discardvisual="true">',
-                        xml_content,
-                    )
-            else:
-                # No compiler tag - insert new one after <mujoco...>
-                xml_content = re.sub(
-                    r"(<mujoco[^>]*>)",
-                    r'\1\n  <compiler discardvisual="true"/>',
-                    xml_content,
-                )
+            compiler = root.find("compiler")
+            if compiler is None:
+                compiler = ET.SubElement(root, "compiler")
+            compiler.set("discardvisual", "true")
+            xml_content = ET.tostring(root, encoding="unicode")
 
         return xml_content
 
