@@ -448,14 +448,17 @@ class ParallelJunitTestResult(unittest.TextTestResult):
         if self.showAll:
             self.stream.writeln(f"{self.getDescription(test)} ...")
             self.stream.flush()
+        elif self.dots:
+            self.stream.writeln(f"{test} ...")
+            self.stream.flush()
         self.start_time = time.perf_counter_ns()
         super(unittest.TextTestResult, self).startTest(test)
 
-    def _add_helper(self, test, dots_message, show_all_message):
+    def _add_helper(self, test, show_all_message):
         if self.showAll:
             self.stream.writeln(f"{self.getDescription(test)} ... {show_all_message}")
         elif self.dots:
-            self.stream.write(dots_message)
+            self.stream.writeln(f"{test} ... {show_all_message}")
         self.stream.flush()
 
     def _record_test(self, test, code, message=None, details=None):
@@ -470,38 +473,38 @@ class ParallelJunitTestResult(unittest.TextTestResult):
 
     def addSuccess(self, test):
         super(unittest.TextTestResult, self).addSuccess(test)
-        self._add_helper(test, ".", "ok")
+        self._add_helper(test, "ok")
         self._record_test(test, "OK")
 
     def addError(self, test, err):
         super(unittest.TextTestResult, self).addError(test, err)
-        self._add_helper(test, "E", "ERROR")
+        self._add_helper(test, "ERROR")
         self._record_test(test, "ERROR", str(err[1]), self._exc_info_to_string(err, test))
 
     def addFailure(self, test, err):
         super(unittest.TextTestResult, self).addFailure(test, err)
-        self._add_helper(test, "F", "FAIL")
+        self._add_helper(test, "FAIL")
         self._record_test(test, "FAIL", str(err[1]), self._exc_info_to_string(err, test))
 
     def addSkip(self, test, reason):
         super(unittest.TextTestResult, self).addSkip(test, reason)
-        self._add_helper(test, "s", f"skipped {reason!r}")
+        self._add_helper(test, f"skipped {reason!r}")
         self._record_test(test, "SKIP", reason)
 
     def addExpectedFailure(self, test, err):
         super(unittest.TextTestResult, self).addExpectedFailure(test, err)
-        self._add_helper(test, "x", "expected failure")
+        self._add_helper(test, "expected failure")
         self._record_test(test, "OK", "expected failure")
 
     def addUnexpectedSuccess(self, test):
         super(unittest.TextTestResult, self).addUnexpectedSuccess(test)
-        self._add_helper(test, "u", "unexpected success")
+        self._add_helper(test, "unexpected success")
         self._record_test(test, "FAIL", "unexpected success")
 
     def addSubTest(self, test, subtest, err):
         super(unittest.TextTestResult, self).addSubTest(test, subtest, err)
         if err is not None:
-            self._add_helper(test, "E", "ERROR")
+            self._add_helper(test, "ERROR")
             # err is (class, error, traceback)
             self._record_test(test, "FAIL", str(err[1]), self._exc_info_to_string(err, test))
 
