@@ -50,6 +50,7 @@ from .kernels import (
     convert_mj_coords_to_warp_kernel,
     convert_mjw_contacts_to_newton_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
+    convert_qfrc_actuator_from_mj_kernel,
     convert_rigid_forces_from_mj_kernel,
     convert_solref,
     convert_warp_coords_to_mj_kernel,
@@ -3287,6 +3288,33 @@ class SolverMuJoCo(SolverBase):
                     self.mjw_data.cfrc_int,
                 ],
                 outputs=[state.body_qdd, state.body_parent_f],
+                device=model.device,
+            )
+
+        # Update actuator forces in joint DOF space.
+        qfrc_actuator = getattr(getattr(state, "mujoco", None), "qfrc_actuator", None)
+        if qfrc_actuator is not None:
+            if is_mjwarp:
+                mjw_qfrc = mj_data.qfrc_actuator
+                mjw_qpos = mj_data.qpos
+            else:
+                mjw_qfrc = wp.array([mj_data.qfrc_actuator], dtype=wp.float32, device=model.device)
+                mjw_qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
+            wp.launch(
+                convert_qfrc_actuator_from_mj_kernel,
+                dim=(nworld, joints_per_world),
+                inputs=[
+                    mjw_qfrc,
+                    mjw_qpos,
+                    joints_per_world,
+                    model.joint_type,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_child,
+                    model.body_com,
+                ],
+                outputs=[qfrc_actuator],
                 device=model.device,
             )
 

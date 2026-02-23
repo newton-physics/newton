@@ -779,6 +779,11 @@ class Model:
         if "body_parent_f" in requested:
             s.body_parent_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
+        if "mujoco:qfrc_actuator" in requested:
+            if not hasattr(s, "mujoco"):
+                s.mujoco = Model.AttributeNamespace("mujoco")
+            s.mujoco.qfrc_actuator = wp.zeros_like(self.joint_qd, requires_grad=requires_grad)
+
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 
