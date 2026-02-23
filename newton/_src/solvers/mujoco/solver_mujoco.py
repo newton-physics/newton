@@ -1202,26 +1202,15 @@ class SolverMuJoCo(SolverBase):
         # we preserve sentinel values and resolve deterministically in _init_actuators
         # using actuator_target_label.
         def resolve_actuator_transmission_index(_: str, context: dict[str, Any]) -> wp.vec2i:
-            """Resolve the transmission target index for a USD actuator prim.
+            """Return sentinel to defer actuator target resolution to _init_actuators.
 
-            Reads the ``mjc:target`` relationship from the actuator prim and returns
-            the resolved target index packed into a ``wp.vec2i``.
-
-            Args:
-                _: The attribute name (unused).
-                context: A dictionary containing at least a ``"prim"`` key with the USD prim
-                    for the actuator being processed.
-
-            Returns:
-                A ``wp.vec2i`` where the first element is the target index and
-                the second element is unused (set to 0). Returns ``(-1, -1)`` if
-                target resolution is deferred.
+            DOF indices from ``joint_dof_label`` during USD import may not include
+            internally-created joints (free joints for floating bases), causing an
+            offset between import-time and finalized DOF indices. Deferring
+            resolution to ``_init_actuators`` (via ``actuator_target_label``) uses
+            the finalized model where all DOFs are present.
             """
-            prim = context["prim"]
-            _trntype, target_idx, _target_path = resolve_actuator_target(prim)
-            if target_idx < 0:
-                return wp.vec2i(wp.int32(-1), wp.int32(-1))
-            return wp.vec2i(wp.int32(target_idx), wp.int32(0))
+            return wp.vec2i(wp.int32(-1), wp.int32(-1))
 
         def resolve_actuator_transmission_type(_: str, context: dict[str, Any]) -> int:
             """Resolve transmission type for a USD actuator prim from its target path."""
@@ -1301,6 +1290,9 @@ class SolverMuJoCo(SolverBase):
                 usd_value_transformer=resolve_actuator_transmission_type,
             )
         )
+        def usd_parse_dyntype(value: Any, _context: dict[str, Any]) -> int:
+            return parse_dyntype(str(value))
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_dyntype",
@@ -1311,8 +1303,16 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="dyntype",
                 mjcf_value_transformer=parse_dyntype,
+                usd_attribute_name="mjc:dynType",
+                usd_value_transformer=usd_parse_dyntype,
             )
         )
+        def usd_parse_gaintype(value: Any, _context: dict[str, Any]) -> int:
+            return parse_gaintype(str(value))
+
+        def usd_parse_biastype(value: Any, _context: dict[str, Any]) -> int:
+            return parse_biastype(str(value))
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_gaintype",
@@ -1323,6 +1323,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="gaintype",
                 mjcf_value_transformer=parse_gaintype,
+                usd_attribute_name="mjc:gainType",
+                usd_value_transformer=usd_parse_gaintype,
             )
         )
         builder.add_custom_attribute(
@@ -1335,6 +1337,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="biastype",
                 mjcf_value_transformer=parse_biastype,
+                usd_attribute_name="mjc:biasType",
+                usd_value_transformer=usd_parse_biastype,
             )
         )
 
@@ -1441,6 +1445,18 @@ class SolverMuJoCo(SolverBase):
                 mjcf_value_transformer=parse_presence,
                 usd_attribute_name="*",
                 usd_value_transformer=make_usd_has_range_transformer("mjc:forceRange"),
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_inheritrange",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="inheritrange",
+                usd_attribute_name="mjc:inheritRange",
             )
         )
         builder.add_custom_attribute(
@@ -2649,6 +2665,10 @@ class SolverMuJoCo(SolverBase):
             if hasattr(mujoco_attrs, "actuator_biastype"):
                 biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
                 general_args["biastype"] = biastype
+            if hasattr(mujoco_attrs, "actuator_inheritrange"):
+                inheritrange = float(mujoco_attrs.actuator_inheritrange.numpy()[mujoco_act_idx])
+                if inheritrange > 0.0:
+                    general_args["inheritrange"] = inheritrange
 
             # Detect position/velocity actuator shortcuts. Use set_to_position/
             # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
@@ -4020,13 +4040,25 @@ class SolverMuJoCo(SolverBase):
                     }
 
                     size = shape_size[shape]
-                    # Ensure size is valid for the site type
+                    # MuJoCo site_size is always 3 elements. Only the first N
+                    # are meaningful per type (sphere=1, capsule/cylinder=2,
+                    # box=3). Unused elements must be MuJoCo's default (0.005)
+                    # since the spec API does not auto-fill them.
+                    MJC_DEFAULT_SITE_SIZE = 0.005
                     if np.any(size > 0.0):
-                        nonzero = size[size > 0.0][0]
-                        size[size == 0.0] = nonzero
-                        site_params["size"] = size
+                        if site_geom_type == GeoType.SPHERE:
+                            r = size[0] if size[0] > 0 else size[size > 0][0]
+                            site_params["size"] = [r, MJC_DEFAULT_SITE_SIZE, MJC_DEFAULT_SITE_SIZE]
+                        elif site_geom_type in (GeoType.CAPSULE, GeoType.CYLINDER):
+                            r = size[0] if size[0] > 0 else size[size > 0][0]
+                            h = size[1] if size[1] > 0 else r
+                            site_params["size"] = [r, h, MJC_DEFAULT_SITE_SIZE]
+                        else:
+                            nonzero = size[size > 0.0][0]
+                            size[size == 0.0] = nonzero
+                            site_params["size"] = size
                     else:
-                        site_params["size"] = [0.01, 0.01, 0.01]
+                        site_params["size"] = [MJC_DEFAULT_SITE_SIZE] * 3
 
                     if shape_flags[shape] & ShapeFlags.VISIBLE:
                         site_params["rgba"] = [0.0, 1.0, 0.0, 0.5]
@@ -4723,6 +4755,42 @@ class SolverMuJoCo(SolverBase):
 
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
+
+        # Write back compiled actuator parameters into Newton's custom attribute
+        # storage. MuJoCo's compiler resolves spec-level placeholders (positive
+        # biasprm[2] = dampratio → negative biasprm[2] = -kv). Without this,
+        # update_ctrl_direct_actuator_properties_kernel would overwrite the
+        # resolved values with the unresolved spec values. mujoco_warp.set_const
+        # does not implement this resolution.
+        if mujoco_attrs is not None and mjc_actuator_ctrl_source_list:
+            has_biasprm = hasattr(mujoco_attrs, "actuator_biasprm")
+            has_gainprm = hasattr(mujoco_attrs, "actuator_gainprm")
+            if has_biasprm or has_gainprm:
+                bp_np = mujoco_attrs.actuator_biasprm.numpy() if has_biasprm else None
+                gp_np = mujoco_attrs.actuator_gainprm.numpy() if has_gainprm else None
+                per_world = len(mjc_actuator_ctrl_source_list)
+                total = bp_np.shape[0] if bp_np is not None else (gp_np.shape[0] if gp_np is not None else 0)
+                nw = total // per_world if per_world > 0 else 1
+                modified = False
+                for mjc_act_idx, (src, newton_idx) in enumerate(
+                    zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list)
+                ):
+                    if src != 1 or newton_idx < 0 or mjc_act_idx >= self.mj_model.nu:
+                        continue
+                    compiled_bp = self.mj_model.actuator_biasprm[mjc_act_idx]
+                    compiled_gp = self.mj_model.actuator_gainprm[mjc_act_idx]
+                    for w in range(nw):
+                        idx = w * per_world + newton_idx
+                        if bp_np is not None:
+                            bp_np[idx] = compiled_bp
+                        if gp_np is not None:
+                            gp_np[idx] = compiled_gp
+                    modified = True
+                if modified:
+                    if bp_np is not None:
+                        mujoco_attrs.actuator_biasprm.assign(bp_np)
+                    if gp_np is not None:
+                        mujoco_attrs.actuator_gainprm.assign(gp_np)
 
         self._update_mjc_data(self.mj_data, model, state)
 
@@ -5829,7 +5897,12 @@ class SolverMuJoCo(SolverBase):
             ],
             device=self.model.device,
         )
-
+        # Resolve biasprm[2] dampratio → -kv via set_const. The kernel above
+        # writes raw biasprm from Newton's custom attributes, which may contain
+        # a positive biasprm[2] (dampratio placeholder). set_const resolves it
+        # to -kv = -2*dampratio*sqrt(kp*actuator_acc0) using the current model
+        # mass properties.
+        self._mujoco_warp.set_const(self.mjw_model, self.mjw_data)
     def _validate_model_for_separate_worlds(self, model: Model) -> None:
         """Validate that the Newton model is compatible with MuJoCo's separate_worlds mode.
 

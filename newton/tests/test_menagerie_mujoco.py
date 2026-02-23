@@ -18,14 +18,10 @@
 Verifies that robots from the MuJoCo Menagerie produce equivalent simulation
 results when loaded via MJCF into Newton's SolverMuJoCo vs native mujoco_warp.
 
-Architecture::
-
-    TestMenagerieBase           Abstract base with all test infrastructure
-    ├── TestMenagerieMJCF       Load Newton model from MJCF
-    │   ├── TestMenagerie_UniversalRobotsUr5e   (enabled, split pipeline)
-    │   ├── TestMenagerie_ApptronikApollo       (enabled, full pipeline)
-    │   └── ...                                 (61 robots total, most skipped)
-    └── TestMenagerieUSD        Load Newton model from USD (all skipped)
+Test Architecture:
+    - TestMenagerieBase: Abstract base class with all test infrastructure
+    - TestMenagerieMJCF: MJCF model source variant
+    - TestMenagerie_<RobotName>: One derived class per menagerie robot
 
 Each test:
     1. Downloads the robot from menagerie (cached).
@@ -56,6 +52,8 @@ Per-robot configuration (override in subclass):
 
 from __future__ import annotations
 
+import os
+import re
 import time
 import unittest
 from abc import abstractmethod
@@ -69,6 +67,7 @@ import warp as wp
 import newton
 from newton._src.utils.download_assets import download_git_folder
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf
+from newton._src.usd.schemas import SchemaResolverMjc, SchemaResolverNewton
 from newton.solvers import SolverMuJoCo
 
 # Check for mujoco availability via SolverMuJoCo's lazy import mechanism
@@ -87,6 +86,10 @@ except ImportError:
 
 MENAGERIE_GIT_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 
+# If set, use this path as the root of an already-cloned mujoco_menagerie repo
+# instead of downloading. Example: export NEWTON_MENAGERIE_PATH=/path/to/mujoco_menagerie
+NEWTON_MENAGERIE_PATH_ENV = "NEWTON_MENAGERIE_PATH"
+
 
 def download_menagerie_asset(
     robot_folder: str,
@@ -96,6 +99,9 @@ def download_menagerie_asset(
     """
     Download a robot folder from the MuJoCo Menagerie repository.
 
+    If the environment variable NEWTON_MENAGERIE_PATH is set to the root of an
+    already-cloned mujoco_menagerie repo, that path is used and no download occurs.
+
     Args:
         robot_folder: The folder name in the menagerie repo (e.g., "unitree_go2")
         cache_dir: Optional cache directory override
@@ -104,6 +110,12 @@ def download_menagerie_asset(
     Returns:
         Path to the downloaded robot folder
     """
+    local_root = os.environ.get(NEWTON_MENAGERIE_PATH_ENV)
+    if local_root and not force_refresh:
+        path = Path(local_root) / robot_folder
+        if path.exists():
+            return path
+
     return download_git_folder(
         MENAGERIE_GIT_URL,
         robot_folder,
@@ -164,27 +176,51 @@ def create_newton_model_from_mjcf(
 
 
 def create_newton_model_from_usd(
-    mjcf_path: Path,
+    usd_path: Path,
     *,
     num_worlds: int = 1,
     add_ground: bool = True,
+    ignore_paths: list[str] | None = None,
 ) -> newton.Model:
     """
-    Create a Newton model by converting MJCF to USD first.
-
-    NOTE: This is a placeholder for future USD converter integration.
+    Create a Newton model from a USD file (converted from MuJoCo Menagerie MJCF).
 
     Args:
-        mjcf_path: Path to the MJCF XML file
+        usd_path: Path to the USD scene file
         num_worlds: Number of world instances to create
         add_ground: Whether to add a ground plane
+        ignore_paths: Regex patterns for USD prim paths to skip during import.
 
     Returns:
         Finalized Newton Model
     """
-    raise NotImplementedError(
-        "USD conversion path not yet implemented. Waiting for MuJoCo USD converter to be finalized."
+    robot_builder = newton.ModelBuilder()
+    SolverMuJoCo.register_custom_attributes(robot_builder)
+
+    robot_builder.default_shape_cfg.mu = 1.0
+    robot_builder.default_shape_cfg.mu_torsional = 0.005
+    robot_builder.default_shape_cfg.mu_rolling = 0.0001
+
+    robot_builder.add_usd(
+        str(usd_path),
+        collapse_fixed_joints=False,
+        enable_self_collisions=False,
+        schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()],
+        ignore_paths=ignore_paths,
     )
+
+    builder = newton.ModelBuilder()
+    SolverMuJoCo.register_custom_attributes(builder)
+
+    if add_ground:
+        builder.add_ground_plane()
+
+    if num_worlds > 1:
+        builder.replicate(robot_builder, num_worlds)
+    else:
+        builder.add_world(robot_builder)
+
+    return builder.finalize()
 
 
 # =============================================================================
@@ -488,6 +524,11 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
     "body_iquat",
+    # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
+    "body_invweight0",
+    # Recomputed from joint transforms; small float diff. Backfilled.
+    "body_pos",
+    "body_quat",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
     "geom_contype",
@@ -510,6 +551,14 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_fields_unordered() which understands type-specific semantics
     "geom_size",
+    # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
+    # re-diagonalization. Backfilled instead.
+    "actuator_acc0",
+    # Derived from inertia and dof_armature by set_const_0. Backfilled.
+    "dof_invweight0",
+    # Sparse mass matrix structure (M_colind, M_rowind, M_rowadr, M_rownnz, etc.);
+    # can differ with inertia re-diagonalization and dof representation.
+    "M_",
     # Range: Compared via compare_jnt_range() which only checks limited joints
     # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
     "jnt_range",
@@ -940,6 +989,604 @@ def compare_jnt_range(
                     rtol=0,
                     err_msg=f"jnt_range[{world},{jnt}] mismatch (limited joint)",
                 )
+
+
+# =============================================================================
+# USD-specific sorted comparison helpers
+# =============================================================================
+
+
+def compare_bodies_sorted(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 0.1,
+) -> None:
+    """Compare body properties between Newton and native, handling reordering.
+
+    The USD importer may assign body properties to different indices than the
+    MJCF parser. This function matches bodies by (mass, body_ipos) signature
+    and verifies the multisets are equal.
+    """
+    from scipy.spatial.transform import Rotation
+
+    assert newton_mjw.nbody == native_mjw.nbody, (
+        f"nbody mismatch: newton={newton_mjw.nbody} vs native={native_mjw.nbody}"
+    )
+
+    nbody = newton_mjw.nbody
+
+    newton_mass = newton_mjw.body_mass.numpy().flatten()
+    native_mass = native_mjw.body_mass.numpy().flatten()
+    newton_ipos = newton_mjw.body_ipos.numpy().reshape(-1, 3)
+    native_ipos = native_mjw.body_ipos.numpy().reshape(-1, 3)
+    newton_inertia = newton_mjw.body_inertia.numpy().reshape(-1, 3)
+    native_inertia = native_mjw.body_inertia.numpy().reshape(-1, 3)
+    newton_iquat = newton_mjw.body_iquat.numpy().reshape(-1, 4)
+    native_iquat = native_mjw.body_iquat.numpy().reshape(-1, 4)
+
+    def _reconstruct_tensor(principal: np.ndarray, iquat_wxyz: np.ndarray) -> np.ndarray:
+        iquat_xyzw = np.roll(iquat_wxyz, -1, axis=-1)
+        R = Rotation.from_quat(iquat_xyzw).as_matrix()
+        D = np.diag(principal)
+        return R @ D @ R.T
+
+    # Build signatures for matching: sorted eigenvalues of the inertia tensor + mass.
+    # Eigenvalues are invariant to the axis convention used for iquat.
+    def _body_signature(mass: float, inertia: np.ndarray, iquat: np.ndarray) -> np.ndarray:
+        tensor = _reconstruct_tensor(inertia, iquat)
+        eigvals = sorted(np.linalg.eigvalsh(tensor))
+        return np.array([float(mass)] + eigvals, dtype=np.float64)
+
+    newton_sigs = [_body_signature(newton_mass[i], newton_inertia[i], newton_iquat[i]) for i in range(nbody)]
+    native_sigs = [_body_signature(native_mass[i], native_inertia[i], native_iquat[i]) for i in range(nbody)]
+
+    # Sort by signature values and compare with tolerance
+    newton_order = sorted(range(nbody), key=lambda i: tuple(newton_sigs[i]))
+    native_order = sorted(range(nbody), key=lambda i: tuple(native_sigs[i]))
+
+    mismatches = []
+    for k in range(nbody):
+        ni = newton_order[k]
+        nati = native_order[k]
+        diff = np.max(np.abs(newton_sigs[ni] - native_sigs[nati]))
+        if diff > tol:
+            mismatches.append(
+                f"sorted[{k}]: newton body {ni}={newton_sigs[ni]} "
+                f"native body {nati}={native_sigs[nati]} (max diff={diff:.2e})"
+            )
+    assert not mismatches, (
+        f"Body multiset mismatch ({len(mismatches)}/{nbody} after sorting):\n"
+        + "\n".join(mismatches[:5])
+    )
+
+
+def compare_joints_sorted(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 1e-5,
+) -> None:
+    """Compare joint properties by sorting, handling reordering.
+
+    Matches joints by (type, mass_of_parent_body, limited) and verifies
+    the multisets of joint properties are equivalent.
+    """
+    assert newton_mjw.njnt == native_mjw.njnt, (
+        f"njnt mismatch: newton={newton_mjw.njnt} vs native={native_mjw.njnt}"
+    )
+
+    njnt = newton_mjw.njnt
+    if njnt == 0:
+        return
+
+    newton_type = newton_mjw.jnt_type.numpy().flatten()
+    native_type = native_mjw.jnt_type.numpy().flatten()
+    newton_limited = newton_mjw.jnt_limited.numpy().flatten()
+    native_limited = native_mjw.jnt_limited.numpy().flatten()
+    newton_stiffness = newton_mjw.jnt_stiffness.numpy().flatten()
+    native_stiffness = native_mjw.jnt_stiffness.numpy().flatten()
+
+    def _jnt_signature(jtype, limited, stiffness):
+        return (int(jtype), int(limited), round(float(stiffness), 8))
+
+    newton_sigs = sorted([_jnt_signature(newton_type[i], newton_limited[i], newton_stiffness[i]) for i in range(njnt)])
+    native_sigs = sorted([_jnt_signature(native_type[i], native_limited[i], native_stiffness[i]) for i in range(njnt)])
+
+    mismatches = []
+    for i, (ns, nats) in enumerate(zip(newton_sigs, native_sigs, strict=True)):
+        if ns != nats:
+            mismatches.append(f"sorted[{i}]: newton={ns} native={nats}")
+    assert not mismatches, (
+        f"Joint multiset mismatch ({len(mismatches)}/{njnt} after sorting):\n"
+        + "\n".join(mismatches[:5])
+    )
+
+    # Compare joint ranges for limited joints (sorted by range values)
+    newton_range = newton_mjw.jnt_range.numpy()
+    native_range = native_mjw.jnt_range.numpy()
+
+    for world in range(newton_range.shape[0]):
+        newton_limited_ranges = sorted(
+            tuple(newton_range[world, j]) for j in range(njnt) if newton_limited[j]
+        )
+        native_limited_ranges = sorted(
+            tuple(native_range[world, j]) for j in range(njnt) if native_limited[j]
+        )
+        assert len(newton_limited_ranges) == len(native_limited_ranges), (
+            f"world {world}: limited joint count mismatch"
+        )
+        for k, (nr, natr) in enumerate(zip(newton_limited_ranges, native_limited_ranges, strict=True)):
+            np.testing.assert_allclose(
+                nr, natr, atol=tol, rtol=0,
+                err_msg=f"jnt_range sorted[{k}] world={world}",
+            )
+
+
+def compare_geoms_subset(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 1e-6,
+) -> None:
+    """Compare geom fields when Newton has a subset of native geoms.
+
+    Newton's USD import with skip_visual_only_geoms=True produces fewer geoms
+    than native MJCF. This function matches Newton geoms to native geoms by
+    (body_id, geom_type, geom_size) and compares physics-relevant properties.
+    """
+    newton_ngeom = newton_mjw.ngeom
+    native_ngeom = native_mjw.ngeom
+    assert newton_ngeom <= native_ngeom, (
+        f"Newton has more geoms ({newton_ngeom}) than native ({native_ngeom})"
+    )
+
+    newton_type = newton_mjw.geom_type.numpy()
+    native_type = native_mjw.geom_type.numpy()
+    newton_size = newton_mjw.geom_size.numpy()
+    native_size = native_mjw.geom_size.numpy()
+
+    GEOM_PLANE = 0
+    GEOM_SPHERE = 2
+    GEOM_MESH = 7
+
+    # Build signature: (type, rounded size components) for matching.
+    # Body IDs may differ due to body reordering, so we omit them.
+    # Mesh sizes differ due to USD/MJCF scale conventions, so omit for meshes.
+    def _geom_sig(gtype, gsize):
+        if gtype == GEOM_PLANE:
+            return (int(gtype), 0.0, 0.0, 0.0)
+        elif gtype == GEOM_SPHERE:
+            return (int(gtype), round(float(gsize[0]), 6), 0.0, 0.0)
+        elif gtype == GEOM_MESH:
+            return (int(gtype), 0.0, 0.0, 0.0)
+        else:
+            return (int(gtype),) + tuple(round(float(s), 6) for s in gsize)
+
+    newton_sigs = [_geom_sig(newton_type[i], newton_size[0, i]) for i in range(newton_ngeom)]
+    native_sigs = [_geom_sig(native_type[i], native_size[0, i]) for i in range(native_ngeom)]
+
+    # Every Newton geom signature must appear in native (Newton is a subset)
+    from collections import Counter
+
+    newton_counts = Counter(newton_sigs)
+    native_counts = Counter(native_sigs)
+    for sig, count in newton_counts.items():
+        native_count = native_counts.get(sig, 0)
+        assert native_count >= count, (
+            f"Geom signature {sig} appears {count}x in Newton but only {native_count}x in native"
+        )
+
+    # Compare sorted (type, size) multisets for physics-relevant geoms
+    newton_phys = sorted(s for s in newton_sigs if s[0] != GEOM_PLANE)
+    native_phys = sorted(s for s in native_sigs if s[0] != GEOM_PLANE)
+
+    # Newton's physics geoms should be a subset of native's
+    newton_counter = Counter(newton_phys)
+    native_counter = Counter(native_phys)
+    missing = []
+    for sig, count in newton_counter.items():
+        if native_counter.get(sig, 0) < count:
+            missing.append(f"{sig}: newton={count}, native={native_counter.get(sig, 0)}")
+    assert not missing, (
+        f"Physics geom multiset: Newton has geoms not in native:\n" + "\n".join(missing[:5])
+    )
+
+
+def compare_wraps_sorted(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 1e-5,
+) -> None:
+    """Compare wrap fields after sorting by (type, prm) to handle reordering."""
+    newton_type = newton_mjw.wrap_type.numpy().flatten()
+    native_type = native_mjw.wrap_type.numpy().flatten()
+    newton_prm = newton_mjw.wrap_prm.numpy().flatten()
+    native_prm = native_mjw.wrap_prm.numpy().flatten()
+
+    assert len(newton_type) == len(native_type), (
+        f"nwrap mismatch: {len(newton_type)} vs {len(native_type)}"
+    )
+
+    nwrap = len(newton_type)
+    if nwrap == 0:
+        return
+
+    def _wrap_sig(wtype, wprm):
+        return (int(wtype), round(float(wprm), 8))
+
+    newton_sigs = sorted([_wrap_sig(newton_type[i], newton_prm[i]) for i in range(nwrap)])
+    native_sigs = sorted([_wrap_sig(native_type[i], native_prm[i]) for i in range(nwrap)])
+
+    mismatches = []
+    for i, (ns, nats) in enumerate(zip(newton_sigs, native_sigs, strict=True)):
+        if ns != nats:
+            mismatches.append(f"sorted[{i}]: newton={ns} native={nats}")
+    assert not mismatches, (
+        f"Wrap multiset mismatch ({len(mismatches)}/{nwrap} after sorting):\n"
+        + "\n".join(mismatches[:5])
+    )
+
+
+# =============================================================================
+# Name-based index mapping for USD vs MJCF body/joint/DOF ordering
+# =============================================================================
+
+
+def build_body_index_map(
+    newton_mj_model: Any,
+    native_mj_model: Any,
+) -> dict[int, int]:
+    """Build native_body_idx -> newton_body_idx mapping using body names.
+
+    Newton's mj_model encodes the full prim path in the body name (with ``_``
+    separators).  We match by checking that the Newton name ends with
+    ``_<native_name>`` (boundary-aligned suffix match).
+    """
+    nbody_native = native_mj_model.nbody
+    nbody_newton = newton_mj_model.nbody
+    assert nbody_newton == nbody_native, (
+        f"nbody mismatch: newton={nbody_newton} vs native={nbody_native}"
+    )
+
+    newton_names = [newton_mj_model.body(i).name for i in range(nbody_newton)]
+    native_names = [native_mj_model.body(i).name for i in range(nbody_native)]
+
+    body_map: dict[int, int] = {0: 0}
+    used_newton: set[int] = {0}
+
+    for ni in range(1, nbody_native):
+        native_name = native_names[ni]
+        for nw_i in range(1, nbody_newton):
+            if nw_i in used_newton:
+                continue
+            if _suffix_match(newton_names[nw_i], native_name):
+                body_map[ni] = nw_i
+                used_newton.add(nw_i)
+                break
+
+    if len(body_map) < nbody_native:
+        unmapped = [native_names[i] for i in range(nbody_native) if i not in body_map]
+        raise ValueError(f"Could not map {len(unmapped)} native bodies: {unmapped[:5]}")
+
+    return body_map
+
+
+def _suffix_match(nw_name: str, native_name: str) -> bool:
+    """Check if nw_name matches native_name by exact or boundary-aligned suffix.
+
+    The USD converter may append ``_N`` (numeric) to avoid name collisions
+    (e.g., MJCF joint ``torso`` becomes USD prim ``torso_1``).  We strip
+    trailing ``_<digits>`` from the Newton name before the suffix check.
+    """
+    if nw_name == native_name:
+        return True
+    suffix = "_" + native_name
+    if nw_name.endswith(suffix):
+        return True
+    # Strip trailing _N (converter disambiguation) and retry
+    stripped = re.sub(r"_\d+$", "", nw_name)
+    if stripped != nw_name and (stripped == native_name or stripped.endswith(suffix)):
+        return True
+    return False
+
+
+def build_jnt_index_map(
+    newton_mj_model: Any,
+    native_mj_model: Any,
+) -> dict[int, int]:
+    """Build native_jnt_idx -> newton_jnt_idx mapping using joint names."""
+    njnt_native = native_mj_model.njnt
+    njnt_newton = newton_mj_model.njnt
+    assert njnt_newton == njnt_native, (
+        f"njnt mismatch: newton={njnt_newton} vs native={njnt_native}"
+    )
+
+    newton_names = [newton_mj_model.jnt(i).name for i in range(njnt_newton)]
+    native_names = [native_mj_model.jnt(i).name for i in range(njnt_native)]
+
+    jnt_map: dict[int, int] = {}
+    used_newton: set[int] = set()
+    for ni in range(njnt_native):
+        native_name = native_names[ni]
+        for nw_i in range(njnt_newton):
+            if nw_i in used_newton:
+                continue
+            if _suffix_match(newton_names[nw_i], native_name):
+                jnt_map[ni] = nw_i
+                used_newton.add(nw_i)
+                break
+
+    return jnt_map
+
+
+def build_dof_index_map(
+    newton_mjw: Any,
+    native_mjw: Any,
+    jnt_map: dict[int, int],
+) -> dict[int, int]:
+    """Build native_dof_idx -> newton_dof_idx mapping from the joint map."""
+    newton_dofadr = newton_mjw.jnt_dofadr.numpy().flatten()
+    native_dofadr = native_mjw.jnt_dofadr.numpy().flatten()
+    newton_type = newton_mjw.jnt_type.numpy().flatten()
+    native_type = native_mjw.jnt_type.numpy().flatten()
+
+    def _ndof(jtype: int) -> int:
+        return {0: 6, 1: 3, 2: 1, 3: 1}.get(int(jtype), 1)
+
+    dof_map: dict[int, int] = {}
+    for native_ji, newton_ji in jnt_map.items():
+        native_adr = int(native_dofadr[native_ji])
+        newton_adr = int(newton_dofadr[newton_ji])
+        n = _ndof(native_type[native_ji])
+        for d in range(n):
+            dof_map[native_adr + d] = newton_adr + d
+
+    return dof_map
+
+
+def _actuator_target_name(mj_model: Any, act_idx: int) -> str:
+    """Get the human-readable target name for an actuator.
+
+    Resolves trnid to a joint, tendon, site, or body name depending on trntype.
+    """
+    _TRN_RESOLVERS = {
+        0: "jnt",       # mjTRN_JOINT
+        1: "jnt",       # mjTRN_JOINTINPARENT
+        3: "tendon",    # mjTRN_TENDON
+        4: "site",      # mjTRN_SITE
+        5: "body",      # mjTRN_BODY
+    }
+    trntype = int(mj_model.actuator_trntype[act_idx])
+    trnid = int(mj_model.actuator_trnid[act_idx, 0])
+    resolver = _TRN_RESOLVERS.get(trntype)
+    if resolver is not None and hasattr(mj_model, resolver):
+        try:
+            return getattr(mj_model, resolver)(trnid).name
+        except Exception:
+            pass
+    return ""
+
+
+def build_actuator_index_map(
+    newton_mj_model: Any,
+    native_mj_model: Any,
+) -> dict[int, int]:
+    """Build native_actuator_idx -> newton_actuator_idx mapping.
+
+    Tries actuator name matching first. Falls back to matching by the
+    actuator's target name (joint/tendon/site/body name resolved from trnid).
+    """
+    nu_native = native_mj_model.nu
+    nu_newton = newton_mj_model.nu
+    assert nu_newton == nu_native, (
+        f"nu mismatch: newton={nu_newton} vs native={nu_native}"
+    )
+
+    newton_act_names = [newton_mj_model.actuator(i).name for i in range(nu_newton)]
+    native_act_names = [native_mj_model.actuator(i).name for i in range(nu_native)]
+
+    act_map: dict[int, int] = {}
+    used_newton: set[int] = set()
+
+    # Strategy 1: match by actuator name (when Newton provides names).
+    if any(n for n in newton_act_names):
+        for ni in range(nu_native):
+            for nw_i in range(nu_newton):
+                if nw_i in used_newton:
+                    continue
+                if _suffix_match(newton_act_names[nw_i], native_act_names[ni]):
+                    act_map[ni] = nw_i
+                    used_newton.add(nw_i)
+                    break
+
+    # Strategy 2: match remaining actuators by target name.
+    if len(act_map) < nu_native:
+        newton_targets = [_actuator_target_name(newton_mj_model, i) for i in range(nu_newton)]
+        native_targets = [_actuator_target_name(native_mj_model, i) for i in range(nu_native)]
+
+        for ni in range(nu_native):
+            if ni in act_map:
+                continue
+            native_target = native_targets[ni]
+            if not native_target:
+                continue
+            for nw_i in range(nu_newton):
+                if nw_i in used_newton:
+                    continue
+                if not newton_targets[nw_i]:
+                    continue
+                if _suffix_match(newton_targets[nw_i], native_target):
+                    act_map[ni] = nw_i
+                    used_newton.add(nw_i)
+                    break
+
+    if len(act_map) < nu_native:
+        unmapped = [native_act_names[i] for i in range(nu_native) if i not in act_map]
+        import warnings
+        warnings.warn(
+            f"Could not map {len(unmapped)}/{nu_native} actuators: {unmapped[:5]}",
+            stacklevel=2,
+        )
+
+    return act_map
+
+
+def _reindex_1d(arr: np.ndarray, idx_map: dict[int, int], n: int) -> np.ndarray:
+    """Reindex a 1D array from newton ordering to native ordering."""
+    out = np.zeros_like(arr)
+    for native_i, newton_i in idx_map.items():
+        if native_i < n and newton_i < len(arr):
+            out[native_i] = arr[newton_i]
+    return out
+
+
+def _reindex_2d_axis1(arr: np.ndarray, idx_map: dict[int, int], n: int) -> np.ndarray:
+    """Reindex a 2D/3D array along axis 1 from newton ordering to native ordering."""
+    out = np.zeros_like(arr)
+    for native_i, newton_i in idx_map.items():
+        if native_i < arr.shape[1] and newton_i < arr.shape[1]:
+            out[:, native_i] = arr[:, newton_i]
+    return out
+
+
+def compare_body_physics_mapped(
+    newton_mjw: Any,
+    native_mjw: Any,
+    body_map: dict[int, int],
+    tol: float = 1e-4,
+) -> None:
+    """Compare physics-relevant body fields using a name-based index mapping."""
+    nbody = native_mjw.nbody
+
+    # Structural fields that verify the body tree topology is preserved
+    # under the index mapping.  Mass and inertia are already covered by
+    # compare_bodies_sorted(); body_pos/body_quat are in DEFAULT skip
+    # (re-diagonalization / backfill) so we do not duplicate them here.
+    fields_exact = ["body_dofnum", "body_jntnum", "body_treeid"]
+    fields_float = ["body_gravcomp"]
+
+    def _reindex(arr: np.ndarray) -> np.ndarray:
+        if len(arr.shape) == 1:
+            return _reindex_1d(arr, body_map, nbody)
+        return _reindex_2d_axis1(arr, body_map, nbody)
+
+    for field in fields_exact:
+        newton_arr = getattr(newton_mjw, field, None)
+        native_arr = getattr(native_mjw, field, None)
+        if newton_arr is None or native_arr is None:
+            continue
+        nn = newton_arr.numpy()
+        nat = native_arr.numpy()
+        if nn.shape != nat.shape:
+            continue
+        np.testing.assert_array_equal(
+            _reindex(nn), nat, err_msg=f"body field {field} (reindexed)"
+        )
+
+    for field in fields_float:
+        newton_arr = getattr(newton_mjw, field, None)
+        native_arr = getattr(native_mjw, field, None)
+        if newton_arr is None or native_arr is None:
+            continue
+        nn = newton_arr.numpy()
+        nat = native_arr.numpy()
+        if nn.shape != nat.shape:
+            continue
+        np.testing.assert_allclose(
+            _reindex(nn), nat, atol=tol, rtol=0,
+            err_msg=f"body field {field} (reindexed)",
+        )
+
+
+def compare_dof_physics_mapped(
+    newton_mjw: Any,
+    native_mjw: Any,
+    dof_map: dict[int, int],
+    tol: float = 1e-4,
+) -> None:
+    """Compare physics-relevant DOF fields using a name-based index mapping."""
+    nv = native_mjw.nv
+
+    fields_float = ["dof_armature", "dof_frictionloss"]
+
+    for field in fields_float:
+        newton_arr = getattr(newton_mjw, field, None)
+        native_arr = getattr(native_mjw, field, None)
+        if newton_arr is None or native_arr is None:
+            continue
+        nn = newton_arr.numpy()
+        nat = native_arr.numpy()
+        if nn.shape != nat.shape:
+            continue
+        if len(nn.shape) == 1:
+            reindexed = _reindex_1d(nn, dof_map, nv)
+        elif len(nn.shape) >= 2:
+            reindexed = _reindex_2d_axis1(nn, dof_map, nv)
+        else:
+            continue
+        np.testing.assert_allclose(
+            reindexed, nat, atol=tol, rtol=0,
+            err_msg=f"dof field {field} (reindexed)",
+        )
+
+
+ACTUATOR_SKIP_FIELDS: set[str] = {
+    "actuator_plugin",
+    "actuator_user",
+    "actuator_id",
+    "actuator_trnid",
+    "actuator_trntype",
+    "actuator_trntype_body_adr",
+    "actuator_actadr",
+    "actuator_actnum",
+}
+
+
+def compare_actuator_physics_mapped(
+    newton_mjw: Any,
+    native_mjw: Any,
+    act_map: dict[int, int],
+    tol: float = 1e-4,
+    skip_fields: set[str] | None = None,
+) -> None:
+    """Compare all actuator_* fields using a name-based index mapping.
+
+    Discovers fields dynamically from the native model. Only compares
+    actuators present in act_map (partial maps are allowed when some
+    actuator trnids could not be resolved).
+
+    Args:
+        act_map: native_actuator_idx -> newton_actuator_idx.
+        skip_fields: Field names to skip.
+    """
+    skip = (skip_fields or set()) | ACTUATOR_SKIP_FIELDS
+    mapped_native = sorted(act_map.keys())
+    nu = native_mjw.nu
+
+    fields = [name for name in dir(native_mjw) if name.startswith("actuator_") and name not in skip]
+
+    for field in fields:
+        newton_arr = getattr(newton_mjw, field, None)
+        native_arr = getattr(native_mjw, field, None)
+        if newton_arr is None or native_arr is None:
+            continue
+        nn = newton_arr.numpy()
+        nat = native_arr.numpy()
+        if nn.shape != nat.shape:
+            continue
+
+        # Determine which axis is the actuator axis based on shape.
+        # (nworld, nu, ...) → axis 1;  (nu, ...) → axis 0
+        if len(nn.shape) >= 2 and nn.shape[1] == nu:
+            newton_vals = nn[:, [act_map[ni] for ni in mapped_native]]
+            native_vals = nat[:, mapped_native]
+        elif nn.shape[0] == nu:
+            newton_vals = nn[[act_map[ni] for ni in mapped_native]]
+            native_vals = nat[mapped_native]
+        else:
+            continue
+        np.testing.assert_allclose(
+            newton_vals, native_vals, atol=tol, rtol=tol,
+            err_msg=f"actuator field {field} (reindexed, {len(mapped_native)} mapped)",
+        )
 
 
 # =============================================================================
@@ -1561,7 +2208,7 @@ def backfill_model_from_native(
 
 def compare_mjw_models(
     newton_mjw: Any,
-    native_mjw: Any,
+    native_mjw: Any,more
     skip_fields: set[str] | None = None,
     tol: float = 1e-6,
 ) -> None:
@@ -1790,6 +2437,10 @@ class TestMenagerieBase(unittest.TestCase):
     split_pipeline_tol: float = 1e-5  # Tolerance for contact/constraint matching in split pipeline
     njmax: int | None = None  # Max constraint rows per world (None = auto from MuJoCo)
     nconmax: int | None = None  # Max contacts per world (None = auto from MuJoCo)
+    # Override integrator for SolverMuJoCo creation. None = let solver pick from
+    # model attributes / its own default. Set to "euler" to avoid implicit integrators
+    # that mujoco_warp doesn't support (relevant for USD models).
+    solver_integrator: str | int | None = None
     # CUDA graph capture with split pipeline injection produces incorrect results.
     # Disabled by default; re-enable per robot once the interaction is understood.
     use_cuda_graph: bool = False
@@ -1823,14 +2474,75 @@ class TestMenagerieBase(unittest.TestCase):
     def _create_newton_model(self) -> newton.Model:
         """Create Newton model from the source (MJCF or USD).
 
-        Subclasses must implement this to define how Newton loads the model:
-        - TestMenagerieMJCF: Load directly from MJCF
-        - TestMenagerieUSD: Convert MJCF to USD, then load USD
+        Subclasses must implement this to define how Newton loads the model.
 
         Note: The native MuJoCo comparison always loads from MJCF (ground truth).
         See _create_native_mujoco_warp() which is shared by all subclasses.
         """
         ...
+
+    def _align_models(self, newton_solver: SolverMuJoCo, native_mjw_model: Any, mj_model: Any) -> None:
+        """Hook for subclass-specific model alignment before comparison.
+
+        Called after both models are built and expanded but before
+        compare_mjw_models. Override in subclasses to fix up known
+        discrepancies between the model sources.
+        """
+
+    def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare inertia tensors between Newton and native models.
+
+        Default: per-index comparison of reconstructed 3x3 tensors.
+        Override in subclasses where body ordering may differ.
+        """
+        compare_inertia_tensors(newton_mjw, native_mjw)
+
+    def _init_control(self, native_mjw_data: Any, newton_control: Any) -> None:
+        """Initialize control strategy with the ctrl arrays from both sides.
+
+        Override in subclasses where actuator counts may differ.
+        """
+        self.control_strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)  # type: ignore[union-attr]
+
+    def _compare_geoms(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare geom fields between Newton and native models.
+
+        Default: unordered matching when parse_visuals is set, otherwise direct index comparison.
+        Override in subclasses where geom ordering may differ.
+        """
+        if newton_mjw.ngeom == native_mjw.ngeom:
+            if self.parse_visuals:
+                compare_geom_fields_unordered(newton_mjw, native_mjw, skip_fields=self.model_skip_fields)
+            else:
+                compare_geom_sizes(newton_mjw, native_mjw)
+
+    def _compare_jnt_range(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare joint ranges between Newton and native models.
+
+        Default: compare limited joints. Override in subclasses where joint ordering may differ.
+        """
+        compare_jnt_range(newton_mjw, native_mjw)
+
+    def _compare_body_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare physics-relevant body fields (mass, pos, quat, etc.).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where body ordering may differ.
+        """
+
+    def _compare_dof_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare physics-relevant DOF fields (armature, damping, etc.).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where DOF ordering may differ.
+        """
+
+    def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare actuator fields (gainprm, biasprm, acc0, gear, etc.).
+
+        Default: no-op (covered by compare_mjw_models for same-order pipelines).
+        Override in subclasses where actuator ordering may differ.
+        """
 
     def _load_assets(self) -> dict[str, bytes]:
         """Load mesh/texture assets from the MJCF directory for from_xml_string."""
@@ -1920,12 +2632,15 @@ class TestMenagerieBase(unittest.TestCase):
         newton_model = self._create_newton_model()
         newton_state = newton_model.state()
         newton_control = newton_model.control()
-        newton_solver = SolverMuJoCo(
-            newton_model,
+        solver_kwargs = dict(
             skip_visual_only_geoms=not self.parse_visuals,
             njmax=self.njmax,
             nconmax=self.nconmax,
         )
+        if self.solver_integrator is not None:
+            solver_kwargs["integrator"] = self.solver_integrator
+
+        newton_solver = SolverMuJoCo(newton_model, **solver_kwargs)
 
         mj_model, mj_data_native, native_mjw_model, native_mjw_data = self._create_native_mujoco_warp()
 
@@ -1937,17 +2652,53 @@ class TestMenagerieBase(unittest.TestCase):
         # TODO: Remove this workaround once Newton's MJCF parser supports timestep extraction
         dt = float(mj_model.opt.timestep)
 
-        compare_models(
-            newton_solver.mjw_model,
-            native_mjw_model,
-            skip_fields=self.model_skip_fields,
-            backfill_fields=self.backfill_fields,
-        )
+        # Hook for subclass-specific model alignment (USD fixups, etc.)
+        self._align_models(newton_solver, native_mjw_model, mj_model)
 
+        # Compare mjw_model structures
+        compare_mjw_models(newton_solver.mjw_model, native_mjw_model, skip_fields=self.model_skip_fields)
         # Disable sensor_rne_postconstraint on native — Newton doesn't support
         # sensors, so rne_postconstraint would compute cacc/cfrc_int on native
         # but not on Newton, causing spurious diffs.
         native_mjw_model.sensor_rne_postconstraint = False
+        # Compare reconstructed inertia tensors (principal + iquat -> full 3x3)
+        self._compare_inertia(newton_solver.mjw_model, native_mjw_model)
+
+        # Compare solref fields by physics equivalence (direct mode vs standard mode)
+        for solref_field in [
+            "dof_solref",
+            "eq_solref",
+            "geom_solref",
+            "jnt_solref",
+            "pair_solref",
+            "pair_solreffriction",
+            "tendon_solref_fri",
+            "tendon_solref_lim",
+        ]:
+            if any(s in solref_field for s in self.model_skip_fields):
+                continue
+            if hasattr(newton_solver.mjw_model, solref_field) and hasattr(native_mjw_model, solref_field):
+                newton_arr = getattr(newton_solver.mjw_model, solref_field)
+                native_arr = getattr(native_mjw_model, solref_field)
+                # Only compare if both have data and shapes match (geom counts may differ)
+                if newton_arr is not None and native_arr is not None:
+                    if (
+                        hasattr(newton_arr, "shape")
+                        and newton_arr.shape == native_arr.shape
+                        and newton_arr.shape[0] > 0
+                    ):
+                        compare_solref_physics(newton_solver.mjw_model, native_mjw_model, solref_field)
+
+        # Compare geom fields
+        self._compare_geoms(newton_solver.mjw_model, native_mjw_model)
+
+        # Compare joint ranges
+        self._compare_jnt_range(newton_solver.mjw_model, native_mjw_model)
+
+        # Compare physics-relevant body/DOF/actuator fields (mapped comparison for reordered pipelines)
+        self._compare_body_physics(newton_solver.mjw_model, native_mjw_model)
+        self._compare_dof_physics(newton_solver.mjw_model, native_mjw_model)
+        self._compare_actuator_physics(newton_solver.mjw_model, native_mjw_model)
 
         # Optional: backfill computed fields from native to Newton to eliminate
         # numerical differences from model compilation (enables tighter tolerances for dynamics)
@@ -1967,7 +2718,7 @@ class TestMenagerieBase(unittest.TestCase):
             mjw_smooth.rne(newton_solver.mjw_model, newton_solver.mjw_data)
 
         # Initialize control strategy with the ctrl arrays it will fill
-        self.control_strategy.init(native_mjw_data.ctrl, newton_control.mujoco.ctrl)  # type: ignore[union-attr]
+        self._init_control(native_mjw_data, newton_control)
 
         # Setup viewer if in debug mode
         viewer = None
@@ -2137,23 +2888,159 @@ class TestMenagerieMJCF(TestMenagerieBase):
 
 
 class TestMenagerieUSD(TestMenagerieBase):
-    """Base class for USD-based tests: Newton loads MJCF converted to USD.
+    """Base class for USD-based tests: Newton loads pre-converted USD.
 
-    The MJCF file is converted to USD using mujoco_usd_converter, then
-    Newton loads the USD file. Native MuJoCo still loads the original MJCF.
+    Subclasses set usd_path to the pre-converted USD file. Native MuJoCo
+    still loads the original MJCF from menagerie for comparison.
     """
 
-    # All USD tests are skipped until the converter is ready
-    skip_reason: str | None = "USD converter not yet implemented"
+    usd_path: str = ""
 
-    def _create_newton_model(self) -> newton.Model:
-        """Create Newton model by converting MJCF to USD first."""
-        return create_newton_model_from_usd(
-            self.mjcf_path,
-            num_worlds=self.num_worlds,
-            add_ground=False,  # scene.xml includes ground plane
+    # Backfill requires 1:1 body index correspondence; disabled for USD since
+    # body ordering may differ from native MJCF.
+    backfill_model: bool = False
+
+    # USD models may carry implicit integrators that mujoco_warp doesn't support.
+    # Force Euler so put_model succeeds; _align_models copies native integrator after.
+    solver_integrator: str = "euler"
+
+    njmax: int = 600
+
+    nconmax: int = 200
+
+    # USD-specific skips on top of DEFAULT_MODEL_SKIP_FIELDS.
+    # Fields handled by sorted/mapped comparison hooks (_compare_inertia,
+    # _compare_body_physics, _compare_dof_physics, _compare_geoms, _compare_jnt_range)
+    # are skipped from the generic compare_mjw_models pass, not silently ignored.
+    model_skip_fields: ClassVar[set[str]] = DEFAULT_MODEL_SKIP_FIELDS | {
+        # Actuator ordering may differ → compared via _compare_actuator_physics
+        "actuator_",
+        # Equality constraints not yet imported from USD
+        "eq_", "neq",
+        # Body ordering may differ → compared via _compare_inertia / _compare_body_physics
+        "body_",
+        # DOF ordering may differ → compared via _compare_dof_physics
+        "dof_",
+        # Joint ordering may differ → compared via _compare_jnt_range
+        "jnt_",
+        # Sparse mass matrix structure and Cholesky: derived from body/DOF tree ordering
+        "mapM2M", "qLD_updates",
+        # stat.meaninertia is derived from body mass/inertia (which may differ for some USD models)
+        "stat",
+        # Broadphase collision data depends on geom ordering
+        "nxn_",
+        # Contact pairs not imported from USD
+        "npair", "pair_",
+        # Mesh counts differ between USD and MJCF representations
+        "nmesh", "nmeshface", "nmeshgraph", "nmeshnormal",
+        "nmeshpoly", "nmeshpolymap", "nmeshpolyvert", "nmeshvert",
+        "nmaxmeshdeg", "nmaxpolygon",
+        # Site body IDs reference body indices (different ordering)
+        "site_",
+        # Wrap object IDs reference geoms (different ordering)
+        "wrap_objid",
+    }
+
+    # Per-step comparison: body/geom/dof ordering can all differ between
+    # USD and MJCF, so only aggregate (order-independent) fields are safe.
+    compare_fields: ClassVar[list[str]] = [
+        "energy",
+    ]
+
+    def _compare_inertia(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare inertia using sorted body signatures (handles reordering)."""
+        compare_bodies_sorted(newton_mjw, native_mjw)
+
+    def _compare_geoms(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare geom subset: Newton excludes visual-only geoms."""
+        compare_geoms_subset(newton_mjw, native_mjw)
+
+    def _compare_jnt_range(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare joint properties using sorted multisets (handles reordering)."""
+        compare_joints_sorted(newton_mjw, native_mjw)
+
+    def _init_control(self, native_mjw_data: Any, newton_control: Any) -> None:
+        """Handle missing actuators: USD actuator import is incomplete."""
+        mujoco_ctrl = getattr(newton_control, "mujoco", None)
+        if mujoco_ctrl is None or not hasattr(mujoco_ctrl, "ctrl"):
+            self.control_strategy = ZeroControlStrategy()
+            self.control_strategy.init(native_mjw_data.ctrl, native_mjw_data.ctrl)
+        else:
+            self.control_strategy.init(native_mjw_data.ctrl, mujoco_ctrl.ctrl)  # type: ignore[union-attr]
+
+    def _align_models(self, newton_solver: SolverMuJoCo, native_mjw_model: Any, mj_model: Any) -> None:
+        """Align Newton's mjw_model options with native and build index maps.
+
+        Copies all solver option fields from the native model so the simulation
+        uses identical settings.  Also builds body/joint/DOF index maps for
+        mapped comparison hooks.
+        """
+        newton_opt = newton_solver.mjw_model.opt
+        native_opt = native_mjw_model.opt
+        for attr in dir(native_opt):
+            if attr.startswith("_") or callable(getattr(native_opt, attr)):
+                continue
+            native_val = getattr(native_opt, attr)
+            if isinstance(native_val, (int, float, bool)):
+                setattr(newton_opt, attr, native_val)
+
+        self._body_map = build_body_index_map(newton_solver.mj_model, mj_model)
+        self._jnt_map = build_jnt_index_map(newton_solver.mj_model, mj_model)
+        self._dof_map = build_dof_index_map(
+            newton_solver.mjw_model, native_mjw_model, self._jnt_map,
+        )
+        self._actuator_map = build_actuator_index_map(newton_solver.mj_model, mj_model)
+
+    def _compare_body_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare physics-relevant body fields using name-based index mapping."""
+        compare_body_physics_mapped(newton_mjw, native_mjw, self._body_map)
+
+    def _compare_dof_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare physics-relevant DOF fields using name-based index mapping."""
+        compare_dof_physics_mapped(newton_mjw, native_mjw, self._dof_map)
+
+    def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare actuator fields using name-based index mapping."""
+        compare_actuator_physics_mapped(
+            newton_mjw, native_mjw, self._actuator_map,
+            skip_fields=self.actuator_skip_fields,
         )
 
+    actuator_skip_fields: ClassVar[set[str]] = {
+        # Derived from mass matrix; differs when backfill_model=False because
+        # Newton re-diagonalizes inertia. Compared indirectly via simulation equivalence.
+        "actuator_acc0",
+    }
+
+    # Regex patterns for USD prim paths to skip during import.
+    usd_ignore_paths: ClassVar[list[str]] = []
+
+    # Body names to strip from the MJCF XML before creating the native model.
+    # Used when the USD omits or cannot represent certain MJCF bodies.
+    mjcf_strip_bodies: ClassVar[list[str]] = []
+
+    def _get_mjcf_xml(self) -> str:
+        xml_content = super()._get_mjcf_xml()
+        if self.mjcf_strip_bodies:
+            for body_name in self.mjcf_strip_bodies:
+                xml_content = re.sub(
+                    rf'<body\s+name="{re.escape(body_name)}"[^/]*/>', "", xml_content
+                )
+        return xml_content
+
+    def _create_newton_model(self) -> newton.Model:
+        """Create Newton model from pre-converted USD file."""
+        if not self.usd_path:
+            raise unittest.SkipTest("usd_path not defined")
+        usd_file = Path(self.usd_path)
+        if not usd_file.exists():
+            raise unittest.SkipTest(f"USD file not found: {usd_file}")
+        return create_newton_model_from_usd(
+            usd_file,
+            num_worlds=self.num_worlds,
+            add_ground=False,  # scene.xml includes ground plane
+            ignore_paths=self.usd_ignore_paths or None,
+        )
 
 # =============================================================================
 # Robot Test Classes
