@@ -870,6 +870,10 @@ Request them via <a class="reference internal" href="../api/_generated/newton.Mo
 <tr class="row-odd"><td><p><a class="reference internal" href="../api/_generated/newton.State.html#newton.State.body_parent_f" title="newton.State.body_parent_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">body_parent_f</span></code></a></p></td>
 <td><p>Rigid-body parent interaction wrenches</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="xref py py-attr docutils literal notranslate"><span class="pre">qfrc_actuator</span></code></p></td>
+<td><p>Actuator forces in generalized (joint DOF) coordinates, namespaced under <code class="docutils literal notranslate"><span class="pre">state.mujoco.qfrc_actuator</span></code>.
+Only populated by <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -879,7 +883,7 @@ Request them via <a class="reference internal" href="../api/_generated/newton.Mo
 <ul class="simple">
 <li><p>Some components transparently request attributes they need. For example, <a class="reference internal" href="../api/_generated/newton.sensors.SensorIMU.html#newton.sensors.SensorIMU" title="newton.sensors.SensorIMU"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorIMU</span></code></a> requests <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code> and <a class="reference internal" href="../api/_generated/newton.sensors.SensorContact.html#newton.sensors.SensorContact" title="newton.sensors.SensorContact"><code class="xref py py-class docutils literal notranslate"><span class="pre">SensorContact</span></code></a> requests <code class="docutils literal notranslate"><span class="pre">force</span></code>.
 Create sensors before allocating State/Contacts for this to work automatically.</p></li>
-<li><p>Solvers populate extended attributes they support. Currently, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> populates <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code>, <code class="docutils literal notranslate"><span class="pre">body_parent_f</span></code>, and <code class="docutils literal notranslate"><span class="pre">force</span></code>.</p></li>
+<li><p>Solvers populate extended attributes they support. Currently, <a class="reference internal" href="../api/_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> populates <code class="docutils literal notranslate"><span class="pre">body_qdd</span></code>, <code class="docutils literal notranslate"><span class="pre">body_parent_f</span></code>, <code class="docutils literal notranslate"><span class="pre">mujoco:qfrc_actuator</span></code>, and <code class="docutils literal notranslate"><span class="pre">force</span></code>.</p></li>
 </ul>
 </section>
 </section>
