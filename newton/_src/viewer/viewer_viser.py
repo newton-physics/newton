@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import inspect
+import os
 import warnings
 from pathlib import Path
 from typing import ClassVar
@@ -863,9 +864,18 @@ class ViewerViser(ViewerBase):
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
 
+        # Keep playbackPath relative so notebook proxy prefixes (e.g. /lab/proxy/<port>/)
+        # are preserved. Each viewer instance uses a different port, so paths stay distinct.
+        playback_path = "recording.viser"
         base_url = f"http://127.0.0.1:{port}"
+        player_url = f"{base_url}/?playbackPath={playback_path}"
 
-        # Create URL with playback path pointing to the served recording
-        player_url = f"{base_url}/?playbackPath=/recording.viser"
+        # Route through Jupyter's proxy when running in remote notebook environments.
+        jupyter_base_url = os.environ.get("JUPYTER_BASE_URL")
+        if jupyter_base_url:
+            if not jupyter_base_url.startswith("/"):
+                jupyter_base_url = "/" + jupyter_base_url
+            jupyter_base_url = jupyter_base_url.rstrip("/")
+            player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
 
         return player_url
