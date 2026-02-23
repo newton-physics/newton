@@ -7212,5 +7212,39 @@ class TestActuatorDampratio(unittest.TestCase):
         self.assertAlmostEqual(float(dr[2]), 0.0, places=5, msg="motor has no dampratio")
 
 
+class TestActuatorDampratioMultiWorld(unittest.TestCase):
+    """Verify dampratio biasprm[2] is propagated to all worlds, not just world 0."""
+
+    MJCF = TestActuatorDampratio.MJCF
+    NUM_WORLDS = 4
+
+    @classmethod
+    def setUpClass(cls):
+        robot_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_ground_plane()
+        builder.replicate(robot_builder, cls.NUM_WORLDS)
+        cls.model = builder.finalize()
+        cls.solver = SolverMuJoCo(cls.model)
+
+    def test_biasprm2_consistent_across_worlds(self):
+        """biasprm[2] should be identical across all worlds for dampratio actuators."""
+        bp = self.solver.mjw_model.actuator_biasprm.numpy()
+        self.assertGreater(bp.shape[0], 1, "mjw_model should have multiple worlds")
+        # Actuator 0 has dampratio=1, so biasprm[2] should be nonzero and identical
+        world0_val = bp[0, 0, 2]
+        self.assertNotAlmostEqual(float(world0_val), 0.0, places=3)
+        for w in range(1, self.NUM_WORLDS):
+            np.testing.assert_allclose(
+                bp[w, 0, 2],
+                world0_val,
+                atol=1e-6,
+                err_msg=f"World {w} biasprm[2] should match world 0",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
