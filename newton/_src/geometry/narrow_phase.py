@@ -21,8 +21,7 @@ from typing import Any
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-
+from ..core.types import MAXVAL, Devicelike
 from ..geometry.collision_core import (
     ENABLE_TILE_BVH_QUERY,
     check_infinite_plane_bsphere_overlap,
@@ -1471,7 +1470,7 @@ class NarrowPhase:
         max_candidate_pairs: int,
         max_triangle_pairs: int = 1000000,
         reduce_contacts: bool = True,
-        device=None,
+        device: Devicelike | None = None,
         shape_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         shape_voxel_resolution: wp.array(dtype=wp.vec3i) | None = None,
