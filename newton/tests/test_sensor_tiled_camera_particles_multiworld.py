@@ -33,11 +33,19 @@ def _build_multiworld_particle_model(*, worlds: int, spacing: float):
     - each world gets its own camera placed above the particle block
 
     The rendered depth image should be identical across worlds.
+
+    Args:
+        worlds: Number of simulation worlds to create.
+        spacing [m]: Translation step between consecutive worlds.
+
+    Returns:
+        Configured model builder containing ``worlds`` translated copies of the
+        same particle blueprint.
     """
     if worlds <= 0:
-        raise ValueError("worlds must be positive")
+        raise ValueError("non-positive worlds")
     if spacing <= 0.0:
-        raise ValueError("spacing must be positive")
+        raise ValueError("non-positive spacing")
 
     # Per-world particle blueprint.
     # Keep particle counts small so this can run on CPU CI as well.
@@ -77,6 +85,10 @@ def test_sensor_tiled_camera_multiworld_particles_consistent(test: unittest.Test
 
     This catches incorrect BVH particle index mapping across worlds, which can cause
     wrong depth images and, on CUDA, illegal memory accesses.
+
+    Args:
+        test: ``unittest.TestCase`` instance used for assertions.
+        device: Warp device identifier (for example ``"cpu"`` or ``"cuda:0"``).
     """
     wp.init()
 
