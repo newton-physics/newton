@@ -33,6 +33,7 @@ class State:
         (
             "body_qdd",
             "body_parent_f",
+            "mujoco:qfrc_actuator",
         )
     )
     """

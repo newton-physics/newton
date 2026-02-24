@@ -1365,7 +1365,43 @@ def update_ctrl_direct_actuator_properties_kernel(
 
     world_newton_idx = world * actuators_per_world + newton_idx
     actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
-    actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
+
+    bias = newton_actuator_biasprm[world_newton_idx]
+    # biasprm[2] is resolved by the MuJoCo compiler from dampratio via mj_setConst.
+    # _sync_compiled_actuator_params writes the resolved value to world 0's Newton
+    # custom attrs, but not to other worlds. Always read [2] from world 0 so all
+    # worlds get the compiler-resolved damping value.
+    bias[2] = newton_actuator_biasprm[newton_idx][2]
+    actuator_bias[world, actuator] = bias
+
+
+@wp.kernel
+def sync_compiled_actuator_params_kernel(
+    mjc_actuator_ctrl_source: wp.array(dtype=wp.int32),
+    mjc_actuator_to_newton_idx: wp.array(dtype=wp.int32),
+    compiled_gainprm: wp.array2d(dtype=vec10),
+    compiled_biasprm: wp.array2d(dtype=vec10),
+    # outputs
+    newton_actuator_gainprm: wp.array(dtype=vec10),
+    newton_actuator_biasprm: wp.array(dtype=vec10),
+):
+    """Copy compiler-resolved gainprm/biasprm back to Newton custom attributes.
+
+    Runs once after put_model to ensure Newton's custom attributes contain the
+    compiler-resolved values (e.g. dampratio → damping). This prevents
+    update_actuator_properties from overwriting resolved values.
+    """
+    actuator = wp.tid()
+
+    if mjc_actuator_ctrl_source[actuator] != CTRL_SOURCE_CTRL_DIRECT:
+        return
+
+    newton_idx = mjc_actuator_to_newton_idx[actuator]
+    if newton_idx < 0:
+        return
+
+    newton_actuator_gainprm[newton_idx] = compiled_gainprm[0, actuator]
+    newton_actuator_biasprm[newton_idx] = compiled_biasprm[0, actuator]
 
 
 @wp.kernel
@@ -1973,6 +2009,85 @@ def convert_rigid_forces_from_mj_kernel(
         offset = mjw_xipos[world, mjc_body] - mjw_subtree_com[world, mjw_body_rootid[mjc_body]]
 
         body_parent_f[newton_body] = wp.spatial_vector(parent_f_lin, parent_f_ang - wp.cross(offset, parent_f_lin))
+
+
+@wp.kernel
+def convert_qfrc_actuator_from_mj_kernel(
+    mjw_qfrc_actuator: wp.array2d(dtype=wp.float32),
+    qpos: wp.array2d(dtype=wp.float32),
+    joints_per_world: int,
+    joint_type: wp.array(dtype=wp.int32),
+    joint_q_start: wp.array(dtype=wp.int32),
+    joint_qd_start: wp.array(dtype=wp.int32),
+    joint_dof_dim: wp.array(dtype=wp.int32, ndim=2),
+    joint_child: wp.array(dtype=wp.int32),
+    body_com: wp.array(dtype=wp.vec3),
+    # output
+    qfrc_actuator: wp.array(dtype=wp.float32),
+):
+    """Convert MuJoCo qfrc_actuator [nworld, nv] into Newton flat DOF array.
+
+    Uses the same joint-based DOF mapping as the coordinate conversion
+    kernels.  For free joints the wrench is transformed from MuJoCo's
+    (origin, body-frame) convention to Newton's (CoM, world-frame)
+    convention (dual of the velocity transform).  Ball and other joints
+    are copied directly.
+    """
+    worldid, jntid = wp.tid()
+
+    q_i = joint_q_start[jntid]
+    qd_i = joint_qd_start[jntid]
+    wqd_i = joint_qd_start[joints_per_world * worldid + jntid]
+
+    type = joint_type[jntid]
+
+    if type == JointType.FREE:
+        # MuJoCo qfrc_actuator for free joint:
+        #   [f_x, f_y, f_z] = linear force at body origin (world frame)
+        #   [τ_x, τ_y, τ_z] = torque in body frame
+        # Newton convention (dual of velocity transform):
+        #   f_lin_newton = f_lin_mujoco            (unchanged)
+        #   tau_newton    = R * tau_body - r_com x f_lin
+
+        f_lin = wp.vec3(
+            mjw_qfrc_actuator[worldid, qd_i + 0],
+            mjw_qfrc_actuator[worldid, qd_i + 1],
+            mjw_qfrc_actuator[worldid, qd_i + 2],
+        )
+        tau_body = wp.vec3(
+            mjw_qfrc_actuator[worldid, qd_i + 3],
+            mjw_qfrc_actuator[worldid, qd_i + 4],
+            mjw_qfrc_actuator[worldid, qd_i + 5],
+        )
+
+        # Body rotation (MuJoCo quaternion wxyz)
+        rot = wp.quat(
+            qpos[worldid, q_i + 4],
+            qpos[worldid, q_i + 5],
+            qpos[worldid, q_i + 6],
+            qpos[worldid, q_i + 3],
+        )
+
+        # CoM offset in world frame
+        child = joint_child[jntid]
+        com_world = wp.quat_rotate(rot, body_com[child])
+
+        # Rotate torque body -> world and shift reference origin -> CoM
+        tau_world = wp.quat_rotate(rot, tau_body) - wp.cross(com_world, f_lin)
+
+        qfrc_actuator[wqd_i + 0] = f_lin[0]
+        qfrc_actuator[wqd_i + 1] = f_lin[1]
+        qfrc_actuator[wqd_i + 2] = f_lin[2]
+        qfrc_actuator[wqd_i + 3] = tau_world[0]
+        qfrc_actuator[wqd_i + 4] = tau_world[1]
+        qfrc_actuator[wqd_i + 5] = tau_world[2]
+    elif type == JointType.BALL:
+        for i in range(3):
+            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
+    else:
+        axis_count = joint_dof_dim[jntid, 0] + joint_dof_dim[jntid, 1]
+        for i in range(axis_count):
+            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
 
 
 @wp.kernel

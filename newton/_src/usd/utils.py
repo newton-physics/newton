@@ -102,6 +102,39 @@ def has_attribute(prim: Usd.Prim, name: str) -> bool:
     return attr and attr.HasAuthoredValue()
 
 
+def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
+    """
+    Check if a USD prim has an applied API schema, even if the schema is not
+    registered with USD's schema registry.
+
+    For registered schemas (e.g. ``UsdPhysics.RigidBodyAPI``), ``prim.HasAPI()``
+    is sufficient. However, non-core schemas that may be in draft state or not
+    yet registered (e.g. MuJoCo-specific schemas like ``MjcSiteAPI``) will not
+    be found by ``HasAPI()``. This helper falls back to inspecting the raw
+    ``apiSchemas`` metadata on the prim.
+
+    Args:
+        prim: The USD prim to query.
+        schema_name: The API schema name to check for (e.g. ``"MjcSiteAPI"``).
+
+    Returns:
+        True if the schema is applied to the prim, False otherwise.
+    """
+    if prim.HasAPI(schema_name):
+        return True
+
+    schemas_listop = prim.GetMetadata("apiSchemas")
+    if schemas_listop:
+        all_schemas = (
+            list(schemas_listop.prependedItems)
+            + list(schemas_listop.appendedItems)
+            + list(schemas_listop.explicitItems)
+        )
+        return schema_name in all_schemas
+
+    return False
+
+
 @overload
 def get_float(prim: Usd.Prim, name: str, default: float) -> float: ...
 

@@ -22,6 +22,7 @@ Utilities for working with the Universal Scene Description (USD) format.
    get_quat
    get_scale
    get_transform
+   has_applied_api_schema
    has_attribute
    type_to_warp
    value_to_warp
