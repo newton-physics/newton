@@ -14,6 +14,21 @@
 # limitations under the License.
 
 try:
+    # Work around a thread-safety bug in UsdPhysics.LoadUsdPhysicsFromRange
+    # that causes heap corruption (double free / segfault) when USD's internal
+    # TBB thread pool processes stages with many physics prims concurrently.
+    # Setting the concurrency limit to 1 BEFORE any pxr module initializes
+    # TBB is the only reliable mitigation.  The env-var fallback covers the
+    # case where pxr is unavailable.
+    from pxr import Work
+
+    Work.SetConcurrencyLimit(1)
+except Exception:
+    import os
+
+    os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
+
+try:
     # register the newton schema plugin before any other USD code is executed
     import newton_usd_schemas  # noqa: F401
 except ImportError:

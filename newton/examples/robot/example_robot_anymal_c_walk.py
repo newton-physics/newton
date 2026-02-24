@@ -32,7 +32,6 @@ import newton
 import newton.examples
 import newton.utils
 from newton import GeoType, State
-from newton.geometry import create_mesh_terrain
 
 lab_to_mujoco = [0, 6, 3, 9, 1, 7, 4, 10, 2, 8, 5, 11]
 mujoco_to_lab = [0, 4, 8, 2, 6, 10, 1, 5, 9, 3, 7, 11]
@@ -114,7 +113,7 @@ class Example:
 
         # Generate procedural terrain for visual demonstration (but not during unit tests)
         if not self.is_test:
-            vertices, indices = create_mesh_terrain(
+            terrain_mesh = newton.Mesh.create_terrain(
                 grid_size=(8, 3),  # 3x8 grid for forward walking
                 block_size=(3.0, 3.0),
                 terrain_types=["random_grid", "flat", "wave", "gap", "pyramid_stairs"],
@@ -124,8 +123,8 @@ class Example:
                     "wave": {"wave_amplitude": 0.1, "wave_frequency": 2.0},  # amplitude reduced from 0.15
                 },
                 seed=42,
+                compute_inertia=False,
             )
-            terrain_mesh = newton.Mesh(vertices, indices)
             terrain_offset = wp.transform(p=wp.vec3(-5, -2.0, 0.01), q=wp.quat_identity())
             builder.add_shape_mesh(
                 body=-1,
@@ -159,8 +158,14 @@ class Example:
             "LF_KFE": -0.8,
         }
         # Set initial joint positions (skip first 7 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
-        for key, value in initial_q.items():
-            builder.joint_q[builder.joint_key.index(key) + 6] = value
+        for name, value in initial_q.items():
+            idx = next(
+                (i for i, lbl in enumerate(builder.joint_label) if lbl.endswith(f"/{name}")),
+                None,
+            )
+            if idx is None:
+                raise ValueError(f"Joint '{name}' not found in builder.joint_label")
+            builder.joint_q[idx + 6] = value
 
         for i in range(len(builder.joint_target_ke)):
             builder.joint_target_ke[i] = 150
@@ -169,10 +174,6 @@ class Example:
         self.model = builder.finalize()
 
         use_mujoco_contacts = args.use_mujoco_contacts if args else False
-
-        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
-        if not use_mujoco_contacts:
-            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
 
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
@@ -204,11 +205,11 @@ class Example:
         # Evaluate forward kinematics to update body poses based on initial joint configuration
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
 
-        # Initialize contacts using collision pipeline
+        # Initialize contacts
         if use_mujoco_contacts:
             self.contacts = None
         else:
-            self.contacts = self.collision_pipeline.contacts()
+            self.contacts = self.model.contacts()
 
         # Download the policy from the newton-assets repository
         policy_asset_path = newton.utils.download_asset("anybotics_anymal_c")
@@ -248,9 +249,8 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            # Compute contacts using collision pipeline for terrain mesh
             if self.contacts is not None:
-                self.collision_pipeline.collide(self.state_0, self.contacts)
+                self.model.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
@@ -293,7 +293,8 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        assert self.model.body_key == [
+        body_names = [lbl.split("/")[-1] for lbl in self.model.body_label]
+        assert body_names == [
             "base",
             "LF_HIP",
             "LF_THIGH",
@@ -308,7 +309,8 @@ class Example:
             "RH_THIGH",
             "RH_SHANK",
         ]
-        assert self.model.joint_key == [
+        joint_names = [lbl.split("/")[-1] for lbl in self.model.joint_label]
+        assert joint_names == [
             "floating_base",
             "LF_HAA",
             "LF_HFE",

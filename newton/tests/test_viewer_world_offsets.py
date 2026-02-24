@@ -55,7 +55,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
         world.add_shape_box(
             body=0,
@@ -119,7 +119,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
         world_z.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
         builder_z.replicate(world_z, world_count)
@@ -142,7 +142,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
         world_y.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
         builder_y.replicate(world_y, world_count)
@@ -171,7 +171,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="box_body",
+            label="box_body",
         )
         world.add_shape_box(body=0, hx=1.0, hy=1.0, hz=1.0)
 
@@ -209,7 +209,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(body_pos, wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="offset_body",
+            label="offset_body",
         )
         # Add shape with local offset
         world.add_shape_box(
@@ -256,7 +256,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
 
         # Replicate with zero spacing (new default)
@@ -347,7 +347,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
                     xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
                     mass=1.0,
                     inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-                    key="test_body",
+                    label="test_body",
                 )
                 builder.replicate(world, world_count)
 
@@ -381,7 +381,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="test_body",
+            label="test_body",
         )
         builder.replicate(world, world_count)
         model = builder.finalize()
@@ -421,7 +421,7 @@ class TestViewerWorldOffsets(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
             mass=1.0,
             inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-            key="world_body",
+            label="world_body",
         )
         cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
         world.add_shape(
@@ -482,7 +482,7 @@ def test_visual_separation(test: TestViewerWorldOffsets, device):
         xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
         mass=1.0,
         inertia=wp.mat33(np.eye(3)),
-        key="test_body",
+        label="test_body",
     )
     cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
     world.add_shape(

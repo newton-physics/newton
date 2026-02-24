@@ -22,15 +22,8 @@ newton.utils
    bourke_color_map
    color_graph
    compute_world_offsets
-   create_box_mesh
    create_cable_stiffness_from_elastic_moduli
-   create_capsule_mesh
-   create_cone_mesh
-   create_cylinder_mesh
-   create_ellipsoid_mesh
    create_parallel_transport_cable_quaternions
-   create_plane_mesh
-   create_sphere_mesh
    create_straight_cable_points
    create_straight_cable_points_and_quaternions
    download_asset

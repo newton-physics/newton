@@ -33,9 +33,14 @@ newton.geometry
    collide_sphere_capsule
    collide_sphere_cylinder
    collide_sphere_sphere
-   compute_shape_inertia
-   create_box_mesh
-   create_mesh_heightfield
-   create_mesh_terrain
+   compute_inertia_shape
+   create_empty_sdf_data
    remesh_mesh
+   sdf_box
+   sdf_capsule
+   sdf_cone
+   sdf_cylinder
+   sdf_mesh
+   sdf_plane
+   sdf_sphere
    transform_inertia

@@ -22,7 +22,7 @@ import numpy as np
 import warp as wp
 
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
-from ..geometry.broad_phase_sap import BroadPhaseSAP, SAPSortType
+from ..geometry.broad_phase_sap import BroadPhaseSAP
 from ..geometry.collision_core import compute_tight_aabb_from_support
 from ..geometry.contact_data import ContactData
 from ..geometry.kernels import create_soft_contacts
@@ -113,11 +113,6 @@ def write_contact(
         if d > contact_margin:
             return
         index = wp.atomic_add(writer_data.contact_count, 0, 1)
-        if index >= writer_data.contact_max:
-            # Reached buffer limit
-            wp.atomic_add(writer_data.contact_count, 0, -1)
-            return
-
     if index >= writer_data.contact_max:
         return
 
@@ -195,15 +190,14 @@ def compute_shape_aabbs(
     contact_margin = shape_contact_margin[shape_id]
     margin_vec = wp.vec3(contact_margin, contact_margin, contact_margin)
 
-    # Check if this is an infinite plane, mesh, or SDF - use bounding sphere fallback
+    # Check if this is an infinite plane, mesh, or heightfield - use bounding sphere fallback
     scale = shape_scale[shape_id]
     is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
     is_mesh = geo_type == GeoType.MESH
-    is_sdf = geo_type == GeoType.SDF
     is_hfield = geo_type == GeoType.HFIELD
 
-    if is_infinite_plane or is_mesh or is_sdf or is_hfield:
-        # Use conservative bounding sphere approach for infinite planes, meshes, and SDFs
+    if is_infinite_plane or is_mesh or is_hfield:
+        # Use conservative bounding sphere approach for infinite planes, meshes, and heightfields
         radius = shape_collision_radius[shape_id]
         half_extents = wp.vec3(radius, radius, radius)
         aabb_lower[shape_id] = pos - half_extents - margin_vec
@@ -407,9 +401,7 @@ class CollisionPipeline:
         soft_contact_margin: float = 0.01,
         requires_grad: bool | None = None,
         broad_phase: BroadPhaseMode | BroadPhaseInstance | None = None,
-        broad_phase_mode: BroadPhaseMode | None = None,
         narrow_phase: NarrowPhase | None = None,
-        sap_sort_type=None,
         sdf_hydroelastic_config: NarrowPhase.HydroelasticSDF.Config | None = None,
     ):
         """
@@ -419,28 +411,22 @@ class CollisionPipeline:
             model (Model): The simulation model.
             reduce_contacts (bool, optional): Whether to reduce contacts for mesh-mesh collisions. Defaults to True.
             rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
-                If None, estimated based on broad phase mode:
-                - EXPLICIT: len(shape_pairs_filtered) * 10 contacts
-                - NXN/SAP: shape_count * 20 contacts (assumes ~20 contacts per shape)
-                For better memory efficiency, use rigid_contact_max computed from actual collision pairs.
+                Resolution order:
+                - If provided, use this value.
+                - Else if ``model.rigid_contact_max > 0``, use the model value.
+                - Else estimate automatically from model shape and pair metadata.
             soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
             soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
             requires_grad (bool | None, optional): Whether to enable gradient computation. If None, uses model.requires_grad.
             broad_phase (BroadPhaseMode | BroadPhaseAllPairs | BroadPhaseSAP | BroadPhaseExplicit | None, optional):
-                Either a broad phase mode string (backward-compatible alias for broad_phase_mode) or
+                Either a broad phase mode string ("explicit", "nxn", "sap") or
                 a prebuilt broad phase instance for expert usage.
-            broad_phase_mode (BroadPhaseMode | None, optional): Broad phase mode for collision detection.
-                Used with model-driven construction. Defaults to "explicit" when neither broad_phase nor
-                broad_phase_mode is provided.
             narrow_phase (NarrowPhase | None, optional): Optional prebuilt narrow phase instance. Must be
                 provided together with a broad phase instance for expert usage.
             shape_pairs_filtered (wp.array | None, optional): Precomputed shape pairs for EXPLICIT mode.
-                When broad_phase_mode is "explicit", uses model.shape_contact_pairs if not provided. For
+                When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
                 "nxn"/"sap" modes, ignored.
-            sap_sort_type (SAPSortType | None, optional): Sorting algorithm for SAP broad phase.
-                Only used when broad_phase_mode is "sap". Options: SEGMENTED or TILE.
-                If None, uses default (SEGMENTED).
             sdf_hydroelastic_config (NarrowPhase.HydroelasticSDF.Config | None, optional): Configuration for
                 hydroelastic collision handling. Defaults to None.
         """
@@ -452,22 +438,21 @@ class CollisionPipeline:
             else:
                 broad_phase_instance = broad_phase
 
-        mode_from_kwarg = _normalize_broad_phase_mode(broad_phase_mode) if broad_phase_mode is not None else None
-        if (
-            mode_from_kwarg is not None
-            and mode_from_broad_phase is not None
-            and mode_from_kwarg != mode_from_broad_phase
-        ):
-            raise ValueError("broad_phase and broad_phase_mode are both provided with different values")
-
         shape_count = model.shape_count
         particle_count = model.particle_count
         device = model.device
 
-        # Estimate rigid_contact_max for collision pipeline (accounts for contact reduction)
+        # Resolve rigid contact capacity with explicit > model > estimated precedence.
         if rigid_contact_max is None:
-            rigid_contact_max = _estimate_rigid_contact_max(model)
-        self.rigid_contact_max = rigid_contact_max
+            model_rigid_contact_max = int(getattr(model, "rigid_contact_max", 0) or 0)
+            if model_rigid_contact_max > 0:
+                rigid_contact_max = model_rigid_contact_max
+            else:
+                rigid_contact_max = _estimate_rigid_contact_max(model)
+        self._rigid_contact_max = rigid_contact_max
+        # Keep model-level default in sync with the resolved pipeline capacity.
+        # This avoids divergence between model- and contacts-based users (e.g. VBD init).
+        model.rigid_contact_max = rigid_contact_max
         if requires_grad is None:
             requires_grad = model.requires_grad
 
@@ -490,15 +475,8 @@ class CollisionPipeline:
                 raise ValueError("Provide both broad_phase and narrow_phase for expert component construction")
             if sdf_hydroelastic_config is not None:
                 raise ValueError("sdf_hydroelastic_config cannot be used when narrow_phase is provided")
-            if sap_sort_type is not None:
-                raise ValueError("sap_sort_type cannot be used when broad_phase instance is provided")
 
             inferred_mode = _infer_broad_phase_mode_from_instance(broad_phase_instance)
-            if mode_from_kwarg is not None and mode_from_kwarg != inferred_mode:
-                raise ValueError(
-                    "broad_phase_mode does not match the provided broad_phase instance "
-                    f"(expected {inferred_mode!r}, got {mode_from_kwarg!r})"
-                )
             self.broad_phase_mode = inferred_mode
             self.broad_phase = broad_phase_instance
 
@@ -530,15 +508,14 @@ class CollisionPipeline:
             self.narrow_phase = narrow_phase
             self.hydroelastic_sdf = self.narrow_phase.hydroelastic_sdf
         else:
-            selected_mode = mode_from_kwarg if mode_from_kwarg is not None else mode_from_broad_phase
-            self.broad_phase_mode = selected_mode if selected_mode is not None else "explicit"
+            self.broad_phase_mode = mode_from_broad_phase if mode_from_broad_phase is not None else "explicit"
 
             if self.broad_phase_mode == "explicit":
                 if shape_pairs_filtered is None:
                     shape_pairs_filtered = getattr(model, "shape_contact_pairs", None)
                 if shape_pairs_filtered is None:
                     raise ValueError(
-                        "shape_pairs_filtered must be provided for broad_phase_mode=EXPLICIT "
+                        "shape_pairs_filtered must be provided for broad_phase=EXPLICIT "
                         "(or set model.shape_contact_pairs)"
                     )
                 self.broad_phase = BroadPhaseExplicit()
@@ -548,7 +525,7 @@ class CollisionPipeline:
                 self.shape_pairs_excluded_count = 0
             elif self.broad_phase_mode == "nxn":
                 if shape_world is None:
-                    raise ValueError("model.shape_world is required for broad_phase_mode=NXN")
+                    raise ValueError("model.shape_world is required for broad_phase=NXN")
                 self.broad_phase = BroadPhaseAllPairs(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
                 self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
@@ -558,11 +535,8 @@ class CollisionPipeline:
                 )
             elif self.broad_phase_mode == "sap":
                 if shape_world is None:
-                    raise ValueError("model.shape_world is required for broad_phase_mode=SAP")
-                sort_type = sap_sort_type if sap_sort_type is not None else SAPSortType.SEGMENTED
-                self.broad_phase = BroadPhaseSAP(
-                    shape_world, shape_flags=shape_flags, sort_type=sort_type, device=device
-                )
+                    raise ValueError("model.shape_world is required for broad_phase=SAP")
+                self.broad_phase = BroadPhaseSAP(shape_world, shape_flags=shape_flags, device=device)
                 self.shape_pairs_filtered = None
                 self.shape_pairs_max = (shape_count * (shape_count - 1)) // 2
                 self.shape_pairs_excluded = self._build_excluded_pairs(model)
@@ -631,8 +605,18 @@ class CollisionPipeline:
         if soft_contact_max is None:
             soft_contact_max = shape_count * particle_count
         self.soft_contact_margin = soft_contact_margin
-        self.soft_contact_max = soft_contact_max
+        self._soft_contact_max = soft_contact_max
         self.requires_grad = requires_grad
+
+    @property
+    def rigid_contact_max(self) -> int:
+        """Maximum rigid contact buffer capacity used by this pipeline."""
+        return self._rigid_contact_max
+
+    @property
+    def soft_contact_max(self) -> int:
+        """Maximum soft contact buffer capacity used by this pipeline."""
+        return self._soft_contact_max
 
     def contacts(self) -> Contacts:
         """
@@ -809,7 +793,8 @@ class CollisionPipeline:
                 shape_data=self.geom_data,
                 shape_transform=self.geom_transform,
                 shape_source=model.shape_source_ptr,
-                shape_sdf_data=model.shape_sdf_data,
+                sdf_data=model.sdf_data,
+                shape_sdf_index=model.shape_sdf_index,
                 shape_contact_margin=model.shape_contact_margin,
                 shape_collision_radius=model.shape_collision_radius,
                 shape_flags=model.shape_flags,

@@ -235,7 +235,7 @@ class Example:
                 bend_damping=bend_damping,
                 stretch_stiffness=stretch_stiffness,
                 stretch_damping=stretch_damping,
-                key=f"bundle_cable_{i}",
+                label=f"bundle_cable_{i}",
             )
 
         # Create moving obstacles (capsules arranged along X axis)
@@ -318,9 +318,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline (default)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.collision_pipeline.contacts()
+        self.contacts = self.model.contacts()
         self.viewer.set_model(self.model)
 
         # Obstacle kinematics parameters
@@ -400,7 +398,7 @@ class Example:
 
             # Collide for contact detection
             if update_step_history:
-                self.collision_pipeline.collide(self.state_0, self.contacts)
+                self.model.collide(self.state_0, self.contacts)
 
             self.solver.set_rigid_history_update(update_step_history)
             self.solver.step(

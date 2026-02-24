@@ -277,36 +277,19 @@ class MeshAdjacency:
         self.edges[key] = edge
 
 
-def create_sphere_mesh(
-    radius=1.0,
-    num_latitudes=default_num_segments,
-    num_longitudes=default_num_segments,
-    reverse_winding=False,
-):
-    """Create a sphere mesh with specified parameters.
-
-    Generates vertices and triangle indices for a UV sphere using
-    latitude/longitude parametrization. Each vertex contains position,
-    normal, and UV coordinates.
-
-    Args:
-        radius (float): Sphere radius. Defaults to 1.0.
-        num_latitudes (int): Number of horizontal divisions (latitude lines).
-            Defaults to default_num_segments.
-        num_longitudes (int): Number of vertical divisions (longitude lines).
-            Defaults to default_num_segments.
-        reverse_winding (bool): If True, reverses triangle winding order.
-            Defaults to False.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
-              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
-              UV coords).
-            - indices (np.ndarray): Uint32 array of triangle indices for
-              rendering.
-    """
-    vertices = []
+def create_mesh_sphere(
+    radius: float = 1.0,
+    *,
+    num_latitudes: int = default_num_segments,
+    num_longitudes: int = default_num_segments,
+    reverse_winding: bool = False,
+    compute_normals: bool = True,
+    compute_uvs: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Create sphere geometry data with optional normals and UVs."""
+    positions = []
+    normals = [] if compute_normals else None
+    uvs = [] if compute_uvs else None
     indices = []
 
     for i in range(num_latitudes + 1):
@@ -322,109 +305,95 @@ def create_sphere_mesh(
             x = cos_phi * sin_theta
             y = cos_theta
             z = sin_phi * sin_theta
-
-            u = float(j) / num_longitudes
-            v = float(i) / num_latitudes
-
-            vertices.append([x * radius, y * radius, z * radius, x, y, z, u, v])
+            positions.append([x * radius, y * radius, z * radius])
+            if compute_normals:
+                normals.append([x, y, z])
+            if compute_uvs:
+                u = float(j) / num_longitudes
+                v = float(i) / num_latitudes
+                uvs.append([u, v])
 
     for i in range(num_latitudes):
         for j in range(num_longitudes):
             first = i * (num_longitudes + 1) + j
             second = first + num_longitudes + 1
-
             if reverse_winding:
                 indices.extend([first, second, first + 1, second, second + 1, first + 1])
             else:
                 indices.extend([first, first + 1, second, second, first + 1, second + 1])
 
-    return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
+    return (
+        np.asarray(positions, dtype=np.float32),
+        np.asarray(indices, dtype=np.uint32),
+        None if normals is None else np.asarray(normals, dtype=np.float32),
+        None if uvs is None else np.asarray(uvs, dtype=np.float32),
+    )
 
 
-def create_ellipsoid_mesh(
-    rx=1.0,
-    ry=1.0,
-    rz=1.0,
-    num_latitudes=default_num_segments,
-    num_longitudes=default_num_segments,
-    reverse_winding=False,
-):
-    """Create an ellipsoid mesh with specified semi-axes.
-
-    Generates vertices and triangle indices for a UV ellipsoid using
-    latitude/longitude parametrization. Each vertex contains position,
-    normal, and UV coordinates. The ellipsoid is centered at the origin
-    with semi-axes along the X, Y, and Z axes.
-
-    Args:
-        rx (float): Semi-axis length along the X direction. Defaults to 1.0.
-        ry (float): Semi-axis length along the Y direction. Defaults to 1.0.
-        rz (float): Semi-axis length along the Z direction. Defaults to 1.0.
-        num_latitudes (int): Number of horizontal divisions (latitude lines).
-            Defaults to default_num_segments.
-        num_longitudes (int): Number of vertical divisions (longitude lines).
-            Defaults to default_num_segments.
-        reverse_winding (bool): If True, reverses triangle winding order.
-            Defaults to False.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
-              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
-              UV coords).
-            - indices (np.ndarray): Uint32 array of triangle indices for
-              rendering.
-    """
-    vertices = []
+def create_mesh_ellipsoid(
+    rx: float = 1.0,
+    ry: float = 1.0,
+    rz: float = 1.0,
+    *,
+    num_latitudes: int = default_num_segments,
+    num_longitudes: int = default_num_segments,
+    reverse_winding: bool = False,
+    compute_normals: bool = True,
+    compute_uvs: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Create ellipsoid geometry data with optional normals and UVs."""
+    positions = []
+    normals = [] if compute_normals else None
+    uvs = [] if compute_uvs else None
     indices = []
 
     for i in range(num_latitudes + 1):
         theta = i * np.pi / num_latitudes
         sin_theta = np.sin(theta)
         cos_theta = np.cos(theta)
-
         for j in range(num_longitudes + 1):
             phi = j * 2 * np.pi / num_longitudes
             sin_phi = np.sin(phi)
             cos_phi = np.cos(phi)
 
-            # Unit sphere coordinates
             ux = cos_phi * sin_theta
             uy = cos_theta
             uz = sin_phi * sin_theta
-
-            # Scaled position for ellipsoid
             px = ux * rx
             py = uy * ry
             pz = uz * rz
+            positions.append([px, py, pz])
 
-            # Normal for ellipsoid: gradient of (x/rx)^2 + (y/ry)^2 + (z/rz)^2 = 1
-            # n = (2x/rx^2, 2y/ry^2, 2z/rz^2), normalized
-            nx = ux / rx
-            ny = uy / ry
-            nz = uz / rz
-            n_len = np.sqrt(nx * nx + ny * ny + nz * nz)
-            if n_len > 1e-10:
-                nx /= n_len
-                ny /= n_len
-                nz /= n_len
-
-            u = float(j) / num_longitudes
-            v = float(i) / num_latitudes
-
-            vertices.append([px, py, pz, nx, ny, nz, u, v])
+            if compute_normals:
+                nx = ux / rx
+                ny = uy / ry
+                nz = uz / rz
+                n_len = np.sqrt(nx * nx + ny * ny + nz * nz)
+                if n_len > 1e-10:
+                    nx /= n_len
+                    ny /= n_len
+                    nz /= n_len
+                normals.append([nx, ny, nz])
+            if compute_uvs:
+                u = float(j) / num_longitudes
+                v = float(i) / num_latitudes
+                uvs.append([u, v])
 
     for i in range(num_latitudes):
         for j in range(num_longitudes):
             first = i * (num_longitudes + 1) + j
             second = first + num_longitudes + 1
-
             if reverse_winding:
                 indices.extend([first, second, first + 1, second, second + 1, first + 1])
             else:
                 indices.extend([first, first + 1, second, second, first + 1, second + 1])
 
-    return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
+    return (
+        np.asarray(positions, dtype=np.float32),
+        np.asarray(indices, dtype=np.uint32),
+        None if normals is None else np.asarray(normals, dtype=np.float32),
+        None if uvs is None else np.asarray(uvs, dtype=np.float32),
+    )
 
 
 def _normalize_color(color) -> tuple[float, float, float] | None:
@@ -859,34 +828,26 @@ def load_meshes_from_file(
     return meshes
 
 
-def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_segments):
-    """Create a capsule (pill-shaped) mesh with hemispherical ends.
-
-    Generates vertices and triangle indices for a capsule shape consisting
-    of a cylinder with hemispherical caps at both ends.
-
-    Args:
-        radius (float): Radius of the capsule.
-        half_height (float): Half the height of the cylindrical portion
-            (distance from center to hemisphere start).
-        up_axis (int): Axis along which the capsule extends (0=X, 1=Y, 2=Z).
-            Defaults to 1 (Y-axis).
-        segments (int): Number of segments for tessellation.
-            Defaults to default_num_segments.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
-              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
-              UV coords).
-            - indices (np.ndarray): Uint32 array of triangle indices for
-              rendering.
-    """
-    vertices = []
+def create_mesh_capsule(
+    radius: float,
+    half_height: float,
+    *,
+    up_axis: int = 1,
+    segments: int = default_num_segments,
+    compute_normals: bool = True,
+    compute_uvs: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Create capsule geometry data with optional normals and UVs."""
+    positions = []
+    normals = [] if compute_normals else None
+    uvs = [] if compute_uvs else None
     indices = []
 
-    x_dir, y_dir, z_dir = ((1, 2, 0), (2, 0, 1), (1, 2, 0))[up_axis]
-    up_vector = np.zeros(3)
+    if up_axis not in (0, 1, 2):
+        raise ValueError("up_axis must be between 0 and 2")
+
+    x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
+    up_vector = np.zeros(3, dtype=np.float32)
     up_vector[up_axis] = half_height
 
     for i in range(segments + 1):
@@ -903,190 +864,251 @@ def create_capsule_mesh(radius, half_height, up_axis=1, segments=default_num_seg
             y = cos_theta
             x = sin_phi * sin_theta
 
-            u = cos_theta * 0.5 + 0.5
-            v = cos_phi * sin_theta * 0.5 + 0.5
-
-            xyz = x, y, z
-            x, y, z = xyz[x_dir], xyz[y_dir], xyz[z_dir]
-            xyz = np.array((x, y, z), dtype=np.float32) * radius
-            if j < segments // 2:
-                xyz += up_vector
+            xyz = np.array((x, y, z), dtype=np.float32)
+            normal = xyz[[x_dir, y_dir, z_dir]]
+            pos = normal * radius
+            if normal[up_axis] >= 0.0:
+                pos += up_vector
             else:
-                xyz -= up_vector
+                pos -= up_vector
 
-            vertices.append([*xyz, x, y, z, u, v])
+            positions.append(pos.tolist())
+            if compute_normals:
+                normals.append(normal.tolist())
+            if compute_uvs:
+                u = cos_theta * 0.5 + 0.5
+                v = cos_phi * sin_theta * 0.5 + 0.5
+                uvs.append([u, v])
 
-    nv = len(vertices)
-    for i in range(segments + 1):
-        for j in range(segments + 1):
+    nv = len(positions)
+    for i in range(segments):
+        for j in range(segments):
             first = (i * (segments + 1) + j) % nv
             second = (first + segments + 1) % nv
             indices.extend([first, second, (first + 1) % nv, second, (second + 1) % nv, (first + 1) % nv])
 
-    vertex_data = np.array(vertices, dtype=np.float32)
-    index_data = np.array(indices, dtype=np.uint32)
-
-    return vertex_data, index_data
-
-
-def create_cone_mesh(radius, half_height, up_axis=1, segments=default_num_segments):
-    """Create a cone mesh with circular base and pointed top.
-
-    Generates vertices and triangle indices for a cone shape. Implemented as
-    a cylinder with zero top radius to ensure correct normal calculations.
-
-    Args:
-        radius (float): Radius of the cone's circular base.
-        half_height (float): Half the total height of the cone
-            (distance from center to tip/base).
-        up_axis (int): Axis along which the cone extends (0=X, 1=Y, 2=Z).
-            Defaults to 1 (Y-axis).
-        segments (int): Number of segments around the circumference.
-            Defaults to default_num_segments.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
-              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
-              UV coords).
-            - indices (np.ndarray): Uint32 array of triangle indices for
-              rendering.
-    """
-    # render it as a cylinder with zero top radius so we get correct normals on the sides
-    return create_cylinder_mesh(radius, half_height, up_axis, segments, 0.0)
+    return (
+        np.asarray(positions, dtype=np.float32),
+        np.asarray(indices, dtype=np.uint32),
+        None if normals is None else np.asarray(normals, dtype=np.float32),
+        None if uvs is None else np.asarray(uvs, dtype=np.float32),
+    )
 
 
-def create_cylinder_mesh(radius, half_height, up_axis=1, segments=default_num_segments, top_radius=None):
-    """Create a cylinder or truncated cone mesh.
+def create_mesh_cone(
+    radius: float,
+    half_height: float,
+    *,
+    up_axis: int = 1,
+    segments: int = default_num_segments,
+    compute_normals: bool = True,
+    compute_uvs: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Create cone geometry data with optional normals and UVs."""
+    return create_mesh_cylinder(
+        radius,
+        half_height,
+        up_axis=up_axis,
+        segments=segments,
+        top_radius=0.0,
+        compute_normals=compute_normals,
+        compute_uvs=compute_uvs,
+    )
 
-    Generates vertices and triangle indices for a cylindrical shape with
-    optional different top and bottom radii (creating a truncated cone when
-    different). Includes circular caps at both ends.
 
-    Args:
-        radius (float): Radius of the bottom circular face.
-        half_height (float): Half the total height of the cylinder
-            (distance from center to top/bottom face).
-        up_axis (int): Axis along which the cylinder extends (0=X, 1=Y, 2=Z).
-            Defaults to 1 (Y-axis).
-        segments (int): Number of segments around the circumference.
-            Defaults to default_num_segments.
-        top_radius (float, optional): Radius of the top circular face.
-            If None, uses same radius as bottom (true cylinder).
-            If different, creates a truncated cone.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
-              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
-              UV coords).
-            - indices (np.ndarray): Uint32 array of triangle indices for
-              rendering.
-
-    Raises:
-        ValueError: If up_axis is not 0, 1, or 2.
-    """
+def create_mesh_cylinder(
+    radius: float,
+    half_height: float,
+    *,
+    up_axis: int = 1,
+    segments: int = default_num_segments,
+    top_radius: float | None = None,
+    compute_normals: bool = True,
+    compute_uvs: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Create cylinder/truncated cone geometry data with optional normals/UVs."""
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
 
-    x_dir, y_dir, z_dir = (
-        (1, 2, 0),
-        (0, 1, 2),
-        (2, 0, 1),
-    )[up_axis]
-
-    indices = []
-
-    cap_vertices = []
-    side_vertices = []
-
-    # create center cap vertices
-    position = np.array([0, -half_height, 0])[[x_dir, y_dir, z_dir]]
-    normal = np.array([0, -1, 0])[[x_dir, y_dir, z_dir]]
-    cap_vertices.append([*position, *normal, 0.5, 0.5])
-    cap_vertices.append([*-position, *-normal, 0.5, 0.5])
-
+    x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
     if top_radius is None:
         top_radius = radius
-    side_slope = -np.arctan2(top_radius - radius, 2 * half_height)
 
-    # create the cylinder base and top vertices
-    for j in (-1, 1):
-        center_index = max(j, 0)
-        if j == 1:
-            radius = top_radius
+    indices = []
+    positions = []
+    normals = [] if compute_normals else None
+    uvs = [] if compute_uvs else None
+
+    def add_vertex(position: np.ndarray, normal: np.ndarray | None, uv: tuple[float, float] | None) -> int:
+        idx = len(positions)
+        positions.append(position.tolist())
+        if compute_normals:
+            assert normals is not None
+            normals.append([0.0, 0.0, 0.0] if normal is None else normal.tolist())
+        if compute_uvs:
+            assert uvs is not None
+            uvs.append([0.0, 0.0] if uv is None else [uv[0], uv[1]])
+        return idx
+
+    side_radial_component = 2.0 * half_height
+    side_axial_component = radius - top_radius
+
+    # Side vertices first (contiguous layout for robust indexing).
+    side_bottom_indices = []
+    for i in range(segments):
+        theta = 2 * np.pi * i / segments
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+
+        position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
+        position = position[[x_dir, y_dir, z_dir]]
+
+        side_normal = None
+        if compute_normals:
+            side_normal = np.array(
+                [
+                    side_radial_component * cos_theta,
+                    side_axial_component,
+                    side_radial_component * sin_theta,
+                ],
+                dtype=np.float32,
+            )
+            normal_length = np.linalg.norm(side_normal)
+            if normal_length > 0.0:
+                side_normal = side_normal / normal_length
+            side_normal = side_normal[[x_dir, y_dir, z_dir]]
+
+        side_uv = (i / max(segments - 1, 1), 0.0) if compute_uvs else None
+        side_bottom_indices.append(add_vertex(position, side_normal, side_uv))
+
+    side_top_indices = []
+    side_apex_index: int | None = None
+    if top_radius > 0.0:
         for i in range(segments):
             theta = 2 * np.pi * i / segments
-
             cos_theta = np.cos(theta)
             sin_theta = np.sin(theta)
 
-            x = cos_theta
-            y = j * half_height
-            z = sin_theta
+            position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+            position = position[[x_dir, y_dir, z_dir]]
 
-            position = np.array([radius * x, y, radius * z])
+            side_normal = None
+            if compute_normals:
+                side_normal = np.array(
+                    [
+                        side_radial_component * cos_theta,
+                        side_axial_component,
+                        side_radial_component * sin_theta,
+                    ],
+                    dtype=np.float32,
+                )
+                normal_length = np.linalg.norm(side_normal)
+                if normal_length > 0.0:
+                    side_normal = side_normal / normal_length
+                side_normal = side_normal[[x_dir, y_dir, z_dir]]
 
-            normal = np.array([x, side_slope, z])
-            normal = normal / np.linalg.norm(normal)
-            uv = (i / (segments - 1), (j + 1) / 2)
-            vertex = np.hstack([position[[x_dir, y_dir, z_dir]], normal[[x_dir, y_dir, z_dir]], uv])
-            side_vertices.append(vertex)
+            side_uv = (i / max(segments - 1, 1), 1.0) if compute_uvs else None
+            side_top_indices.append(add_vertex(position, side_normal, side_uv))
+    else:
+        apex_position = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        apex_normal = None
+        if compute_normals:
+            apex_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        side_apex_index = add_vertex(apex_position, apex_normal, (0.5, 1.0) if compute_uvs else None)
 
-            normal = np.array([0, j, 0])
-            uv = (cos_theta * 0.5 + 0.5, sin_theta * 0.5 + 0.5)
-            vertex = np.hstack([position[[x_dir, y_dir, z_dir]], normal[[x_dir, y_dir, z_dir]], uv])
-            cap_vertices.append(vertex)
+    # Cap vertices after side vertices (also contiguous per cap).
+    cap_center_bottom_idx: int | None = None
+    cap_center_top_idx: int | None = None
 
-            cs = center_index * segments
-            indices.extend([center_index, i + cs + 2, (i + 1) % segments + cs + 2][::-j])
+    if radius > 0.0:
+        cap_center_bottom_pos = np.array([0.0, -half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        cap_center_bottom_n = (
+            np.array([0.0, -1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]] if compute_normals else None
+        )
+        cap_center_bottom_idx = add_vertex(
+            cap_center_bottom_pos, cap_center_bottom_n, (0.5, 0.5) if compute_uvs else None
+        )
 
-    # create the cylinder side indices
+    if top_radius > 0.0:
+        cap_center_top_pos = np.array([0.0, half_height, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        cap_center_top_n = (
+            np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]] if compute_normals else None
+        )
+        cap_center_top_idx = add_vertex(cap_center_top_pos, cap_center_top_n, (0.5, 0.5) if compute_uvs else None)
+
+    cap_ring_bottom_indices = []
+    if radius > 0.0:
+        for i in range(segments):
+            theta = 2 * np.pi * i / segments
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            position = np.array([radius * cos_theta, -half_height, radius * sin_theta], dtype=np.float32)
+            position = position[[x_dir, y_dir, z_dir]]
+            cap_normal = (
+                np.array([0.0, -1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]] if compute_normals else None
+            )
+            cap_uv = (cos_theta * 0.5 + 0.5, sin_theta * 0.5 + 0.5) if compute_uvs else None
+            cap_ring_bottom_indices.append(add_vertex(position, cap_normal, cap_uv))
+
+    cap_ring_top_indices = []
+    if top_radius > 0.0:
+        for i in range(segments):
+            theta = 2 * np.pi * i / segments
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            position = np.array([top_radius * cos_theta, half_height, top_radius * sin_theta], dtype=np.float32)
+            position = position[[x_dir, y_dir, z_dir]]
+            cap_normal = np.array([0.0, 1.0, 0.0], dtype=np.float32)[[x_dir, y_dir, z_dir]] if compute_normals else None
+            cap_uv = (cos_theta * 0.5 + 0.5, sin_theta * 0.5 + 0.5) if compute_uvs else None
+            cap_ring_top_indices.append(add_vertex(position, cap_normal, cap_uv))
+
+    # Bottom cap
+    if cap_center_bottom_idx is not None and cap_ring_bottom_indices:
+        for i in range(segments):
+            i0 = cap_ring_bottom_indices[i]
+            i1 = cap_ring_bottom_indices[(i + 1) % segments]
+            indices.extend([cap_center_bottom_idx, i0, i1])
+
+    # Top cap
+    if cap_center_top_idx is not None and cap_ring_top_indices:
+        for i in range(segments):
+            i0 = cap_ring_top_indices[i]
+            i1 = cap_ring_top_indices[(i + 1) % segments]
+            indices.extend([cap_center_top_idx, i1, i0])
+
+    # Side faces
     for i in range(segments):
-        index1 = len(cap_vertices) + i + segments
-        index2 = len(cap_vertices) + ((i + 1) % segments) + segments
-        index3 = len(cap_vertices) + i
-        index4 = len(cap_vertices) + ((i + 1) % segments)
+        bottom_i = side_bottom_indices[i]
+        bottom_next = side_bottom_indices[(i + 1) % segments]
 
-        indices.extend([index1, index2, index3, index2, index4, index3])
+        if top_radius > 0.0:
+            top_i = side_top_indices[i]
+            top_next = side_top_indices[(i + 1) % segments]
+            indices.extend([top_i, top_next, bottom_i, top_next, bottom_next, bottom_i])
+        else:
+            assert side_apex_index is not None
+            indices.extend([side_apex_index, bottom_next, bottom_i])
 
-    vertex_data = np.array(np.vstack((cap_vertices, side_vertices)), dtype=np.float32)
-    index_data = np.array(indices, dtype=np.uint32)
+    return (
+        np.asarray(positions, dtype=np.float32),
+        np.asarray(indices, dtype=np.uint32),
+        None if normals is None else np.asarray(normals, dtype=np.float32),
+        None if uvs is None else np.asarray(uvs, dtype=np.float32),
+    )
 
-    return vertex_data, index_data
 
-
-def create_arrow_mesh(
-    base_radius, base_height, cap_radius=None, cap_height=None, up_axis=1, segments=default_num_segments
-):
-    """Create an arrow mesh with cylindrical shaft and conical head.
-
-    Generates vertices and triangle indices for an arrow shape consisting of
-    a cylindrical base (shaft) with a conical cap (arrowhead) at the top.
-
-    Args:
-        base_radius (float): Radius of the cylindrical shaft.
-        base_height (float): Height of the cylindrical shaft portion.
-        cap_radius (float, optional): Radius of the conical arrowhead base.
-            If None, defaults to base_radius * 1.8.
-        cap_height (float, optional): Height of the conical arrowhead.
-            If None, defaults to base_height * 0.18.
-        up_axis (int): Axis along which the arrow extends (0=X, 1=Y, 2=Z).
-            Defaults to 1 (Y-axis).
-        segments (int): Number of segments for tessellation.
-            Defaults to default_num_segments.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
-              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
-              UV coords).
-            - indices (np.ndarray): Uint32 array of triangle indices for
-              rendering.
-
-    Raises:
-        ValueError: If up_axis is not 0, 1, or 2.
-    """
+def create_mesh_arrow(
+    base_radius: float,
+    base_height: float,
+    *,
+    cap_radius: float | None = None,
+    cap_height: float | None = None,
+    up_axis: int = 1,
+    segments: int = default_num_segments,
+    compute_normals: bool = True,
+    compute_uvs: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Create arrow geometry data with optional normals and UVs."""
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
     if cap_radius is None:
@@ -1094,132 +1116,170 @@ def create_arrow_mesh(
     if cap_height is None:
         cap_height = base_height * 0.18
 
-    up_vector = np.array([0, 0, 0])
-    up_vector[up_axis] = 1
+    up_vector = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+    up_vector[up_axis] = 1.0
 
-    base_vertices, base_indices = create_cylinder_mesh(base_radius, base_height / 2, up_axis, segments)
-    cap_vertices, cap_indices = create_cone_mesh(cap_radius, cap_height / 2, up_axis, segments)
+    base_positions, base_indices, base_normals, base_uvs = create_mesh_cylinder(
+        base_radius,
+        base_height / 2,
+        up_axis=up_axis,
+        segments=segments,
+        compute_normals=compute_normals,
+        compute_uvs=compute_uvs,
+    )
+    cap_positions, cap_indices, cap_normals, cap_uvs = create_mesh_cone(
+        cap_radius,
+        cap_height / 2,
+        up_axis=up_axis,
+        segments=segments,
+        compute_normals=compute_normals,
+        compute_uvs=compute_uvs,
+    )
 
-    base_vertices[:, :3] += base_height / 2 * up_vector
-    # move cap slightly lower to avoid z-fighting
-    cap_vertices[:, :3] += (base_height + cap_height / 2 - 1e-3 * base_height) * up_vector
+    base_positions = base_positions.copy()
+    cap_positions = cap_positions.copy()
+    base_positions += base_height / 2 * up_vector
+    cap_positions += (base_height + cap_height / 2 - 1e-3 * base_height) * up_vector
 
-    vertex_data = np.vstack((base_vertices, cap_vertices))
-    index_data = np.hstack((base_indices, cap_indices + len(base_vertices)))
+    positions = np.vstack((base_positions, cap_positions))
+    indices = np.hstack((base_indices, cap_indices + len(base_positions)))
+    normals = None
+    uvs = None
+    if compute_normals:
+        normals = np.vstack((base_normals, cap_normals))
+    if compute_uvs:
+        uvs = np.vstack((base_uvs, cap_uvs))
+    return positions.astype(np.float32), indices.astype(np.uint32), normals, uvs
 
-    return vertex_data, index_data
 
+def create_mesh_box(
+    hx: float,
+    hy: float,
+    hz: float,
+    *,
+    duplicate_vertices: bool = True,
+    compute_normals: bool = True,
+    compute_uvs: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Create box geometry data with optional duplicated vertices, normals, and UVs."""
+    if duplicate_vertices:
+        # fmt: off
+        positions = np.array(
+            [
+                [-hx, -hy, -hz], [-hx, -hy,  hz], [-hx,  hy,  hz], [-hx,  hy, -hz],
+                [ hx, -hy, -hz], [ hx, -hy,  hz], [ hx,  hy,  hz], [ hx,  hy, -hz],
+                [-hx, -hy, -hz], [-hx, -hy,  hz], [ hx, -hy,  hz], [ hx, -hy, -hz],
+                [-hx,  hy, -hz], [-hx,  hy,  hz], [ hx,  hy,  hz], [ hx,  hy, -hz],
+                [-hx, -hy, -hz], [-hx,  hy, -hz], [ hx,  hy, -hz], [ hx, -hy, -hz],
+                [-hx, -hy,  hz], [-hx,  hy,  hz], [ hx,  hy,  hz], [ hx, -hy,  hz],
+            ],
+            dtype=np.float32,
+        )
+        indices = np.array(
+            [
+                 0,  1,  2,  0,  2,  3,   4,  6,  5,  4,  7,  6,
+                 8, 10,  9,  8, 11, 10,  12, 13, 14, 12, 14, 15,
+                16, 17, 18, 16, 18, 19,  20, 22, 21, 20, 23, 22,
+            ],
+            dtype=np.uint32,
+        )
+        # fmt: on
+        normals = None
+        uvs = None
+        if compute_normals:
+            normals = np.array(
+                [
+                    [-1, 0, 0],
+                    [-1, 0, 0],
+                    [-1, 0, 0],
+                    [-1, 0, 0],
+                    [1, 0, 0],
+                    [1, 0, 0],
+                    [1, 0, 0],
+                    [1, 0, 0],
+                    [0, -1, 0],
+                    [0, -1, 0],
+                    [0, -1, 0],
+                    [0, -1, 0],
+                    [0, 1, 0],
+                    [0, 1, 0],
+                    [0, 1, 0],
+                    [0, 1, 0],
+                    [0, 0, -1],
+                    [0, 0, -1],
+                    [0, 0, -1],
+                    [0, 0, -1],
+                    [0, 0, 1],
+                    [0, 0, 1],
+                    [0, 0, 1],
+                    [0, 0, 1],
+                ],
+                dtype=np.float32,
+            )
+        if compute_uvs:
+            face_uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)
+            uvs = np.vstack([face_uv] * 6).astype(np.float32)
+        return positions, indices, normals, uvs
 
-def create_box_mesh(extents):
-    """Create a rectangular box (cuboid) mesh.
-
-    Generates vertices and triangle indices for a box shape with 6 faces.
-    Each face consists of 2 triangles with proper normals pointing outward.
-
-    Args:
-        extents (tuple[float, float, float]): Half-extents of the box in each
-            dimension (half_width, half_length, half_height). The full box
-            dimensions will be twice these values.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - vertices (np.ndarray): Float32 array of shape (N, 8) where each
-              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
-              UV coords).
-            - indices (np.ndarray): Uint32 array of triangle indices for
-              rendering.
-    """
-    x_extent, y_extent, z_extent = extents
-
-    vertices = [
-        # Position                        Normal    UV
-        [-x_extent, -y_extent, -z_extent, -1, 0, 0, 0, 0],
-        [-x_extent, -y_extent, z_extent, -1, 0, 0, 1, 0],
-        [-x_extent, y_extent, z_extent, -1, 0, 0, 1, 1],
-        [-x_extent, y_extent, -z_extent, -1, 0, 0, 0, 1],
-        [x_extent, -y_extent, -z_extent, 1, 0, 0, 0, 0],
-        [x_extent, -y_extent, z_extent, 1, 0, 0, 1, 0],
-        [x_extent, y_extent, z_extent, 1, 0, 0, 1, 1],
-        [x_extent, y_extent, -z_extent, 1, 0, 0, 0, 1],
-        [-x_extent, -y_extent, -z_extent, 0, -1, 0, 0, 0],
-        [-x_extent, -y_extent, z_extent, 0, -1, 0, 1, 0],
-        [x_extent, -y_extent, z_extent, 0, -1, 0, 1, 1],
-        [x_extent, -y_extent, -z_extent, 0, -1, 0, 0, 1],
-        [-x_extent, y_extent, -z_extent, 0, 1, 0, 0, 0],
-        [-x_extent, y_extent, z_extent, 0, 1, 0, 1, 0],
-        [x_extent, y_extent, z_extent, 0, 1, 0, 1, 1],
-        [x_extent, y_extent, -z_extent, 0, 1, 0, 0, 1],
-        [-x_extent, -y_extent, -z_extent, 0, 0, -1, 0, 0],
-        [-x_extent, y_extent, -z_extent, 0, 0, -1, 1, 0],
-        [x_extent, y_extent, -z_extent, 0, 0, -1, 1, 1],
-        [x_extent, -y_extent, -z_extent, 0, 0, -1, 0, 1],
-        [-x_extent, -y_extent, z_extent, 0, 0, 1, 0, 0],
-        [-x_extent, y_extent, z_extent, 0, 0, 1, 1, 0],
-        [x_extent, y_extent, z_extent, 0, 0, 1, 1, 1],
-        [x_extent, -y_extent, z_extent, 0, 0, 1, 0, 1],
-    ]
-
+    positions = np.array(
+        [
+            [-hx, -hy, -hz],
+            [hx, -hy, -hz],
+            [hx, hy, -hz],
+            [-hx, hy, -hz],
+            [-hx, -hy, hz],
+            [hx, -hy, hz],
+            [hx, hy, hz],
+            [-hx, hy, hz],
+        ],
+        dtype=np.float32,
+    )
     # fmt: off
-    indices = [
-        0, 1, 2,
-        0, 2, 3,
-        4, 6, 5,
-        4, 7, 6,
-        8, 10, 9,
-        8, 11, 10,
-        12, 13, 14,
-        12, 14, 15,
-        16, 17, 18,
-        16, 18, 19,
-        20, 22, 21,
-        20, 23, 22,
-    ]
+    indices = np.array(
+        [
+            0, 2, 1, 0, 3, 2,  4, 5, 6, 4, 6, 7,
+            0, 1, 5, 0, 5, 4,  2, 3, 7, 2, 7, 6,
+            0, 4, 7, 0, 7, 3,  1, 2, 6, 1, 6, 5,
+        ],
+        dtype=np.uint32,
+    )
     # fmt: on
-    return np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32)
+    normals = None
+    uvs = None
+    if compute_normals:
+        normals = compute_vertex_normals(positions, indices).astype(np.float32)
+    if compute_uvs:
+        uvs = np.zeros((len(positions), 2), dtype=np.float32)
+    return positions, indices, normals, uvs
 
 
-def create_plane_mesh(width, length):
-    """Create a rectangular plane mesh in the XY plane.
-
-    Generates vertices and triangle indices for a flat rectangular plane
-    lying in the XY plane (Z=0) with upward-pointing normals.
-
-    Args:
-        width (float): Width of the plane in the X direction.
-        length (float): Length of the plane in the Y direction.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]: A tuple containing:
-            - vertices (np.ndarray): Float32 array of shape (4, 8) where each
-              vertex contains [x, y, z, nx, ny, nz, u, v] (position, normal,
-              UV coords). All vertices have Z=0 and normals pointing up
-              (0, 0, 1).
-            - indices (np.ndarray): Uint32 array of 6 triangle indices forming
-              2 triangles with counterclockwise winding.
-    """
+def create_mesh_plane(
+    width: float,
+    length: float,
+    *,
+    compute_normals: bool = True,
+    compute_uvs: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+    """Create plane geometry data with optional normals and UVs."""
     half_width = width / 2
     half_length = length / 2
-
-    # Create 4 vertices for a rectangle in XY plane (Z=0)
-    vertices = [
-        # Position                           Normal      UV
-        [-half_width, -half_length, 0.0, 0, 0, 1, 0, 0],  # bottom-left
-        [half_width, -half_length, 0.0, 0, 0, 1, 1, 0],  # bottom-right
-        [half_width, half_length, 0.0, 0, 0, 1, 1, 1],  # top-right
-        [-half_width, half_length, 0.0, 0, 0, 1, 0, 1],  # top-left
-    ]
-
-    # Create 2 triangles (6 indices) - counterclockwise winding
-    indices = [
-        0,
-        1,
-        2,  # first triangle
-        0,
-        2,
-        3,  # second triangle
-    ]
-
-    return (np.array(vertices, dtype=np.float32), np.array(indices, dtype=np.uint32))
+    positions = np.array(
+        [
+            [-half_width, -half_length, 0.0],
+            [half_width, -half_length, 0.0],
+            [half_width, half_length, 0.0],
+            [-half_width, half_length, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.uint32)
+    normals = None
+    uvs = None
+    if compute_normals:
+        normals = np.array([[0.0, 0.0, 1.0]] * 4, dtype=np.float32)
+    if compute_uvs:
+        uvs = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=np.float32)
+    return positions, indices, normals, uvs
 
 
 @wp.kernel

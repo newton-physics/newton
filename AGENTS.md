@@ -29,6 +29,7 @@
   - For compound arrays list per-component units, e.g. `[0] k_mu [Pa], [1] k_lambda [Pa], ...`.
   - When a parameter's interpretation varies across solvers, document each solver's convention instead of a single unit.
   - Skip non-physical fields (indices, keys, counts, flags).
+  - This rule applies to **public API docstrings only**, not test docstrings.
 - **Keep the documentation up-to-date.**
   - When adding new files or symbols that are part of the public-facing API, make sure to keep the auto-generated documentation updated by running `docs/generate_api.py`.
 - **Add examples to README.md**
@@ -139,6 +140,7 @@ Follow conventional commit message practices.
   - **Never commit first and run pre-commit after** - this requires amending commits and creates messy history
 - Keep commits focused and atomic—one logical change per commit.
 - Reference related issues in commit messages when applicable.
+- **When iterating on PR feedback**, prefer adding new commits over amending existing ones. This avoids force-pushing and lets the reviewer easily verify each change request was addressed.
 - **Do not include AI attribution or co-authorship lines** (e.g., "Co-Authored-By: Claude...") in commit messages. Commits should represent human contributions without explicit AI attribution.
 - **Commit message format**:
   - Separate subject from body with a blank line

@@ -29,6 +29,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.geometry.hashtable import hashtable_find_or_insert
 from newton._src.geometry.remesh import (
     PointCloudExtractor,
@@ -38,7 +39,6 @@ from newton._src.geometry.remesh import (
     compute_camera_basis,
     compute_voxel_key,
 )
-from newton.geometry import create_box_mesh
 
 # Check if Open3D is available for reconstruction tests
 OPEN3D_AVAILABLE = importlib.util.find_spec("open3d") is not None
@@ -56,7 +56,16 @@ def create_unit_cube_mesh(center: np.ndarray | None = None) -> tuple[np.ndarray,
     Returns:
         Tuple of (vertices, indices) where vertices is (8, 3) and indices is (36,).
     """
-    vertices, indices = create_box_mesh((0.5, 0.5, 0.5))
+    mesh = newton.Mesh.create_box(
+        0.5,
+        0.5,
+        0.5,
+        duplicate_vertices=False,
+        compute_normals=False,
+        compute_uvs=False,
+        compute_inertia=False,
+    )
+    vertices, indices = mesh.vertices, mesh.indices
     if center is not None:
         vertices = vertices + np.array(center, dtype=np.float32)
     return vertices, indices

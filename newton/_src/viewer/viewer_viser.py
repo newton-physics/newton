@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import inspect
+import os
 import warnings
 from pathlib import Path
 from typing import ClassVar
@@ -22,7 +23,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.utils import create_plane_mesh
 
 from ..core.types import override
 from ..utils.texture import load_texture, normalize_texture
@@ -600,11 +600,11 @@ class ViewerViser(ViewerBase):
             else:
                 width = geo_scale[0]
                 length = geo_scale[1] if len(geo_scale) > 1 else 10.0
-            vertices, indices = create_plane_mesh(width, length)
-            points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
-            normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
-            uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-            indices = wp.array(indices, dtype=wp.int32, device=self.device)
+            mesh = newton.Mesh.create_plane(width, length, compute_inertia=False)
+            points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+            normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+            uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+            indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
             self.log_mesh(name, points, indices, normals, uvs, hidden=hidden)
         else:
             super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src, hidden)
@@ -864,9 +864,18 @@ class ViewerViser(ViewerBase):
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
 
+        # Keep playbackPath relative so notebook proxy prefixes (e.g. /lab/proxy/<port>/)
+        # are preserved. Each viewer instance uses a different port, so paths stay distinct.
+        playback_path = "recording.viser"
         base_url = f"http://127.0.0.1:{port}"
+        player_url = f"{base_url}/?playbackPath={playback_path}"
 
-        # Create URL with playback path pointing to the served recording
-        player_url = f"{base_url}/?playbackPath=/recording.viser"
+        # Route through Jupyter's proxy when running in remote notebook environments.
+        jupyter_base_url = os.environ.get("JUPYTER_BASE_URL")
+        if jupyter_base_url:
+            if not jupyter_base_url.startswith("/"):
+                jupyter_base_url = "/" + jupyter_base_url
+            jupyter_base_url = jupyter_base_url.rstrip("/")
+            player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
 
         return player_url

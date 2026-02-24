@@ -23,7 +23,6 @@ import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
-from newton.utils import create_sphere_mesh
 
 from ..core.types import override
 from ..utils.render import copy_rgb_frame_uint8
@@ -307,13 +306,13 @@ class ViewerGL(ViewerBase):
         """
         Create a low-resolution sphere mesh for point rendering.
         """
-        vertices, indices = create_sphere_mesh(1.0, 6, 6)
-        self._point_mesh = MeshGL(len(vertices), len(indices), self.device)
+        mesh = nt.Mesh.create_sphere(1.0, num_latitudes=6, num_longitudes=6, compute_inertia=False)
+        self._point_mesh = MeshGL(len(mesh.vertices), len(mesh.indices), self.device)
 
-        points = wp.array(vertices[:, 0:3], dtype=wp.vec3, device=self.device)
-        normals = wp.array(vertices[:, 3:6], dtype=wp.vec3, device=self.device)
-        uvs = wp.array(vertices[:, 6:8], dtype=wp.vec2, device=self.device)
-        indices = wp.array(indices, dtype=wp.int32, device=self.device)
+        points = wp.array(mesh.vertices, dtype=wp.vec3, device=self.device)
+        normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
+        uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
+        indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
 
         self._point_mesh.update(points, indices, normals, uvs)
 
