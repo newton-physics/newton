@@ -1684,6 +1684,110 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
         assert_body_pair_filtered(builder, model, a, b)
 
 
+def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
+    """VBD rigid contact-force query returns valid per-contact buffers."""
+    builder = newton.ModelBuilder()
+    builder.default_shape_cfg.ke = 1.0e3
+    builder.default_shape_cfg.kd = 1.0e1
+    builder.default_shape_cfg.mu = 0.5
+
+    # Two overlapping dynamic boxes to guarantee rigid-rigid contact generation.
+    b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, label="box0")
+    b1 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()), mass=1.0, label="box1")
+    builder.add_shape_box(b0, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(b1, hx=0.1, hy=0.1, hz=0.1)
+
+    builder.color()
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+
+    state0 = model.state()
+    contacts = model.contacts()
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+
+    dt = 1.0 / 60.0
+
+    # Build contacts on the current state and query them directly.
+    # This keeps the test focused on contact-force extraction, not on integration dynamics.
+    model.collide(state0, contacts)
+
+    c_b0, c_b1, c_p0w, c_p1w, c_f_b1, c_count = solver.collect_rigid_contact_forces(state0, contacts, dt)
+    count = int(c_count.numpy()[0])
+
+    # Buffer lengths must match rigid contact capacity.
+    expected_len = int(contacts.rigid_contact_shape0.shape[0])
+    test.assertEqual(int(c_b0.shape[0]), expected_len)
+    test.assertEqual(int(c_b1.shape[0]), expected_len)
+    test.assertEqual(int(c_p0w.shape[0]), expected_len)
+    test.assertEqual(int(c_p1w.shape[0]), expected_len)
+    test.assertEqual(int(c_f_b1.shape[0]), expected_len)
+
+    # We set up overlapping boxes, so at least one rigid contact should be queryable.
+    test.assertGreater(count, 0, msg="Expected at least one rigid-rigid contact")
+
+    b0_np = c_b0.numpy()
+    b1_np = c_b1.numpy()
+    f_np = c_f_b1.numpy()
+    test.assertTrue(np.all(b0_np[:count] >= 0), msg="Invalid body0 ids in active contact range")
+    test.assertTrue(np.all(b1_np[:count] >= 0), msg="Invalid body1 ids in active contact range")
+    test.assertTrue(np.isfinite(f_np[:count]).all(), msg="Non-finite contact force values in active contact range")
+
+    force_norms = np.linalg.norm(f_np[:count], axis=1)
+    test.assertTrue(np.any(force_norms > 1.0e-8), msg="Expected at least one non-zero rigid contact force")
+
+
+def _skip_forward_stepping_masked_rigid_bodies_impl(test: unittest.TestCase, device):
+    """Skipped body stays fixed while unskipped body follows gravity-only analytic motion."""
+    builder = newton.ModelBuilder()
+
+    z0 = 0.0
+    b_skip = builder.add_body(mass=1.0, label="skip_body")
+    b_free = builder.add_body(mass=1.0, label="free_body")
+    builder.color()
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, -9.81))
+
+    state0 = model.state()
+    state1 = model.state()
+    control = model.control()
+    solver = newton.solvers.SolverVBD(model, iterations=1)
+    solver.set_rigid_forward_skip_body_ids([int(b_skip)])
+
+    dt = 1.0 / 60.0
+    num_steps = 10
+
+    for _ in range(num_steps):
+        state0.clear_forces()
+        solver.step(state0, state1, control, None, dt)
+        state0, state1 = state1, state0
+
+    assert state0.body_q is not None
+    q_final = state0.body_q.numpy()
+    z_skip = float(q_final[int(b_skip), 2])
+    z_free = float(q_final[int(b_free), 2])
+
+    # Semi-implicit Euler with constant acceleration:
+    # z_n = z0 + a * dt^2 * n * (n + 1) / 2
+    assert model.gravity is not None
+    accel_z = float(model.gravity.numpy()[0][2])
+    expected_z_free = z0 + accel_z * (dt * dt) * num_steps * (num_steps + 1) * 0.5
+
+    test.assertAlmostEqual(
+        z_skip,
+        z0,
+        places=7,
+        msg=f"Skipped body moved unexpectedly: z={z_skip:.8f}, expected {z0:.8f}",
+    )
+    test.assertAlmostEqual(
+        z_free,
+        expected_z_free,
+        delta=1.0e-5,
+        msg=f"Unskipped body z mismatch: z={z_free:.8f}, expected {expected_z_free:.8f}",
+    )
+    test.assertLess(z_free, z_skip, msg="Unskipped body should fall below skipped body under gravity")
+
+
 class TestCable(unittest.TestCase):
     pass
 
@@ -1764,6 +1868,18 @@ add_function_test(
     TestCable,
     "test_cable_graph_collision_filter_pairs",
     _cable_graph_collision_filter_pairs_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_collect_rigid_body_contact_forces",
+    _collect_rigid_body_contact_forces_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_skip_forward_stepping_masked_rigid_bodies",
+    _skip_forward_stepping_masked_rigid_bodies_impl,
     devices=devices,
 )
 
