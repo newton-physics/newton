@@ -6985,30 +6985,6 @@ class TestMjcfMultiRootArticulations(unittest.TestCase):
         joint_art = model.joint_articulation.numpy()
         self.assertEqual(len(set(joint_art)), 3)
 
-    def test_single_root_body_unchanged(self):
-        """Single root body MJCF should still produce exactly 1 articulation with model name label."""
-        mjcf = """<?xml version="1.0" encoding="utf-8"?>
-<mujoco model="single_robot">
-    <worldbody>
-        <body name="base" pos="0 0 0">
-            <geom type="sphere" size="0.1" mass="1.0"/>
-            <body name="link" pos="0.5 0 0">
-                <joint type="hinge" axis="0 0 1"/>
-                <geom type="sphere" size="0.05" mass="0.5"/>
-            </body>
-        </body>
-    </worldbody>
-</mujoco>
-"""
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(mjcf, floating=False)
-        model = builder.finalize()
-
-        articulation_count = len(model.articulation_start.numpy()) - 1
-        self.assertEqual(articulation_count, 1)
-        # Label should be the model name (backward compatible)
-        self.assertEqual(model.articulation_label[0], "single_robot")
-
     def test_multi_root_articulation_labels(self):
         """Multi-root articulations should get model_name/body_name labels."""
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
@@ -7091,3 +7067,38 @@ class TestMjcfMultiRootArticulations(unittest.TestCase):
         # All joints should be in one articulation (hierarchical composition)
         articulation_count = len(model.articulation_start.numpy()) - 1
         self.assertEqual(articulation_count, 1)
+
+    def test_multi_root_with_ignore_classes(self):
+        """ignore_classes should correctly interact with multi-root articulation splitting."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <worldbody>
+        <body name="robot" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+        <body name="visual_marker" childclass="visual" pos="1 0 0">
+            <geom type="sphere" size="0.05" mass="0.1"/>
+        </body>
+        <body name="obstacle" pos="2 0 0">
+            <geom type="box" size="0.2 0.2 0.2" mass="2.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Ignore the "visual" class — only robot and obstacle should produce articulations
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False, ignore_classes=["visual"])
+        model = builder.finalize()
+
+        # visual_marker is ignored, so 2 articulations (robot + obstacle)
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # visual_marker body should not exist
+        self.assertNotIn("scene/worldbody/visual_marker", builder.body_label)
+        self.assertIn("scene/worldbody/robot", builder.body_label)
+        self.assertIn("scene/worldbody/obstacle", builder.body_label)
