@@ -1463,17 +1463,7 @@ def verify_narrow_phase_buffers(
 
 
 class NarrowPhase:
-    class HydroelasticSDF(_HydroelasticSDF):
-        """NarrowPhase-scoped hydroelastic API wrapper.
-
-        This wrapper keeps the discoverable API path ``NarrowPhase.HydroelasticSDF``
-        without aliasing the exact same class object that is already documented in
-        ``newton.geometry``. Using a distinct subclass avoids duplicate Sphinx object
-        descriptions under ``-W`` docs builds.
-        """
-
-        class Config(_HydroelasticSDF.Config):
-            """Hydroelastic configuration namespace for NarrowPhase usage."""
+    HydroelasticSDF = _HydroelasticSDF
 
     def __init__(
         self,
@@ -1486,7 +1476,7 @@ class NarrowPhase:
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         shape_voxel_resolution: wp.array(dtype=wp.vec3i) | None = None,
         contact_writer_warp_func: Any | None = None,
-        hydroelastic_sdf: _HydroelasticSDF | None = None,
+        hydroelastic_sdf: NarrowPhase.HydroelasticSDF | None = None,
         has_meshes: bool = True,
         has_heightfields: bool = False,
     ):

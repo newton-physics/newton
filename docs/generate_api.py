@@ -122,6 +122,72 @@ def solver_submodule_pages() -> list[str]:
     return modules
 
 
+def _collect_nested_class_aliases(module: ModuleType, classes: list[str]) -> list[tuple[str, type]]:
+    """Return nested class aliases exposed from classes in *module*.
+
+    A nested class alias is a class-valued attribute on a parent class where the
+    target class is not lexically defined inside that parent (i.e. its qualname
+    does not start with ``<Parent>.<Alias>`` in the parent module).
+    """
+
+    aliases: list[tuple[str, type]] = []
+    public_top_level_classes: set[type] = set()
+    for class_name in classes:
+        class_obj = getattr(module, class_name, None)
+        if inspect.isclass(class_obj):
+            public_top_level_classes.add(class_obj)
+
+    for cls_name in classes:
+        cls_obj = getattr(module, cls_name, None)
+        if not inspect.isclass(cls_obj):
+            continue
+
+        parent_qual_prefix = f"{getattr(cls_obj, '__qualname__', cls_obj.__name__)}."
+        parent_module = getattr(cls_obj, "__module__", module.__name__)
+
+        for member_name, member_obj in vars(cls_obj).items():
+            if member_name.startswith("_"):
+                continue
+            if not inspect.isclass(member_obj):
+                continue
+
+            member_qualname = getattr(member_obj, "__qualname__", "")
+            member_module = getattr(member_obj, "__module__", "")
+            is_lexically_nested = member_module == parent_module and member_qualname.startswith(parent_qual_prefix)
+            if is_lexically_nested:
+                continue
+            # Only treat aliases to module-level public classes as API aliases.
+            if member_obj not in public_top_level_classes:
+                continue
+
+            aliases.append((f"{cls_name}.{member_name}", member_obj))
+
+    aliases.sort(key=lambda item: item[0])
+    # Deduplicate while preserving order.
+    seen: set[str] = set()
+    unique: list[tuple[str, type]] = []
+    for alias_name, alias_obj in aliases:
+        if alias_name in seen:
+            continue
+        seen.add(alias_name)
+        unique.append((alias_name, alias_obj))
+    return unique
+
+
+def _resolve_canonical_target_name(module: ModuleType, mod_name: str, target_cls: type) -> str:
+    """Return a stable canonical reference for *target_cls* in *module* when possible."""
+
+    for name in public_symbols(module):
+        try:
+            candidate = getattr(module, name)
+        except Exception:
+            continue
+        if inspect.isclass(candidate) and candidate is target_cls:
+            return f"{mod_name}.{name}"
+
+    return f"{target_cls.__module__}.{target_cls.__qualname__}"
+
+
 def write_module_page(mod_name: str) -> None:
     """Create an .rst file for *mod_name* under *OUTPUT_DIR*."""
 
@@ -226,6 +292,25 @@ def write_module_page(mod_name: str) -> None:
             )
             lines.extend([f"   {cls}" for cls in classes])
         lines.append("")
+
+    class_aliases = _collect_nested_class_aliases(module, classes)
+    if class_aliases and not is_solver_submodule:
+        lines.extend([".. rubric:: Nested Class Aliases", ""])
+        for alias_name, alias_target in class_aliases:
+            canonical = _resolve_canonical_target_name(module, mod_name, alias_target)
+            alias_doc = inspect.getdoc(alias_target) or ""
+            lines.extend(
+                [
+                    f".. py:class:: {alias_name}",
+                    f"   :canonical: {canonical}",
+                    "",
+                    f"   Alias of :class:`~{canonical}`.",
+                ]
+            )
+            if alias_doc:
+                lines.append("")
+                lines.extend([f"   {line}" if line else "   " for line in alias_doc.splitlines()])
+            lines.append("")
 
     if functions:
         functions.sort()
