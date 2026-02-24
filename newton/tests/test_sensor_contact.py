@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import types
 import unittest
 
 import warp as wp
@@ -79,6 +80,8 @@ class TestSensorContact(unittest.TestCase):
         model = MockModel()
         model.body_label = ["A", "B"]
         model.body_shapes = [entity_A, entity_B]
+        model.shape_body = wp.array([0, 0, 1], dtype=wp.int32, device=device)
+        model.shape_transform = wp.zeros(3, dtype=wp.transform, device=device)
 
         contact_sensor = SensorContact(model, sensing_obj_bodies="*", counterpart_bodies="*")
 
@@ -156,7 +159,7 @@ class TestSensorContact(unittest.TestCase):
                     forces=scenario["forces"],
                 )
 
-                contact_sensor.update(contacts)
+                contact_sensor.update(None, contacts)
 
                 self.assertIsNotNone(contact_sensor.net_force)
                 self.assertEqual(contact_sensor.net_force.shape, contact_sensor.shape)
@@ -169,6 +172,37 @@ class TestSensorContact(unittest.TestCase):
                 assert_np_equal(net_forces[1, 1], scenario["force_on_B_from_A"])
                 assert_np_equal(net_forces[0, 0], scenario["force_on_A_from_all"])
                 assert_np_equal(net_forces[1, 0], scenario["force_on_B_from_all"])
+
+    def test_sensing_obj_transforms(self):
+        """Test that sensing object transforms are computed correctly."""
+        device = wp.get_device()
+
+        model = MockModel()
+        model.body_label = ["A", "B"]
+        model.body_shapes = [(0,), (1,)]
+        model.shape_body = wp.array([0, 1], dtype=wp.int32, device=device)
+        model.shape_transform = wp.array(
+            [wp.transform_identity(), wp.transform_identity()], dtype=wp.transform, device=device
+        )
+
+        sensor = SensorContact(model, sensing_obj_bodies="*")
+
+        body_pos_a = wp.vec3(1.0, 2.0, 3.0)
+        body_pos_b = wp.vec3(4.0, 5.0, 6.0)
+        body_q = wp.array(
+            [wp.transform(body_pos_a, wp.quat_identity()), wp.transform(body_pos_b, wp.quat_identity())],
+            dtype=wp.transform,
+            device=device,
+        )
+        # lightweight stand-in for State
+        state = types.SimpleNamespace(body_q=body_q)
+
+        contacts = create_contacts(device, [], naconmax=1)
+        sensor.update(state, contacts)
+
+        transforms = sensor.sensing_obj_transforms.numpy()
+        assert_np_equal(transforms[0][:3], [1.0, 2.0, 3.0])
+        assert_np_equal(transforms[1][:3], [4.0, 5.0, 6.0])
 
 
 class TestSensorContactMuJoCo(unittest.TestCase):
@@ -230,7 +264,7 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
-        sensor.update(contacts)
+        sensor.update(state_in, contacts)
 
         forces = sensor.net_force.numpy()
         g = 9.81
@@ -296,8 +330,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
         solver.update_contacts(contacts, state_in)
-        sensor_abc.update(contacts)
-        sensor_base.update(contacts)
+        sensor_abc.update(state_in, contacts)
+        sensor_base.update(state_in, contacts)
 
         forces = sensor_abc.net_force.numpy()
         g = 9.81
