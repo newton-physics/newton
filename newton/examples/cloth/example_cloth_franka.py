@@ -21,6 +21,10 @@
 # showcasing its ability to handle complex contacts while ensuring it
 # remains intersection-free.
 #
+# The simulation runs in centimeter scale for better numerical behavior
+# of the VBD solver. A vis_state is used to convert back to meter scale
+# for visualization.
+#
 # Command: python -m newton.examples cloth_franka
 #
 ###########################################################################
@@ -132,7 +136,7 @@ def compute_body_jacobian(
 class Example:
     def __init__(self, viewer, args=None):
         # parameters
-        #   simulation
+        #   simulation (centimeter scale)
         self.add_cloth = True
         self.add_robot = True
         self.sim_substeps = 15
@@ -142,13 +146,16 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
-        #   contact
+        # visualization: simulation in cm, viewer in meters
+        self.viz_scale = 0.01
+
+        #   contact (cm scale)
         #       body-cloth contact
-        self.cloth_particle_radius = 0.008
-        self.cloth_body_contact_margin = 0.01
+        self.cloth_particle_radius = 0.8
+        self.cloth_body_contact_margin = 1.0
         #       self-contact
-        self.particle_self_contact_radius = 0.002
-        self.particle_self_contact_margin = 0.003
+        self.particle_self_contact_radius = 0.2
+        self.particle_self_contact_margin = 0.3
 
         self.soft_contact_ke = 100
         self.soft_contact_kd = 2e-3
@@ -165,7 +172,7 @@ class Example:
         self.bending_ke = 1e-4
         self.bending_kd = 1e-3
 
-        self.scene = ModelBuilder()
+        self.scene = ModelBuilder(gravity=-981.0)
         self.soft_contact_max = 1000000
 
         self.viewer = viewer
@@ -179,16 +186,16 @@ class Example:
             self.dof_q_per_world = franka.joint_coord_count
             self.dof_qd_per_world = franka.joint_dof_count
 
-        # add a table
+        # add a table (cm scale)
         self.scene.add_shape_box(
             -1,
             wp.transform(
-                wp.vec3(0.0, -0.5, 0.1),
+                wp.vec3(0.0, -50.0, 10.0),
                 wp.quat_identity(),
             ),
-            hx=0.4,
-            hy=0.4,
-            hz=0.1,
+            hx=40.0,
+            hy=40.0,
+            hz=10.0,
         )
 
         # add the T-shirt
@@ -205,10 +212,10 @@ class Example:
                 vertices=vertices,
                 indices=mesh_indices,
                 rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi),
-                pos=wp.vec3(0.0, 0.70, 0.28),
+                pos=wp.vec3(0.0, 70.0, 28.0),
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                density=0.2,
-                scale=0.01,
+                density=0.00002,
+                scale=1.0,
                 tri_ke=self.tri_ke,
                 tri_ka=self.tri_ka,
                 tri_kd=self.tri_kd,
@@ -265,9 +272,6 @@ class Example:
 
         self.cloth_solver: SolverVBD | None = None
         if self.add_cloth:
-            # initialize cloth solver
-            #   set edge rest angle to zero to disable bending, this is currently a workaround to make SolverVBD stable
-            #   TODO: fix SolverVBD's bending issue
             self.model.edge_rest_angle.zero_()
             self.cloth_solver = SolverVBD(
                 self.model,
@@ -285,11 +289,27 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(-0.6, 0.6, 1.24), -42.0, -58.0)
 
-        # create Warp arrays for gravity so we can swap Model.gravity during
-        # a simulation running under CUDA graph capture
-        self.gravity_zero = wp.zeros(1, dtype=wp.vec3)  # used for the robot solver
-        # gravity in cm/s^2
-        self.gravity_earth = wp.array(wp.vec3(0.0, 0.0, -9.81), dtype=wp.vec3)  # used for the cloth solver
+        # Visualization state for meter-scale rendering
+        self.viz_state = self.model.state()
+
+        # Pre-compute scaled shape data for meter-scale visualization.
+        # The viewer reads model.shape_transform and model.shape_scale during
+        # log_state, so we swap them temporarily in render().
+        self.sim_shape_transform = self.model.shape_transform
+        self.sim_shape_scale = self.model.shape_scale
+
+        xform_np = self.model.shape_transform.numpy().copy()
+        xform_np[:, :3] *= self.viz_scale
+        self.viz_shape_transform = wp.array(xform_np, dtype=wp.transform, device=self.model.device)
+
+        scale_np = self.model.shape_scale.numpy().copy()
+        scale_np *= self.viz_scale
+        self.viz_shape_scale = wp.array(scale_np, dtype=wp.vec3, device=self.model.device)
+
+        # gravity arrays for swapping during simulation
+        self.gravity_zero = wp.zeros(1, dtype=wp.vec3)
+        # gravity in cm/s²
+        self.gravity_earth = wp.array(wp.vec3(0.0, 0.0, -981.0), dtype=wp.vec3)
 
         # Ensure FK evaluation (for non-MuJoCo solvers):
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
@@ -346,12 +366,11 @@ class Example:
         builder.add_urdf(
             str(asset_path / "urdf" / "fr3_franka_hand.urdf"),
             xform=wp.transform(
-                (-0.5, -0.5, -0.1),
-                # (-0.5, -0.2, 0.5),
+                (-50.0, -50.0, -10.0),
                 wp.quat_identity(),
             ),
             floating=False,
-            scale=1,  # unit: cm
+            scale=100,  # URDF is in meters, scale to cm
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             force_show_colliders=False,
@@ -363,43 +382,43 @@ class Example:
 
         self.robot_key_poses = np.array(
             [
-                # translation_duration, gripper transform (3D position, 4D quaternion), gripper open (1) or closed (0)
-                # # top left
-                [2.5, 0.31, -0.60, 0.23, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, 0.31, -0.60, 0.23, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 0.26, -0.60, 0.26, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 0.12, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [3, -0.06, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, -0.06, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                # bottom right
-                [2, 0.15, -0.33, 0.31, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [3, 0.15, -0.33, 0.21, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [3, 0.15, -0.33, 0.21, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, 0.15, -0.33, 0.28, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [3, -0.02, -0.33, 0.28, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, -0.02, -0.33, 0.28, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                # translation_duration, gripper transform (3D position [cm], 4D quaternion), gripper activation
                 # top left
-                [2, -0.28, -0.60, 0.28, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, -0.28, -0.60, 0.20, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, -0.28, -0.60, 0.20, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, -0.18, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [3, 0.05, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, 0.05, -0.60, 0.31, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                # # bottom left
-                [3, -0.18, -0.30, 0.205, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [3, -0.18, -0.30, 0.205, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, -0.03, -0.30, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [3, -0.03, -0.30, 0.31, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, -0.03, -0.30, 0.31, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2.5, 31.0, -60.0, 23.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 31.0, -60.0, 23.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 26.0, -60.0, 26.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 12.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -6.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -6.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                # bottom right
+                [2, 15.0, -33.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, 15.0, -33.0, 21.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, 15.0, -33.0, 21.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 15.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -2.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, -2.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                # top left
+                [2, -28.0, -60.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -28.0, -60.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -28.0, -60.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -18.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, 5.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, 5.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                # bottom left
+                [3, -18.0, -30.0, 20.5, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [3, -18.0, -30.0, 20.5, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [3, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 # bottom
-                [2, -0.0, -0.21, 0.30, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, -0.0, -0.21, 0.20, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                [2, -0.0, -0.21, 0.20, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [2, -0.0, -0.21, 0.35, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, -0.0, -0.30, 0.35, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1.5, -0.0, -0.30, 0.35, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1.5, -0.0, -0.40, 0.35, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, -0.0, -0.40, 0.35, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -21.0, 30.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -21.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, 0.0, -21.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [2, 0.0, -21.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1.5, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
+                [1, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
             ],
             dtype=np.float32,
         )
@@ -413,7 +432,7 @@ class Example:
             [
                 0.0,
                 0.0,
-                0.22,
+                22.0,
             ],
             wp.quat_identity(),
         )
@@ -505,9 +524,9 @@ class Example:
         # 5. Combine primary task and null-space controller
         delta_q = J_inv @ delta_target + N @ delta_q_null
 
-        # Apply gripper finger control
-        delta_q[-2] = self.target[-1] * 0.04 - q[-2]
-        delta_q[-1] = self.target[-1] * 0.04 - q[-1]
+        # Apply gripper finger control (finger positions in cm)
+        delta_q[-2] = self.target[-1] * 4.0 - q[-2]
+        delta_q[-1] = self.target[-1] * 4.0 - q[-1]
 
         self.target_joint_qd.assign(delta_q)
 
@@ -563,13 +582,32 @@ class Example:
         if self.viewer is None:
             return
 
+        # Scale particle positions from cm to meters for visualization
+        positions = self.state_0.particle_q.numpy()
+        self.viz_state.particle_q = wp.array(positions * self.viz_scale, dtype=wp.vec3)
+
+        # Scale body positions from cm to meters for visualization
+        if self.model.body_count > 0:
+            body_q_np = self.state_0.body_q.numpy()
+            body_q_scaled = body_q_np.copy()
+            body_q_scaled[:, :3] *= self.viz_scale
+            self.viz_state.body_q = wp.array(body_q_scaled, dtype=wp.transform)
+
+        # Swap model shape data to meter-scale for rendering
+        self.model.shape_transform = self.viz_shape_transform
+        self.model.shape_scale = self.viz_shape_scale
+
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
+        self.viewer.log_state(self.viz_state)
         self.viewer.end_frame()
 
+        # Restore simulation shape data
+        self.model.shape_transform = self.sim_shape_transform
+        self.model.shape_scale = self.sim_shape_scale
+
     def test_final(self):
-        p_lower = wp.vec3(-0.36, -0.95, -0.05)
-        p_upper = wp.vec3(0.36, 0.05, 0.56)
+        p_lower = wp.vec3(-36.0, -95.0, -5.0)
+        p_upper = wp.vec3(36.0, 5.0, 56.0)
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
@@ -578,13 +616,13 @@ class Example:
         newton.examples.test_particle_state(
             self.state_0,
             "particle velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 2.0,
+            lambda q, qd: max(abs(qd)) < 200.0,
         )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
             "body velocities are within a reasonable range",
-            lambda q, qd: max(abs(qd)) < 0.7,
+            lambda q, qd: max(abs(qd)) < 70.0,
         )
 
 
