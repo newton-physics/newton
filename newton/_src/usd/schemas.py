@@ -25,7 +25,11 @@ from . import utils as usd
 
 
 def _physx_gap_from_prim(prim: Any) -> float | None:
-    """Compute Newton gap from PhysX: contactOffset - restOffset [m]. Returns None if either is unset (-inf)."""
+    """Compute Newton gap from PhysX: contactOffset - restOffset [m].
+
+    Returns None if either attribute is missing or -inf (PhysX uses -inf for "engine default").
+    Only when both are finite do we compute a concrete gap.
+    """
     contact_offset = usd.get_attribute(prim, "physxCollision:contactOffset")
     rest_offset = usd.get_attribute(prim, "physxCollision:restOffset")
     if contact_offset is None or rest_offset is None:

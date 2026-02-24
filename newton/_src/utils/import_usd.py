@@ -1872,18 +1872,15 @@ def parse_usd(
                     default=builder.default_shape_cfg.margin,
                     verbose=verbose,
                 )
-                gap_default = (
-                    builder.default_shape_cfg.gap if builder.default_shape_cfg.gap is not None else builder.rigid_gap
-                )
                 gap_val = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="gap",
-                    default=gap_default,
                     verbose=verbose,
                 )
-                # When gap is -inf (unset), pass None so builder uses rigid_gap.
-                gap_cfg = None if gap_val == float("-inf") else gap_val
+                if gap_val == float("-inf"):
+                    gap_val = builder.default_shape_cfg.gap
+                gap_cfg = gap_val
 
                 shape_params = {
                     "body": body_id,

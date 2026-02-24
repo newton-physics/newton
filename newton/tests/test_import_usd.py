@@ -4542,7 +4542,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_margin_parsing(self):
-        """Test that margin and gap are parsed correctly from USD (newton:contactMargin, newton:contactGap)."""
+        """Test that newton:contactMargin is parsed into shape margin [m]."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -4550,32 +4550,20 @@ def Xform "Articulation" (
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
 
-        # Create an articulation with a body
         articulation = UsdGeom.Xform.Define(stage, "/Articulation")
         UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
-
         body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
-        body_prim = body.GetPrim()
-        UsdPhysics.RigidBodyAPI.Apply(body_prim)
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
 
-        # Collider1: newton:contactMargin -> shape margin
         collider1 = UsdGeom.Cube.Define(stage, "/Articulation/Body/Collider1")
         collider1_prim = collider1.GetPrim()
         collider1_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider1_prim)
         collider1_prim.GetAttribute("newton:contactMargin").Set(0.05)
 
-        # Collider2: newton:contactGap -> shape gap
         collider2 = UsdGeom.Sphere.Define(stage, "/Articulation/Body/Collider2")
         collider2_prim = collider2.GetPrim()
-        collider2_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider2_prim)
-        collider2_prim.GetAttribute("newton:contactGap").Set(0.02)
-
-        # Collider3: no authoring (should use defaults)
-        collider3 = UsdGeom.Capsule.Define(stage, "/Articulation/Body/Collider3")
-        collider3_prim = collider3.GetPrim()
-        UsdPhysics.CollisionAPI.Apply(collider3_prim)
 
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.margin = 1e-5
@@ -4586,12 +4574,45 @@ def Xform "Articulation" (
 
         shape1_idx = result["path_shape_map"]["/Articulation/Body/Collider1"]
         shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
-        shape3_idx = result["path_shape_map"]["/Articulation/Body/Collider3"]
-
         self.assertAlmostEqual(model.shape_margin.numpy()[shape1_idx], 0.05, places=4)
-        self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.02, places=4)
-        self.assertAlmostEqual(model.shape_margin.numpy()[shape3_idx], 1e-5, places=6)
-        self.assertAlmostEqual(model.shape_gap.numpy()[shape3_idx], 0.01, places=4)
+        self.assertAlmostEqual(model.shape_margin.numpy()[shape2_idx], 1e-5, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_contact_gap_parsing(self):
+        """Test that newton:contactGap is parsed into shape gap [m]."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        articulation = UsdGeom.Xform.Define(stage, "/Articulation")
+        UsdPhysics.ArticulationRootAPI.Apply(articulation.GetPrim())
+        body = UsdGeom.Xform.Define(stage, "/Articulation/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+
+        collider1 = UsdGeom.Cube.Define(stage, "/Articulation/Body/Collider1")
+        collider1_prim = collider1.GetPrim()
+        collider1_prim.ApplyAPI("NewtonCollisionAPI")
+        UsdPhysics.CollisionAPI.Apply(collider1_prim)
+        collider1_prim.GetAttribute("newton:contactGap").Set(0.02)
+
+        collider2 = UsdGeom.Sphere.Define(stage, "/Articulation/Body/Collider2")
+        collider2_prim = collider2.GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider2_prim)
+
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.margin = 0.0
+        builder.default_shape_cfg.gap = 0.01
+        builder.rigid_gap = 0.01
+        result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        shape1_idx = result["path_shape_map"]["/Articulation/Body/Collider1"]
+        shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
+        self.assertAlmostEqual(model.shape_gap.numpy()[shape1_idx], 0.02, places=4)
+        self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.01, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
