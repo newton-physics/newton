@@ -30,7 +30,6 @@ def _make_single_sphere_model(device=None):
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-        key="body",
     )
     builder.add_shape_sphere(body=0, radius=0.5)
     return builder.finalize(device=device)
@@ -43,7 +42,6 @@ def _make_model_no_shapes(device=None):
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         mass=1.0,
         inertia=wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
-        key="body",
     )
     return builder.finalize(device=device)
 

@@ -34,8 +34,8 @@ class Picking:
     def __init__(
         self,
         model: newton.Model,
-        pick_stiffness: float = 500.0,
-        pick_damping: float = 50.0,
+        pick_stiffness: float = 50.0,
+        pick_damping: float = 5.0,
         world_offsets: wp.array | None = None,
     ) -> None:
         """

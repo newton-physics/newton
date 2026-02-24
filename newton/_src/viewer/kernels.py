@@ -100,7 +100,7 @@ def apply_picking_force_kernel(
     vel_at_offset = vel_com + wp.cross(angular_vel, offset)
     
     # Adjust force to mass for more adaptive manipulation of picked bodies.
-    force_multiplier = 1.0 + 0.1 * body_mass[pick_body]
+    force_multiplier = 10.0 + body_mass[pick_body]
 
     # Compute the force to apply
     force_at_offset = force_multiplier * (
