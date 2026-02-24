@@ -264,7 +264,8 @@ class TestNarrowPhase(unittest.TestCase):
             wp.array(geom_source, dtype=wp.uint64),
             wp.array(shape_contact_margin, dtype=wp.float32),
             wp.array(geom_collision_radius, dtype=wp.float32),
-            wp.zeros(len(geom_list), dtype=SDFData),  # shape_sdf_data - empty for non-mesh tests
+            wp.zeros(0, dtype=SDFData),  # sdf_data - empty compact table for non-mesh tests
+            wp.full(len(geom_list), -1, dtype=wp.int32),  # shape_sdf_index - no SDF for all shapes
             wp.full(
                 len(geom_list), ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32
             ),  # shape_flags - collision enabled, no hydroelastic
@@ -290,7 +291,8 @@ class TestNarrowPhase(unittest.TestCase):
             geom_source,
             shape_contact_margin,
             geom_collision_radius,
-            shape_sdf_data,
+            sdf_data,
+            shape_sdf_index,
             shape_flags,
             shape_collision_aabb_lower,
             shape_collision_aabb_upper,
@@ -318,7 +320,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
-            shape_sdf_data=shape_sdf_data,
+            sdf_data=sdf_data,
+            shape_sdf_index=shape_sdf_index,
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
@@ -1289,7 +1292,8 @@ class TestNarrowPhase(unittest.TestCase):
             dtype=wp.vec4,
         )
         geom_source = wp.zeros(3, dtype=wp.uint64)
-        shape_sdf_data = wp.zeros(3, dtype=SDFData)  # SDF data (not used in this test)
+        sdf_data = wp.zeros(0, dtype=SDFData)  # Compact SDF table (unused in this test)
+        shape_sdf_index = wp.full(3, -1, dtype=wp.int32)
         geom_collision_radius = wp.array([1e6, 0.2, 0.2], dtype=wp.float32)
         shape_flags = wp.full(3, ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32)  # Collision enabled, no hydroelastic
 
@@ -1330,7 +1334,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
-            shape_sdf_data=shape_sdf_data,
+            sdf_data=sdf_data,
+            shape_sdf_index=shape_sdf_index,
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
@@ -1365,7 +1370,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
-            shape_sdf_data=shape_sdf_data,
+            sdf_data=sdf_data,
+            shape_sdf_index=shape_sdf_index,
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,
@@ -1401,7 +1407,8 @@ class TestNarrowPhase(unittest.TestCase):
             shape_data=geom_data,
             shape_transform=geom_transform,
             shape_source=geom_source,
-            shape_sdf_data=shape_sdf_data,
+            sdf_data=sdf_data,
+            shape_sdf_index=shape_sdf_index,
             shape_contact_margin=shape_contact_margin,
             shape_collision_radius=geom_collision_radius,
             shape_flags=shape_flags,

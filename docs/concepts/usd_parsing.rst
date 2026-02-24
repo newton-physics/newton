@@ -37,14 +37,16 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 Mass and Inertia Precedence
 ---------------------------
 
-For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves inertial properties using the
-following precedence:
+For rigid bodies with ``UsdPhysics.MassAPI`` applied, Newton resolves each inertial property
+(mass, inertia, center of mass) independently.  Authored attributes take precedence;
+``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)`` provides baseline values for the rest.
 
-1. If both ``physics:mass`` and ``physics:diagonalInertia`` are authored on the rigid body, those
-   authored values are used directly (no mass-property recomputation).
-   If ``physics:centerOfMass`` is missing, ``(0, 0, 0)`` is used.
-   If ``physics:principalAxes`` is missing, identity rotation is used.
-2. If either mass or diagonal inertia is missing, Newton falls back to
+1. Authored ``physics:mass``, ``physics:diagonalInertia``, and ``physics:centerOfMass`` are
+   applied directly when present.  If ``physics:principalAxes`` is missing, identity rotation
+   is used.
+2. When ``physics:mass`` is authored but ``physics:diagonalInertia`` is not, the inertia
+   accumulated from collision shapes is scaled by ``authored_mass / accumulated_mass``.
+3. For any remaining unresolved properties, Newton falls back to
    ``UsdPhysics.RigidBodyAPI.ComputeMassProperties(...)``.
    In this fallback path, collider contributions use a two-level precedence:
 
@@ -63,8 +65,14 @@ following precedence:
       by USD during ``ComputeMassProperties(...)``. In other words, unit-density callback data does
       not mean authored densities are ignored.
 
-When a body mass value is resolved in either path, Newton always overwrites body mass and inverse
-mass for the imported body. If resolved mass is non-positive, inverse mass is set to ``0``.
+If resolved mass is non-positive, inverse mass is set to ``0``.
+
+.. tip::
+
+   For the most predictable results, fully author ``physics:mass``, ``physics:diagonalInertia``,
+   ``physics:principalAxes``, and ``physics:centerOfMass`` on each rigid body.  This avoids any
+   fallback heuristics and is also the fastest import path since ``ComputeMassProperties(...)``
+   can be skipped entirely.
 
 .. _schema_resolvers:
 

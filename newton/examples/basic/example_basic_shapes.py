@@ -62,29 +62,31 @@ class Example:
 
         # SPHERE
         self.sphere_pos = wp.vec3(0.0, -2.0, drop_z)
-        body_sphere = builder.add_body(xform=wp.transform(p=self.sphere_pos, q=wp.quat_identity()), key="sphere")
+        body_sphere = builder.add_body(xform=wp.transform(p=self.sphere_pos, q=wp.quat_identity()), label="sphere")
         builder.add_shape_sphere(body_sphere, radius=0.5)
 
         # ELLIPSOID (flat disk shape: a=b > c for stability when resting on ground)
         self.ellipsoid_pos = wp.vec3(0.0, -6.0, drop_z)
         body_ellipsoid = builder.add_body(
-            xform=wp.transform(p=self.ellipsoid_pos, q=wp.quat_identity()), key="ellipsoid"
+            xform=wp.transform(p=self.ellipsoid_pos, q=wp.quat_identity()), label="ellipsoid"
         )
         builder.add_shape_ellipsoid(body_ellipsoid, a=0.5, b=0.5, c=0.25)
 
         # CAPSULE
         self.capsule_pos = wp.vec3(0.0, 0.0, drop_z)
-        body_capsule = builder.add_body(xform=wp.transform(p=self.capsule_pos, q=wp.quat_identity()), key="capsule")
+        body_capsule = builder.add_body(xform=wp.transform(p=self.capsule_pos, q=wp.quat_identity()), label="capsule")
         builder.add_shape_capsule(body_capsule, radius=0.3, half_height=0.7)
 
         # CYLINDER
         self.cylinder_pos = wp.vec3(0.0, -4.0, drop_z)
-        body_cylinder = builder.add_body(xform=wp.transform(p=self.cylinder_pos, q=wp.quat_identity()), key="cylinder")
+        body_cylinder = builder.add_body(
+            xform=wp.transform(p=self.cylinder_pos, q=wp.quat_identity()), label="cylinder"
+        )
         builder.add_shape_cylinder(body_cylinder, radius=0.4, half_height=0.6)
 
         # BOX
         self.box_pos = wp.vec3(0.0, 2.0, drop_z)
-        body_box = builder.add_body(xform=wp.transform(p=self.box_pos, q=wp.quat_identity()), key="box")
+        body_box = builder.add_body(xform=wp.transform(p=self.box_pos, q=wp.quat_identity()), label="box")
         builder.add_shape_box(body_box, hx=0.5, hy=0.35, hz=0.25)
 
         # MESH (bunny)
@@ -92,12 +94,12 @@ class Example:
         demo_mesh = newton.usd.get_mesh(usd_stage.GetPrimAtPath("/root/bunny"))
 
         self.mesh_pos = wp.vec3(0.0, 4.0, drop_z - 0.5)
-        body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), key="mesh")
+        body_mesh = builder.add_body(xform=wp.transform(p=self.mesh_pos, q=wp.quat(0.5, 0.5, 0.5, 0.5)), label="mesh")
         builder.add_shape_mesh(body_mesh, mesh=demo_mesh)
 
         # CONE (no collision support in the standard collision pipeline)
         self.cone_pos = wp.vec3(0.0, 6.0, drop_z)
-        body_cone = builder.add_body(xform=wp.transform(p=self.cone_pos, q=wp.quat_identity()), key="cone")
+        body_cone = builder.add_body(xform=wp.transform(p=self.cone_pos, q=wp.quat_identity()), label="cone")
         builder.add_shape_cone(body_cone, radius=0.45, half_height=0.6)
 
         # Color rigid bodies for VBD solver
@@ -120,12 +122,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(
-            self.model,
-            args,
-        )
-        self.contacts = self.collision_pipeline.contacts()
+        self.contacts = self.model.contacts()
 
         self.viewer.set_model(self.model)
 
@@ -146,7 +143,7 @@ class Example:
             # apply forces to the model
             self.viewer.apply_forces(self.state_0)
 
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
 
             # swap states

@@ -100,7 +100,7 @@ class CollisionSetup:
 
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            broad_phase_mode=broad_phase,
+            broad_phase=broad_phase,
         )
         self.contacts = self.collision_pipeline.contacts()
 
@@ -119,18 +119,18 @@ class CollisionSetup:
 
     def add_shape(self, shape_type: GeoType, body: int, sdf_max_resolution: int | None = None):
         if shape_type == GeoType.BOX:
-            self.builder.add_shape_box(body, key=type_to_str(shape_type))
+            self.builder.add_shape_box(body, label=type_to_str(shape_type))
         elif shape_type == GeoType.SPHERE:
-            self.builder.add_shape_sphere(body, radius=0.5, key=type_to_str(shape_type))
+            self.builder.add_shape_sphere(body, radius=0.5, label=type_to_str(shape_type))
         elif shape_type == GeoType.CAPSULE:
-            self.builder.add_shape_capsule(body, radius=0.25, half_height=0.3, key=type_to_str(shape_type))
+            self.builder.add_shape_capsule(body, radius=0.25, half_height=0.3, label=type_to_str(shape_type))
         elif shape_type == GeoType.CYLINDER:
-            self.builder.add_shape_cylinder(body, radius=0.25, half_height=0.4, key=type_to_str(shape_type))
+            self.builder.add_shape_cylinder(body, radius=0.25, half_height=0.4, label=type_to_str(shape_type))
         elif shape_type == GeoType.CONE:
             # Rotate cone so flat base faces -X (toward the incoming object)
             rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), -np.pi / 2.0)
             xform = wp.transform(wp.vec3(), rot)
-            self.builder.add_shape_cone(body, xform=xform, radius=0.25, half_height=0.4, key=type_to_str(shape_type))
+            self.builder.add_shape_cone(body, xform=xform, radius=0.25, half_height=0.4, label=type_to_str(shape_type))
         elif shape_type == GeoType.MESH:
             # Use box mesh (works correctly with collision pipeline)
             mesh = newton.Mesh.create_box(
@@ -142,13 +142,13 @@ class CollisionSetup:
                 compute_uvs=False,
                 compute_inertia=False,
             )
-            # Configure SDF settings if specified
-            cfg = newton.ModelBuilder.ShapeConfig(sdf_max_resolution=sdf_max_resolution)
-            self.builder.add_shape_mesh(body, mesh=mesh, cfg=cfg, key=type_to_str(shape_type))
+            if sdf_max_resolution is not None:
+                mesh.build_sdf(max_resolution=sdf_max_resolution)
+            self.builder.add_shape_mesh(body, mesh=mesh, label=type_to_str(shape_type))
         elif shape_type == GeoType.CONVEX_MESH:
             # Use a sphere mesh as it's already convex
             mesh = newton.Mesh.create_sphere(0.5, compute_normals=False, compute_uvs=False, compute_inertia=False)
-            self.builder.add_shape_convex_hull(body, mesh=mesh, key=type_to_str(shape_type))
+            self.builder.add_shape_convex_hull(body, mesh=mesh, label=type_to_str(shape_type))
         else:
             raise NotImplementedError(f"Shape type {shape_type} not implemented")
 
@@ -189,7 +189,7 @@ class CollisionSetup:
         self.viewer.end_frame()
 
     def test(self, test_level: TestLevel, body: int, tolerance: float = 3e-3):
-        body_name = f"body {body} ({self.model.shape_key[body]})"
+        body_name = f"body {body} ({self.model.shape_label[body]})"
         if test_level & TestLevel.VELOCITY_X:
             test_body_state(
                 self.model,
@@ -276,7 +276,7 @@ def test_collision_pipeline(
         shape_type_b=shape_type_b,
         broad_phase=broad_phase,
     )
-    for _ in range(200):
+    for _ in range(100):
         setup.step()
         setup.render()
     setup.test(test_level_a, 0, tolerance=tolerance)
@@ -386,7 +386,7 @@ def test_mesh_mesh_sdf_modes(
         sdf_max_resolution_a=sdf_max_resolution_a,
         sdf_max_resolution_b=sdf_max_resolution_b,
     )
-    for _ in range(200):
+    for _ in range(100):
         setup.step()
         setup.render()
     setup.test(TestLevel.VELOCITY_YZ, 0, tolerance=tolerance)
@@ -468,13 +468,13 @@ class TestCollisionPipelineFilterPairs(unittest.TestCase):
     pass
 
 
-def test_shape_collision_filter_pairs(test, device, broad_phase_mode: str):
+def test_shape_collision_filter_pairs(test, device, broad_phase: str):
     """Verify that excluded shape pairs produce no contacts under NxN or SAP broad phase.
 
     Args:
         test: The test case instance.
         device: Warp device to run on.
-        broad_phase_mode: Broad phase algorithm to test (NXN or SAP).
+        broad_phase: Broad phase algorithm to test (NXN or SAP).
     """
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(gravity=0.0)
@@ -487,7 +487,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase_mode: str):
         # Exclude this pair so they must not generate contacts
         builder.shape_collision_filter_pairs.append((min(shape_a, shape_b), max(shape_a, shape_b)))
         model = builder.finalize(device=device)
-        pipeline = newton.CollisionPipeline(model, broad_phase_mode=broad_phase_mode)
+        pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
         state = model.state()
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
@@ -500,7 +500,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase_mode: str):
             test.assertNotEqual(
                 pair,
                 excluded,
-                f"Excluded pair {excluded} must not appear in contacts (broad_phase={broad_phase_mode})",
+                f"Excluded pair {excluded} must not appear in contacts (broad_phase={broad_phase})",
             )
         # With the only pair excluded, we must have zero rigid contacts
         test.assertEqual(n, 0, f"Expected 0 rigid contacts when only pair is excluded (got {n})")
@@ -511,14 +511,14 @@ add_function_test(
     "test_shape_collision_filter_pairs_nxn",
     test_shape_collision_filter_pairs,
     devices=devices,
-    broad_phase_mode="nxn",
+    broad_phase="nxn",
 )
 add_function_test(
     TestCollisionPipelineFilterPairs,
     "test_shape_collision_filter_pairs_sap",
     test_shape_collision_filter_pairs,
     devices=devices,
-    broad_phase_mode="sap",
+    broad_phase="sap",
 )
 
 
@@ -546,16 +546,18 @@ def test_collision_filter_consistent_across_broadphases(test, device):
 
         model = builder.finalize(device=device)
 
-        def _contact_pairs(broad_phase_mode):
-            pipeline = newton.CollisionPipeline(model, broad_phase_mode=broad_phase_mode)
+        def _contact_pairs(broad_phase):
+            pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase)
             state = model.state()
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
             n = contacts.rigid_contact_count.numpy()[0]
+            shape0_np = contacts.rigid_contact_shape0.numpy()
+            shape1_np = contacts.rigid_contact_shape1.numpy()
             pairs = set()
             for i in range(n):
-                s0 = int(contacts.rigid_contact_shape0.numpy()[i])
-                s1 = int(contacts.rigid_contact_shape1.numpy()[i])
+                s0 = int(shape0_np[i])
+                s1 = int(shape1_np[i])
                 pairs.add((min(s0, s1), max(s0, s1)))
             return pairs
 

@@ -891,6 +891,7 @@ def apply_joint_forces(
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
+    joint_X_c: wp.array(dtype=wp.transform),
     joint_qd_start: wp.array(dtype=int),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
     joint_axis: wp.array(dtype=wp.vec3),
@@ -907,7 +908,7 @@ def apply_joint_forces(
     id_p = joint_parent[tid]
 
     X_pj = joint_X_p[tid]
-    # X_cj = joint_X_c[tid]
+    X_cj = joint_X_c[tid]
 
     X_wp = X_pj
     pose_p = X_pj
@@ -921,7 +922,7 @@ def apply_joint_forces(
 
     # child transform and moment arm
     pose_c = body_q[id_c]
-    X_wc = pose_c
+    X_wc = pose_c * X_cj
     com_c = body_com[id_c]
     r_c = wp.transform_get_translation(X_wc) - wp.transform_point(pose_c, com_c)
 

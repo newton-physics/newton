@@ -171,7 +171,7 @@ class TestInertiaValidation(unittest.TestCase):
         body_idx = builder.add_body(
             mass=0.05,  # Below bound
             inertia=invalid_inertia,  # Violates triangle inequality
-            key="test_body",
+            label="test_body",
         )
 
         with warnings.catch_warnings(record=True) as w:
@@ -206,7 +206,7 @@ class TestInertiaValidation(unittest.TestCase):
         body_idx = builder.add_body(
             mass=0.05,  # Below bound
             inertia=invalid_inertia,  # Violates triangle inequality
-            key="test_body",
+            label="test_body",
         )
 
         with warnings.catch_warnings(record=True) as w:
@@ -243,7 +243,7 @@ class TestInertiaValidation(unittest.TestCase):
         # Add a body with negative mass
         body_idx = builder.add_body(
             mass=-1.0,  # Negative mass - critical issue
-            key="test_body",
+            label="test_body",
         )
 
         with warnings.catch_warnings(record=True) as w:

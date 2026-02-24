@@ -90,7 +90,7 @@ def test_fk_with_indices(test, device):
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1, j2], key=f"pendulum_{i}")
+        builder.add_articulation([j1, j2], label=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -168,7 +168,7 @@ def test_ik_with_indices(test, device):
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1, j2], key=f"pendulum_{i}")
+        builder.add_articulation([j1, j2], label=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -248,7 +248,7 @@ def test_isaac_lab_use_case(test, device):
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1, j2], key=f"env_{i}")
+        builder.add_articulation([j1, j2], label=f"env_{i}")
 
     model = builder.finalize(device=device)
 
