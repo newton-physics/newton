@@ -478,11 +478,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # principal axis ordering and orientation. Compare via compare_inertia_tensors() instead.
     "body_inertia",
     "body_iquat",
-    # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
-    "body_invweight0",
-    # Recomputed from joint transforms; small float diff. Backfilled.
-    "body_pos",
-    "body_quat",
     # Collision filtering: Newton uses different representation but equivalent behavior
     "geom_conaffinity",
     "geom_contype",
@@ -523,8 +518,12 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "M_",
     # Compilation-dependent fields: validated at 1e-3 by compare_compiled_model_fields()
     # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
+    "body_invweight0",
+    # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
     # Derived from inertia and dof_armature by set_const_0. Backfilled.
     "dof_invweight0",
+    "body_pos",
+    "body_quat",
     "body_subtreemass",
     # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
     # re-diagonalization. Backfilled instead.
@@ -752,6 +751,62 @@ def compare_solref_physics(
         atol=0,
         err_msg=f"{field_name} kd mismatch (physics-equivalent)",
     )
+
+
+def compare_geom_sizes(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 1e-6,
+) -> None:
+    """Compare geom_size with type-specific semantics (direct index comparison).
+
+    MuJoCo stores 3 floats per geom in geom_size, but only a subset is
+    meaningful depending on the geom type:
+        - Plane (0): skip (infinite extent, size is cosmetic).
+        - Sphere (2): only radius (size[0]).
+        - Capsule (3), Cylinder (5): radius and half-length (size[:2]).
+        - All others: all 3 components.
+    """
+    ngeom = newton_mjw.ngeom
+    assert ngeom == native_mjw.ngeom, f"ngeom mismatch: newton={ngeom} vs native={native_mjw.ngeom}"
+
+    GEOM_PLANE = 0
+
+    newton_type = newton_mjw.geom_type.numpy()
+    newton_size = newton_mjw.geom_size.numpy()
+    native_size = native_mjw.geom_size.numpy()
+
+    for w in range(newton_size.shape[0]):
+        for g in range(ngeom):
+            gtype = newton_type[g]
+            n_sz = newton_size[w, g]
+            nat_sz = native_size[w, g]
+            if gtype == GEOM_PLANE:
+                continue
+            elif gtype == 2:  # SPHERE
+                np.testing.assert_allclose(
+                    n_sz[0],
+                    nat_sz[0],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"geom_size[{w},{g}] (SPHERE) radius",
+                )
+            elif gtype in (3, 5):  # CAPSULE, CYLINDER
+                np.testing.assert_allclose(
+                    n_sz[:2],
+                    nat_sz[:2],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"geom_size[{w},{g}] (CAPSULE/CYLINDER)",
+                )
+            else:
+                np.testing.assert_allclose(
+                    n_sz,
+                    nat_sz,
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"geom_size[{w},{g}] (type={gtype})",
+                )
 
 
 def compare_geom_fields_unordered(

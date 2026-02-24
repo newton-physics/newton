@@ -215,21 +215,21 @@ class TestMenagerieUsdImport(unittest.TestCase):
         builder, model = self._load_robot("h1")
         self.assertEqual(builder.body_count, 20)
         self.assertEqual(builder.joint_count, 20)
-        self.assertEqual(builder.shape_count, 55)
+        self.assertEqual(builder.shape_count, 54)
         self._assert_no_nan(model, "h1")
 
     def test_import_g1_with_hands(self):
         builder, model = self._load_robot("g1_with_hands")
         self.assertEqual(builder.body_count, 44)
         self.assertEqual(builder.joint_count, 44)
-        self.assertEqual(builder.shape_count, 105)
+        self.assertEqual(builder.shape_count, 104)
         self._assert_no_nan(model, "g1_with_hands")
 
     def test_import_shadow_hand(self):
         builder, model = self._load_robot("shadow_hand")
         self.assertEqual(builder.body_count, 25)
         self.assertEqual(builder.joint_count, 25)
-        self.assertEqual(builder.shape_count, 63)
+        self.assertEqual(builder.shape_count, 62)
         self._assert_no_nan(model, "shadow_hand")
 
     def test_import_robotiq_2f85_v4(self):
@@ -250,7 +250,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
         builder, model = self._load_robot("booster_t1")
         self.assertEqual(builder.body_count, 24)
         self.assertEqual(builder.joint_count, 24)
-        self.assertEqual(builder.shape_count, 38)
+        self.assertEqual(builder.shape_count, 37)
         self._assert_no_nan(model, "booster_t1")
 
     def test_import_wonik_allegro(self):

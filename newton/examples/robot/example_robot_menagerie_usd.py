@@ -16,8 +16,8 @@
 ###########################################################################
 # Example Robot Menagerie USD
 #
-# Parameterized example for visualizing and testing MuJoCo Menagerie
-# robot assets that have been converted to USD format.
+# Parameterized example for visualizing MuJoCo Menagerie robot assets
+# that have been converted to USD format, simulated with SolverMuJoCo.
 #
 # Usage:
 #   uv run -m newton.examples robot_menagerie_usd --robot h1
@@ -25,11 +25,16 @@
 #   uv run -m newton.examples robot_menagerie_usd --robot shadow_hand
 #
 # Available robots:
-#   apptronik_apollo, g1_with_hands, h1,
+#   apptronik_apollo, booster_t1, g1_with_hands, h1,
 #   robotiq_2f85_v4, shadow_hand, wonik_allegro
+#
+# Asset resolution:
+#   Set NEWTON_ASSETS_PATH to the root of the newton-assets repo.
+#   Falls back to newton/tests/assets/menagerie/ for local assets.
 #
 ###########################################################################
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -37,48 +42,88 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton import ActuatorMode
 
-# Menagerie USD asset configurations.
-# TODO: Migrate to newton-assets repo. When available, replace local paths with
-# download_asset("menagerie/<robot>") from newton._src.utils.download_assets.
+# ---------------------------------------------------------------------------
+# Asset resolution
+# ---------------------------------------------------------------------------
+
+NEWTON_ASSETS_PATH_ENV = "NEWTON_ASSETS_PATH"
+LOCAL_TEST_ASSETS = Path(__file__).parent.parent.parent / "tests" / "assets" / "menagerie"
+
+
+def _assets_root() -> Path:
+    """Return the menagerie USD assets root directory.
+
+    Checks NEWTON_ASSETS_PATH env var first, then falls back to the local
+    test assets bundled in the Newton repo.
+    """
+    env = os.environ.get(NEWTON_ASSETS_PATH_ENV)
+    if env:
+        return Path(env)
+    return LOCAL_TEST_ASSETS
+
+
+# ---------------------------------------------------------------------------
+# Robot configurations
+# ---------------------------------------------------------------------------
+# Each entry maps a robot key to its USD scene file path (relative to
+# the assets root), plus visualization parameters.
+#
+# The ``usd_scene`` paths follow the layout in newton/tests/assets/menagerie/.
+# The ``menagerie_folder`` and ``menagerie_xml`` fields mirror the
+# MENAGERIE_USD_ASSETS registry in test_menagerie_usd_mujoco.py.
+
 MENAGERIE_USD_ROBOTS = {
     "apptronik_apollo": {
-        "path": "newton/tests/assets/menagerie/apptronik_apollo/apptronik_apollo scene.usda",
+        "usd_scene": "apptronik_apollo/apptronik_apollo scene.usda",
+        "menagerie_folder": "apptronik_apollo",
+        "menagerie_xml": "apptronik_apollo.xml",
+        "initial_height": 1.0,
+        "is_floating": True,
+    },
+    "booster_t1": {
+        "usd_scene": "booster_t1/t1 scene.usda",
+        "menagerie_folder": "booster_t1",
+        "menagerie_xml": "t1.xml",
         "initial_height": 1.0,
         "is_floating": True,
     },
     "g1_with_hands": {
-        "path": "newton/tests/assets/menagerie/g1_with_hands/g1_29dof_with_hand_rev_1_0 scene.usda",
+        "usd_scene": "g1_with_hands/g1_29dof_with_hand_rev_1_0 scene.usda",
+        "menagerie_folder": "unitree_g1",
+        "menagerie_xml": "g1_with_hands.xml",
         "initial_height": 0.8,
         "is_floating": True,
     },
     "h1": {
-        "path": "newton/tests/assets/menagerie/h1/h1 scene.usda",
+        "usd_scene": "h1/h1 scene.usda",
+        "menagerie_folder": "unitree_h1",
+        "menagerie_xml": "h1.xml",
         "initial_height": 1.0,
         "is_floating": True,
     },
     "robotiq_2f85_v4": {
-        "path": "newton/tests/assets/menagerie/robotiq_2f85_v4/2f85 scene.usda",
+        "usd_scene": "robotiq_2f85_v4/2f85 scene.usda",
+        "menagerie_folder": "robotiq_2f85_v4",
+        "menagerie_xml": "2f85.xml",
         "initial_height": 0.3,
         "is_floating": False,
     },
     "shadow_hand": {
-        "path": "newton/tests/assets/menagerie/shadow_hand/right_shadow_hand scene.usda",
+        "usd_scene": "shadow_hand/right_shadow_hand scene.usda",
+        "menagerie_folder": "shadow_hand",
+        "menagerie_xml": "left_hand.xml",
         "initial_height": 0.5,
         "is_floating": False,
     },
     "wonik_allegro": {
-        "path": "newton/tests/assets/menagerie/wonik_allegro/allegro_right.usda",
+        "usd_scene": "wonik_allegro/allegro_right.usda",
+        "menagerie_folder": "wonik_allegro",
+        "menagerie_xml": "left_hand.xml",
         "initial_height": 0.5,
         "is_floating": False,
     },
 }
-
-
-def get_repo_root() -> Path:
-    """Get the newton repository root directory."""
-    return Path(__file__).parent.parent.parent.parent
 
 
 class Example:
@@ -96,28 +141,25 @@ class Example:
         self.viewer = viewer
         self.device = wp.get_device()
 
-        # Get robot config
         if robot_name not in MENAGERIE_USD_ROBOTS:
             raise ValueError(f"Unknown robot: {robot_name}. Available: {list(MENAGERIE_USD_ROBOTS.keys())}")
 
         robot_config = MENAGERIE_USD_ROBOTS[robot_name]
-        asset_path = get_repo_root() / robot_config["path"]
+        asset_path = _assets_root() / robot_config["usd_scene"]
 
         if not asset_path.exists():
-            raise FileNotFoundError(f"Asset not found: {asset_path}")
+            raise FileNotFoundError(
+                f"Asset not found: {asset_path}\n"
+                f"Set {NEWTON_ASSETS_PATH_ENV} to the newton-assets repo root, or ensure "
+                f"local test assets exist at {LOCAL_TEST_ASSETS}."
+            )
 
-        # Build robot template
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverMuJoCo.register_custom_attributes(robot_builder)
-        robot_builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(
-            limit_ke=1.0e3,
-            limit_kd=1.0e1,
-            friction=1e-5,
-        )
-        robot_builder.default_shape_cfg.ke = 2.0e3
-        robot_builder.default_shape_cfg.kd = 1.0e2
-        robot_builder.default_shape_cfg.kf = 1.0e3
-        robot_builder.default_shape_cfg.mu = 0.75
+
+        robot_builder.default_shape_cfg.mu = 1.0
+        robot_builder.default_shape_cfg.mu_torsional = 0.005
+        robot_builder.default_shape_cfg.mu_rolling = 0.0001
 
         initial_height = robot_config["initial_height"]
         robot_builder.add_usd(
@@ -128,16 +170,8 @@ class Example:
             hide_collision_shapes=True,
         )
 
-        # Approximate meshes for faster collision detection
         robot_builder.approximate_meshes("bounding_box")
 
-        # Set joint actuator properties
-        for i in range(robot_builder.joint_dof_count):
-            robot_builder.joint_target_ke[i] = 150.0
-            robot_builder.joint_target_kd[i] = 5.0
-            robot_builder.joint_act_mode[i] = int(ActuatorMode.POSITION)
-
-        # Build main model with replication
         builder = newton.ModelBuilder()
         builder.replicate(robot_builder, self.num_worlds)
 
@@ -147,7 +181,6 @@ class Example:
 
         self.model = builder.finalize()
 
-        # Create solver
         self.solver = newton.solvers.SolverMuJoCo(
             self.model,
             iterations=100,
@@ -161,10 +194,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        # Initialize FK
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Create collision pipeline
         self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
         self.contacts = self.collision_pipeline.contacts()
         self.collision_pipeline.collide(self.state_0, self.contacts)
@@ -185,13 +216,8 @@ class Example:
         self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-
-            # Apply forces for picking, wind, etc.
             self.viewer.apply_forces(self.state_0)
-
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
-
-            # Swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -209,7 +235,9 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        # Check that all bodies are above the ground
+        body_q = self.state_0.body_q.numpy()
+        body_qd = self.state_0.body_qd.numpy()
+
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -217,16 +245,11 @@ class Example:
             lambda q, qd: q[2] > -0.1,
         )
 
-        # Check for NaN values in state
-        body_q = self.state_0.body_q.numpy()
-        body_qd = self.state_0.body_qd.numpy()
-
         if np.any(np.isnan(body_q)):
             raise AssertionError(f"{self.robot_name}: NaN detected in body_q")
         if np.any(np.isnan(body_qd)):
             raise AssertionError(f"{self.robot_name}: NaN detected in body_qd")
 
-        # Check that velocities are reasonable
         max_velocity = np.max(np.abs(body_qd))
         if max_velocity > 100.0:
             raise AssertionError(f"{self.robot_name}: Velocity too high: {max_velocity}")
