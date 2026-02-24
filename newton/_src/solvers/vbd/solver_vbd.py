@@ -1153,13 +1153,23 @@ class SolverVBD(SolverBase):
 
         Masked bodies keep their current pose/velocity during the AVBD forward step,
         while still participating in contact solve and coupling.
+
+        Args:
+            body_ids: Body indices to mark as forward-skip bodies [index].
+                Values outside ``[0, model.body_count)`` are ignored. Passing an empty
+                sequence clears the skip mask.
         """
+        if self.integrate_with_external_rigid_solver:
+            return
+
         mask = np.zeros(self.model.body_count, dtype=np.int32)
         ids = np.asarray(body_ids, dtype=np.int32).reshape(-1)
         if ids.size > 0:
             valid = ids[(ids >= 0) & (ids < self.model.body_count)]
             mask[valid] = 1
-        self._body_skip_forward_mask = wp.array(mask, dtype=wp.int32, device=self.device)
+
+        # Reuse the buffer allocated in __init__ instead of replacing it.
+        self._body_skip_forward_mask.assign(mask)
 
     @override
     def step(
@@ -1951,14 +1961,26 @@ class SolverVBD(SolverBase):
 
         This produces a **contact-specific** buffer that coupling code can filter (e.g., proxy contacts only).
 
+        Args:
+            state: Simulation state containing rigid body transforms/velocities used for contact-force evaluation.
+            contacts: Contact data buffers containing rigid contact geometry/material references.
+            dt: Time step size.
+
         Returns:
-            Tuple of:
-            - body0: wp.array(int32) body index for shape0
-            - body1: wp.array(int32) body index for shape1
-            - point0_world: wp.array(wp.vec3) world-space contact point on body0
-            - point1_world: wp.array(wp.vec3) world-space contact point on body1
-            - force_on_body1: wp.array(wp.vec3) contact force (world) applied to body1
-            - rigid_contact_count: wp.array(int32) length-1 array with active contact count
+            tuple[
+                wp.array(dtype=wp.int32),
+                wp.array(dtype=wp.int32),
+                wp.array(dtype=wp.vec3),
+                wp.array(dtype=wp.vec3),
+                wp.array(dtype=wp.vec3),
+                wp.array(dtype=wp.int32),
+            ]: Tuple of per-contact outputs:
+                - body0: Body index for shape0, int32.
+                - body1: Body index for shape1, int32.
+                - point0_world: World-space contact point on body0, wp.vec3.
+                - point1_world: World-space contact point on body1, wp.vec3.
+                - force_on_body1: Contact force applied to body1 in world frame, wp.vec3.
+                - rigid_contact_count: Length-1 active rigid-contact count, int32.
         """
         # Allocate/resize persistent buffers to match contact capacity.
         max_contacts = int(contacts.rigid_contact_shape0.shape[0]) if contacts is not None else 0
