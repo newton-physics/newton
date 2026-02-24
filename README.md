@@ -577,10 +577,18 @@ uv sync --extra examples
         <img src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_softbody_hanging.png" alt="Softbody Hanging">
       </a>
     </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
   </tr>
   <tr>
     <td align="center">
       <code>uv run -m newton.examples softbody_hanging</code>
+    </td>
+    <td align="center">
+    </td>
+    <td align="center">
     </td>
   </tr>
 </table>

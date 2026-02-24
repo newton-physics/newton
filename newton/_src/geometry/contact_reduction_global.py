@@ -275,6 +275,61 @@ def unpack_contact_id(packed: wp.uint64) -> int:
     ...
 
 
+@wp.func
+def encode_oct(n: wp.vec3) -> wp.vec2:
+    """Encode a unit normal into octahedral 2D representation.
+
+    Projects the unit vector onto an octahedron and flattens to 2D.
+    Near-uniform precision, stable numerics, no trig needed.
+    """
+    l1 = wp.abs(n[0]) + wp.abs(n[1]) + wp.abs(n[2])
+    if l1 < 1.0e-20:
+        return wp.vec2(0.0, 0.0)
+    inv_l1 = 1.0 / l1
+    ox = n[0] * inv_l1
+    oy = n[1] * inv_l1
+    oz = n[2] * inv_l1
+
+    if oz < 0.0:
+        sign_x = 1.0
+        if ox < 0.0:
+            sign_x = -1.0
+        sign_y = 1.0
+        if oy < 0.0:
+            sign_y = -1.0
+        new_x = (1.0 - wp.abs(oy)) * sign_x
+        new_y = (1.0 - wp.abs(ox)) * sign_y
+        ox = new_x
+        oy = new_y
+
+    return wp.vec2(ox, oy)
+
+
+@wp.func
+def decode_oct(e: wp.vec2) -> wp.vec3:
+    """Decode octahedral 2D representation back to a unit normal.
+
+    Inverse of encode_oct.  Lossless within float precision.
+    """
+    nz = 1.0 - wp.abs(e[0]) - wp.abs(e[1])
+    nx = e[0]
+    ny = e[1]
+
+    if nz < 0.0:
+        sign_x = 1.0
+        if nx < 0.0:
+            sign_x = -1.0
+        sign_y = 1.0
+        if ny < 0.0:
+            sign_y = -1.0
+        new_x = (1.0 - wp.abs(ny)) * sign_x
+        new_y = (1.0 - wp.abs(nx)) * sign_y
+        nx = new_x
+        ny = new_y
+
+    return wp.normalize(wp.vec3(nx, ny, nz))
+
+
 @wp.struct
 class GlobalContactReducerData:
     """Struct for passing GlobalContactReducer arrays to kernels.
@@ -285,16 +340,18 @@ class GlobalContactReducerData:
 
     # Contact buffer arrays
     position_depth: wp.array(dtype=wp.vec4)
-    normal: wp.array(dtype=wp.vec3)
+    normal: wp.array(dtype=wp.vec2)  # Octahedral-encoded unit normal (see encode_oct/decode_oct)
     shape_pairs: wp.array(dtype=wp.vec2i)
     contact_count: wp.array(dtype=wp.int32)
     capacity: int
 
-    # Optional hydroelastic data (area and stiffness coefficient)
-    # contact_area: area of contact surface element (for hydroelastic contacts)
-    # contact_k_eff: effective stiffness coefficient k_a*k_b/(k_a+k_b)
+    # Optional hydroelastic data
+    # contact_area: area of contact surface element (per contact)
     contact_area: wp.array(dtype=wp.float32)
-    contact_k_eff: wp.array(dtype=wp.float32)
+
+    # Effective stiffness coefficient k_a*k_b/(k_a+k_b) per hashtable entry
+    # Constant for a given shape pair, stored once per entry instead of per contact
+    entry_k_eff: wp.array(dtype=wp.float32)
 
     # Aggregate force per hashtable entry (indexed by ht_capacity)
     # Used for hydroelastic stiffness calculation: c_stiffness = k_eff * |agg_force| / total_depth
@@ -310,14 +367,11 @@ class GlobalContactReducerData:
     # Accumulates sum(area * depth) for penetrating contacts
     weight_sum: wp.array(dtype=wp.float32)
 
-    # Aggregate moment per hashtable entry (for moment matching)
-    # Accumulates moment contributions for friction scaling
-    agg_moment: wp.array(dtype=wp.float32)
-
     # Hashtable arrays
     ht_keys: wp.array(dtype=wp.uint64)
     ht_values: wp.array(dtype=wp.uint64)
     ht_active_slots: wp.array(dtype=wp.int32)
+    ht_insert_failures: wp.array(dtype=wp.int32)
     ht_capacity: int
     ht_values_per_key: int
 
@@ -328,11 +382,11 @@ def _clear_active_kernel(
     ht_keys: wp.array(dtype=wp.uint64),
     ht_values: wp.array(dtype=wp.uint64),
     ht_active_slots: wp.array(dtype=wp.int32),
-    # Hydroelastic aggregate arrays (indexed by hashtable entry)
+    # Hydroelastic per-entry arrays
     agg_force: wp.array(dtype=wp.vec3),
     weighted_pos_sum: wp.array(dtype=wp.vec3),
     weight_sum: wp.array(dtype=wp.float32),
-    agg_moment: wp.array(dtype=wp.float32),
+    entry_k_eff: wp.array(dtype=wp.float32),
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
@@ -369,7 +423,7 @@ def _clear_active_kernel(
                 agg_force[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weighted_pos_sum[entry_idx] = wp.vec3(0.0, 0.0, 0.0)
                 weight_sum[entry_idx] = 0.0
-                agg_moment[entry_idx] = 0.0
+                entry_k_eff[entry_idx] = 0.0
 
         # Clear this value slot (slot-major layout)
         value_idx = local_idx * ht_capacity + entry_idx
@@ -381,11 +435,13 @@ def _clear_active_kernel(
 def _zero_count_and_contacts_kernel(
     ht_active_slots: wp.array(dtype=wp.int32),
     contact_count: wp.array(dtype=wp.int32),
+    ht_insert_failures: wp.array(dtype=wp.int32),
     ht_capacity: int,
 ):
     """Zero the active slots count and contact count."""
     ht_active_slots[ht_capacity] = 0
     contact_count[0] = 0
+    ht_insert_failures[0] = 0
 
 
 class GlobalContactReducer:
@@ -418,19 +474,18 @@ class GlobalContactReducer:
     Packed for efficient memory access:
 
     - position_depth: vec4(position.x, position.y, position.z, depth)
-    - normal: vec3(normal.x, normal.y, normal.z)
+    - normal: vec2(octahedral-encoded unit normal)
     - shape_pairs: vec2i(shape_a, shape_b)
-    - contact_area: float (optional, for hydroelastic contacts)
-    - contact_k_eff: float (optional, for hydroelastic contacts)
+    - contact_area: float (optional, per contact, for hydroelastic contacts)
 
     Attributes:
         capacity: Maximum number of contacts that can be stored
         values_per_key: Number of value slots per hashtable entry (7)
         position_depth: vec4 array storing position.xyz and depth
-        normal: vec3 array storing contact normal
+        normal: vec2 array storing octahedral-encoded contact normal
         shape_pairs: vec2i array storing (shape_a, shape_b) per contact
-        contact_area: float array storing contact area (for hydroelastic)
-        contact_k_eff: float array storing effective stiffness (for hydroelastic)
+        contact_area: float array storing contact area per contact (for hydroelastic)
+        entry_k_eff: float array storing effective stiffness per hashtable entry (for hydroelastic)
         contact_count: Atomic counter for allocated contacts
         hashtable: HashTable for tracking best contacts (keys only)
         ht_values: Values array for hashtable (managed here, not by HashTable)
@@ -447,7 +502,7 @@ class GlobalContactReducer:
         Args:
             capacity: Maximum number of contacts to store
             device: Warp device (e.g., "cuda:0", "cpu")
-            store_hydroelastic_data: If True, allocate arrays for contact_area and contact_k_eff
+            store_hydroelastic_data: If True, allocate arrays for contact_area and entry_k_eff
         """
         self.capacity = capacity
         self.device = device
@@ -458,20 +513,19 @@ class GlobalContactReducer:
 
         # Contact buffer (struct of arrays)
         self.position_depth = wp.zeros(capacity, dtype=wp.vec4, device=device)
-        self.normal = wp.zeros(capacity, dtype=wp.vec3, device=device)
+        self.normal = wp.zeros(capacity, dtype=wp.vec2, device=device)  # Octahedral-encoded normals
         self.shape_pairs = wp.zeros(capacity, dtype=wp.vec2i, device=device)
 
         # Optional hydroelastic data arrays
         if store_hydroelastic_data:
             self.contact_area = wp.zeros(capacity, dtype=wp.float32, device=device)
-            self.contact_k_eff = wp.zeros(capacity, dtype=wp.float32, device=device)
         else:
-            # Empty arrays (0 capacity) for non-hydroelastic use
             self.contact_area = wp.zeros(0, dtype=wp.float32, device=device)
-            self.contact_k_eff = wp.zeros(0, dtype=wp.float32, device=device)
 
         # Atomic counter for contact allocation
         self.contact_count = wp.zeros(1, dtype=wp.int32, device=device)
+        # Count failed hashtable inserts (e.g., table full)
+        self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
 
         # Hashtable sizing: estimate unique (shape_pair, bin) keys needed
         # - 35 bins per shape pair (20 normal + 15 voxel groups)
@@ -490,21 +544,20 @@ class GlobalContactReducer:
         # Accumulates sum(area * depth * normal) for all penetrating contacts per entry
         if store_hydroelastic_data:
             self.agg_force = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
-            # Weighted position sum for anchor contact computation
             self.weighted_pos_sum = wp.zeros(self.hashtable.capacity, dtype=wp.vec3, device=device)
-            # Weight sum for normalizing weighted_pos_sum
             self.weight_sum = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
-            # Aggregate moment for moment matching
-            self.agg_moment = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
+            # k_eff per entry (constant per shape pair, set once on first insert)
+            self.entry_k_eff = wp.zeros(self.hashtable.capacity, dtype=wp.float32, device=device)
         else:
             self.agg_force = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weighted_pos_sum = wp.zeros(0, dtype=wp.vec3, device=device)
             self.weight_sum = wp.zeros(0, dtype=wp.float32, device=device)
-            self.agg_moment = wp.zeros(0, dtype=wp.float32, device=device)
+            self.entry_k_eff = wp.zeros(0, dtype=wp.float32, device=device)
 
     def clear(self):
         """Clear all contacts and reset the reducer (full clear)."""
         self.contact_count.zero_()
+        self.ht_insert_failures.zero_()
         self.hashtable.clear()
         self.ht_values.zero_()
 
@@ -528,7 +581,7 @@ class GlobalContactReducer:
                 self.agg_force,
                 self.weighted_pos_sum,
                 self.weight_sum,
-                self.agg_moment,
+                self.entry_k_eff,
                 self.hashtable.capacity,
                 self.values_per_key,
                 num_threads,
@@ -543,6 +596,7 @@ class GlobalContactReducer:
             inputs=[
                 self.hashtable.active_slots,
                 self.contact_count,
+                self.ht_insert_failures,
                 self.hashtable.capacity,
             ],
             device=self.device,
@@ -561,14 +615,14 @@ class GlobalContactReducer:
         data.contact_count = self.contact_count
         data.capacity = self.capacity
         data.contact_area = self.contact_area
-        data.contact_k_eff = self.contact_k_eff
+        data.entry_k_eff = self.entry_k_eff
         data.agg_force = self.agg_force
         data.weighted_pos_sum = self.weighted_pos_sum
         data.weight_sum = self.weight_sum
-        data.agg_moment = self.agg_moment
         data.ht_keys = self.hashtable.keys
         data.ht_values = self.ht_values
         data.ht_active_slots = self.hashtable.active_slots
+        data.ht_insert_failures = self.ht_insert_failures
         data.ht_capacity = self.hashtable.capacity
         data.ht_values_per_key = self.values_per_key
         return data
@@ -601,9 +655,9 @@ def export_contact_to_buffer(
     if contact_id >= reducer_data.capacity:
         return -1
 
-    # Store contact data (packed into vec4)
+    # Store contact data (packed into vec4, normal octahedral-encoded into vec2)
     reducer_data.position_depth[contact_id] = wp.vec4(position[0], position[1], position[2], depth)
-    reducer_data.normal[contact_id] = normal
+    reducer_data.normal[contact_id] = encode_oct(normal)
     reducer_data.shape_pairs[contact_id] = wp.vec2i(shape_a, shape_b)
 
     return contact_id
@@ -641,9 +695,9 @@ def reduce_contact_in_hashtable(
         shape_collision_aabb_upper: Per-shape local AABB upper bounds
         shape_voxel_resolution: Per-shape voxel grid resolution
     """
-    # Read contact data from buffer
+    # Read contact data from buffer (normal is octahedral-encoded)
     pd = reducer_data.position_depth[contact_id]
-    normal = reducer_data.normal[contact_id]
+    normal = decode_oct(reducer_data.normal[contact_id])
     pair = reducer_data.shape_pairs[contact_id]
 
     position = wp.vec3(pd[0], pd[1], pd[2])
@@ -796,20 +850,22 @@ def reduce_buffered_contacts_kernel(
 def unpack_contact(
     contact_id: int,
     position_depth: wp.array(dtype=wp.vec4),
-    normal: wp.array(dtype=wp.vec3),
+    normal: wp.array(dtype=wp.vec2),
 ):
     """Unpack contact data from the buffer.
+
+    Normal is stored as octahedral-encoded vec2 and decoded back to vec3.
 
     Args:
         contact_id: Index into the contact buffer
         position_depth: Contact buffer for position.xyz + depth
-        normal: Contact buffer for normal
+        normal: Contact buffer for octahedral-encoded normal
 
     Returns:
         Tuple of (position, normal, depth)
     """
     pd = position_depth[contact_id]
-    n = normal[contact_id]
+    n = decode_oct(normal[contact_id])
 
     position = wp.vec3(pd[0], pd[1], pd[2])
     depth = pd[3]
@@ -878,7 +934,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     # Define vector type for tracking exported contact IDs
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def export_reduced_contacts_kernel(
         # Hashtable arrays
         ht_keys: wp.array(dtype=wp.uint64),
@@ -886,7 +942,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
         ht_active_slots: wp.array(dtype=wp.int32),
         # Contact buffer arrays
         position_depth: wp.array(dtype=wp.vec4),
-        normal: wp.array(dtype=wp.vec3),
+        normal: wp.array(dtype=wp.vec2),  # Octahedral-encoded
         shape_pairs: wp.array(dtype=wp.vec2i),
         # Shape data for extracting thickness and effective radius
         shape_types: wp.array(dtype=int),
@@ -982,7 +1038,7 @@ def create_export_reduced_contacts_kernel(writer_func: Any):
     return export_reduced_contacts_kernel
 
 
-@wp.kernel(enable_backward=False)
+@wp.kernel(enable_backward=False, module="unique")
 def mesh_triangle_contacts_to_reducer_kernel(
     shape_types: wp.array(dtype=int),
     shape_data: wp.array(dtype=wp.vec4),

@@ -250,9 +250,10 @@ class Example:
 
         self.control = self.model.control()
 
-        # Create collision pipeline (default)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(
-            self.model, args, soft_contact_margin=self.cloth_body_contact_margin
+        # Explicit collision pipeline for cloth-body contacts with custom margin
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model,
+            soft_contact_margin=self.cloth_body_contact_margin,
         )
         self.contacts = self.collision_pipeline.contacts()
 

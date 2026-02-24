@@ -15,9 +15,14 @@
 
 from __future__ import annotations
 
+import os
+
 
 class UI:
     def __init__(self, window):
+        self._file_dialog_result: str | None = None
+        self._pending_file_dialog = None
+
         try:
             from imgui_bundle import (
                 imgui,
@@ -258,6 +263,7 @@ class UI:
         if not self.is_available:
             return
 
+        self._poll_file_dialog()
         self.imgui.render()
         self.imgui.end_frame()
 
@@ -309,59 +315,68 @@ class UI:
         except (AttributeError, KeyError, IndexError):
             return fallback_color
 
-    def open_save_file_dialog(
-        self,
-        title: str = "Save File",
-        defaultextension: str = "",
-        filetypes: list[tuple[str, str]] | None = None,
-    ) -> str | None:
-        """Opens a file dialog for saving a file and returns the selected path."""
+    def consume_file_dialog_result(self) -> str | None:
+        """Return the latest completed file dialog path once.
+
+        File dialogs are asynchronous: `open_load_file_dialog()` and
+        `open_save_file_dialog()` queue a native dialog and return immediately.
+        Poll this method from the render loop to retrieve the selected path.
+        """
+        if not self.is_available:
+            return None
+
+        result = self._file_dialog_result
+        self._file_dialog_result = None
+        return result
+
+    def _poll_file_dialog(self):
+        """Check if pending file dialog has completed."""
+        if not self.is_available:
+            return
+
+        if self._pending_file_dialog is None:
+            return
+        if self._pending_file_dialog.ready():
+            result = self._pending_file_dialog.result()
+            if result:
+                if isinstance(result, list):
+                    if len(result) == 1:
+                        self._file_dialog_result = result[0]
+                    elif len(result) > 1:
+                        print("Warning: multiple files selected; expected a single file.")
+                else:
+                    self._file_dialog_result = result
+            self._pending_file_dialog = None
+
+    def open_save_file_dialog(self, title: str = "Save File") -> None:
+        """Start an asynchronous native OS save-file dialog.
+
+        Use `consume_file_dialog_result()` to retrieve the selected path.
+        """
+        if not self.is_available:
+            return
+
         try:
-            import tkinter as tk  # noqa: PLC0415
-            from tkinter import filedialog  # noqa: PLC0415
+            from imgui_bundle import portable_file_dialogs as pfd
+
+            self._pending_file_dialog = pfd.save_file(title, os.getcwd())
         except ImportError:
-            print("Warning: tkinter not found. To use the file dialog, please install it.")
-            return None
+            print("Warning: portable_file_dialogs not available")
+
+    def open_load_file_dialog(self, title: str = "Open File") -> None:
+        """Start an asynchronous native OS open-file dialog.
+
+        Use `consume_file_dialog_result()` to retrieve the selected path.
+        """
+        if not self.is_available:
+            return
 
         try:
-            root = tk.Tk()
-        except tk.TclError:
-            print("Warning: no display found - cannot open file dialog.")
-            return None
+            from imgui_bundle import portable_file_dialogs as pfd
 
-        root.withdraw()  # Hide the main window
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=defaultextension,
-            filetypes=filetypes or [("All Files", "*.*")],
-            title=title,
-        )
-        root.destroy()
-        return file_path
-
-    def open_load_file_dialog(
-        self, title: str = "Open File", filetypes: list[tuple[str, str]] | None = None
-    ) -> str | None:
-        """Opens a file dialog for loading a file and returns the selected path."""
-        try:
-            import tkinter as tk  # noqa: PLC0415
-            from tkinter import filedialog  # noqa: PLC0415
+            self._pending_file_dialog = pfd.open_file(title, os.getcwd())
         except ImportError:
-            print("Warning: tkinter not found. To use the file dialog, please install it.")
-            return None
-
-        try:
-            root = tk.Tk()
-        except tk.TclError:
-            print("Warning: no display found - cannot open file dialog.")
-            return None
-
-        root.withdraw()  # Hide the main window
-        file_path = filedialog.askopenfilename(
-            filetypes=filetypes or [("All Files", "*.*")],
-            title=title,
-        )
-        root.destroy()
-        return file_path
+            print("Warning: portable_file_dialogs not available")
 
     def shutdown(self):
         if not self.is_available:

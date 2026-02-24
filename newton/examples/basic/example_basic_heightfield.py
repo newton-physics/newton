@@ -82,19 +82,14 @@ class Example:
 
         if self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model)
-            self.collision_pipeline = None
+            self.contacts = None
         else:
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
-            self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
+            self.contacts = self.model.contacts()
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-
-        if self.collision_pipeline is not None:
-            self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
-        else:
-            self.contacts = None
 
         self.viewer.set_model(self.model)
 
@@ -112,8 +107,8 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            if self.collision_pipeline is not None:
-                self.contacts = self.model.collide(self.state_0, collision_pipeline=self.collision_pipeline)
+            if self.contacts is not None:
+                self.model.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 

@@ -16,6 +16,8 @@
 import unittest
 from enum import IntEnum
 
+import warp as wp
+
 import newton
 from newton.solvers import SolverMuJoCo
 
@@ -99,7 +101,25 @@ class TestMujocoFixedTendon(unittest.TestCase):
         joint_start_positions = [0.5, 0.0, 0.5, 0.0]
         state_in.joint_q.assign(joint_start_positions)
 
-        for _i in range(0, 200):
+        device = model.device
+        use_cuda_graph = device.is_cuda and wp.is_mempool_enabled(device)
+        if use_cuda_graph:
+            # warmup (2 steps for full ping-pong cycle)
+            solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
+            solver.step(state_in=state_out, state_out=state_in, contacts=contacts, control=control, dt=dt)
+            with wp.ScopedCapture(device) as capture:
+                solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
+                solver.step(state_in=state_out, state_out=state_in, contacts=contacts, control=control, dt=dt)
+            graph = capture.graph
+
+        remaining = 200 - (4 if use_cuda_graph else 0)
+        for _i in range(remaining // 2 if use_cuda_graph else remaining):
+            if use_cuda_graph:
+                wp.capture_launch(graph)
+            else:
+                solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
+                state_in, state_out = state_out, state_in
+        if use_cuda_graph and remaining % 2 == 1:
             solver.step(state_in=state_in, state_out=state_out, contacts=contacts, control=control, dt=dt)
             state_in, state_out = state_out, state_in
 

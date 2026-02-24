@@ -24,7 +24,7 @@ See Also:
 
 from __future__ import annotations
 
-from enum import IntEnum
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -41,11 +41,14 @@ from .broad_phase_common import (
 wp.set_module_options({"enable_backward": False})
 
 
-class SAPSortType(IntEnum):
-    """Sort algorithm to use for SAP broad phase."""
+SAPSortMode = Literal["segmented", "tile"]
 
-    SEGMENTED = 0  # Use wp.utils.segmented_sort_pairs (default)
-    TILE = 1  # Use wp.tile_sort with shared memory (faster for certain sizes)
+
+def _normalize_sort_mode(mode: str) -> SAPSortMode:
+    normalized = mode.strip().lower()
+    if normalized not in ("segmented", "tile"):
+        raise ValueError(f"Unsupported SAP sort mode: {mode!r}. Expected 'segmented' or 'tile'.")
+    return normalized
 
 
 @wp.func
@@ -425,7 +428,7 @@ class BroadPhaseSAP:
         shape_shape_world,
         shape_flags=None,
         sweep_thread_count_multiplier: int = 5,
-        sort_type: SAPSortType = SAPSortType.SEGMENTED,
+        sort_type: str = "segmented",
         tile_block_dim: int | None = None,
         device=None,
     ):
@@ -438,7 +441,9 @@ class BroadPhaseSAP:
                 only shapes with the COLLIDE_SHAPES flag will be included in collision checks.
                 This efficiently filters out visual-only shapes.
             sweep_thread_count_multiplier: Multiplier for number of threads used in sweep phase
-            sort_type: Type of sorting algorithm to use (SEGMENTED or TILE)
+            sort_type: SAP sort mode. Use ``"segmented"`` (default) for
+                ``wp.utils.segmented_sort_pairs`` or ``"tile"`` for
+                tile-based sorting via ``wp.tile_sort``.
             tile_block_dim: Block dimension for tile-based sorting (optional, auto-calculated if None).
                 If None, will be set to next power of 2 >= max_shapes_per_world, capped at 512.
                 Minimum value is 32 (required by wp.tile_sort). If provided, will be clamped to [32, 1024].
@@ -446,7 +451,7 @@ class BroadPhaseSAP:
                 arrays or the device of the input warp array.
         """
         self.sweep_thread_count_multiplier = sweep_thread_count_multiplier
-        self.sort_type = sort_type
+        self.sort_type = _normalize_sort_mode(sort_type)
         self.tile_block_dim_override = tile_block_dim  # Store user override if provided
 
         # Convert to numpy if it's a warp array
@@ -491,7 +496,7 @@ class BroadPhaseSAP:
 
         # Create tile sort kernel if using tile-based sorting
         self.tile_sort_kernel = None
-        if self.sort_type == SAPSortType.TILE:
+        if self.sort_type == "tile":
             # Calculate block_dim: next power of 2 >= max_shapes_per_world, capped at 512
             if self.tile_block_dim_override is not None:
                 self.tile_block_dim = max(32, min(self.tile_block_dim_override, 1024))
@@ -608,7 +613,7 @@ class BroadPhaseSAP:
 
         # Perform segmented sort - each world is sorted independently
         # Two strategies: tile-based (faster for certain sizes) or segmented (more flexible)
-        if self.sort_type == SAPSortType.TILE and self.tile_sort_kernel is not None:
+        if self.sort_type == "tile" and self.tile_sort_kernel is not None:
             # Use tile-based sort with shared memory
             wp.launch_tiled(
                 kernel=self.tile_sort_kernel,

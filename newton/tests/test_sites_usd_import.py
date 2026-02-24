@@ -81,7 +81,7 @@ def Xform "World"
 
         # Find site
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_types = model.shape_type.numpy()
 
         site_idx = None
@@ -159,7 +159,7 @@ def Xform "World"
         found_sites = []
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
 
         for i in range(model.shape_count):
             if shape_flags[i] & ShapeFlags.SITE:
@@ -237,7 +237,7 @@ def Xform "World"
         }
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_types = model.shape_type.numpy()
 
         for i in range(model.shape_count):
@@ -286,7 +286,7 @@ def Xform "World"
         model = builder.finalize()
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
         shape_transforms = model.shape_transform.numpy()
 
         # Find sites and check orientations
@@ -355,7 +355,7 @@ def Xform "World"
         model = builder.finalize()
 
         shape_flags = model.shape_flags.numpy()
-        shape_keys = model.shape_key
+        shape_keys = model.shape_label
 
         # Count sites
         site_count = 0
