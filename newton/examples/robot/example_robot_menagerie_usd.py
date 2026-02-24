@@ -68,78 +68,42 @@ def _assets_root() -> Path:
 # ---------------------------------------------------------------------------
 # Each entry maps a robot key to its USD scene file path (relative to
 # the assets root), plus visualization parameters.
-#
 # The ``usd_scene`` paths follow the layout in newton/tests/assets/menagerie/.
-# The ``menagerie_folder`` and ``menagerie_xml`` fields mirror the
-# MENAGERIE_USD_ASSETS registry in test_menagerie_usd_mujoco.py.
 
 MENAGERIE_USD_ROBOTS = {
-    "apptronik_apollo": {
-        "usd_scene": "apptronik_apollo/apptronik_apollo scene.usda",
-        "menagerie_folder": "apptronik_apollo",
-        "menagerie_xml": "apptronik_apollo.xml",
-        "initial_height": 1.0,
-        "is_floating": True,
-    },
-    "booster_t1": {
-        "usd_scene": "booster_t1/t1 scene.usda",
-        "menagerie_folder": "booster_t1",
-        "menagerie_xml": "t1.xml",
-        "initial_height": 1.0,
-        "is_floating": True,
-    },
-    "g1_with_hands": {
-        "usd_scene": "g1_with_hands/g1_29dof_with_hand_rev_1_0 scene.usda",
-        "menagerie_folder": "unitree_g1",
-        "menagerie_xml": "g1_with_hands.xml",
-        "initial_height": 0.8,
-        "is_floating": True,
-    },
-    "h1": {
-        "usd_scene": "h1/h1 scene.usda",
-        "menagerie_folder": "unitree_h1",
-        "menagerie_xml": "h1.xml",
-        "initial_height": 1.0,
-        "is_floating": True,
-    },
-    "robotiq_2f85_v4": {
-        "usd_scene": "robotiq_2f85_v4/2f85 scene.usda",
-        "menagerie_folder": "robotiq_2f85_v4",
-        "menagerie_xml": "2f85.xml",
-        "initial_height": 0.3,
-        "is_floating": False,
-    },
-    "shadow_hand": {
-        "usd_scene": "shadow_hand/right_shadow_hand scene.usda",
-        "menagerie_folder": "shadow_hand",
-        "menagerie_xml": "left_hand.xml",
-        "initial_height": 0.5,
-        "is_floating": False,
-    },
-    "wonik_allegro": {
-        "usd_scene": "wonik_allegro/allegro_right.usda",
-        "menagerie_folder": "wonik_allegro",
-        "menagerie_xml": "left_hand.xml",
-        "initial_height": 0.5,
-        "is_floating": False,
-    },
+    "apptronik_apollo": {"usd_scene": "apptronik_apollo/apptronik_apollo scene.usda", "initial_height": 1.0},
+    "booster_t1": {"usd_scene": "booster_t1/t1 scene.usda", "initial_height": 1.0},
+    "g1_with_hands": {"usd_scene": "g1_with_hands/g1_29dof_with_hand_rev_1_0 scene.usda", "initial_height": 0.8},
+    "h1": {"usd_scene": "h1/h1 scene.usda", "initial_height": 1.0},
+    "robotiq_2f85_v4": {"usd_scene": "robotiq_2f85_v4/2f85 scene.usda", "initial_height": 0.3},
+    "shadow_hand": {"usd_scene": "shadow_hand/right_shadow_hand scene.usda", "initial_height": 0.5},
+    "wonik_allegro": {"usd_scene": "wonik_allegro/allegro_right.usda", "initial_height": 0.5},
 }
 
 
 class Example:
-    def __init__(self, viewer, robot_name: str, num_worlds: int = 4, args=None):
-        self.fps = 50
-        self.frame_dt = 1.0 / self.fps
+    """Menagerie USD simulation example."""
 
-        self.sim_time = 0.0
+    def __init__(self, viewer, robot_name: str, num_worlds: int = 4, args=None):
+        """Initialize the example.
+
+        Args:
+            viewer: Viewer instance for rendering.
+            robot_name: Menagerie key to load.
+            num_worlds: Number of simulated worlds [count].
+            args: Parsed CLI args.
+        """
+        self.fps = 50  # [Hz]
+        self.frame_dt = 1.0 / self.fps  # [s]
+
+        self.sim_time = 0.0  # [s]
         self.sim_substeps = 4
-        self.sim_dt = self.frame_dt / self.sim_substeps
+        self.sim_dt = self.frame_dt / self.sim_substeps  # [s]
 
         self.num_worlds = num_worlds
         self.robot_name = robot_name
 
         self.viewer = viewer
-        self.device = wp.get_device()
 
         if robot_name not in MENAGERIE_USD_ROBOTS:
             raise ValueError(f"Unknown robot: {robot_name}. Available: {list(MENAGERIE_USD_ROBOTS.keys())}")
@@ -161,7 +125,7 @@ class Example:
         robot_builder.default_shape_cfg.mu_torsional = 0.005
         robot_builder.default_shape_cfg.mu_rolling = 0.0001
 
-        initial_height = robot_config["initial_height"]
+        initial_height = robot_config["initial_height"]  # [m]
         robot_builder.add_usd(
             str(asset_path),
             xform=wp.transform(wp.vec3(0, 0, initial_height)),
@@ -173,6 +137,7 @@ class Example:
         robot_builder.approximate_meshes("bounding_box")
 
         builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(robot_builder, self.num_worlds)
 
         builder.default_shape_cfg.ke = 1.0e3
@@ -206,6 +171,7 @@ class Example:
         self.capture()
 
     def capture(self):
+        """Capture the simulation loop into a CUDA graph if running on GPU."""
         self.graph = None
         if wp.get_device().is_cuda:
             with wp.ScopedCapture() as capture:
@@ -213,6 +179,7 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
+        """Run one frame of simulation (collision + substeps)."""
         self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -221,6 +188,7 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
+        """Advance the simulation by one frame [s]."""
         if self.graph:
             wp.capture_launch(self.graph)
         else:
@@ -229,12 +197,14 @@ class Example:
         self.sim_time += self.frame_dt
 
     def render(self):
+        """Render the current simulation state to the viewer."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test_final(self):
+        """Validate simulation output after the run completes."""
         body_q = self.state_0.body_q.numpy()
         body_qd = self.state_0.body_qd.numpy()
 
@@ -251,7 +221,7 @@ class Example:
             raise AssertionError(f"{self.robot_name}: NaN detected in body_qd")
 
         max_velocity = np.max(np.abs(body_qd))
-        if max_velocity > 100.0:
+        if max_velocity > 100.0:  # [m/s]
             raise AssertionError(f"{self.robot_name}: Velocity too high: {max_velocity}")
 
 

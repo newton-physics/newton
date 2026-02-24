@@ -2659,8 +2659,7 @@ class SolverMuJoCo(SolverBase):
                 general_args["biastype"] = biastype
             if hasattr(mujoco_attrs, "actuator_inheritrange"):
                 inheritrange = float(mujoco_attrs.actuator_inheritrange.numpy()[mujoco_act_idx])
-                if inheritrange > 0.0:
-                    general_args["inheritrange"] = inheritrange
+                general_args["inheritrange"] = inheritrange
 
             # Detect position/velocity actuator shortcuts. Use set_to_position/
             # set_to_velocity after add_actuator so MuJoCo's compiler computes kd

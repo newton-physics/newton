@@ -1944,6 +1944,15 @@ class TestMenagerieBase(unittest.TestCase):
         Override in subclasses where DOF ordering may differ.
         """
 
+    def _compare_compiled_fields(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare compilation-dependent fields at relaxed tolerance.
+
+        Default: validates MODEL_BACKFILL_FIELDS at 1e-3 to catch parser bugs
+        while allowing expected compilation differences.
+        Override in subclasses to skip or adjust.
+        """
+        compare_compiled_model_fields(newton_mjw, native_mjw, self.backfill_fields)
+
     def _compare_actuator_physics(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare actuator fields (gainprm, biasprm, acc0, gear, etc.).
 
@@ -2106,6 +2115,9 @@ class TestMenagerieBase(unittest.TestCase):
         self._compare_body_physics(newton_solver.mjw_model, native_mjw_model)
         self._compare_dof_physics(newton_solver.mjw_model, native_mjw_model)
         self._compare_actuator_physics(newton_solver.mjw_model, native_mjw_model)
+
+        # Validate compilation-dependent fields at relaxed tolerance (1e-3).
+        self._compare_compiled_fields(newton_solver.mjw_model, native_mjw_model)
 
         # Optional: backfill computed fields from native to Newton to eliminate
         # numerical differences from model compilation (enables tighter tolerances for dynamics)
