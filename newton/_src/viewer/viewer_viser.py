@@ -870,12 +870,35 @@ class ViewerViser(ViewerBase):
         base_url = f"http://127.0.0.1:{port}"
         player_url = f"{base_url}/?playbackPath={playback_path}"
 
-        # Route through Jupyter's proxy when running in remote notebook environments.
-        jupyter_base_url = os.environ.get("JUPYTER_BASE_URL")
+        # Route through Jupyter's proxy when running in notebook environments.
+        # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
+        # In that case, fall back to common env vars and running server metadata.
+        jupyter_base_url = None
+        for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
+            candidate = os.environ.get(env_name)
+            if candidate:
+                jupyter_base_url = candidate
+                break
+
+        if not jupyter_base_url:
+            try:
+                from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
+
+                for server in list_running_servers():
+                    candidate = server.get("base_url")
+                    if candidate:
+                        jupyter_base_url = candidate
+                        break
+            except Exception:
+                pass
+
         if jupyter_base_url:
             if not jupyter_base_url.startswith("/"):
                 jupyter_base_url = "/" + jupyter_base_url
-            jupyter_base_url = jupyter_base_url.rstrip("/")
+            if jupyter_base_url != "/":
+                jupyter_base_url = jupyter_base_url.rstrip("/")
+            else:
+                jupyter_base_url = ""
             player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
 
         return player_url
