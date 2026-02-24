@@ -853,11 +853,11 @@ def parse_mjcf(
             # Handle explicit mass: compute inertia using existing functions, add to body
             if geom_mass_explicit is not None and link >= 0 and not just_visual:
                 from ..geometry.inertia import (  # noqa: PLC0415
-                    compute_box_inertia_from_mass,
-                    compute_capsule_inertia,
-                    compute_cylinder_inertia,
-                    compute_ellipsoid_inertia,
-                    compute_sphere_inertia,
+                    compute_inertia_box_from_mass,
+                    compute_inertia_capsule,
+                    compute_inertia_cylinder,
+                    compute_inertia_ellipsoid,
+                    compute_inertia_sphere,
                 )
 
                 # Compute inertia by calling functions with density=1.0, then scale by mass ratio
@@ -867,37 +867,40 @@ def parse_mjcf(
 
                 if geom_type == "sphere":
                     r = geom_size[0]
-                    m_computed, c, I = compute_sphere_inertia(1.0, r)
-                    if m_computed > 1e-30:
+                    m_computed, c, I = compute_inertia_sphere(1.0, r)
+                    if m_computed > 1e-6:
                         I = I * (geom_mass_explicit / m_computed)
                 elif geom_type == "box":
                     # Box has a direct mass-based function - no scaling needed
-                    w, h, d = geom_size[0] * 2.0, geom_size[1] * 2.0, geom_size[2] * 2.0
-                    I = compute_box_inertia_from_mass(geom_mass_explicit, w, h, d)
+                    # geom_size is already half-extents, so use directly
+                    hx, hy, hz = geom_size[0], geom_size[1], geom_size[2]
+                    I = compute_inertia_box_from_mass(geom_mass_explicit, hx, hy, hz)
                 elif geom_type == "cylinder":
                     r = geom_size[0]
                     if "fromto" in geom_attrib:
                         ft = np.fromstring(geom_attrib["fromto"], sep=" ")
-                        h = np.linalg.norm(ft[:3] - ft[3:]) * scale
+                        h_full = np.linalg.norm(ft[:3] - ft[3:]) * scale
+                        half_height = h_full * 0.5
                     else:
-                        h = 2.0 * geom_size[1]  # full height
-                    m_computed, c, I = compute_cylinder_inertia(1.0, r, h)
-                    if m_computed > 1e-30:
+                        half_height = geom_size[1]  # already half-height
+                    m_computed, c, I = compute_inertia_cylinder(1.0, r, half_height)
+                    if m_computed > 1e-6:
                         I = I * (geom_mass_explicit / m_computed)
                 elif geom_type == "capsule":
                     r = geom_size[0]
                     if "fromto" in geom_attrib:
                         ft = np.fromstring(geom_attrib["fromto"], sep=" ")
-                        h = np.linalg.norm(ft[:3] - ft[3:]) * scale
+                        h_full = np.linalg.norm(ft[:3] - ft[3:]) * scale
+                        half_height = h_full * 0.5
                     else:
-                        h = 2.0 * geom_size[1]  # full height
-                    m_computed, c, I = compute_capsule_inertia(1.0, r, h)
-                    if m_computed > 1e-30:
+                        half_height = geom_size[1]  # already half-height
+                    m_computed, c, I = compute_inertia_capsule(1.0, r, half_height)
+                    if m_computed > 1e-6:
                         I = I * (geom_mass_explicit / m_computed)
                 elif geom_type == "ellipsoid":
                     a, b, c = geom_size[0], geom_size[1], geom_size[2]
-                    m_computed, c, I = compute_ellipsoid_inertia(1.0, a, b, c)
-                    if m_computed > 1e-30:
+                    m_computed, c, I = compute_inertia_ellipsoid(1.0, a, b, c)
+                    if m_computed > 1e-6:
                         I = I * (geom_mass_explicit / m_computed)
 
                 # Add explicit mass and computed inertia to body
