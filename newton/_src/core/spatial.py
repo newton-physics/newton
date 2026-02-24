@@ -63,6 +63,67 @@ def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float =
 
 
 @wp.func
+def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3) -> wp.vec3:
+    """Evaluate point velocity for Newton's spatial-vector layout.
+
+    Newton stores spatial vectors as ``(linear, angular)`` while Warp's
+    ``wp.velocity_at_point()`` expects ``(angular, linear)``.
+    """
+    qd_wp = wp.spatial_vector(wp.spatial_bottom(qd), wp.spatial_top(qd))
+    return wp.velocity_at_point(qd_wp, r)
+
+
+@wp.func
+def transform_twist(t: wp.transform, x: wp.spatial_vector) -> wp.spatial_vector:
+    """Transform a twist while preserving Newton's spatial-vector layout.
+
+    Newton uses ``(linear, angular)`` ordering; Warp uses
+    ``(angular, linear)`` for its spatial math helpers.
+    """
+    x_wp = wp.spatial_vector(wp.spatial_bottom(x), wp.spatial_top(x))
+    y_wp = wp.transform_twist(t, x_wp)
+    return wp.spatial_vector(wp.spatial_bottom(y_wp), wp.spatial_top(y_wp))
+
+
+@wp.func
+def transform_wrench(t: wp.transform, x: wp.spatial_vector) -> wp.spatial_vector:
+    """Transform a wrench while preserving Newton's spatial-vector layout.
+
+    Newton uses ``(force, torque)`` ordering; Warp uses
+    ``(torque, force)`` for spatial wrenches.
+    """
+    x_wp = wp.spatial_vector(wp.spatial_bottom(x), wp.spatial_top(x))
+    y_wp = wp.transform_wrench(t, x_wp)
+    return wp.spatial_vector(wp.spatial_bottom(y_wp), wp.spatial_top(y_wp))
+
+
+@wp.func
+def _wrap_angle_pm_pi(theta: float) -> float:
+    """Wrap an angle to the interval [-pi, pi)."""
+    two_pi = 2.0 * wp.pi
+    wrapped = wp.mod(theta + wp.pi, two_pi)
+    if wrapped < 0.0:
+        wrapped += two_pi
+    return wrapped - wp.pi
+
+
+@wp.func
+def quat_decompose(q: wp.quat) -> wp.vec3:
+    """Decompose quaternion to XYZ angles using Warp's Euler routine.
+
+    Warp's conversion can return equivalent angles outside the principal branch
+    (for example, by adding 2*pi on one component). Newton expects wrapped
+    coordinates for stable joint-coordinate reconstruction.
+    """
+    angles = wp.quat_to_euler(q, 2, 1, 0)
+    return wp.vec3(
+        _wrap_angle_pm_pi(angles[0]),
+        _wrap_angle_pm_pi(angles[1]),
+        _wrap_angle_pm_pi(angles[2]),
+    )
+
+
+@wp.func
 def quat_velocity(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
     """Approximate angular velocity from successive world quaternions (world frame).
 
@@ -123,5 +184,9 @@ def quat_between_axes(*axes: AxisType) -> wp.quat:
 __all__ = [
     "quat_between_axes",
     "quat_between_vectors_robust",
+    "quat_decompose",
     "quat_velocity",
+    "transform_twist",
+    "transform_wrench",
+    "velocity_at_point",
 ]

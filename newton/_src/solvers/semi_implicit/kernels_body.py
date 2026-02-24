@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
+from ...core.spatial import quat_decompose
 from ...sim import (
     Control,
     JointType,
@@ -369,7 +370,7 @@ def eval_body_joints(
             q_pc = wp.quat_inverse(q_p) * q_c
 
             # decompose to a compound rotation each axis
-            angles = wp.quat_to_euler(q_pc, 2, 1, 0)
+            angles = quat_decompose(q_pc)
 
             orig_axis_0 = joint_axis[i_0]
             orig_axis_1 = joint_axis[i_1]
@@ -439,7 +440,7 @@ def eval_body_joints(
             q_pc = wp.quat_inverse(q_p) * q_c
 
             # decompose to a compound rotation each axis
-            angles = wp.quat_to_euler(q_pc, 2, 1, 0)
+            angles = quat_decompose(q_pc)
 
             orig_axis_0 = joint_axis[i_0]
             orig_axis_1 = joint_axis[i_1]
