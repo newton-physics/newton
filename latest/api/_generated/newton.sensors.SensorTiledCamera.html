@@ -913,58 +913,6 @@ output as tiles in a grid layout.</p>
 
 </dd></dl>
 
-<dl class="py class">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">RenderShapeType</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType" title="Link to this definition">#</a></dt>
-<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/enum.html#enum.IntEnum" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">IntEnum</span></code></a></p>
-<p>Geometry types supported by the Warp raytracer (subset of newton.GeoType).</p>
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.BOX">
-<span class="sig-name descname"><span class="pre">BOX</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">6</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.BOX" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.CAPSULE">
-<span class="sig-name descname"><span class="pre">CAPSULE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">3</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.CAPSULE" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.CONE">
-<span class="sig-name descname"><span class="pre">CONE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">9</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.CONE" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.CYLINDER">
-<span class="sig-name descname"><span class="pre">CYLINDER</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">5</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.CYLINDER" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.ELLIPSOID">
-<span class="sig-name descname"><span class="pre">ELLIPSOID</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">4</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.ELLIPSOID" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.MESH">
-<span class="sig-name descname"><span class="pre">MESH</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">7</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.MESH" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.NONE">
-<span class="sig-name descname"><span class="pre">NONE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">11</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.NONE" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.PLANE">
-<span class="sig-name descname"><span class="pre">PLANE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">0</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.PLANE" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.RenderShapeType.SPHERE">
-<span class="sig-name descname"><span class="pre">SPHERE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">2</span></em><a class="headerlink" href="#newton.sensors.SensorTiledCamera.RenderShapeType.SPHERE" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
-
-</dd></dl>
-
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.sensors.SensorTiledCamera.__init__">
 <span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">options</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.sensors.SensorTiledCamera.__init__" title="Link to this definition">#</a></dt>
@@ -1287,18 +1235,6 @@ If None, no albedo rendering is performed.</p></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.PIXEL_PRIORITY"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderOrder.PIXEL_PRIORITY</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.TILED"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderOrder.TILED</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderOrder.VIEW_PRIORITY"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderOrder.VIEW_PRIORITY</span></code></a></li>
-</ul>
-</li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType</span></code></a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.BOX"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.BOX</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.CAPSULE"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.CAPSULE</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.CONE"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.CONE</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.CYLINDER"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.CYLINDER</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.ELLIPSOID"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.ELLIPSOID</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.MESH"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.MESH</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.NONE"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.NONE</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.PLANE"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.PLANE</span></code></a></li>
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.RenderShapeType.SPHERE"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.RenderShapeType.SPHERE</span></code></a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.sensors.SensorTiledCamera.__init__"><code class="docutils literal notranslate"><span class="pre">SensorTiledCamera.__init__()</span></code></a></li>
