@@ -718,10 +718,17 @@ class TestImportMjcfGeometry(unittest.TestCase):
         </body>
 
         <!-- Body with mixed explicit mass and density-based mass -->
+        <!-- Explicit mass should win even when a conflicting density is specified -->
         <body name="body6" pos="5 0 1">
             <freejoint/>
-            <geom type="sphere" size="0.1" mass="1.5" density="0"/>
+            <geom type="sphere" size="0.1" mass="1.5" density="5000"/>
             <geom type="box" size="0.1 0.1 0.1" density="1000"/>
+        </body>
+
+        <!-- Body with mass="0" — should contribute zero mass and zero inertia -->
+        <body name="body7" pos="6 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="0"/>
         </body>
     </worldbody>
 </mujoco>
@@ -759,12 +766,18 @@ class TestImportMjcfGeometry(unittest.TestCase):
             body_mass[5], expected_body5_mass, places=4, msg="Body 5 mass should combine explicit and density-based"
         )
 
+        # Body 6: mass="0" — zero mass zeroes density, m_computed guard skips inertia → no contribution
+        self.assertAlmostEqual(body_mass[6], 0.0, places=6, msg="Body 6 (mass=0) should have zero mass")
+
         # Verify that bodies with explicit mass have non-zero inertia
         # (inertia should be computed from the explicit mass, not zero)
         body_inertia = model.body_inertia.numpy()
         for i in range(5):  # Bodies 0-4 have only explicit mass
             inertia_trace = np.trace(body_inertia[i])
             self.assertGreater(inertia_trace, 0.0, msg=f"Body {i} should have non-zero inertia from explicit mass")
+
+        # Body 6: mass="0" should also have zero inertia
+        self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
 
     def test_solreflimit_parsing(self):
         """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""

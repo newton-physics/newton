@@ -862,43 +862,49 @@ def parse_mjcf(
 
                 # Compute inertia by calling functions with density=1.0, then scale by mass ratio
                 # This avoids manual volume computation - functions handle it internally
-                c = wp.vec3()  # center of mass (at origin for primitives)
-                I = wp.mat33()
+                com = wp.vec3()  # center of mass (at origin for primitives)
+                inertia_tensor = wp.mat33()
+                inertia_computed = False
 
                 if geom_type == "sphere":
                     r = geom_size[0]
-                    m_computed, c, I = compute_inertia_sphere(1.0, r)
+                    m_computed, com, inertia_tensor = compute_inertia_sphere(1.0, r)
                     if m_computed > 1e-6:
-                        I = I * (geom_mass_explicit / m_computed)
+                        inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
+                        inertia_computed = True
                 elif geom_type == "box":
                     # Box has a direct mass-based function - no scaling needed
                     # geom_size is already half-extents, so use directly
                     hx, hy, hz = geom_size[0], geom_size[1], geom_size[2]
-                    I = compute_inertia_box_from_mass(geom_mass_explicit, hx, hy, hz)
+                    inertia_tensor = compute_inertia_box_from_mass(geom_mass_explicit, hx, hy, hz)
+                    inertia_computed = True
                 elif geom_type == "cylinder":
-                    m_computed, c, I = compute_inertia_cylinder(1.0, geom_radius, geom_height)
+                    m_computed, com, inertia_tensor = compute_inertia_cylinder(1.0, geom_radius, geom_height)
                     if m_computed > 1e-6:
-                        I = I * (geom_mass_explicit / m_computed)
+                        inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
+                        inertia_computed = True
                 elif geom_type == "capsule":
-                    m_computed, c, I = compute_inertia_capsule(1.0, geom_radius, geom_height)
+                    m_computed, com, inertia_tensor = compute_inertia_capsule(1.0, geom_radius, geom_height)
                     if m_computed > 1e-6:
-                        I = I * (geom_mass_explicit / m_computed)
+                        inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
+                        inertia_computed = True
                 elif geom_type == "ellipsoid":
                     rx, ry, rz = geom_size[0], geom_size[1], geom_size[2]
-                    m_computed, c, I = compute_inertia_ellipsoid(1.0, rx, ry, rz)
+                    m_computed, com, inertia_tensor = compute_inertia_ellipsoid(1.0, rx, ry, rz)
                     if m_computed > 1e-6:
-                        I = I * (geom_mass_explicit / m_computed)
+                        inertia_tensor = inertia_tensor * (geom_mass_explicit / m_computed)
+                        inertia_computed = True
                 else:
-                    if verbose:
-                        print(
-                            f"Warning: explicit mass ({geom_mass_explicit}) on geom '{geom_name}' "
-                            f"with type '{geom_type}' is not supported — mass will be ignored"
-                        )
+                    warnings.warn(
+                        f"explicit mass ({geom_mass_explicit}) on geom '{geom_name}' "
+                        f"with type '{geom_type}' is not supported — mass will be ignored",
+                        stacklevel=2,
+                    )
 
                 # Add explicit mass and computed inertia to body
-                if I[0, 0] != 0.0 or I[1, 1] != 0.0 or I[2, 2] != 0.0:  # Check if inertia was computed
-                    com_body = wp.transform_point(tf, c)
-                    builder._update_body_mass(link, geom_mass_explicit, I, com_body, tf.q)
+                if inertia_computed:
+                    com_body = wp.transform_point(tf, com)
+                    builder._update_body_mass(link, geom_mass_explicit, inertia_tensor, com_body, tf.q)
 
         return shapes
 
