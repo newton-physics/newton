@@ -32,7 +32,6 @@ newton
    :toctree: _generated
    :nosignatures:
 
-   ActuatorMode
    Axis
    CollisionPipeline
    Contacts

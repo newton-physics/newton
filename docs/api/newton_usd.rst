@@ -11,7 +11,6 @@ Utilities for working with the Universal Scene Description (USD) format.
    :toctree: _generated
    :signatures: long
 
-   from_gfquat
    get_attribute
    get_attributes_in_namespace
    get_custom_attribute_declarations
