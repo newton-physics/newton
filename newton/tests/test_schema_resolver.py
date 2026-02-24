@@ -1354,25 +1354,24 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertEqual(gap, float("-inf"))
 
         # Newton contactGap only -> PhysX getter returns None, falls through to Newton
-        collider_a.GetAttribute("newton:contactGap").Set(0.1)
+        collider_a.GetAttribute("newton:contactGap").Set(0.07)
         gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
-        self.assertAlmostEqual(gap, 0.1)
+        self.assertAlmostEqual(gap, 0.07)
 
         # PhysX only contactOffset (no restOffset) -> getter returns None, still Newton
         collider_a.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.25)
         gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
-        self.assertAlmostEqual(gap, 0.1)
+        self.assertAlmostEqual(gap, 0.07)
 
-        # PhysX both set -> getter returns 0.25 - 0.15 = 0.10; but Newton is also authored
-        # PhysX is first, so PhysX wins: 0.10
+        # PhysX both set -> getter returns 0.25 - 0.15 = 0.10; PhysX is first, so PhysX wins
         collider_a.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.15)
         gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
         self.assertAlmostEqual(gap, 0.10)
 
-        # Newton first -> Newton wins: 0.1
+        # Newton first -> Newton wins: 0.07
         resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
         gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
-        self.assertAlmostEqual(gap, 0.1)
+        self.assertAlmostEqual(gap, 0.07)
 
         # --- Collider B: PhysX-only (no Newton contactGap) ---
         collider_b = UsdGeom.Cube.Define(stage, "/xform/collider_b").GetPrim()
