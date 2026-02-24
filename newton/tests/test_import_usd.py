@@ -4541,8 +4541,13 @@ def Xform "Articulation" (
             builder.add_usd(stage)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_contact_margin_parsing(self):
-        """Test that contact_margin is parsed correctly from USD."""
+    def test_gap_parsing(self):
+        """Verify USD contact margin parsing into shape gap values [m].
+
+        The ``newton:contactMargin`` USD attribute should map to per-shape
+        ``gap`` values [m], while colliders without an explicit value should
+        fall back to the configured default gap [m].
+        """
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -4558,35 +4563,35 @@ def Xform "Articulation" (
         body_prim = body.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
 
-        # Create a collider with newton:contactMargin
+        # Create a collider with newton:contactMargin (mapped to internal "gap")
         collider1 = UsdGeom.Cube.Define(stage, "/Articulation/Body/Collider1")
         collider1_prim = collider1.GetPrim()
         collider1_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider1_prim)
         collider1_prim.GetAttribute("newton:contactMargin").Set(0.05)
 
-        # Create another collider without contact_margin (should use default)
+        # Create another collider without gap (should use default)
         collider2 = UsdGeom.Sphere.Define(stage, "/Articulation/Body/Collider2")
         collider2_prim = collider2.GetPrim()
         UsdPhysics.CollisionAPI.Apply(collider2_prim)
 
         # Import the USD
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.contact_margin = 0.01  # set a known default
+        builder.default_shape_cfg.gap = 0.01  # set a known default
         result = builder.add_usd(stage)
         model = builder.finalize()
 
-        # Verify contact_margin was parsed correctly
+        # Verify gap was parsed correctly
         shape1_idx = result["path_shape_map"]["/Articulation/Body/Collider1"]
         shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
 
         # Collider1 should have the authored value
-        margin1 = model.shape_contact_margin.numpy()[shape1_idx]
-        self.assertAlmostEqual(margin1, 0.05, places=4)
+        gap1 = model.shape_gap.numpy()[shape1_idx]
+        self.assertAlmostEqual(gap1, 0.05, places=4)
 
         # Collider2 should have the default value
-        margin2 = model.shape_contact_margin.numpy()[shape2_idx]
-        self.assertAlmostEqual(margin2, 0.01, places=4)
+        gap2 = model.shape_gap.numpy()[shape2_idx]
+        self.assertAlmostEqual(gap2, 0.01, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_enabled_parsing(self):

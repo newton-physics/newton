@@ -544,27 +544,36 @@ class ViewerViser(ViewerBase):
         if starts_np is None or ends_np is None or len(starts_np) == 0:
             return
 
-        # Viser expects line segments as (N, 2, 3) or we can use points format
-        # Build line points array: interleave starts and ends
+        starts_np = np.asarray(starts_np, dtype=np.float32)
+        ends_np = np.asarray(ends_np, dtype=np.float32)
         num_lines = len(starts_np)
-        line_points = np.zeros((num_lines * 2, 3), dtype=np.float32)
-        line_points[0::2] = starts_np
-        line_points[1::2] = ends_np
+
+        # Viser requires points with shape (N, 2, 3): [start, end] per segment.
+        line_points = np.stack((starts_np, ends_np), axis=1)
+
+        def _rgb_to_uint8_array(rgb: np.ndarray) -> np.ndarray:
+            rgb = np.asarray(rgb, dtype=np.float32)
+            max_val = float(np.max(rgb)) if rgb.size > 0 else 0.0
+            if max_val <= 1.0:
+                rgb = rgb * 255.0
+            return np.clip(rgb, 0, 255).astype(np.uint8)
 
         # Process colors
+        color_rgb: tuple[int, int, int] | np.ndarray = (0, 255, 0)
         if colors is not None:
             colors_np = self._to_numpy(colors)
             if colors_np is not None:
-                if colors_np.ndim == 1 and len(colors_np) == 3:
-                    # Single color for all lines
-                    color_rgb = tuple((colors_np * 255).astype(np.uint8).tolist())
-                else:
-                    # Per-line colors - expand to per-point
-                    color_rgb = (0, 255, 0)  # Default green
-            else:
-                color_rgb = (0, 255, 0)
-        else:
-            color_rgb = (0, 255, 0)
+                colors_np = np.asarray(colors_np)
+                if colors_np.ndim == 1 and colors_np.shape[0] == 3:
+                    # Single color for all lines.
+                    color_rgb = tuple(_rgb_to_uint8_array(colors_np).tolist())
+                elif colors_np.ndim == 2 and colors_np.shape == (num_lines, 3):
+                    # Per-line colors: repeat each line color for [start, end].
+                    line_colors = _rgb_to_uint8_array(colors_np)
+                    color_rgb = np.repeat(line_colors[:, None, :], 2, axis=1)
+                elif colors_np.ndim == 3 and colors_np.shape == (num_lines, 2, 3):
+                    # Already per-point-per-segment colors.
+                    color_rgb = _rgb_to_uint8_array(colors_np)
 
         # Add line segments to viser
         handle = self._server.scene.add_line_segments(
@@ -870,12 +879,44 @@ class ViewerViser(ViewerBase):
         base_url = f"http://127.0.0.1:{port}"
         player_url = f"{base_url}/?playbackPath={playback_path}"
 
-        # Route through Jupyter's proxy when running in remote notebook environments.
-        jupyter_base_url = os.environ.get("JUPYTER_BASE_URL")
-        if jupyter_base_url:
-            if not jupyter_base_url.startswith("/"):
-                jupyter_base_url = "/" + jupyter_base_url
-            jupyter_base_url = jupyter_base_url.rstrip("/")
-            player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
+        # Route through Jupyter's proxy only when jupyter-server-proxy is installed.
+        # Without that package, proxy URLs may be unavailable and break playback.
+        jupyter_base_url = None
+        try:
+            from importlib.util import find_spec  # noqa: PLC0415
+
+            has_jupyter_server_proxy = find_spec("jupyter_server_proxy") is not None
+        except Exception:
+            has_jupyter_server_proxy = False
+
+        if has_jupyter_server_proxy:
+            # JUPYTER_BASE_URL is not always exported (e.g. CLI --NotebookApp.base_url).
+            # In that case, fall back to common env vars and running server metadata.
+            for env_name in ("JUPYTER_BASE_URL", "JUPYTERHUB_SERVICE_PREFIX", "NB_PREFIX"):
+                candidate = os.environ.get(env_name)
+                if candidate:
+                    jupyter_base_url = candidate
+                    break
+
+            if not jupyter_base_url:
+                try:
+                    from jupyter_server.serverapp import list_running_servers  # noqa: PLC0415
+
+                    for server in list_running_servers():
+                        candidate = server.get("base_url")
+                        if candidate:
+                            jupyter_base_url = candidate
+                            break
+                except Exception:
+                    pass
+
+            if jupyter_base_url:
+                if not jupyter_base_url.startswith("/"):
+                    jupyter_base_url = "/" + jupyter_base_url
+                if jupyter_base_url != "/":
+                    jupyter_base_url = jupyter_base_url.rstrip("/")
+                else:
+                    jupyter_base_url = ""
+                player_url = f"{jupyter_base_url}/proxy/{port}/?playbackPath={playback_path}"
 
         return player_url
