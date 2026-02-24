@@ -1291,9 +1291,6 @@ class SolverMuJoCo(SolverBase):
             )
         )
 
-        def usd_parse_dyntype(value: Any, _context: dict[str, Any]) -> int:
-            return parse_dyntype(str(value))
-
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_dyntype",
@@ -1305,16 +1302,9 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="dyntype",
                 mjcf_value_transformer=parse_dyntype,
                 usd_attribute_name="mjc:dynType",
-                usd_value_transformer=usd_parse_dyntype,
+                usd_value_transformer=parse_dyntype,
             )
         )
-
-        def usd_parse_gaintype(value: Any, _context: dict[str, Any]) -> int:
-            return parse_gaintype(str(value))
-
-        def usd_parse_biastype(value: Any, _context: dict[str, Any]) -> int:
-            return parse_biastype(str(value))
-
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_gaintype",
@@ -1326,7 +1316,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="gaintype",
                 mjcf_value_transformer=parse_gaintype,
                 usd_attribute_name="mjc:gainType",
-                usd_value_transformer=usd_parse_gaintype,
+                usd_value_transformer=parse_gaintype,
             )
         )
         builder.add_custom_attribute(
@@ -1340,7 +1330,7 @@ class SolverMuJoCo(SolverBase):
                 mjcf_attribute_name="biastype",
                 mjcf_value_transformer=parse_biastype,
                 usd_attribute_name="mjc:biasType",
-                usd_value_transformer=usd_parse_biastype,
+                usd_value_transformer=parse_biastype,
             )
         )
 
@@ -4765,42 +4755,6 @@ class SolverMuJoCo(SolverBase):
 
         self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
-
-        # Write back compiled actuator parameters into Newton's custom attribute
-        # storage. MuJoCo's compiler resolves spec-level placeholders (positive
-        # biasprm[2] = dampratio → negative biasprm[2] = -kv). Without this,
-        # update_ctrl_direct_actuator_properties_kernel would overwrite the
-        # resolved values with the unresolved spec values. mujoco_warp.set_const
-        # does not implement this resolution.
-        if mujoco_attrs is not None and mjc_actuator_ctrl_source_list:
-            has_biasprm = hasattr(mujoco_attrs, "actuator_biasprm")
-            has_gainprm = hasattr(mujoco_attrs, "actuator_gainprm")
-            if has_biasprm or has_gainprm:
-                bp_np = mujoco_attrs.actuator_biasprm.numpy() if has_biasprm else None
-                gp_np = mujoco_attrs.actuator_gainprm.numpy() if has_gainprm else None
-                per_world = len(mjc_actuator_ctrl_source_list)
-                total = bp_np.shape[0] if bp_np is not None else (gp_np.shape[0] if gp_np is not None else 0)
-                nw = total // per_world if per_world > 0 else 1
-                modified = False
-                for mjc_act_idx, (src, newton_idx) in enumerate(
-                    zip(mjc_actuator_ctrl_source_list, mjc_actuator_to_newton_idx_list, strict=True)
-                ):
-                    if src != 1 or newton_idx < 0 or mjc_act_idx >= self.mj_model.nu:
-                        continue
-                    compiled_bp = self.mj_model.actuator_biasprm[mjc_act_idx]
-                    compiled_gp = self.mj_model.actuator_gainprm[mjc_act_idx]
-                    for w in range(nw):
-                        idx = w * per_world + newton_idx
-                        if bp_np is not None:
-                            bp_np[idx] = compiled_bp
-                        if gp_np is not None:
-                            gp_np[idx] = compiled_gp
-                    modified = True
-                if modified:
-                    if bp_np is not None:
-                        mujoco_attrs.actuator_biasprm.assign(bp_np)
-                    if gp_np is not None:
-                        mujoco_attrs.actuator_gainprm.assign(gp_np)
 
         self._update_mjc_data(self.mj_data, model, state)
 

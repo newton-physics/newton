@@ -18,10 +18,14 @@
 Verifies that robots from the MuJoCo Menagerie produce equivalent simulation
 results when loaded via MJCF into Newton's SolverMuJoCo vs native mujoco_warp.
 
-Test Architecture:
-    - TestMenagerieBase: Abstract base class with all test infrastructure
-    - TestMenagerieMJCF: MJCF model source variant
-    - TestMenagerie_<RobotName>: One derived class per menagerie robot
+Architecture::
+
+    TestMenagerieBase           Abstract base with all test infrastructure
+    ├── TestMenagerieMJCF       Load Newton model from MJCF
+    │   ├── TestMenagerie_UniversalRobotsUr5e   (enabled, split pipeline)
+    │   ├── TestMenagerie_ApptronikApollo       (enabled, full pipeline)
+    │   └── ...                                 (61 robots total, most skipped)
+    └── TestMenagerieUSD        Load Newton model from USD (all skipped)
 
 Each test:
     1. Downloads the robot from menagerie (cached).
@@ -501,14 +505,6 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_fields_unordered() which understands type-specific semantics
     "geom_size",
-    # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
-    # re-diagonalization. Backfilled instead.
-    "actuator_acc0",
-    # Derived from inertia and dof_armature by set_const_0. Backfilled.
-    "dof_invweight0",
-    # Sparse mass matrix structure (M_colind, M_rowind, M_rowadr, M_rownnz, etc.);
-    # can differ with inertia re-diagonalization and dof representation.
-    "M_",
     # Range: Compared via compare_jnt_range() which only checks limited joints
     # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
     "jnt_range",
@@ -522,8 +518,17 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_",
     "pair_geom",  # geom indices depend on geom ordering
     "nxn_",  # broadphase pairs depend on geom ordering
+    # Sparse mass matrix structure (M_colind, M_rowind, M_rowadr, M_rownnz, etc.);
+    # can differ with inertia re-diagonalization and dof representation.
+    "M_",
     # Compilation-dependent fields: validated at 1e-3 by compare_compiled_model_fields()
+    # Derived from inertia by set_const; differs when inertia representation differs. Backfilled.
+    # Derived from inertia and dof_armature by set_const_0. Backfilled.
+    "dof_invweight0",
     "body_subtreemass",
+    # Computed from mass matrix and actuator moment at qpos0; differs due to inertia
+    # re-diagonalization. Backfilled instead.
+    "actuator_acc0",
     "stat",  # meaninertia derived from invweight0
 }
 
@@ -1784,9 +1789,7 @@ class TestMenagerieBase(unittest.TestCase):
     split_pipeline_tol: float = 1e-5  # Tolerance for contact/constraint matching in split pipeline
     njmax: int | None = None  # Max constraint rows per world (None = auto from MuJoCo)
     nconmax: int | None = None  # Max contacts per world (None = auto from MuJoCo)
-    # Override integrator for SolverMuJoCo creation. None = let solver pick from
-    # model attributes / its own default. Set to "euler" to avoid implicit integrators
-    # that mujoco_warp doesn't support (relevant for USD models).
+    # Override integrator for SolverMuJoCo
     solver_integrator: str | int | None = None
     # CUDA graph capture with split pipeline injection produces incorrect results.
     # Disabled by default; re-enable per robot once the interaction is understood.
@@ -1821,7 +1824,9 @@ class TestMenagerieBase(unittest.TestCase):
     def _create_newton_model(self) -> newton.Model:
         """Create Newton model from the source (MJCF or USD).
 
-        Subclasses must implement this to define how Newton loads the model.
+        Subclasses must implement this to define how Newton loads the model:
+        - TestMenagerieMJCF: Load directly from MJCF
+        - TestMenagerieUSD: Convert MJCF to USD, then load USD
 
         Note: The native MuJoCo comparison always loads from MJCF (ground truth).
         See _create_native_mujoco_warp() which is shared by all subclasses.

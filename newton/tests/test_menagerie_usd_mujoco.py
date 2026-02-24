@@ -19,14 +19,14 @@ MuJoCo Menagerie USD Integration Tests
 Tests that MuJoCo Menagerie robots converted to USD simulate identically
 in Newton's MuJoCo solver vs native MuJoCo (loaded from original MJCF).
 
-Part A: Import tests verify that each USD asset loads correctly (body/joint/
+Import tests verify that each USD asset loads correctly (body/joint/
 shape counts, no NaN values, correct joint types).
 
-Part B: Simulation equivalence tests reuse the TestMenagerieBase infrastructure
+Simulation equivalence tests reuse the TestMenagerieBase infrastructure
 from test_menagerie_mujoco.py to compare per-step simulation state between
 Newton (USD) and native MuJoCo (MJCF).
 
-Part C: Menagerie robot stubs. One class per menagerie robot, using the default
+Menagerie robot stubs. One class per menagerie robot, using the default
 TestMenagerieUSD configuration. Initially these run with no usd_path (skipped
 until a pre-converted USD is available).
 
@@ -173,10 +173,8 @@ MENAGERIE_USD_ASSETS = {
 
 
 # =============================================================================
-# Part A: Import Tests
+# Import Tests
 # =============================================================================
-
-
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestMenagerieUsdImport(unittest.TestCase):
     """Verify that each menagerie USD asset imports correctly into Newton."""
@@ -288,8 +286,6 @@ class TestMenagerieUsdImport(unittest.TestCase):
 # =============================================================================
 # USD-specific sorted comparison helpers
 # =============================================================================
-
-
 def compare_bodies_sorted(
     newton_mjw: Any,
     native_mjw: Any,
@@ -1051,7 +1047,7 @@ class TestMenagerieUSD(TestMenagerieBase):
 
 
 # =============================================================================
-# Part B: Simulation Equivalence Tests (pre-converted USD assets)
+# Simulation Equivalence Tests (pre-converted USD assets)
 # =============================================================================
 # Tests with local pre-converted USD assets and custom configurations.
 # The native MuJoCo model is always loaded from the original MJCF.
