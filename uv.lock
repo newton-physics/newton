@@ -2620,6 +2620,7 @@ wheels = [
 name = "newton"
 source = { editable = "." }
 dependencies = [
+    { name = "newton-actuators" },
     { name = "warp-lang" },
 ]
 
@@ -2826,6 +2827,7 @@ requires-dist = [
     { name = "mujoco-warp", marker = "extra == 'torch-cu12'", specifier = ">=3.5.0" },
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
+    { name = "newton-actuators" },
     { name = "newton-usd-schemas", marker = "extra == 'dev'", specifier = ">=0.1.0a2" },
     { name = "newton-usd-schemas", marker = "extra == 'docs'", specifier = ">=0.1.0a2" },
     { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0a2" },
@@ -2901,6 +2903,17 @@ provides-extras = ["dev", "docs", "examples", "importers", "notebook", "remesh",
 
 [package.metadata.requires-dev]
 dev = [{ name = "asv", specifier = ">=0.6.4" }]
+
+[[package]]
+name = "newton-actuators"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "warp-lang" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/ee/3119604cad4ca894fb80ef8ccd06b6bbd0b485b38ddc152ca753c67e0e76/newton_actuators-0.1.0-py3-none-any.whl", hash = "sha256:ba08923d12faaed6ef2b36d06948321425aee11d2f67c43cbd74d88a2649acce", size = 25990, upload-time = "2026-01-28T10:17:14.975Z" },
+]
 
 [[package]]
 name = "newton-usd-schemas"

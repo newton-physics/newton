@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -26,6 +27,9 @@ from ..core.types import Devicelike
 from .contacts import Contacts
 from .control import Control
 from .state import State
+
+if TYPE_CHECKING:
+    from newton_actuators import Actuator
 
 
 class Model:
@@ -405,6 +409,8 @@ class Model:
         """Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_vel = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
+        self.joint_act = None
+        """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_articulation = None
@@ -703,6 +709,7 @@ class Model:
         self.attribute_frequency["joint_armature"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_pos"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_act"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_act_mode"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
@@ -735,6 +742,9 @@ class Model:
         self.attribute_frequency["shape_source_ptr"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_scale"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
+
+        self.actuators: list[Actuator] = []
+        """List of actuator instances for this model."""
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
@@ -810,6 +820,7 @@ class Model:
             if self.joint_count:
                 c.joint_target_pos = wp.clone(self.joint_target_pos, requires_grad=requires_grad)
                 c.joint_target_vel = wp.clone(self.joint_target_vel, requires_grad=requires_grad)
+                c.joint_act = wp.clone(self.joint_act, requires_grad=requires_grad)
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
@@ -820,6 +831,7 @@ class Model:
         else:
             c.joint_target_pos = self.joint_target_pos
             c.joint_target_vel = self.joint_target_vel
+            c.joint_act = self.joint_act
             c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
