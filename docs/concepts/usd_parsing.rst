@@ -156,7 +156,7 @@ The following USD example demonstrates how PhysX attributes are authored in a US
        prepend apiSchemas = ["PhysicsCollisionAPI", "PhysxCollisionAPI"]
    ) {
        # PhysX collision settings
-       float physxCollision:contactOffset = 0.02  # → contact_margin = 0.02
+      float physxCollision:contactOffset = 0.02  # → gap = 0.02
    }
 
 2. Priority-Based Resolution
@@ -247,7 +247,7 @@ Each solver has its own namespace prefixes for solver-specific attributes. The t
      - ``mjc:model:joint:testMjcJointScalar``, ``mjc:state:joint:testMjcJointVec3``
    * - **Newton**
      - ``newton``
-     - ``newton:hullVertexLimit``, ``newton:contactMargin``
+     - ``newton:hullVertexLimit``, ``newton:contactGap``
 
 **Accessing Collected Solver-Specific Attributes:**
 

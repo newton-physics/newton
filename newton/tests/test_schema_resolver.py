@@ -1288,9 +1288,9 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(pd_gains[0][0], 2.0, places=5)
         self.assertAlmostEqual(pd_gains[0][1], 0.2, places=5)
 
-    def test_contact_margin(self):
+    def test_gap(self):
         """
-        Test contact_margin priority.
+        Test gap priority.
         """
         stage = Usd.Stage.CreateInMemory()
         xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
@@ -1306,30 +1306,30 @@ class TestSchemaResolver(unittest.TestCase):
         # Create resolver
         resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
 
-        # there is no authored contact_margin in the asset, so it should be the physx default (-inf)
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertEqual(contact_margin, float("-inf"))
+        # there is no authored gap in the asset, so it should be the physx default (-inf)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertEqual(gap, float("-inf"))
 
         # an explicit newton value should be used
         collider.GetAttribute("newton:contactMargin").Set(0.2)
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertAlmostEqual(contact_margin, 0.2)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.2)
 
         # an explicit physx value should override the newton value
         collider.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.3)
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertAlmostEqual(contact_margin, 0.3)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.3)
 
         # reversed resolver priority should use the newton value
         resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertAlmostEqual(contact_margin, 0.2)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.2)
 
-        # mujoco mjc:margin is not equivalent to newton:contactMargin, so it is ignored
+        # mujoco mjc:margin is not equivalent to newton:gap, so it is ignored
         resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
         collider.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.4)
-        contact_margin = resolver.get_value(collider, PrimType.SHAPE, "contact_margin")
-        self.assertAlmostEqual(contact_margin, 0.2)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.2)
 
         # mjc:margin is available instead via custom solver attributes
         builder = ModelBuilder()

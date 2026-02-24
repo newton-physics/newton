@@ -760,7 +760,7 @@ def test_mesh_ground_collision_index(test, device):
 
     # Set large contact margin to ensure all mesh vertices will be within the contact margin
     # Must be set BEFORE adding shapes
-    builder.rigid_contact_margin = 2.0
+    builder.rigid_gap = 2.0
 
     # create body with nonzero mass to ensure it is not static
     # and contact points will be computed
