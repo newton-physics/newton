@@ -22,6 +22,7 @@ import warp as wp
 
 import newton
 
+
 @wp.struct
 class PickingState:
     picked_point_local: wp.vec3
@@ -29,6 +30,7 @@ class PickingState:
     picking_target_world: wp.vec3
     pick_stiffness: float
     pick_damping: float
+
 
 @wp.kernel
 def compute_pick_state_kernel(
@@ -98,19 +100,20 @@ def apply_picking_force_kernel(
 
     # Velocity at the picked point
     vel_at_offset = vel_com + wp.cross(angular_vel, offset)
-    
+
     # Adjust force to mass for more adaptive manipulation of picked bodies.
     force_multiplier = 10.0 + body_mass[pick_body]
 
     # Compute the force to apply
     force_at_offset = force_multiplier * (
-                        pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world)
-                        - (pick_state[0].pick_damping * vel_at_offset)
-                                        )
+        pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world)
+        - (pick_state[0].pick_damping * vel_at_offset)
+    )
     # Compute the resulting torque given the offset from COM to the picked point.
     torque_at_offset = wp.cross(offset, force_at_offset)
 
     wp.atomic_add(body_f, pick_body, wp.spatial_vector(force_at_offset, torque_at_offset))
+
 
 @wp.kernel
 def update_pick_target_kernel(
@@ -118,7 +121,7 @@ def update_pick_target_kernel(
     d: wp.vec3,
     world_offset: wp.vec3,
     # read-write
-    pick_state: wp.array(dtype=PickingState), 
+    pick_state: wp.array(dtype=PickingState),
 ):
     # get original mouse cursor target (in physics space)
     original_target = pick_state[0].picking_target_world
@@ -137,6 +140,7 @@ def update_pick_target_kernel(
 
     # Update the original mouse cursor target (no smoothing here)
     pick_state[0].picking_target_world = new_mouse_target
+
 
 @wp.kernel
 def update_shape_xforms(

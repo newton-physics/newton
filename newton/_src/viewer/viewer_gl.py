@@ -29,7 +29,6 @@ from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.gui import UI
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
-from .kernels import PickingState
 from .picking import Picking
 from .viewer import ViewerBase
 from .wind import Wind

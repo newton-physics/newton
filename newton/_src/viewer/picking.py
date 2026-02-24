@@ -19,7 +19,7 @@ import warp as wp
 import newton
 
 from ..geometry import raycast
-from .kernels import apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel, PickingState
+from .kernels import PickingState, apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel
 
 
 class Picking:
