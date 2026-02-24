@@ -20,9 +20,9 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ..geometry import ShapeFlags
+from ..geometry import GeoType, ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderOrder, RenderShapeType
+from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderOrder
 
 DEFAULT_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
@@ -49,21 +49,21 @@ def convert_newton_transform(
 
 @wp.func
 def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
-    if shape_type == RenderShapeType.BOX:
+    if shape_type == GeoType.BOX:
         return True
-    if shape_type == RenderShapeType.CAPSULE:
+    if shape_type == GeoType.CAPSULE:
         return True
-    if shape_type == RenderShapeType.CYLINDER:
+    if shape_type == GeoType.CYLINDER:
         return True
-    if shape_type == RenderShapeType.ELLIPSOID:
+    if shape_type == GeoType.ELLIPSOID:
         return True
-    if shape_type == RenderShapeType.PLANE:
+    if shape_type == GeoType.PLANE:
         return True
-    if shape_type == RenderShapeType.SPHERE:
+    if shape_type == GeoType.SPHERE:
         return True
-    if shape_type == RenderShapeType.CONE:
+    if shape_type == GeoType.CONE:
         return True
-    if shape_type == RenderShapeType.MESH:
+    if shape_type == GeoType.MESH:
         return True
     wp.printf("Unsupported shape geom type: %d\n", shape_type)
     return False
@@ -105,7 +105,6 @@ class SensorTiledCamera:
 
     RenderContext = RenderContext
     RenderLightType = RenderLightType
-    RenderShapeType = RenderShapeType
     RenderOrder = RenderOrder
 
     @dataclass

@@ -4355,6 +4355,56 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
+        """Authored mass without inertia should produce inertia consistent with a uniform-density body.
+
+        Two identical 0.1 [m] cube bodies that should both end up with 8 [kg]
+        mass and inertia I_diag = (1/6) * m * s^2 [kg*m^2]:
+          A - density 8000 [kg/m^3] on the collider shape
+          B - mass 8 [kg] on the body only, inertia via scaling
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        density = 8000.0
+        size = 0.1
+        mass = density * size**3
+        expected_i = (1.0 / 6.0) * mass * size**2
+
+        def create_body(name):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
+            collider.CreateSizeAttr().Set(size)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            return body.GetPrim(), collider.GetPrim()
+
+        # A: density on the collider shape derives mass and inertia.
+        body_prim, collider_prim = create_body("A")
+        UsdPhysics.MassAPI.Apply(body_prim)
+        UsdPhysics.MassAPI.Apply(collider_prim).CreateDensityAttr().Set(density)
+
+        # B: only mass authored on body, inertia scaled from shape accumulation.
+        body_prim, _ = create_body("B")
+        UsdPhysics.MassAPI.Apply(body_prim).CreateMassAttr().Set(mass)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        idx_a = result["path_body_map"]["/World/A"]
+        idx_b = result["path_body_map"]["/World/B"]
+
+        for idx, name in ((idx_a, "A"), (idx_b, "B")):
+            self.assertAlmostEqual(builder.body_mass[idx], mass, places=5, msg=f"Body {name} mass")
+            inertia = np.array(builder.body_inertia[idx]).reshape(3, 3)
+            np.testing.assert_allclose(
+                np.diag(inertia), [expected_i] * 3, atol=1e-5, rtol=1e-5, err_msg=f"Body {name} inertia"
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_applies_axis_rotation_in_compute_callback(self):
         """Compute fallback must rotate cone/capsule/cylinder mass frame for non-Z axes."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -6045,6 +6095,68 @@ def Xform "BodyWithoutVisuals" (
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+
+class TestHasAppliedApiSchema(unittest.TestCase):
+    """Test the has_applied_api_schema helper in newton.usd.utils."""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unregistered_schema_via_metadata(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Sphere "WithSiteAPI" (
+    prepend apiSchemas = ["MjcSiteAPI"]
+)
+{
+    double radius = 0.1
+}
+
+def Sphere "WithoutSiteAPI"
+{
+    double radius = 0.1
+}
+"""
+        )
+
+        prim_with = stage.GetPrimAtPath("/WithSiteAPI")
+        prim_without = stage.GetPrimAtPath("/WithoutSiteAPI")
+
+        self.assertTrue(usd.has_applied_api_schema(prim_with, "MjcSiteAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim_without, "MjcSiteAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim_with, "NonExistentAPI"))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_registered_schema_via_has_api(self):
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/Body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+
+        self.assertTrue(usd.has_applied_api_schema(prim, "PhysicsRigidBodyAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim, "PhysicsMassAPI"))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_appended_and_explicit_items(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Sphere "AppendedSchema" (
+    append apiSchemas = ["MjcSiteAPI"]
+)
+{
+    double radius = 0.1
+}
+"""
+        )
+
+        prim = stage.GetPrimAtPath("/AppendedSchema")
+        self.assertTrue(usd.has_applied_api_schema(prim, "MjcSiteAPI"))
 
 
 if __name__ == "__main__":
