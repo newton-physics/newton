@@ -71,7 +71,7 @@ def _build_multiworld_particle_model(*, worlds: int, spacing: float):
 
     # Multi-world model (world-local positions are translated by add_world() xform).
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    for world_id in range(int(worlds)):
+    for world_id in range(worlds):
         builder.add_world(
             blueprint,
             xform=wp.transform(wp.vec3(float(world_id) * float(spacing), 0.0, 0.0), wp.quat_identity()),
