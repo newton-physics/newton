@@ -27,14 +27,6 @@ class SpatialVectorForm(Enum):
     ANGULAR_LINEAR = "angular_linear"  # [τx, τy, τz, fx, fy, fz] - MuJoCo, Featherstone
 
 
-class ReferenceFrame(Enum):
-    """Reference frame for spatial quantities."""
-
-    WORLD_AT_COM = "world_at_com"  # World orientation, body COM origin
-    WORLD_AT_ORIGIN = "world_at_origin"  # World frame at world origin
-    BODY_LOCAL = "body_local"  # Body-fixed frame
-
-
 @wp.func
 def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float = 1.0e-8) -> wp.quat:
     """Robustly compute the quaternion that rotates ``from_vec`` to ``to_vec``.

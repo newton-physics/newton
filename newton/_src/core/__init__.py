@@ -14,7 +14,6 @@
 # limitations under the License.
 
 from .spatial import (
-    ReferenceFrame,
     SpatialVectorForm,
     quat_between_axes,
     quat_decompose,
@@ -38,7 +37,6 @@ __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
-    "ReferenceFrame",
     "SpatialVectorForm",
     "quat_between_axes",
     "quat_decompose",
