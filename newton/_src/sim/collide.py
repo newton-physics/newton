@@ -841,27 +841,3 @@ class CollisionPipeline:
                 ],
                 device=self.device,
             )
-
-    def get_hydro_contact_surface(self):
-        """Get hydroelastic contact surface data for visualization, if available.
-
-        Returns:
-            HydroelasticContactSurfaceData if hydroelastic_sdf is configured, None otherwise.
-        """
-        if self.hydroelastic_sdf is not None:
-            return self.hydroelastic_sdf.get_hydro_contact_surface()
-        return None
-
-    def set_output_contact_surface(self, enabled: bool) -> None:
-        """Enable or disable contact surface visualization.
-
-        Note: When ``output_contact_surface=True`` in the config, the kernel always
-        writes debug surface data. This method is provided for API compatibility but
-        the actual display is controlled by the viewer's ``show_hydro_contact_surface`` flag.
-
-        Args:
-            enabled: If True, visualization is enabled (viewer will display the data).
-                     If False, visualization is disabled (viewer will hide the data).
-        """
-        if self.hydroelastic_sdf is not None:
-            self.hydroelastic_sdf.set_output_contact_surface(enabled)

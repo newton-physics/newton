@@ -624,7 +624,8 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         sdf_hydroelastic_config=sdf_config,
     )
     # Enable contact surface output for this test (validates penetration depth)
-    collision_pipeline.set_output_contact_surface(True)
+    if collision_pipeline.hydroelastic_sdf is not None:
+        collision_pipeline.hydroelastic_sdf.set_output_contact_surface(True)
     contacts = collision_pipeline.contacts()
 
     # Simulate for 3 seconds to reach equilibrium
@@ -663,7 +664,11 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         )
 
     # Measure penetration from contact surface depth
-    surface_data = collision_pipeline.get_hydro_contact_surface()
+    surface_data = (
+        collision_pipeline.hydroelastic_sdf.get_hydro_contact_surface()
+        if collision_pipeline.hydroelastic_sdf is not None
+        else None
+    )
     test.assertIsNotNone(surface_data, "Hydroelastic contact surface data should be available")
 
     num_faces = int(surface_data.face_contact_count.numpy()[0])
@@ -752,7 +757,14 @@ class TestHydroelastic(unittest.TestCase):
                 viewer.begin_frame(sim_time)
                 viewer.log_state(state_0)
                 viewer.log_contacts(contacts, state_0)
-                viewer.log_hydro_contact_surface(collision_pipeline.get_hydro_contact_surface(), penetrating_only=False)
+                viewer.log_hydro_contact_surface(
+                    (
+                        collision_pipeline.hydroelastic_sdf.get_hydro_contact_surface()
+                        if collision_pipeline.hydroelastic_sdf is not None
+                        else None
+                    ),
+                    penetrating_only=False,
+                )
                 viewer.end_frame()
 
                 state_0, state_1 = simulate(
