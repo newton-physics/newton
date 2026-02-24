@@ -204,6 +204,40 @@ class TestSensorContact(unittest.TestCase):
         assert_np_equal(transforms[0][:3], [1.0, 2.0, 3.0])
         assert_np_equal(transforms[1][:3], [4.0, 5.0, 6.0])
 
+    def test_sensing_obj_transforms_shapes(self):
+        """Test transforms for shape-type sensing objects, including ground shapes."""
+        device = wp.get_device()
+
+        model = MockModel()
+        model.body_label = ["A"]
+        model.body_shapes = [(0,)]
+        model.shape_label = ["s0", "s1"]
+        # shape 0 belongs to body 0, shape 1 is a ground shape (body -1)
+        model.shape_body = wp.array([0, -1], dtype=wp.int32, device=device)
+
+        shape0_local = wp.transform(wp.vec3(0.5, 0.25, 0.125), wp.quat_identity())
+        shape1_local = wp.transform(wp.vec3(10.0, 20.0, 30.0), wp.quat_identity())
+        model.shape_transform = wp.array([shape0_local, shape1_local], dtype=wp.transform, device=device)
+
+        sensor = SensorContact(model, sensing_obj_shapes="*")
+
+        body_pos = wp.vec3(1.0, 2.0, 3.0)
+        body_q = wp.array(
+            [wp.transform(body_pos, wp.quat_identity())],
+            dtype=wp.transform,
+            device=device,
+        )
+        state = types.SimpleNamespace(body_q=body_q)
+
+        contacts = create_contacts(device, [], naconmax=1)
+        sensor.update(state, contacts)
+
+        transforms = sensor.sensing_obj_transforms.numpy()
+        # shape on a body: body_q * shape_transform -> (1+0.5, 2+0.25, 3+0.125)
+        assert_np_equal(transforms[0][:3], [1.5, 2.25, 3.125])
+        # ground shape (body_idx == -1): shape_transform only -> (10, 20, 30)
+        assert_np_equal(transforms[1][:3], [10.0, 20.0, 30.0])
+
 
 class TestSensorContactMuJoCo(unittest.TestCase):
     """End-to-end tests for contact sensors using MuJoCo solver."""

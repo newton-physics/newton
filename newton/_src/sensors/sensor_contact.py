@@ -23,6 +23,11 @@ import warp as wp
 from ..sim import Contacts, Model, State
 from ..utils.selection import match_labels
 
+# Object type constants shared between the kernel and SensorContact.ObjectType enum.
+_OBJ_TYPE_TOTAL = 0
+_OBJ_TYPE_SHAPE = 1
+_OBJ_TYPE_BODY = 2
+
 
 @wp.kernel(enable_backward=False)
 def compute_sensing_obj_transforms_kernel(
@@ -37,9 +42,9 @@ def compute_sensing_obj_transforms_kernel(
     tid = wp.tid()
     idx = indices[tid]
     obj_type = obj_types[tid]
-    if obj_type == wp.static(SensorContact.ObjectType.BODY.value):
+    if obj_type == wp.static(_OBJ_TYPE_BODY):
         transforms[tid] = body_q[idx]
-    elif obj_type == wp.static(SensorContact.ObjectType.SHAPE.value):
+    elif obj_type == wp.static(_OBJ_TYPE_SHAPE):
         body_idx = shape_body[idx]
         if body_idx >= 0:
             transforms[tid] = wp.transform_multiply(body_q[body_idx], shape_transform[idx])
@@ -162,13 +167,13 @@ class SensorContact:
     class ObjectType(Enum):
         """Type tag for entries in :attr:`sensing_objs` and :attr:`counterparts`."""
 
-        TOTAL = 0
+        TOTAL = _OBJ_TYPE_TOTAL
         """Aggregate over all counterparts (counterparts only)."""
 
-        SHAPE = 1
+        SHAPE = _OBJ_TYPE_SHAPE
         """Individual shape."""
 
-        BODY = 2
+        BODY = _OBJ_TYPE_BODY
         """Individual body."""
 
     shape: tuple[int, int]
