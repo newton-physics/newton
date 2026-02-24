@@ -94,7 +94,7 @@ def random_forces_kernel(
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=16):
+    def __init__(self, viewer, world_count=16):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -102,7 +102,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         # load articulation
         arti = newton.ModelBuilder()
@@ -121,7 +121,7 @@ class Example:
         # create scene
         scene = newton.ModelBuilder()
         scene.add_ground_plane()
-        scene.replicate(world, num_worlds=self.num_worlds)
+        scene.replicate(world, world_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()
@@ -160,10 +160,10 @@ class Example:
             self.default_dof_velocities = wp.to_torch(self.ants.get_dof_velocities(self.model)).clone()
 
             # create disjoint subsets to alternate resets
-            all_indices = torch.arange(num_worlds, dtype=torch.int32)
-            self.mask_0 = torch.zeros(num_worlds, dtype=bool)
+            all_indices = torch.arange(world_count, dtype=torch.int32)
+            self.mask_0 = torch.zeros(world_count, dtype=bool)
             self.mask_0[all_indices[::2]] = True
-            self.mask_1 = torch.zeros(num_worlds, dtype=bool)
+            self.mask_1 = torch.zeros(world_count, dtype=bool)
             self.mask_1[all_indices[1::2]] = True
         else:
             # default ant root states
@@ -182,9 +182,9 @@ class Example:
             self.default_dof_velocities = wp.clone(self.ants.get_dof_velocities(self.model))
 
             # create disjoint subsets to alternate resets
-            self.mask_0 = wp.empty(num_worlds, dtype=bool)
-            self.mask_1 = wp.empty(num_worlds, dtype=bool)
-            wp.launch(init_masks, dim=num_worlds, inputs=[self.mask_0, self.mask_1])
+            self.mask_0 = wp.empty(world_count, dtype=bool)
+            self.mask_1 = wp.empty(world_count, dtype=bool)
+            wp.launch(init_masks, dim=world_count, inputs=[self.mask_0, self.mask_1])
 
         self.viewer.set_model(self.model)
 
@@ -224,7 +224,7 @@ class Example:
         if USE_TORCH:
             import torch  # noqa: PLC0415
 
-            dof_forces = 2.0 - 4.0 * torch.rand((self.num_worlds, self.num_per_world, self.ants.joint_dof_count))
+            dof_forces = 2.0 - 4.0 * torch.rand((self.world_count, self.num_per_world, self.ants.joint_dof_count))
         else:
             dof_forces = self.ants.get_dof_forces(self.control)
             wp.launch(
@@ -252,15 +252,15 @@ class Example:
             import torch  # noqa: PLC0415
 
             # random jump speed per world
-            self.default_root_velocities[..., 2] = 3.0 * torch.rand((self.num_worlds, 1))
+            self.default_root_velocities[..., 2] = 3.0 * torch.rand((self.world_count, 1))
             # random spin speed per articulation
             self.default_root_velocities[..., 5] = (
-                4.0 * torch.pi * (0.5 - torch.rand((self.num_worlds, self.num_per_world)))
+                4.0 * torch.pi * (0.5 - torch.rand((self.world_count, self.num_per_world)))
             )
         else:
             wp.launch(
                 reset_kernel,
-                dim=(self.num_worlds, self.num_per_world),
+                dim=(self.world_count, self.num_per_world),
                 inputs=[self.default_root_velocities, mask, 3.0, 2.0 * wp.pi, self.step_count],
             )
 
@@ -288,7 +288,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=16, help="Total number of simulated worlds.")
+    parser.add_argument("--world-count", type=int, default=16, help="Total number of simulated worlds.")
 
     viewer, args = newton.examples.init(parser)
 
@@ -297,6 +297,6 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, num_worlds=args.num_worlds)
+    example = Example(viewer, world_count=args.world_count)
 
     newton.examples.run(example, args)

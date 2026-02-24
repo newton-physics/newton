@@ -26,10 +26,10 @@ from newton.sensors import SensorTiledCamera
 
 
 class SensorTiledCameraBenchmark:
-    param_names = ["resolution", "num_worlds", "iterations"]
+    param_names = ["resolution", "world_count", "iterations"]
     params = ([64], [4096], [50])
 
-    def setup(self, resolution: int, num_worlds: int, iterations: int):
+    def setup(self, resolution: int, world_count: int, iterations: int):
         self.timings = {}
 
         franka = newton.ModelBuilder()
@@ -39,7 +39,7 @@ class SensorTiledCameraBenchmark:
         )
 
         scene = newton.ModelBuilder()
-        scene.replicate(franka, num_worlds)
+        scene.replicate(franka, world_count)
         scene.add_ground_plane()
 
         self.model = scene.finalize()
@@ -54,7 +54,7 @@ class SensorTiledCameraBenchmark:
                         wp.quatf(0.4187639653682709, 0.4224344491958618, 0.5708873867988586, 0.5659270882606506),
                     )
                 ]
-                * num_worlds
+                * world_count
             ],
             dtype=wp.transformf,
         )
@@ -69,57 +69,57 @@ class SensorTiledCameraBenchmark:
         self.color_image = self.tiled_camera_sensor.create_color_image_output(resolution, resolution)
         self.depth_image = self.tiled_camera_sensor.create_depth_image_output(resolution, resolution)
 
-        self.tiled_camera_sensor.update_from_state(self.state)
+        self.tiled_camera_sensor.sync_transforms(self.state)
 
         with wp.ScopedTimer("Refit BVH", synchronize=True, print=False) as timer:
             self.tiled_camera_sensor.render_context.refit_bvh()
         self.timings["refit"] = timer.elapsed
 
         for _ in range(iterations):
-            self.tiled_camera_sensor.render(
+            self.tiled_camera_sensor.update(
                 None,
                 self.camera_transforms,
                 self.camera_rays,
-                self.color_image,
-                self.depth_image,
+                color_image=self.color_image,
+                depth_image=self.depth_image,
                 refit_bvh=False,
             )
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_rendering_pixel(self, resolution: int, num_worlds: int, iterations: int):
+    def time_rendering_pixel(self, resolution: int, world_count: int, iterations: int):
         self.tiled_camera_sensor.render_context.options.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         with wp.ScopedTimer("Rendering", synchronize=True, print=True) as timer:
             for _ in range(iterations):
-                self.tiled_camera_sensor.render(
+                self.tiled_camera_sensor.update(
                     None,
                     self.camera_transforms,
                     self.camera_rays,
-                    self.color_image,
-                    self.depth_image,
+                    color_image=self.color_image,
+                    depth_image=self.depth_image,
                     refit_bvh=False,
                     clear_data=None,
                 )
         self.timings["render_pixel"] = timer.elapsed
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
-    def time_rendering_tiled(self, resolution: int, num_worlds: int, iterations: int):
+    def time_rendering_tiled(self, resolution: int, world_count: int, iterations: int):
         self.tiled_camera_sensor.render_context.options.render_order = SensorTiledCamera.RenderOrder.TILED
         self.tiled_camera_sensor.render_context.options.tile_width = 8
         self.tiled_camera_sensor.render_context.options.tile_height = 8
         with wp.ScopedTimer("Tiled Rendering", synchronize=True, print=False) as timer:
             for _ in range(iterations):
-                self.tiled_camera_sensor.render(
+                self.tiled_camera_sensor.update(
                     None,
                     self.camera_transforms,
                     self.camera_rays,
-                    self.color_image,
-                    self.depth_image,
+                    color_image=self.color_image,
+                    depth_image=self.depth_image,
                     refit_bvh=False,
                     clear_data=None,
                 )
         self.timings["render_tiled"] = timer.elapsed
 
-    def teardown(self, resolution: int, num_worlds: int, iterations: int):
+    def teardown(self, resolution: int, world_count: int, iterations: int):
         print("")
         print("=== Benchmark Results (FPS) ===")
         if "refit" in self.timings:
@@ -138,12 +138,12 @@ class SensorTiledCameraBenchmark:
             Image.fromarray(depth_image.numpy()).save("benchmark_depth.png")
 
     def __print_timer(self, name: str, elapsed: float, iterations: int, sensor: SensorTiledCamera):
-        num_cameras = 1
+        camera_count = 1
         title = f"{name}"
         if iterations > 1:
             title += " average"
         average = f"{elapsed / iterations:.2f} ms"
-        fps = f"({(1000.0 / (elapsed / iterations) * (sensor.render_context.num_worlds * num_cameras)):,.2f} fps)"
+        fps = f"({(1000.0 / (elapsed / iterations) * (sensor.render_context.world_count * camera_count)):,.2f} fps)"
 
         print(f"{title} {'.' * (40 - len(title) - len(average))} {average} {fps if iterations > 1 else ''}")
 

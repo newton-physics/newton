@@ -28,25 +28,11 @@ __all__ = [
 # ==================================================================================
 from ._src.utils.mesh import (
     MeshAdjacency,
-    create_box_mesh,
-    create_capsule_mesh,
-    create_cone_mesh,
-    create_cylinder_mesh,
-    create_ellipsoid_mesh,
-    create_plane_mesh,
-    create_sphere_mesh,
     solidify_mesh,
 )
 
 __all__ += [
     "MeshAdjacency",
-    "create_box_mesh",
-    "create_capsule_mesh",
-    "create_cone_mesh",
-    "create_cylinder_mesh",
-    "create_ellipsoid_mesh",
-    "create_plane_mesh",
-    "create_sphere_mesh",
     "solidify_mesh",
 ]
 

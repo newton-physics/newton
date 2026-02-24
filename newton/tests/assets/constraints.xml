@@ -54,7 +54,7 @@
 
     <body name="beam5" pos="-2 0 0" euler="45 45 0">
       <joint name="joint5" type="hinge" axis="1 0 0" range="0 45" solreflimit="-100 -1"/> <!-- test negative solref -->
-      <geom class="box" contype="0" conaffinity="0"/>
+      <geom class="box"/>
     </body>
 
     <body name="box_condim1" pos="4 0 0">

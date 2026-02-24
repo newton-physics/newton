@@ -1054,7 +1054,7 @@ def evaluate_joint_force_hessian(
 # Utility kernels
 # -----------------------------
 @wp.kernel
-def count_num_adjacent_joints(
+def _count_num_adjacent_joints(
     joint_parent: wp.array(dtype=wp.int32),
     joint_child: wp.array(dtype=wp.int32),
     num_body_adjacent_joints: wp.array(dtype=wp.int32),
@@ -1072,7 +1072,7 @@ def count_num_adjacent_joints(
 
 
 @wp.kernel
-def fill_adjacent_joints(
+def _fill_adjacent_joints(
     joint_parent: wp.array(dtype=wp.int32),
     joint_child: wp.array(dtype=wp.int32),
     body_adjacent_joints_offsets: wp.array(dtype=wp.int32),

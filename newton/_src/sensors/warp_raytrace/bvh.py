@@ -15,8 +15,8 @@
 
 import warp as wp
 
+from ...geometry import GeoType
 from .ray import MAXVAL
-from .types import RenderShapeType
 
 
 @wp.func
@@ -144,8 +144,8 @@ def compute_ellipsoid_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[
 
 @wp.kernel(enable_backward=False)
 def compute_shape_bvh_bounds(
-    num_shapes_enabled: wp.int32,
-    num_worlds: wp.int32,
+    shape_count_enabled: wp.int32,
+    world_count: wp.int32,
     shape_world_index: wp.array(dtype=wp.int32),
     shape_enabled: wp.array(dtype=wp.uint32),
     shape_types: wp.array(dtype=wp.int32),
@@ -158,17 +158,17 @@ def compute_shape_bvh_bounds(
     out_bvh_groups: wp.array(dtype=wp.int32),
 ):
     tid = wp.tid()
-    bvh_index_local = tid % num_shapes_enabled
-    if bvh_index_local >= num_shapes_enabled:
+    bvh_index_local = tid % shape_count_enabled
+    if bvh_index_local >= shape_count_enabled:
         return
 
     shape_index = shape_enabled[bvh_index_local]
 
     world_index = shape_world_index[shape_index]
     if world_index < 0:
-        world_index = num_worlds + world_index
+        world_index = world_count + world_index
 
-    if world_index >= num_worlds:
+    if world_index >= world_count:
         return
 
     transform = shape_transforms[shape_index]
@@ -178,23 +178,23 @@ def compute_shape_bvh_bounds(
     lower = wp.vec3f()
     upper = wp.vec3f()
 
-    if geom_type == RenderShapeType.SPHERE:
+    if geom_type == GeoType.SPHERE:
         lower, upper = compute_sphere_bounds(wp.transform_get_translation(transform), size[0])
-    elif geom_type == RenderShapeType.CAPSULE:
+    elif geom_type == GeoType.CAPSULE:
         lower, upper = compute_capsule_bounds(transform, size)
-    elif geom_type == RenderShapeType.CYLINDER:
+    elif geom_type == GeoType.CYLINDER:
         lower, upper = compute_cylinder_bounds(transform, size)
-    elif geom_type == RenderShapeType.CONE:
+    elif geom_type == GeoType.CONE:
         lower, upper = compute_cone_bounds(transform, size)
-    elif geom_type == RenderShapeType.PLANE:
+    elif geom_type == GeoType.PLANE:
         lower, upper = compute_plane_bounds(transform, size)
-    elif geom_type == RenderShapeType.MESH:
+    elif geom_type == GeoType.MESH:
         min_bounds = mesh_bounds[shape_mesh_indices[shape_index], 0]
         max_bounds = mesh_bounds[shape_mesh_indices[shape_index], 1]
         lower, upper = compute_mesh_bounds(transform, size, min_bounds, max_bounds)
-    elif geom_type == RenderShapeType.ELLIPSOID:
+    elif geom_type == GeoType.ELLIPSOID:
         lower, upper = compute_ellipsoid_bounds(transform, size)
-    elif geom_type == RenderShapeType.BOX:
+    elif geom_type == GeoType.BOX:
         lower, upper = compute_box_bounds(transform, size)
 
     out_bvh_lowers[bvh_index_local] = lower
@@ -205,7 +205,7 @@ def compute_shape_bvh_bounds(
 @wp.kernel(enable_backward=False)
 def compute_particle_bvh_bounds(
     num_particles: wp.int32,
-    num_worlds: wp.int32,
+    world_count: wp.int32,
     particle_world_index: wp.array(dtype=wp.int32),
     particle_position: wp.array(dtype=wp.vec3f),
     particle_radius: wp.array(dtype=wp.float32),
@@ -222,9 +222,9 @@ def compute_particle_bvh_bounds(
 
     world_index = particle_world_index[particle_index]
     if world_index < 0:
-        world_index = num_worlds + world_index
+        world_index = world_count + world_index
 
-    if world_index >= num_worlds:
+    if world_index >= world_count:
         return
 
     lower, upper = compute_sphere_bounds(particle_position[particle_index], particle_radius[particle_index])

@@ -106,7 +106,7 @@ Run an example with additional dependencies:
 
 .. code-block:: console
 
-    uv run --extra examples -m newton.examples robot_humanoid --num-worlds 16
+    uv run --extra examples -m newton.examples robot_humanoid --world-count 16
 
 Run an example that inferences an RL policy:
 

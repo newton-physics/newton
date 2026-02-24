@@ -112,7 +112,7 @@ class Example:
         # Create collision pipeline with soft contact margin (requires_grad for differentiable simulation)
         self.collision_pipeline = newton.CollisionPipeline(
             self.model,
-            broad_phase_mode=newton.BroadPhaseMode.EXPLICIT,
+            broad_phase="explicit",
             soft_contact_margin=0.001,
             requires_grad=True,
         )

@@ -37,7 +37,7 @@ class TestSiteCreation(unittest.TestCase):
             xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()),
             type=GeoType.SPHERE,
             scale=(0.01, 0.01, 0.01),
-            key="test_site",
+            label="test_site",
         )
 
         model = builder.finalize()
@@ -49,7 +49,7 @@ class TestSiteCreation(unittest.TestCase):
 
         self.assertTrue(shape_flags[site] & ShapeFlags.SITE)
         self.assertFalse(shape_flags[site] & ShapeFlags.COLLIDE_SHAPES)
-        self.assertEqual(model.shape_key[site], "test_site")
+        self.assertEqual(model.shape_label[site], "test_site")
         self.assertEqual(shape_body[site], body)
         self.assertEqual(shape_type[site], GeoType.SPHERE)
 
@@ -75,9 +75,9 @@ class TestSiteCreation(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body()
 
-        site1 = builder.add_site(body, key="site_1")
-        site2 = builder.add_site(body, key="site_2")
-        site3 = builder.add_site(body, key="site_3")
+        site1 = builder.add_site(body, label="site_1")
+        site2 = builder.add_site(body, label="site_2")
+        site3 = builder.add_site(body, label="site_3")
 
         model = builder.finalize()
 
@@ -94,7 +94,7 @@ class TestSiteCreation(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body()
 
-        site = builder.add_site(body, visible=False, key="hidden")
+        site = builder.add_site(body, visible=False, label="hidden")
 
         model = builder.finalize()
 
@@ -108,7 +108,7 @@ class TestSiteCreation(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body()
 
-        site = builder.add_site(body, visible=True, key="visible")
+        site = builder.add_site(body, visible=True, label="visible")
 
         model = builder.finalize()
 
@@ -122,10 +122,10 @@ class TestSiteCreation(unittest.TestCase):
         builder = newton.ModelBuilder()
         body = builder.add_body()
 
-        site_sphere = builder.add_site(body, type=GeoType.SPHERE, key="sphere")
-        site_box = builder.add_site(body, type=GeoType.BOX, key="box")
-        site_capsule = builder.add_site(body, type=GeoType.CAPSULE, key="capsule")
-        site_cylinder = builder.add_site(body, type=GeoType.CYLINDER, key="cylinder")
+        site_sphere = builder.add_site(body, type=GeoType.SPHERE, label="sphere")
+        site_box = builder.add_site(body, type=GeoType.BOX, label="box")
+        site_capsule = builder.add_site(body, type=GeoType.CAPSULE, label="capsule")
+        site_cylinder = builder.add_site(body, type=GeoType.CYLINDER, label="cylinder")
 
         model = builder.finalize()
 
@@ -140,7 +140,7 @@ class TestSiteCreation(unittest.TestCase):
         """Test site attached to world (body=-1)."""
         builder = newton.ModelBuilder()
 
-        site = builder.add_site(-1, xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_identity()), key="world_site")
+        site = builder.add_site(-1, xform=wp.transform(wp.vec3(1, 2, 3), wp.quat_identity()), label="world_site")
 
         model = builder.finalize()
 
@@ -159,7 +159,7 @@ class TestSiteCreation(unittest.TestCase):
         body = builder.add_body()
 
         site_xform = wp.transform(wp.vec3(0.5, 0.3, 0.1), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 1.57))
-        site = builder.add_site(body, xform=site_xform, key="positioned_site")
+        site = builder.add_site(body, xform=site_xform, label="positioned_site")
 
         model = builder.finalize()
 
@@ -179,13 +179,13 @@ class TestSiteCreation(unittest.TestCase):
         body3 = builder.add_body(xform=wp.transform(wp.vec3(0, 0, 3), wp.quat_identity()))
 
         # Add sites to each body with local offsets
-        site1 = builder.add_site(body1, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), key="site_body1")
-        site2 = builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0.2, 0), wp.quat_identity()), key="site_body2")
-        site3 = builder.add_site(body3, xform=wp.transform(wp.vec3(0, 0, 0.3), wp.quat_identity()), key="site_body3")
+        site1 = builder.add_site(body1, xform=wp.transform(wp.vec3(0.1, 0, 0), wp.quat_identity()), label="site_body1")
+        site2 = builder.add_site(body2, xform=wp.transform(wp.vec3(0, 0.2, 0), wp.quat_identity()), label="site_body2")
+        site3 = builder.add_site(body3, xform=wp.transform(wp.vec3(0, 0, 0.3), wp.quat_identity()), label="site_body3")
 
         # Add another site to body1 to test multiple sites per body
         site1_extra = builder.add_site(
-            body1, xform=wp.transform(wp.vec3(-0.1, 0, 0), wp.quat_identity()), key="site_body1_extra"
+            body1, xform=wp.transform(wp.vec3(-0.1, 0, 0), wp.quat_identity()), label="site_body1_extra"
         )
 
         model = builder.finalize()
@@ -376,7 +376,7 @@ class TestSiteInvariantEnforcement(unittest.TestCase):
         body = builder.add_body()
 
         # Create site
-        site = builder.add_site(body=body, key="test_site")
+        site = builder.add_site(body=body, label="test_site")
 
         model = builder.finalize()
 

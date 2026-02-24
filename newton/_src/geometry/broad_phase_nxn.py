@@ -47,7 +47,7 @@ def _nxn_broadphase_precomputed_pairs(
     nxn_shape_pair: wp.array(dtype=wp.vec2i, ndim=1),
     # Output arrays
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
     max_candidate_pair: int,
 ):
     elementid = wp.tid()
@@ -74,7 +74,7 @@ def _nxn_broadphase_precomputed_pairs(
         write_pair(
             pair,
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
             max_candidate_pair,
         )
 
@@ -115,12 +115,12 @@ def _find_world_and_local_id(
     Returns:
         tuple: (world_id, local_id) - World ID and local index within that world
     """
-    num_worlds = world_cumsum_lower_tri.shape[0]
+    world_count = world_cumsum_lower_tri.shape[0]
 
     # Find world_id using binary search
     # Declare as dynamic variables for loop mutation
     low = int(0)
-    high = int(num_worlds - 1)
+    high = int(world_count - 1)
     world_id = int(0)
 
     while low <= high:
@@ -157,7 +157,7 @@ def _nxn_broadphase_kernel(
     num_filter_pairs: int,
     # Output arrays
     candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),
-    num_candidate_pair: wp.array(dtype=int, ndim=1),  # Size one array
+    candidate_pair_count: wp.array(dtype=int, ndim=1),  # Size one array
     max_candidate_pair: int,
 ):
     tid = wp.tid()
@@ -224,7 +224,7 @@ def _nxn_broadphase_kernel(
         write_pair(
             wp.vec2i(shape1, shape2),
             candidate_pair,
-            num_candidate_pair,
+            candidate_pair_count,
             max_candidate_pair,
         )
 
@@ -286,12 +286,12 @@ class BroadPhaseAllPairs:
 
         # Calculate cumulative sum of lower triangular elements per world
         # For each world, compute n*(n-1)/2 where n is the number of geometries in that world
-        num_worlds = len(slice_ends_np)
-        world_cumsum_lower_tri_np = np.zeros(num_worlds, dtype=np.int32)
+        world_count = len(slice_ends_np)
+        world_cumsum_lower_tri_np = np.zeros(world_count, dtype=np.int32)
 
         start_idx = 0
         cumsum = 0
-        for world_idx in range(num_worlds):
+        for world_idx in range(world_count):
             end_idx = slice_ends_np[world_idx]
             # Number of geometries in this world (including shared geometries)
             num_geoms_in_world = end_idx - start_idx
@@ -307,7 +307,7 @@ class BroadPhaseAllPairs:
         self.world_cumsum_lower_tri = wp.array(world_cumsum_lower_tri_np, dtype=wp.int32, device=device)
 
         # Store total number of kernel threads needed (last element of cumsum)
-        self.num_kernel_threads = int(world_cumsum_lower_tri_np[-1]) if num_worlds > 0 else 0
+        self.num_kernel_threads = int(world_cumsum_lower_tri_np[-1]) if world_count > 0 else 0
 
         # Store number of regular worlds (for distinguishing dedicated -1 segment)
         self.num_regular_worlds = int(num_regular_worlds)
@@ -322,7 +322,7 @@ class BroadPhaseAllPairs:
         shape_count: int,  # Number of active bounding boxes
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
-        num_candidate_pair: wp.array(dtype=int, ndim=1),
+        candidate_pair_count: wp.array(dtype=int, ndim=1),
         device=None,  # Device to launch on
         filter_pairs: wp.array(dtype=wp.vec2i, ndim=1) | None = None,  # Sorted excluded pairs
         num_filter_pairs: int | None = None,
@@ -345,17 +345,17 @@ class BroadPhaseAllPairs:
                 that collide with all worlds. Indices 0, 1, 2, ... indicate world-specific entities.
             shape_count: Number of active bounding boxes to check
             candidate_pair: Output array to store overlapping shape pairs
-            num_candidate_pair: Output array to store number of overlapping pairs found
+            candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of shape pairs (i,j) where i < j whose AABBs overlap
         (with optional margin expansion), whose collision groups allow interaction, and whose world indices are
         compatible (same world or at least one is global). Pairs in filter_pairs (if provided) are excluded.
-        The number of pairs found will be written to num_candidate_pair[0].
+        The number of pairs found will be written to candidate_pair_count[0].
         """
         max_candidate_pair = candidate_pair.shape[0]
 
-        num_candidate_pair.zero_()
+        candidate_pair_count.zero_()
 
         if device is None:
             device = shape_lower.device
@@ -389,7 +389,7 @@ class BroadPhaseAllPairs:
                 filter_pairs_arr,
                 n_filter,
             ],
-            outputs=[candidate_pair, num_candidate_pair, max_candidate_pair],
+            outputs=[candidate_pair, candidate_pair_count, max_candidate_pair],
             device=device,
         )
 
@@ -417,7 +417,7 @@ class BroadPhaseExplicit:
         shape_pair_count: int,
         # Outputs
         candidate_pair: wp.array(dtype=wp.vec2i, ndim=1),  # Array to store overlapping shape pairs
-        num_candidate_pair: wp.array(dtype=int, ndim=1),
+        candidate_pair_count: wp.array(dtype=int, ndim=1),
         device=None,  # Device to launch on
     ):
         """Launch the explicit pairs broad phase collision detection.
@@ -434,7 +434,7 @@ class BroadPhaseExplicit:
             shape_pairs: Array of precomputed shape pairs to check
             shape_pair_count: Number of shape pairs to check
             candidate_pair: Output array to store overlapping shape pairs
-            num_candidate_pair: Output array to store number of overlapping pairs found
+            candidate_pair_count: Output array to store number of overlapping pairs found
             device: Device to launch on. If None, uses the device of the input arrays.
 
         The method will populate candidate_pair with the indices of shape pairs whose AABBs overlap
@@ -443,7 +443,7 @@ class BroadPhaseExplicit:
 
         max_candidate_pair = candidate_pair.shape[0]
 
-        num_candidate_pair.zero_()
+        candidate_pair_count.zero_()
 
         if device is None:
             device = shape_lower.device
@@ -461,7 +461,7 @@ class BroadPhaseExplicit:
                 shape_contact_margin,
                 shape_pairs,
                 candidate_pair,
-                num_candidate_pair,
+                candidate_pair_count,
                 max_candidate_pair,
             ],
             device=device,

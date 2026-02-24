@@ -114,7 +114,7 @@ To handle the special case of joint entities, that vary in the number of DOFs, c
 - Joint Constraints: :attr:`~newton.Model.joint_constraint_world_start`
 
 All :attr:`~newton.Model.world_*_start` arrays adopt a special format that facilitates accounting of the total number of entities in each world as well as the global world (index ``-1``) at the front and back of each per-entity array such as :attr:`~newton.Model.body_world`.
-Specifically, each :attr:`~newton.Model.world_*_start` array contains ``num_worlds + 2`` entries, with the first ``num_worlds`` entries corresponding to starting indices of each ``world >= 0`` world,
+Specifically, each :attr:`~newton.Model.world_*_start` array contains ``world_count + 2`` entries, with the first ``world_count`` entries corresponding to starting indices of each ``world >= 0`` world,
 the second last entry corresponds to the starting index of the global entities at the back (world index ``-1``), and the last entry corresponding to total number of entities or dimensions in the model.
 
 With this format, we can easily compute the number of entities per world by computing the difference between consecutive entries in these arrays (since they are essentially cumulative sums),
@@ -125,7 +125,7 @@ For the previous example, we can compute the per-world shape counts as follows:
 .. code-block::
 
    # Total number of worlds
-   print("model.num_worlds :", model.num_worlds)  # In this example, we have worlds 0 and 1, and num_worlds = 2
+   print("model.world_count :", model.world_count)  # In this example, we have worlds 0 and 1, and world_count = 2
 
    # Shape start indices per world
    # Entries: [start_world_0, start_world_1, start_global_back, total_shapes]
@@ -134,7 +134,7 @@ For the previous example, we can compute the per-world shape counts as follows:
    # Output: Shape starts: [1  3  5  6]  # 1 global shape at front, 2 shapes in world 0, 2 shapes in world 1, 1 global shape at back, total 6 shapes
 
    # Compute per-world body counts
-   world_shape_counts = [shape_start[i+1] - shape_start[i] for i in range(model.num_worlds)]
+   world_shape_counts = [shape_start[i+1] - shape_start[i] for i in range(model.world_count)]
    global_shape_count = shape_start[-1] - shape_start[-2] + shape_start[0]  # Global shapes at front and back
 
    # Print shape counts
@@ -179,10 +179,10 @@ For example:
 
    # Define number of entities per world (e.g., bodies)
    body_world_start = model.body_world_start.numpy()
-   num_bodies_per_world = [body_world_start[i+1] - body_world_start[i] for i in range(model.num_worlds)]
+   num_bodies_per_world = [body_world_start[i+1] - body_world_start[i] for i in range(model.world_count)]
 
-   # Launch kernel with 2D grid: (num_worlds, max_num_entities)
-   wp.launch(2d_world_body_example_kernel, dim=(model.num_worlds, max(num_bodies_per_world)), ...)
+   # Launch kernel with 2D grid: (world_count, max_num_entities)
+   wp.launch(2d_world_body_example_kernel, dim=(model.world_count, max(num_bodies_per_world)), ...)
 
 This kernel thread partitioning allows each thread to uniquely identify both the world it is operating on (via ``world_id``) and the relative entity index w.r.t that world (via ``entity_id``).
 The world-relative ``entity_id`` index is useful in certain operations such as accessing the body-specific column of constraint Jacobian matrices in maximal-coordinate formulations, which are stored in contiguous blocks per world.

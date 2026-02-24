@@ -21,6 +21,7 @@ Includes tests for particle-particle friction using relative velocity correctly.
 
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -307,6 +308,78 @@ def test_particle_shape_restitution_correct_particle(test, device):
     )
 
 
+def test_particle_shape_restitution_accounts_for_body_velocity(test, device):
+    """
+    Regression test for the bug where apply_particle_shape_restitution
+    did not account for the rigid body velocity at the contact point when
+    computing relative velocity for restitution (#1273).
+
+    Setup:
+    - A rigid box moving upward at 5 m/s.
+    - A stationary particle sitting just above the top face of the box.
+    - Restitution = 1.0, gravity disabled.
+
+    Without the fix, the kernel computes relative velocity from the
+    particle velocity alone (ignoring the approaching body), so the
+    approaching normal velocity appears zero and no restitution impulse
+    is applied — the particle stays nearly at rest.
+
+    With the fix, the kernel correctly subtracts the body velocity at
+    the contact point, detects the closing velocity, and applies a
+    restitution impulse that launches the particle upward.
+    """
+    builder = newton.ModelBuilder(up_axis="Y")
+
+    # Add a dynamic rigid box centered at origin
+    body_id = builder.add_body(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_shape_box(body=body_id, hx=1.0, hy=0.5, hz=1.0)
+
+    # Add a stationary particle just above the box's top face (y=0.5)
+    particle_radius = 0.1
+    builder.add_particle(
+        pos=(0.0, 0.5 + particle_radius, 0.0),
+        vel=(0.0, 0.0, 0.0),
+        mass=1.0,
+        radius=particle_radius,
+    )
+
+    model = builder.finalize(device=device)
+    model.set_gravity((0.0, 0.0, 0.0))
+    model.soft_contact_restitution = 1.0
+
+    solver = newton.solvers.SolverXPBD(
+        model=model,
+        iterations=10,
+        enable_restitution=True,
+    )
+
+    state0 = model.state()
+    state1 = model.state()
+
+    # Give the rigid body an upward velocity so it approaches the particle
+    body_vel = np.array([[0.0, 5.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+    state0.body_qd.assign(wp.array(body_vel, dtype=wp.spatial_vector, device=device))
+
+    dt = 1.0 / 60.0
+    contacts = model.contacts()
+    model.collide(state0, contacts)
+    control = model.control()
+    solver.step(state0, state1, control, contacts, dt)
+
+    vel = state1.particle_qd.numpy()
+
+    # Without the fix, the position solver alone gives the particle ~5 m/s.
+    # With the fix, restitution adds another ~5 m/s on top (elastic bounce
+    # against a body moving at 5 m/s), yielding ~10 m/s total.
+    test.assertGreater(
+        float(vel[0, 1]),
+        7.0,
+        msg=f"Particle should receive restitution impulse from the moving body (expected ~10 m/s, got {float(vel[0, 1]):.2f})",
+    )
+
+
 devices = get_test_devices(mode="basic")
 
 
@@ -334,6 +407,15 @@ add_function_test(
     TestSolverXPBD,
     "test_particle_shape_restitution_correct_particle",
     test_particle_shape_restitution_correct_particle,
+    devices=devices,
+    check_output=False,
+)
+
+
+add_function_test(
+    TestSolverXPBD,
+    "test_particle_shape_restitution_accounts_for_body_velocity",
+    test_particle_shape_restitution_accounts_for_body_velocity,
     devices=devices,
     check_output=False,
 )

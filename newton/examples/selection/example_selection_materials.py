@@ -67,7 +67,7 @@ def reset_materials_kernel(mu: wp.array3d(dtype=float), seed: int, shape_count: 
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=16):
+    def __init__(self, viewer, world_count=16):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -75,7 +75,7 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.num_worlds = num_worlds
+        self.world_count = world_count
 
         world_template = newton.ModelBuilder()
         world_template.add_mjcf(
@@ -87,7 +87,7 @@ class Example:
         scene = newton.ModelBuilder()
 
         scene.add_ground_plane()
-        scene.replicate(world_template, num_worlds=self.num_worlds)
+        scene.replicate(world_template, world_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()
@@ -262,7 +262,7 @@ class Example:
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
-        "--num-worlds",
+        "--world-count",
         type=int,
         default=16,
         help="Total number of simulated worlds.",
@@ -275,6 +275,6 @@ if __name__ == "__main__":
 
         torch.set_default_device(args.device)
 
-    example = Example(viewer, num_worlds=args.num_worlds)
+    example = Example(viewer, world_count=args.world_count)
 
     newton.examples.run(example, args)

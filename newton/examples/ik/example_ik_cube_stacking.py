@@ -20,7 +20,7 @@
 # worlds using inverse kinematics to set joint target position references
 # for the Franka Emika Franka Panda robot arm.
 #
-# Command: python -m newton.examples ik_cube_stacking --num-worlds 16
+# Command: python -m newton.examples ik_cube_stacking --world-count 16
 #
 ###########################################################################
 
@@ -174,12 +174,14 @@ def advance_task_kernel(
     rot_err = wp.abs(wp.degrees(2.0 * wp.atan2(wp.length(quat_rel[:3]), quat_rel[3])))
 
     # Advance the task if the time elapsed is greater than the soft limit,
-    # the end-effector position error is less than 0.01 meters,
-    # the rotation error is less than 1.0 degrees, and the task index is not the last one.
+    # the end-effector position error is less than 0.001 meters,
+    # the rotation error is less than 0.5 degrees, and the task index is not the last one.
+    # NOTE: These tolerances can be achieved thanks to the gravity compensation enabled via
+    # mujoco:gravcomp and mujoco:jnt_actgravcomp custom attributes.
     if (
         task_time_elapsed[tid] >= task_time_soft_limit
-        and pos_err < 0.01
-        and rot_err < 1.0
+        and pos_err < 0.001
+        and rot_err < 0.5
         and task_idx[tid] < wp.len(task_time_soft_limits) - 1
     ):
         # Advance to the next task
@@ -193,7 +195,7 @@ def advance_task_kernel(
 
 
 class Example:
-    def __init__(self, viewer, num_worlds=4, headless=False, args=None):
+    def __init__(self, viewer, world_count=4, headless=False, args=None):
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -201,7 +203,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.collide_substeps = False
-        self.num_worlds = num_worlds
+        self.world_count = world_count
         self.headless = headless
         self.verbose = getattr(args, "verbose", False)
 
@@ -230,7 +232,7 @@ class Example:
 
         self.model_single = franka_with_table.finalize()
         self.model = scene.finalize()
-        self.num_bodies_per_world = self.model.body_count // self.num_worlds
+        self.num_bodies_per_world = self.model.body_count // self.world_count
 
         use_mujoco_contacts = args.use_mujoco_contacts if args is not None else False
         self.solver = newton.solvers.SolverMuJoCo(
@@ -249,15 +251,13 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.joint_target_shape = self.control.joint_target_pos.reshape((self.num_worlds, -1)).shape
+        self.joint_target_shape = self.control.joint_target_pos.reshape((self.world_count, -1)).shape
         wp.copy(self.control.joint_target_pos[:9], self.model.joint_q[:9])
 
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        # Create collision pipeline from command-line args (default: CollisionPipeline with EXPLICIT)
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.collision_pipeline.contacts()
+        self.contacts = self.model.contacts()
 
         # Setup ik and tasks
         self.state = self.model.state()
@@ -272,7 +272,7 @@ class Example:
         self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
 
         # Set cube colors
-        self.shape_map = {key: s for s, key in enumerate(self.model.shape_key)}
+        self.shape_map = {key: s for s, key in enumerate(self.model.shape_label)}
         self.viewer.update_shape_colors({self.shape_map[s]: v for s, v in self.cube_colors.items()})
 
         if hasattr(self.viewer, "renderer"):
@@ -303,11 +303,11 @@ class Example:
 
     def simulate(self):
         if not self.collide_substeps:
-            self.collision_pipeline.collide(self.state_0, self.contacts)
+            self.model.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             if self.collide_substeps:
-                self.collision_pipeline.collide(self.state_0, self.contacts)
+                self.model.collide(self.state_0, self.contacts)
 
             self.state_0.clear_forces()
 
@@ -332,7 +332,7 @@ class Example:
         tock = time.perf_counter()
         if self.verbose and self.episode_steps > 0:
             print(f"Step {self.episode_steps} time: {tock - self.start_time:.2f}, sim time: {self.sim_time:.2f}")
-            print(f"RT factor: {self.num_worlds * self.sim_time / (tock - self.start_time):.2f}")
+            print(f"RT factor: {self.world_count * self.sim_time / (tock - self.start_time):.2f}")
             print("_" * 100)
 
         self.episode_steps += 1
@@ -387,6 +387,25 @@ class Example:
         builder.joint_effort_limit[:9] = [87, 87, 87, 87, 12, 12, 12, 100, 100]
         builder.joint_armature[:9] = [0.3] * 4 + [0.11] * 3 + [0.15] * 2
 
+        # Enable gravity compensation for the 7 arm joint DOFs
+        gravcomp_attr = builder.custom_attributes["mujoco:jnt_actgravcomp"]
+        if gravcomp_attr.values is None:
+            gravcomp_attr.values = {}
+        for dof_idx in range(7):
+            gravcomp_attr.values[dof_idx] = True
+
+        # Enable body gravcomp on the arm links and hand assembly so MuJoCo
+        # cancels their gravitational load.
+        # Body 0 = base (root), body 1 = fr3_link0 (fixed to world).
+        # Bodies 2-8 = fr3_link1-7 (revolute arm joints).
+        # Bodies 9-11 = fr3_link8, fr3_hand, fr3_hand_tcp (hand assembly).
+        # Bodies 12-13 = fr3_leftfinger, fr3_rightfinger (gripper).
+        gravcomp_body = builder.custom_attributes["mujoco:gravcomp"]
+        if gravcomp_body.values is None:
+            gravcomp_body.values = {}
+        for body_idx in range(2, 14):
+            gravcomp_body.values[body_idx] = 1.0
+
         shape_cfg = newton.ModelBuilder.ShapeConfig(thickness=1e-3, density=1000.0)
         shape_cfg.ke = 5.0e4
         shape_cfg.kd = 5.0e2
@@ -422,7 +441,7 @@ class Example:
         min_distance = np.sqrt(2) * self.cube_size + 0.04
 
         scene = newton.ModelBuilder()
-        for world_id in range(self.num_worlds):
+        for world_id in range(self.world_count):
             scene.begin_world()
             scene.add_builder(franka_with_table)
             self.add_cubes(
@@ -481,7 +500,7 @@ class Example:
             mesh_body = scene.add_body(xform=body_xform)
 
             half_size = 0.5 * self.cube_size
-            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, key=key)
+            scene.add_shape_box(body=mesh_body, hx=half_size, hy=half_size, hz=half_size, cfg=shape_cfg, label=key)
 
             # Set the color of the cube based on the index
             if i == 0:
@@ -505,21 +524,21 @@ class Example:
         self.pos_obj = ik.IKObjectivePosition(
             link_index=self.ee_index,
             link_offset=wp.vec3(0.0, 0.0, 0.0),
-            target_positions=wp.array([self.home_pos] * self.num_worlds, dtype=wp.vec3),
+            target_positions=wp.array([self.home_pos] * self.world_count, dtype=wp.vec3),
         )
 
         # Rotation objective
         self.rot_obj = ik.IKObjectiveRotation(
             link_index=self.ee_index,
             link_offset_rotation=wp.quat_identity(),
-            target_rotations=wp.array([wp.transform_get_rotation(self.ee_tf)[:4]] * self.num_worlds, dtype=wp.vec4),
+            target_rotations=wp.array([wp.transform_get_rotation(self.ee_tf)[:4]] * self.world_count, dtype=wp.vec4),
         )
 
         ik_dofs = self.model_single.joint_coord_count
 
         # Joint limit objective
-        self.joint_limit_lower = wp.clone(self.model.joint_limit_lower.reshape((self.num_worlds, -1))[:, :ik_dofs])
-        self.joint_limit_upper = wp.clone(self.model.joint_limit_upper.reshape((self.num_worlds, -1))[:, :ik_dofs])
+        self.joint_limit_lower = wp.clone(self.model.joint_limit_lower.reshape((self.world_count, -1))[:, :ik_dofs])
+        self.joint_limit_upper = wp.clone(self.model.joint_limit_upper.reshape((self.world_count, -1))[:, :ik_dofs])
 
         self.obj_joint_limits = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.joint_limit_lower.flatten(),
@@ -527,12 +546,12 @@ class Example:
         )
 
         # Variables the solver will update
-        self.joint_q_ik = wp.clone(self.model.joint_q.reshape((self.num_worlds, -1))[:, :ik_dofs])
+        self.joint_q_ik = wp.clone(self.model.joint_q.reshape((self.world_count, -1))[:, :ik_dofs])
 
         self.ik_iters = 24
         self.ik_solver = ik.IKSolver(
             model=self.model_single,
-            n_problems=self.num_worlds,
+            n_problems=self.world_count,
             objectives=[self.pos_obj, self.rot_obj, self.obj_joint_limits],
             lambda_initial=0.1,
             jacobian_mode=ik.IKJacobianType.ANALYTIC,
@@ -565,24 +584,24 @@ class Example:
         self.task_object = wp.array(task_object, shape=(self.task_counter), dtype=wp.int32)
 
         self.task_init_body_q = wp.clone(self.state_0.body_q)
-        self.task_idx = wp.zeros(self.num_worlds, dtype=wp.int32)
+        self.task_idx = wp.zeros(self.world_count, dtype=wp.int32)
 
         self.task_dt = self.frame_dt
-        self.task_time_elapsed = wp.zeros(self.num_worlds, dtype=wp.float32)
+        self.task_time_elapsed = wp.zeros(self.world_count, dtype=wp.float32)
 
         # Initialize the target positions and rotations
-        self.ee_pos_target = wp.zeros(self.num_worlds, dtype=wp.vec3)
-        self.ee_pos_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec3)
+        self.ee_pos_target = wp.zeros(self.world_count, dtype=wp.vec3)
+        self.ee_pos_target_interpolated = wp.zeros(self.world_count, dtype=wp.vec3)
 
-        self.ee_rot_target = wp.zeros(self.num_worlds, dtype=wp.vec4)
-        self.ee_rot_target_interpolated = wp.zeros(self.num_worlds, dtype=wp.vec4)
+        self.ee_rot_target = wp.zeros(self.world_count, dtype=wp.vec4)
+        self.ee_rot_target_interpolated = wp.zeros(self.world_count, dtype=wp.vec4)
 
-        self.gripper_target_interpolated = wp.zeros(shape=(self.num_worlds, 2), dtype=wp.float32)
+        self.gripper_target_interpolated = wp.zeros(shape=(self.world_count, 2), dtype=wp.float32)
 
     def set_joint_targets(self):
         wp.launch(
             set_target_pose_kernel,
-            dim=self.num_worlds,
+            dim=self.world_count,
             inputs=[
                 self.task_schedule,
                 self.task_time_soft_limits,
@@ -623,13 +642,13 @@ class Example:
             self.ik_solver.step(self.joint_q_ik, self.joint_q_ik, iterations=self.ik_iters)
 
         # Set the joint target positions
-        joint_target_pos_view = self.control.joint_target_pos.reshape((self.num_worlds, -1))
+        joint_target_pos_view = self.control.joint_target_pos.reshape((self.world_count, -1))
         wp.copy(dest=joint_target_pos_view[:, :7], src=self.joint_q_ik[:, :7])
         wp.copy(dest=joint_target_pos_view[:, 7:9], src=self.gripper_target_interpolated[:, :2])
 
         wp.launch(
             advance_task_kernel,
-            dim=self.num_worlds,
+            dim=self.world_count,
             inputs=[
                 self.task_time_soft_limits,
                 self.ee_pos_target,
@@ -648,25 +667,27 @@ class Example:
     def test_final(self):
         body_q = self.state_0.body_q.numpy()
 
-        world_success = [True] * self.num_worlds
+        world_success = [True] * self.world_count
         target_rot_inv = wp.quat_inverse(wp.quat_identity())
 
-        for world_id in range(self.num_worlds):
+        for world_id in range(self.world_count):
             for cube_id in range(self.cube_count):
                 drop_off_pos = np.array(self.task_drop_off_pos) + np.array([0.0, 0.0, self.cube_size * cube_id])
                 cube_body_id = world_id * self.num_bodies_per_world + self.robot_body_count + cube_id
                 cube_pos = body_q[cube_body_id][:3]
                 cube_rot = body_q[cube_body_id][3:]
 
-                pos_error = np.linalg.norm(cube_pos - drop_off_pos)
-                if np.isnan(pos_error) or pos_error > 0.05:
+                pos_error = cube_pos - drop_off_pos
+                pos_error_xy = np.linalg.norm(pos_error[:2])
+                pos_error_z = np.abs(pos_error[2])
+                if np.isnan(pos_error_xy) or np.isnan(pos_error_z) or pos_error_xy > 0.02 or pos_error_z > 0.01:
                     world_success[world_id] = False
                     break
 
                 quat_rel = wp.quat(cube_rot) * target_rot_inv
                 quat_rel_np = np.array(quat_rel)
                 rot_err = np.abs(np.degrees(2.0 * np.arctan2(np.linalg.norm(quat_rel_np[:3]), quat_rel_np[3])))
-                if np.isnan(rot_err) or rot_err > 2.0:
+                if np.isnan(rot_err) or rot_err > 5.0:
                     world_success[world_id] = False
                     break
 
@@ -680,11 +701,11 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
-    parser.add_argument("--num-worlds", type=int, default=16, help="Total number of simulated worlds.")
+    parser.add_argument("--world-count", type=int, default=16, help="Total number of simulated worlds.")
     parser.add_argument("--cube-count", type=int, default=3, help="Total number of cubes to stack.")
 
     viewer, args = newton.examples.init(parser)
 
-    example = Example(viewer, num_worlds=args.num_worlds, headless=args.headless, args=args)
+    example = Example(viewer, world_count=args.world_count, headless=args.headless, args=args)
 
     newton.examples.run(example, args)

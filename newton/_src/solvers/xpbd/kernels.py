@@ -29,18 +29,16 @@ from ...utils import (
 
 @wp.kernel
 def apply_particle_shape_restitution(
-    particle_x_new: wp.array(dtype=wp.vec3),
     particle_v_new: wp.array(dtype=wp.vec3),
     particle_x_old: wp.array(dtype=wp.vec3),
     particle_v_old: wp.array(dtype=wp.vec3),
-    particle_invmass: wp.array(dtype=float),
     particle_radius: wp.array(dtype=float),
     particle_flags: wp.array(dtype=wp.int32),
     body_q: wp.array(dtype=wp.transform),
+    body_q_prev: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
+    body_qd_prev: wp.array(dtype=wp.spatial_vector),
     body_com: wp.array(dtype=wp.vec3),
-    body_m_inv: wp.array(dtype=float),
-    body_I_inv: wp.array(dtype=wp.mat33),
     shape_body: wp.array(dtype=int),
     particle_ka: float,
     restitution: float,
@@ -51,8 +49,6 @@ def apply_particle_shape_restitution(
     contact_body_vel: wp.array(dtype=wp.vec3),
     contact_normal: wp.array(dtype=wp.vec3),
     contact_max: int,
-    dt: float,
-    relaxation: float,
     particle_v_out: wp.array(dtype=wp.vec3),
 ):
     tid = wp.tid()
@@ -68,21 +64,21 @@ def apply_particle_shape_restitution(
     if (particle_flags[particle_index] & ParticleFlags.ACTIVE) == 0:
         return
 
-    # x_new = particle_x_new[particle_index]
     v_new = particle_v_new[particle_index]
     px = particle_x_old[particle_index]
     v_old = particle_v_old[particle_index]
 
     X_wb = wp.transform_identity()
-    # X_com = wp.vec3()
+    X_wb_prev = wp.transform_identity()
+    X_com = wp.vec3()
 
     if body_index >= 0:
         X_wb = body_q[body_index]
-        # X_com = body_com[body_index]
+        X_wb_prev = body_q_prev[body_index]
+        X_com = body_com[body_index]
 
     # body position in world space
     bx = wp.transform_point(X_wb, contact_body_pos[tid])
-    # r = bx - wp.transform_point(X_wb, X_com)
 
     n = contact_normal[tid]
     c = wp.dot(n, px - bx) - particle_radius[particle_index]
@@ -90,25 +86,23 @@ def apply_particle_shape_restitution(
     if c > particle_ka:
         return
 
-    rel_vel_old = wp.dot(n, v_old)
-    rel_vel_new = wp.dot(n, v_new)
+    # lever arm from previous pose (consistent with apply_rigid_restitution)
+    bx_prev = wp.transform_point(X_wb_prev, contact_body_pos[tid])
+    r = bx_prev - wp.transform_point(X_wb_prev, X_com)
+
+    # compute body velocity at the contact point
+    bv_contact = wp.transform_vector(X_wb_prev, contact_body_vel[tid])
+    bv_old = bv_contact
+    bv_new = bv_contact
+    if body_index >= 0:
+        bv_old = velocity_at_point(body_qd_prev[body_index], r) + bv_contact
+        bv_new = velocity_at_point(body_qd[body_index], r) + bv_contact
+
+    rel_vel_old = wp.dot(n, v_old - bv_old)
+    rel_vel_new = wp.dot(n, v_new - bv_new)
 
     if rel_vel_old < 0.0:
-        # dv = -n * wp.max(-rel_vel_new + wp.max(-restitution * rel_vel_old, 0.0), 0.0)
         dv = n * (-rel_vel_new + wp.max(-restitution * rel_vel_old, 0.0))
-
-        # compute inverse masses
-        # w1 = particle_invmass[particle_index]
-        # w2 = 0.0
-        # if body_index >= 0:
-        #     angular = wp.cross(r, n)
-        #     q = wp.transform_get_rotation(X_wb)
-        #     rot_angular = wp.quat_rotate_inv(q, angular)
-        #     I_inv = body_I_inv[body_index]
-        #     w2 = body_m_inv[body_index] + wp.dot(rot_angular, I_inv * rot_angular)
-        # denom = w1 + w2
-        # if denom == 0.0:
-        #     return
 
         wp.atomic_add(particle_v_out, particle_index, dv)
 
@@ -897,6 +891,7 @@ def apply_joint_forces(
     joint_parent: wp.array(dtype=int),
     joint_child: wp.array(dtype=int),
     joint_X_p: wp.array(dtype=wp.transform),
+    joint_X_c: wp.array(dtype=wp.transform),
     joint_qd_start: wp.array(dtype=int),
     joint_dof_dim: wp.array(dtype=int, ndim=2),
     joint_axis: wp.array(dtype=wp.vec3),
@@ -913,7 +908,7 @@ def apply_joint_forces(
     id_p = joint_parent[tid]
 
     X_pj = joint_X_p[tid]
-    # X_cj = joint_X_c[tid]
+    X_cj = joint_X_c[tid]
 
     X_wp = X_pj
     pose_p = X_pj
@@ -927,7 +922,7 @@ def apply_joint_forces(
 
     # child transform and moment arm
     pose_c = body_q[id_c]
-    X_wc = pose_c
+    X_wc = pose_c * X_cj
     com_c = body_com[id_c]
     r_c = wp.transform_get_translation(X_wc) - wp.transform_point(pose_c, com_c)
 
@@ -2068,8 +2063,8 @@ def solve_body_contact_positions(
     contact_shape0: wp.array(dtype=int),
     contact_shape1: wp.array(dtype=int),
     shape_material_mu: wp.array(dtype=float),
-    shape_material_torsional_friction: wp.array(dtype=float),
-    shape_material_rolling_friction: wp.array(dtype=float),
+    shape_material_mu_torsional: wp.array(dtype=float),
+    shape_material_mu_rolling: wp.array(dtype=float),
     relaxation: float,
     dt: float,
     # outputs
@@ -2148,22 +2143,22 @@ def solve_body_contact_positions(
     # use average contact material properties
     mat_nonzero = 0
     mu = 0.0
-    torsional_friction = 0.0
-    rolling_friction = 0.0
+    mu_torsional = 0.0
+    mu_rolling = 0.0
     if shape_a >= 0:
         mat_nonzero += 1
         mu += shape_material_mu[shape_a]
-        torsional_friction += shape_material_torsional_friction[shape_a]
-        rolling_friction += shape_material_rolling_friction[shape_a]
+        mu_torsional += shape_material_mu_torsional[shape_a]
+        mu_rolling += shape_material_mu_rolling[shape_a]
     if shape_b >= 0:
         mat_nonzero += 1
         mu += shape_material_mu[shape_b]
-        torsional_friction += shape_material_torsional_friction[shape_b]
-        rolling_friction += shape_material_rolling_friction[shape_b]
+        mu_torsional += shape_material_mu_torsional[shape_b]
+        mu_rolling += shape_material_mu_rolling[shape_b]
     if mat_nonzero > 0:
         mu /= float(mat_nonzero)
-        torsional_friction /= float(mat_nonzero)
-        rolling_friction /= float(mat_nonzero)
+        mu_torsional /= float(mat_nonzero)
+        mu_rolling /= float(mat_nonzero)
 
     r_a = bx_a - wp.transform_point(X_wb_a, com_a)
     r_b = bx_b - wp.transform_point(X_wb_b, com_b)
@@ -2235,7 +2230,7 @@ def solve_body_contact_positions(
 
     delta_omega = omega_b - omega_a
 
-    if torsional_friction > 0.0:
+    if mu_torsional > 0.0:
         err = wp.dot(delta_omega, n) * dt
 
         if wp.abs(err) > 0.0:
@@ -2244,12 +2239,12 @@ def solve_body_contact_positions(
                 err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -n, n, relaxation, dt
             )
 
-            lambda_torsion = wp.clamp(lambda_torsion, -lambda_n * torsional_friction, lambda_n * torsional_friction)
+            lambda_torsion = wp.clamp(lambda_torsion, -lambda_n * mu_torsional, lambda_n * mu_torsional)
 
             ang_delta_a -= n * lambda_torsion
             ang_delta_b += n * lambda_torsion
 
-    if rolling_friction > 0.0:
+    if mu_rolling > 0.0:
         delta_omega -= wp.dot(n, delta_omega) * n
         err = wp.length(delta_omega) * dt
         if err > 0.0:
@@ -2259,7 +2254,7 @@ def solve_body_contact_positions(
                 err, X_wb_a, X_wb_b, m_inv_a, m_inv_b, I_inv_a, I_inv_b, lin, lin, -roll_n, roll_n, relaxation, dt
             )
 
-            lambda_roll = wp.max(lambda_roll, -lambda_n * rolling_friction)
+            lambda_roll = wp.max(lambda_roll, -lambda_n * mu_rolling)
 
             ang_delta_a -= roll_n * lambda_roll
             ang_delta_b += roll_n * lambda_roll

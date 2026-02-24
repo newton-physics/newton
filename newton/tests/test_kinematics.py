@@ -27,9 +27,9 @@ from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_
 def test_fk_ik(test, device):
     builder = newton.ModelBuilder()
 
-    num_worlds = 1
+    world_count = 1
 
-    for i in range(num_worlds):
+    for i in range(world_count):
         builder.add_mjcf(newton.examples.get_asset("nv_ant.xml"), up_axis="Y")
 
         coord_count = 15
@@ -90,7 +90,7 @@ def test_fk_with_indices(test, device):
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1, j2], key=f"pendulum_{i}")
+        builder.add_articulation([j1, j2], label=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -168,7 +168,7 @@ def test_ik_with_indices(test, device):
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1, j2], key=f"pendulum_{i}")
+        builder.add_articulation([j1, j2], label=f"pendulum_{i}")
 
     model = builder.finalize(device=device)
     state = model.state()
@@ -230,8 +230,8 @@ def test_isaac_lab_use_case(test, device):
     builder = newton.ModelBuilder()
 
     # Create 8 identical robots (worlds)
-    num_worlds = 8
-    for i in range(num_worlds):
+    world_count = 8
+    for i in range(world_count):
         b1 = builder.add_link(xform=wp.transform(wp.vec3(i * 3.0, 0.0, 0.0), wp.quat_identity()))
         b2 = builder.add_link(xform=wp.transform(wp.vec3(i * 3.0 + 1.0, 0.0, 0.0), wp.quat_identity()))
         j1 = builder.add_joint_revolute(
@@ -248,7 +248,7 @@ def test_isaac_lab_use_case(test, device):
             parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([j1, j2], key=f"env_{i}")
+        builder.add_articulation([j1, j2], label=f"env_{i}")
 
     model = builder.finalize(device=device)
 

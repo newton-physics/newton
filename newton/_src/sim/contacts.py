@@ -108,40 +108,57 @@ class Contacts:
             self.rigid_contact_shape0 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
             self.rigid_contact_shape1 = wp.full(rigid_contact_max, -1, dtype=wp.int32)
             self.rigid_contact_point0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Contact offset on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_offset1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Contact offset on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Contact normal direction [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_thickness0 = wp.zeros(rigid_contact_max, dtype=wp.float32)
+            """Contact thickness for shape 0 [m], shape (rigid_contact_max,), dtype float."""
             self.rigid_contact_thickness1 = wp.zeros(rigid_contact_max, dtype=wp.float32)
+            """Contact thickness for shape 1 [m], shape (rigid_contact_max,), dtype float."""
             self.rigid_contact_tids = wp.full(rigid_contact_max, -1, dtype=wp.int32)
             # to be filled by the solver (currently unused)
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3)
+            """Contact force [N], shape (rigid_contact_max,), dtype :class:`vec3`."""
 
             # contact stiffness/damping/friction (only allocated if per_contact_shape_properties is enabled)
             if self.per_contact_shape_properties:
                 self.rigid_contact_stiffness = wp.zeros(rigid_contact_max, dtype=wp.float32)
+                """Per-contact stiffness [N/m], shape (rigid_contact_max,), dtype float."""
                 self.rigid_contact_damping = wp.zeros(rigid_contact_max, dtype=wp.float32)
+                """Per-contact damping [N·s/m], shape (rigid_contact_max,), dtype float."""
                 self.rigid_contact_friction = wp.zeros(rigid_contact_max, dtype=wp.float32)
+                """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
             else:
                 self.rigid_contact_stiffness = None
+                """Per-contact stiffness [N/m], shape (rigid_contact_max,), dtype float."""
                 self.rigid_contact_damping = None
+                """Per-contact damping [N·s/m], shape (rigid_contact_max,), dtype float."""
                 self.rigid_contact_friction = None
+                """Per-contact friction coefficient [dimensionless], shape (rigid_contact_max,), dtype float."""
 
             # soft contacts — requires_grad flows through here for differentiable simulation
             self.soft_contact_count = self._counter_array[1:2]
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_shape = wp.full(soft_contact_max, -1, dtype=int)
             self.soft_contact_body_pos = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Contact position on body [m], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_body_vel = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Contact velocity on body [m/s], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_normal = wp.zeros(soft_contact_max, dtype=wp.vec3, requires_grad=requires_grad)
+            """Contact normal direction [unitless], shape (soft_contact_max,), dtype :class:`vec3`."""
             self.soft_contact_tids = wp.full(soft_contact_max, -1, dtype=int)
 
             # Extended contact attributes (optional, allocated on demand)
             self.force: wp.array | None = None
-            """Contact forces (spatial), shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
+            """Contact forces (spatial) [N, N·m], shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
             Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
-            First three entries: linear force; last three entries: torque (moment).
+            First three entries: linear force [N]; last three entries: torque (moment) [N·m].
             When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
 
             This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.

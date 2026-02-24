@@ -7,7 +7,7 @@ name: GPU Benchmarks on AWS EC2 (Reusable)
 # Workflow configuration variables
 env:
   AWS_REGION: us-east-2
-  AWS_INSTANCE_TYPE: g6e.2xlarge
+  AWS_INSTANCE_TYPE: g7e.2xlarge
   AWS_VOLUME_SIZE: 92
   AWS_VOLUME_TYPE: gp3
   AWS_SECURITY_GROUP_IDS: sg-07807c44e7f2a368a
@@ -70,12 +70,14 @@ jobs:
         with:
           mode: start
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          ec2-image-id: ${{ env.LATEST_AMI_ID }}
           ec2-instance-type: ${{ env.AWS_INSTANCE_TYPE }}
           ec2-volume-size: ${{ env.AWS_VOLUME_SIZE }}
           ec2-volume-type: ${{ env.AWS_VOLUME_TYPE }}
-          subnet-id: subnet-051b9d2e71acf8047
-          security-group-id: ${{ env.AWS_SECURITY_GROUP_IDS }}
+          availability-zones-config: >
+            [
+              {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-051b9d2e71acf8047", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"},
+              {"imageId": "${{ env.LATEST_AMI_ID }}", "subnetId": "subnet-0c98bd06abe8ee5eb", "securityGroupId": "${{ env.AWS_SECURITY_GROUP_IDS }}"}
+            ]
           aws-resource-tags: >
             [
               {"Key": "Name", "Value": "ec2-github-runner"},

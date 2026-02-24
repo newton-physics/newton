@@ -80,7 +80,7 @@ class Example:
 
         # Disable collisions with bodies other than shanks
         for body in range(builder.body_count):
-            if "SHANK" not in builder.body_key[body]:
+            if "SHANK" not in builder.body_label[body]:
                 for shape in builder.body_shapes[body]:
                     builder.shape_flags[shape] = builder.shape_flags[shape] & ~newton.ShapeFlags.COLLIDE_PARTICLES
 
@@ -110,8 +110,9 @@ class Example:
             "LF_KFE": -0.8,
         }
         # Set initial joint positions (skip first 7 position coordinates which are the free joint), e.g. for "LF_HAA" value will be written at index 1+6 = 7.
-        for key, value in initial_q.items():
-            builder.joint_q[builder.joint_key.index(key) + 6] = value
+        for name, value in initial_q.items():
+            idx = next(i for i, lbl in enumerate(builder.joint_label) if lbl.endswith(f"/{name}"))
+            builder.joint_q[idx + 6] = value
 
         for i in range(builder.joint_dof_count):
             builder.joint_target_ke[i] = 150
@@ -147,6 +148,7 @@ class Example:
         mpm_options.max_iterations = 50
         mpm_options.critical_fraction = 0.0
         mpm_options.air_drag = 1.0
+        mpm_options.collider_velocity_mode = "finite_difference"
 
         # Set per-particle hardening via custom attributes
         self.model.mpm.hardening.fill_(0.0)
@@ -159,17 +161,18 @@ class Example:
         )
         self.mpm_solver = SolverImplicitMPM(self.model, mpm_options)
 
-        # Configure collider: treat robot bodies as kinematic
-        self.mpm_solver.setup_collider(
-            body_mass=wp.zeros_like(self.model.body_mass),
-        )
-
         # simulation state
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
 
         # not required for MuJoCo, but required for other solvers
         newton.eval_fk(self.model, self.state_0.joint_q, self.state_0.joint_qd, self.state_0)
+
+        # Configure collider: treat robot bodies as kinematic and update initial state
+        self.mpm_solver.setup_collider(
+            body_mass=wp.zeros_like(self.model.body_mass),
+            body_q=self.state_0.body_q,
+        )
 
         # Setup control policy
         self.control = self.model.control()

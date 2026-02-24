@@ -643,7 +643,7 @@ def compute_cofactor_derivative(F: wp.mat33, scale: float) -> mat99:
 
 
 @wp.kernel
-def count_num_adjacent_edges(
+def _count_num_adjacent_edges(
     edges_array: wp.array(dtype=wp.int32, ndim=2), num_vertex_adjacent_edges: wp.array(dtype=wp.int32)
 ):
     for edge_id in range(edges_array.shape[0]):
@@ -663,7 +663,7 @@ def count_num_adjacent_edges(
 
 
 @wp.kernel
-def fill_adjacent_edges(
+def _fill_adjacent_edges(
     edges_array: wp.array(dtype=wp.int32, ndim=2),
     vertex_adjacent_edges_offsets: wp.array(dtype=wp.int32),
     vertex_adjacent_edges_fill_count: wp.array(dtype=wp.int32),
@@ -703,7 +703,7 @@ def fill_adjacent_edges(
 
 
 @wp.kernel
-def count_num_adjacent_faces(
+def _count_num_adjacent_faces(
     face_indices: wp.array(dtype=wp.int32, ndim=2), num_vertex_adjacent_faces: wp.array(dtype=wp.int32)
 ):
     for face in range(face_indices.shape[0]):
@@ -717,7 +717,7 @@ def count_num_adjacent_faces(
 
 
 @wp.kernel
-def fill_adjacent_faces(
+def _fill_adjacent_faces(
     face_indices: wp.array(dtype=wp.int32, ndim=2),
     vertex_adjacent_faces_offsets: wp.array(dtype=wp.int32),
     vertex_adjacent_faces_fill_count: wp.array(dtype=wp.int32),
@@ -748,7 +748,7 @@ def fill_adjacent_faces(
 
 
 @wp.kernel
-def count_num_adjacent_springs(
+def _count_num_adjacent_springs(
     springs_array: wp.array(dtype=wp.int32), num_vertex_adjacent_springs: wp.array(dtype=wp.int32)
 ):
     num_springs = springs_array.shape[0] / 2
@@ -761,7 +761,7 @@ def count_num_adjacent_springs(
 
 
 @wp.kernel
-def fill_adjacent_springs(
+def _fill_adjacent_springs(
     springs_array: wp.array(dtype=wp.int32),
     vertex_adjacent_springs_offsets: wp.array(dtype=wp.int32),
     vertex_adjacent_springs_fill_count: wp.array(dtype=wp.int32),
@@ -784,7 +784,7 @@ def fill_adjacent_springs(
 
 
 @wp.kernel
-def count_num_adjacent_tets(
+def _count_num_adjacent_tets(
     tet_indices: wp.array(dtype=wp.int32, ndim=2), num_vertex_adjacent_tets: wp.array(dtype=wp.int32)
 ):
     for tet in range(tet_indices.shape[0]):
@@ -800,7 +800,7 @@ def count_num_adjacent_tets(
 
 
 @wp.kernel
-def fill_adjacent_tets(
+def _fill_adjacent_tets(
     tet_indices: wp.array(dtype=wp.int32, ndim=2),
     vertex_adjacent_tets_offsets: wp.array(dtype=wp.int32),
     vertex_adjacent_tets_fill_count: wp.array(dtype=wp.int32),
