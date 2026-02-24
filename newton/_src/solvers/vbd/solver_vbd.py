@@ -1960,11 +1960,8 @@ class SolverVBD(SolverBase):
             - force_on_body1: wp.array(wp.vec3) contact force (world) applied to body1
             - rigid_contact_count: wp.array(int32) length-1 array with active contact count
         """
-        if contacts is None:
-            raise ValueError("collect_rigid_contact_forces() requires a Contacts instance.")
-
         # Allocate/resize persistent buffers to match contact capacity.
-        max_contacts = int(contacts.rigid_contact_shape0.shape[0])
+        max_contacts = int(contacts.rigid_contact_shape0.shape[0]) if contacts is not None else 0
         if not hasattr(self, "_rigid_contact_body0") or self._rigid_contact_body0 is None:
             self._rigid_contact_body0 = None
 
@@ -1973,6 +1970,44 @@ class SolverVBD(SolverBase):
             self._rigid_contact_body1 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
             self._rigid_contact_point0_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
             self._rigid_contact_point1_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+
+        missing_rigid_state = any(
+            arr is None
+            for arr in (
+                getattr(self, "body_q_prev", None),
+                getattr(self, "body_body_contact_penalty_k", None),
+                getattr(self, "body_body_contact_material_kd", None),
+                getattr(self, "body_body_contact_material_mu", None),
+            )
+        )
+        no_active_contacts = contacts is None or int(contacts.rigid_contact_count[0]) == 0
+
+        if contacts is not None and contacts.rigid_contact_force is not None:
+            contacts.rigid_contact_force.zero_()
+
+        if no_active_contacts or missing_rigid_state:
+            # Keep outputs in a known default state for coupling paths where rigid AVBD
+            # internal buffers are not initialized (e.g., external rigid solver mode).
+            self._rigid_contact_body0 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
+            self._rigid_contact_body1 = wp.full(max_contacts, -1, dtype=wp.int32, device=self.device)
+            self._rigid_contact_point0_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+            self._rigid_contact_point1_world = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
+
+            rigid_contact_count = (
+                contacts.rigid_contact_count
+                if contacts is not None and contacts.rigid_contact_count is not None
+                else wp.zeros(1, dtype=wp.int32, device=self.device)
+            )
+            return (
+                self._rigid_contact_body0,
+                self._rigid_contact_body1,
+                self._rigid_contact_point0_world,
+                self._rigid_contact_point1_world,
+                contacts.rigid_contact_force
+                if contacts is not None
+                else wp.zeros(0, dtype=wp.vec3, device=self.device),
+                rigid_contact_count,
+            )
 
         # Reuse the existing per-contact force buffer in Contacts (allocated by default).
         # Force convention: force is applied to body1, and -force is applied to body0.
