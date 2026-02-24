@@ -43,7 +43,7 @@ class Example:
         builder.add_ground_plane()
         self.model = builder.finalize()
 
-        mpm_options = SolverImplicitMPM.Options()
+        mpm_options = SolverImplicitMPM.Config()
         mpm_options.voxel_size = options.voxel_size
 
         # Initialize MPM solver
