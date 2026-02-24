@@ -45,6 +45,20 @@ from newton.utils import transform_twist
 
 
 @wp.kernel
+def scale_positions(src: wp.array(dtype=wp.vec3), scale: float, dst: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    dst[i] = src[i] * scale
+
+
+@wp.kernel
+def scale_body_transforms(src: wp.array(dtype=wp.transform), scale: float, dst: wp.array(dtype=wp.transform)):
+    i = wp.tid()
+    p = wp.transform_get_translation(src[i])
+    q = wp.transform_get_rotation(src[i])
+    dst[i] = wp.transform(p * scale, q)
+
+
+@wp.kernel
 def compute_ee_delta(
     body_q: wp.array(dtype=wp.transform),
     offset: wp.transform,
@@ -151,29 +165,26 @@ class Example:
 
         #   contact (cm scale)
         #       body-cloth contact
-        self.cloth_particle_radius = 0.8
+        self.cloth_particle_radius = 0.6
         self.cloth_body_contact_margin = 1.0
         #       self-contact
         self.particle_self_contact_radius = 0.2
         self.particle_self_contact_margin = 0.3
 
-        self.soft_contact_ke = 100
+        self.soft_contact_ke = 2e4
         self.soft_contact_kd = 2e-3
 
-        self.robot_friction = 1.0
-        self.table_friction = 1.0
         self.self_contact_friction = 0.25
 
         #   elasticity
-        self.tri_ke = 1e2
-        self.tri_ka = 1e2
+        self.tri_ke = 1e4
+        self.tri_ka = 1e4
         self.tri_kd = 1.5e-6
 
-        self.bending_ke = 1e-4
+        self.bending_ke = 1e1
         self.bending_kd = 1e-3
 
         self.scene = ModelBuilder(gravity=-981.0)
-        self.soft_contact_max = 1000000
 
         self.viewer = viewer
 
@@ -187,15 +198,20 @@ class Example:
             self.dof_qd_per_world = franka.joint_dof_count
 
         # add a table (cm scale)
+        self.table_hx_cm = 40.0
+        self.table_hy_cm = 40.0
+        self.table_hz_cm = 10.0
+        self.table_pos_cm = wp.vec3(0.0, -50.0, 10.0)
+        self.table_shape_idx = self.scene.shape_count
         self.scene.add_shape_box(
             -1,
             wp.transform(
-                wp.vec3(0.0, -50.0, 10.0),
+                self.table_pos_cm,
                 wp.quat_identity(),
             ),
-            hx=40.0,
-            hy=40.0,
-            hz=10.0,
+            hx=self.table_hx_cm,
+            hy=self.table_hy_cm,
+            hz=self.table_hz_cm,
         )
 
         # add the T-shirt
@@ -212,9 +228,9 @@ class Example:
                 vertices=vertices,
                 indices=mesh_indices,
                 rot=wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi),
-                pos=wp.vec3(0.0, 70.0, 28.0),
+                pos=wp.vec3(0.0, 70.0, 30.0),
                 vel=wp.vec3(0.0, 0.0, 0.0),
-                density=0.00002,
+                density=0.02,
                 scale=1.0,
                 tri_ke=self.tri_ke,
                 tri_ka=self.tri_ka,
@@ -229,6 +245,35 @@ class Example:
         self.scene.add_ground_plane()
 
         self.model = self.scene.finalize(requires_grad=False)
+
+        # Hide the table box from automatic shape rendering -- the GL viewer
+        # bakes primitive dimensions into the mesh and ignores shape_scale,
+        # so we render it manually at meter scale in render() instead.
+        flags = self.model.shape_flags.numpy()
+        flags[self.table_shape_idx] &= ~int(newton.ShapeFlags.VISIBLE)
+        self.model.shape_flags = wp.array(flags, dtype=self.model.shape_flags.dtype, device=self.model.device)
+
+        # Pre-compute meter-scale table viz data
+        self.table_viz_xform = wp.array(
+            [
+                wp.transform(
+                    (
+                        float(self.table_pos_cm[0]) * self.viz_scale,
+                        float(self.table_pos_cm[1]) * self.viz_scale,
+                        float(self.table_pos_cm[2]) * self.viz_scale,
+                    ),
+                    wp.quat_identity(),
+                )
+            ],
+            dtype=wp.transform,
+        )
+        self.table_viz_scale = (
+            self.table_hx_cm * self.viz_scale,
+            self.table_hy_cm * self.viz_scale,
+            self.table_hz_cm * self.viz_scale,
+        )
+        self.table_viz_color = wp.array([wp.vec3(0.5, 0.5, 0.5)], dtype=wp.vec3)
+
         self.model.soft_contact_ke = self.soft_contact_ke
         self.model.soft_contact_kd = self.soft_contact_kd
         self.model.soft_contact_mu = self.self_contact_friction
@@ -293,8 +338,11 @@ class Example:
         self.viz_state = self.model.state()
 
         # Pre-compute scaled shape data for meter-scale visualization.
-        # The viewer reads model.shape_transform and model.shape_scale during
-        # log_state, so we swap them temporarily in render().
+        # Two paths need updating:
+        #   1) The GL viewer's CUDA path reads model.shape_transform / model.shape_scale
+        #      directly, so we swap them temporarily in render().
+        #   2) The base viewer path caches shapes.xforms / shapes.scales during
+        #      set_model(), so we permanently scale those cached copies here.
         self.sim_shape_transform = self.model.shape_transform
         self.sim_shape_scale = self.model.shape_scale
 
@@ -305,6 +353,17 @@ class Example:
         scale_np = self.model.shape_scale.numpy().copy()
         scale_np *= self.viz_scale
         self.viz_shape_scale = wp.array(scale_np, dtype=wp.vec3, device=self.model.device)
+
+        # Scale the viewer's cached shape instance data (base viewer / GL fallback path)
+        if hasattr(self.viewer, "_shape_instances"):
+            for shapes in self.viewer._shape_instances.values():
+                xi = shapes.xforms.numpy()
+                xi[:, :3] *= self.viz_scale
+                shapes.xforms = wp.array(xi, dtype=wp.transform, device=shapes.device)
+
+                sc = shapes.scales.numpy()
+                sc *= self.viz_scale
+                shapes.scales = wp.array(sc, dtype=wp.vec3, device=shapes.device)
 
         # gravity arrays for swapping during simulation
         self.gravity_zero = wp.zeros(1, dtype=wp.vec3)
@@ -330,10 +389,6 @@ class Example:
             return x
 
         self.Jacobian_one_hots = [onehot(i, out_dim) for i in range(out_dim)]
-
-        # for robot control
-        self.delta_q = wp.empty(self.model.joint_count, dtype=float)
-        self.joint_q_des = wp.array(self.model.joint_q.numpy(), dtype=float)
 
         @wp.kernel
         def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
@@ -390,21 +445,21 @@ class Example:
                 [2, 12.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [3, -6.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1, -6.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                # bottom right
+                # bottom left
                 [2, 15.0, -33.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 [3, 15.0, -33.0, 21.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 [3, 15.0, -33.0, 21.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [2, 15.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [3, -2.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1, -2.0, -33.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                # top left
+                # top right
                 [2, -28.0, -60.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 [2, -28.0, -60.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 [2, -28.0, -60.0, 20.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [2, -18.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [3, 5.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1, 5.0, -60.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
-                # bottom left
+                # bottom right
                 [3, -18.0, -30.0, 20.5, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
                 [3, -18.0, -30.0, 20.5, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [2, -3.0, -30.0, 31.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
@@ -418,7 +473,8 @@ class Example:
                 [1, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1.5, 0.0, -30.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
                 [1.5, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_close_activation_val],
-                [1, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [1.5, 0.0, -40.0, 35.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
+                [2, -28.0, -60.0, 28.0, 1, 0.0, 0.0, 0.0, clamp_open_activation_val],
             ],
             dtype=np.float32,
         )
@@ -471,14 +527,15 @@ class Example:
         self,
         state_in: State,
     ):
-        t_mod = (
-            self.sim_time
-            if self.sim_time < self.robot_key_poses_time[-1]
-            else self.sim_time % self.robot_key_poses_time[-1]
-        )
-        include_rotation = True
-        current_interval = np.searchsorted(self.robot_key_poses_time, t_mod)
+        # After the key poses sequence ends, hold position with zero velocity
+        if self.sim_time >= self.robot_key_poses_time[-1]:
+            self.target_joint_qd.zero_()
+            return
+
+        current_interval = np.searchsorted(self.robot_key_poses_time, self.sim_time)
         self.target = self.targets[current_interval]
+
+        include_rotation = True
 
         wp.launch(
             compute_ee_delta,
@@ -503,25 +560,17 @@ class Example:
         delta_target = self.ee_delta.numpy()[0]
         J_inv = np.linalg.pinv(J)
 
-        # 2. Compute null-space projector
-        #    I is size [num_joints x num_joints]
         I = np.eye(J.shape[1], dtype=np.float32)
         N = I - J_inv @ J
 
         q = state_in.joint_q.numpy()
 
-        # 3. Define a desired "elbow-up" reference posture
-        #    (For example, one that keeps joint 2 or 3 above a certain angle.)
-        #    Adjust indices and angles to your robot's kinematics.
         q_des = q.copy()
-        q_des[1:] = self.initial_pose[1:]  # e.g., set elbow joint around 1 rad to keep it up
+        q_des[1:] = self.initial_pose[1:]
 
-        # 4. Define a null-space velocity term pulling joints toward q_des
-        #    K_null is a small gain so it doesn't override main task
         K_null = 1.0
         delta_q_null = K_null * (q_des - q)
 
-        # 5. Combine primary task and null-space controller
         delta_q = J_inv @ delta_target + N @ delta_q_null
 
         # Apply gripper finger control (finger positions in cm)
@@ -582,16 +631,20 @@ class Example:
         if self.viewer is None:
             return
 
-        # Scale particle positions from cm to meters for visualization
-        positions = self.state_0.particle_q.numpy()
-        self.viz_state.particle_q = wp.array(positions * self.viz_scale, dtype=wp.vec3)
-
-        # Scale body positions from cm to meters for visualization
+        # Scale particle and body positions from cm to meters for visualization
+        wp.launch(
+            scale_positions,
+            dim=self.model.particle_count,
+            inputs=[self.state_0.particle_q, self.viz_scale],
+            outputs=[self.viz_state.particle_q],
+        )
         if self.model.body_count > 0:
-            body_q_np = self.state_0.body_q.numpy()
-            body_q_scaled = body_q_np.copy()
-            body_q_scaled[:, :3] *= self.viz_scale
-            self.viz_state.body_q = wp.array(body_q_scaled, dtype=wp.transform)
+            wp.launch(
+                scale_body_transforms,
+                dim=self.model.body_count,
+                inputs=[self.state_0.body_q, self.viz_scale],
+                outputs=[self.viz_state.body_q],
+            )
 
         # Swap model shape data to meter-scale for rendering
         self.model.shape_transform = self.viz_shape_transform
@@ -599,6 +652,14 @@ class Example:
 
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.viz_state)
+        # Render the table box manually at meter scale
+        self.viewer.log_shapes(
+            "/table",
+            newton.GeoType.BOX,
+            self.table_viz_scale,
+            self.table_viz_xform,
+            self.table_viz_color,
+        )
         self.viewer.end_frame()
 
         # Restore simulation shape data
