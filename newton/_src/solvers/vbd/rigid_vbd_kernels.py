@@ -1113,7 +1113,6 @@ def forward_step_rigid_bodies(
     body_inertia: wp.array(dtype=wp.mat33),
     body_inv_mass: wp.array(dtype=float),
     body_inv_inertia: wp.array(dtype=wp.mat33),
-    body_skip_forward_mask: wp.array(dtype=wp.int32),
     body_q: wp.array(dtype=wp.transform),
     body_qd: wp.array(dtype=wp.spatial_vector),
     body_inertia_q: wp.array(dtype=wp.transform),
@@ -1130,7 +1129,6 @@ def forward_step_rigid_bodies(
         body_inertia: Inertia tensors (local body frame).
         body_inv_mass: Inverse masses (0 for kinematic bodies).
         body_inv_inertia: Inverse inertia tensors (local body frame).
-        body_skip_forward_mask: Per-body forward-step skip mask (1 => skip integration).
         body_q: Body transforms (input: start-of-step pose, output: integrated pose).
         body_qd: Body velocities (input: start-of-step velocity, output: integrated velocity).
         body_inertia_q: Inertial target body transforms for the AVBD solve (output).
@@ -1140,14 +1138,7 @@ def forward_step_rigid_bodies(
     # Read current transform
     q_current = body_q[tid]
 
-    # Externally driven / masked bodies:
-    # keep caller-provided body_q_prev (used for finite-difference friction),
-    # but still set inertial target to current pose.
-    if body_skip_forward_mask[tid] != 0:
-        body_inertia_q[tid] = q_current
-        return
-
-    # Kinematic bodies: no integration, inertial target is current pose.
+    # Early exit for kinematic bodies (inv_mass == 0)
     inv_m = body_inv_mass[tid]
     if inv_m == 0.0:
         body_inertia_q[tid] = q_current

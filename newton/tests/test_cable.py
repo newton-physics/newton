@@ -1736,58 +1736,6 @@ def _collect_rigid_body_contact_forces_impl(test: unittest.TestCase, device):
     test.assertTrue(np.any(force_norms > 1.0e-8), msg="Expected at least one non-zero rigid contact force")
 
 
-def _skip_forward_stepping_masked_rigid_bodies_impl(test: unittest.TestCase, device):
-    """Skipped body stays fixed while unskipped body follows gravity-only analytic motion."""
-    builder = newton.ModelBuilder()
-
-    z0 = 0.0
-    b_skip = builder.add_body(mass=1.0, label="skip_body")
-    b_free = builder.add_body(mass=1.0, label="free_body")
-    builder.color()
-
-    model = builder.finalize(device=device)
-    model.set_gravity((0.0, 0.0, -9.81))
-
-    state0 = model.state()
-    state1 = model.state()
-    control = model.control()
-    solver = newton.solvers.SolverVBD(model, iterations=1)
-    solver.set_rigid_forward_skip_body_ids([int(b_skip)])
-
-    dt = 1.0 / 60.0
-    num_steps = 10
-
-    for _ in range(num_steps):
-        state0.clear_forces()
-        solver.step(state0, state1, control, None, dt)
-        state0, state1 = state1, state0
-
-    assert state0.body_q is not None
-    q_final = state0.body_q.numpy()
-    z_skip = float(q_final[int(b_skip), 2])
-    z_free = float(q_final[int(b_free), 2])
-
-    # Semi-implicit Euler with constant acceleration:
-    # z_n = z0 + a * dt^2 * n * (n + 1) / 2
-    assert model.gravity is not None
-    accel_z = float(model.gravity.numpy()[0][2])
-    expected_z_free = z0 + accel_z * (dt * dt) * num_steps * (num_steps + 1) * 0.5
-
-    test.assertAlmostEqual(
-        z_skip,
-        z0,
-        places=7,
-        msg=f"Skipped body moved unexpectedly: z={z_skip:.8f}, expected {z0:.8f}",
-    )
-    test.assertAlmostEqual(
-        z_free,
-        expected_z_free,
-        delta=1.0e-5,
-        msg=f"Unskipped body z mismatch: z={z_free:.8f}, expected {expected_z_free:.8f}",
-    )
-    test.assertLess(z_free, z_skip, msg="Unskipped body should fall below skipped body under gravity")
-
-
 class TestCable(unittest.TestCase):
     pass
 
@@ -1874,12 +1822,6 @@ add_function_test(
     TestCable,
     "test_collect_rigid_body_contact_forces",
     _collect_rigid_body_contact_forces_impl,
-    devices=devices,
-)
-add_function_test(
-    TestCable,
-    "test_skip_forward_stepping_masked_rigid_bodies",
-    _skip_forward_stepping_masked_rigid_bodies_impl,
     devices=devices,
 )
 

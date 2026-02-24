@@ -318,9 +318,6 @@ class SolverVBD(SolverBase):
         # Cached empty arrays for kernels that require wp.array arguments even when counts are zero.
         self._empty_body_q = wp.empty(0, dtype=wp.transform, device=self.device)
 
-        # Optional per-body forward-step skip mask (1 => skip rigid forward integration).
-        self._body_skip_forward_mask = wp.zeros(self.model.body_count, dtype=wp.int32, device=self.device)
-
     def _init_particle_system(
         self,
         model: Model,
@@ -1148,29 +1145,6 @@ class SolverVBD(SolverBase):
         """
         self.update_rigid_history = update
 
-    def set_rigid_forward_skip_body_ids(self, body_ids: list[int] | np.ndarray):
-        """Skip rigid forward integration for selected body IDs.
-
-        Masked bodies keep their current pose/velocity during the AVBD forward step,
-        while still participating in contact solve and coupling.
-
-        Args:
-            body_ids: Body indices to mark as forward-skip bodies [index].
-                Values outside ``[0, model.body_count)`` are ignored. Passing an empty
-                sequence clears the skip mask.
-        """
-        if self.integrate_with_external_rigid_solver:
-            return
-
-        mask = np.zeros(self.model.body_count, dtype=np.int32)
-        ids = np.asarray(body_ids, dtype=np.int32).reshape(-1)
-        if ids.size > 0:
-            valid = ids[(ids >= 0) & (ids < self.model.body_count)]
-            mask[valid] = 1
-
-        # Reuse the buffer allocated in __init__ instead of replacing it.
-        self._body_skip_forward_mask.assign(mask)
-
     @override
     def step(
         self,
@@ -1347,7 +1321,6 @@ class SolverVBD(SolverBase):
                     model.body_inertia,
                     model.body_inv_mass,
                     model.body_inv_inertia,
-                    self._body_skip_forward_mask,
                     state_in.body_q,  # input/output
                     state_in.body_qd,  # input/output
                 ],
