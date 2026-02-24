@@ -134,7 +134,7 @@ class ViewerNull(ViewerBase):
         pass
 
     @override
-    def log_points(self, name, points, radii, colors, hidden=False):
+    def log_points(self, name, points, radii=None, colors=None, hidden=False):
         """
         No-op implementation for logging points.
 

@@ -686,7 +686,7 @@ class ViewerGL(ViewerBase):
         self.lines[name].update(starts, ends, colors)
 
     @override
-    def log_points(self, name, points, radii, colors, hidden=False):
+    def log_points(self, name, points, radii=None, colors=None, hidden=False):
         """
         Log a batch of points for rendering as spheres.
 
@@ -701,14 +701,25 @@ class ViewerGL(ViewerBase):
             self._create_point_mesh()
 
         num_points = len(points)
+        object_recreated = False
         if name not in self.objects:
             # Start with a reasonable default.
             initial_capacity = max(num_points, 256)
             self.objects[name] = MeshInstancerGL(initial_capacity, self._point_mesh)
+            object_recreated = True
         elif num_points > self.objects[name].num_instances:
             old = self.objects[name]
             new_capacity = max(num_points, old.num_instances * 2)
             self.objects[name] = MeshInstancerGL(new_capacity, self._point_mesh)
+            object_recreated = True
+
+        if radii is None:
+            radii = wp.full(num_points, 0.1, dtype=wp.float32, device=self.device)
+
+        # If a point object is first created/recreated and no colors are provided,
+        # initialize to white to avoid uninitialized instance color buffers.
+        if colors is None and object_recreated:
+            colors = wp.full(num_points, wp.vec3(1.0, 1.0, 1.0), dtype=wp.vec3, device=self.device)
 
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden

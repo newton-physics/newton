@@ -1239,7 +1239,7 @@ class ViewerFile(ViewerBase):
         pass
 
     @override
-    def log_points(self, name, points, radii, colors, hidden=False):
+    def log_points(self, name, points, radii=None, colors=None, hidden=False):
         """File viewer doesn't render points, so this is a no-op."""
         pass
 

@@ -487,8 +487,11 @@ class ViewerUSD(ViewerBase):
         instancer.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
 
     @override
-    def log_points(self, name, points, radii, colors, hidden=False):
+    def log_points(self, name, points, radii=None, colors=None, hidden=False):
         num_points = len(points)
+
+        if radii is None:
+            radii = 0.1
 
         if np.isscalar(radii):
             radius_interp = "constant"
