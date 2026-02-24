@@ -751,11 +751,11 @@ def parse_mjcf(
                     # produce NaN from wp.quat_between_vectors.
                     geom_pos = (start + end) * 0.5
                     dir_vec = start - end
-                    dir_len_sq = wp.length_sq(dir_vec)
-                    if dir_len_sq < 1.0e-16:
+                    dir_len = wp.length(dir_vec)
+                    if dir_len < 1.0e-6:
                         geom_rot = wp.quat_identity()
                     else:
-                        direction = wp.normalize(dir_vec)
+                        direction = dir_vec / dir_len
                         if float(direction[2]) < -0.999999:
                             geom_rot = wp.quat(1.0, 0.0, 0.0, 0.0)  # 180° around X
                         else:
@@ -763,7 +763,7 @@ def parse_mjcf(
                     tf = wp.transform(geom_pos, geom_rot)
 
                     geom_radius = geom_size[0]
-                    geom_height = wp.sqrt(dir_len_sq) * 0.5
+                    geom_height = dir_len * 0.5
 
                 else:
                     geom_radius = geom_size[0]
