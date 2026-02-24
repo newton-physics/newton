@@ -22,7 +22,7 @@ from typing import Any
 import warp as wp
 
 from ...core.types import vec5
-from ...sim import ActuatorMode, EqType, JointType
+from ...sim import EqType, JointTargetMode, JointType
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
@@ -1283,7 +1283,7 @@ def update_axis_properties_kernel(
     - Value of -1: unmapped/skip
     - Negative value (<=-2): velocity actuator, newton_axis = -(value + 2)
 
-    For POSITION-only actuators (joint_act_mode == ActuatorMode.POSITION), both
+    For POSITION-only actuators (joint_act_mode == JointTargetMode.POSITION), both
     kp and kd are synced since the position actuator includes damping. For
     POSITION_VELOCITY mode, only kp is synced to the position actuator (kd goes
     to the separate velocity actuator).
@@ -1314,7 +1314,7 @@ def update_axis_properties_kernel(
         # For POSITION-only mode, also sync kd (damping) to the position actuator
         # For POSITION_VELOCITY mode, kd is handled by the separate velocity actuator
         mode = joint_act_mode[idx]  # Use template DOF index (idx) not world_dof
-        if mode == ActuatorMode.POSITION:
+        if mode == JointTargetMode.POSITION:
             kd = joint_target_kd[world_dof]
             actuator_bias[world, actuator][2] = -kd
     elif idx == -1:

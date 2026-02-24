@@ -424,7 +424,7 @@ class Model:
         self.joint_armature = None
         """Armature [kg·m² (rotational) or kg (translational)] for each joint axis (used by :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.SolverFeatherstone`), shape [joint_dof_count], float."""
         self.joint_act_mode = None
-        """Actuator mode per DOF, see :class:`newton.ActuatorMode`. Shape [joint_dof_count], dtype int32."""
+        """Actuator mode per DOF, see :class:`newton.JointTargetMode`. Shape [joint_dof_count], dtype int32."""
         self.joint_target_ke = None
         """Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_kd = None

@@ -27,10 +27,10 @@ import warp as wp
 from ...core.types import MAXVAL, nparray, override, vec5, vec10
 from ...geometry import GeoType, Mesh, ShapeFlags
 from ...sim import (
-    ActuatorMode,
     Contacts,
     Control,
     EqType,
+    JointTargetMode,
     JointType,
     Model,
     ModelBuilder,
@@ -164,9 +164,9 @@ class SolverMuJoCo(SolverBase):
         For :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode, determines which target array to read from:
 
         - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_pos`, syncs gains from
-          :attr:`~newton.Control.joint_target_ke`. For :attr:`~newton.ActuatorMode.POSITION`-only actuators,
+          :attr:`~newton.Control.joint_target_ke`. For :attr:`~newton.JointTargetMode.POSITION`-only actuators,
           also syncs damping from :attr:`~newton.Control.joint_target_kd`. For
-          :attr:`~newton.ActuatorMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
+          :attr:`~newton.JointTargetMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
         - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_vel`, syncs gains from :attr:`~newton.Control.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         """
@@ -4281,7 +4281,7 @@ class SolverMuJoCo(SolverBase):
                     ai = qd_start + i
                     mode = joint_act_mode[ai]
 
-                    if (actuated_axes is None or ai in actuated_axes) and mode != int(ActuatorMode.NONE):
+                    if (actuated_axes is None or ai in actuated_axes) and mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
                         effort_limit = joint_effort_limit[ai]
@@ -4297,7 +4297,7 @@ class SolverMuJoCo(SolverBase):
 
                         template_dof = ai
                         # Add position actuator if mode includes position
-                        if mode == ActuatorMode.POSITION:
+                        if mode == JointTargetMode.POSITION:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=name, **args)
@@ -4305,7 +4305,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             actuator_count += 1
-                        elif mode == ActuatorMode.POSITION_VELOCITY:
+                        elif mode == JointTargetMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=name, **args)
@@ -4315,7 +4315,7 @@ class SolverMuJoCo(SolverBase):
                             actuator_count += 1
 
                         # Add velocity actuator if mode includes velocity
-                        if mode in (ActuatorMode.VELOCITY, ActuatorMode.POSITION_VELOCITY):
+                        if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=name, **args)
@@ -4393,7 +4393,7 @@ class SolverMuJoCo(SolverBase):
                     num_mjc_joints += 1
 
                     mode = joint_act_mode[ai]
-                    if (actuated_axes is None or ai in actuated_axes) and mode != int(ActuatorMode.NONE):
+                    if (actuated_axes is None or ai in actuated_axes) and mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
                         gear = actuator_gears.get(axname)
@@ -4406,7 +4406,7 @@ class SolverMuJoCo(SolverBase):
 
                         template_dof = ai
                         # Add position actuator if mode includes position
-                        if mode == ActuatorMode.POSITION:
+                        if mode == JointTargetMode.POSITION:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=axname, **args)
@@ -4414,7 +4414,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             actuator_count += 1
-                        elif mode == ActuatorMode.POSITION_VELOCITY:
+                        elif mode == JointTargetMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=axname, **args)
@@ -4424,7 +4424,7 @@ class SolverMuJoCo(SolverBase):
                             actuator_count += 1
 
                         # Add velocity actuator if mode includes velocity
-                        if mode in (ActuatorMode.VELOCITY, ActuatorMode.POSITION_VELOCITY):
+                        if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=axname, **args)
@@ -4499,7 +4499,7 @@ class SolverMuJoCo(SolverBase):
                     num_mjc_joints += 1
 
                     mode = joint_act_mode[ai]
-                    if (actuated_axes is None or ai in actuated_axes) and mode != int(ActuatorMode.NONE):
+                    if (actuated_axes is None or ai in actuated_axes) and mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
                         gear = actuator_gears.get(axname)
@@ -4512,7 +4512,7 @@ class SolverMuJoCo(SolverBase):
 
                         template_dof = ai
                         # Add position actuator if mode includes position
-                        if mode == ActuatorMode.POSITION:
+                        if mode == JointTargetMode.POSITION:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=axname, **args)
@@ -4520,7 +4520,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             actuator_count += 1
-                        elif mode == ActuatorMode.POSITION_VELOCITY:
+                        elif mode == JointTargetMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=axname, **args)
@@ -4530,7 +4530,7 @@ class SolverMuJoCo(SolverBase):
                             actuator_count += 1
 
                         # Add velocity actuator if mode includes velocity
-                        if mode in (ActuatorMode.VELOCITY, ActuatorMode.POSITION_VELOCITY):
+                        if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=axname, **args)

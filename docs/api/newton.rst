@@ -40,6 +40,7 @@ newton
    EqType
    GeoType
    Heightfield
+   JointTargetMode
    JointType
    Mesh
    Model

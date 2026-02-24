@@ -30,7 +30,7 @@ from ..core import quat_between_axes, quat_from_euler
 from ..core.types import Axis, AxisType, Sequence, Transform, vec10
 from ..geometry import Mesh, ShapeFlags
 from ..geometry.types import Heightfield
-from ..sim import ActuatorMode, JointType, ModelBuilder
+from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
@@ -1312,7 +1312,7 @@ def parse_mjcf(
                     armature=joint_armature[-1],
                     friction=parse_float(joint_attrib, "frictionloss", 0.0),
                     effort_limit=effort_limit,
-                    actuator_mode=ActuatorMode.NONE,  # Will be set by parse_actuators
+                    actuator_mode=JointTargetMode.NONE,  # Will be set by parse_actuators
                 )
                 if is_angular:
                     angular_axes.append(ax)
@@ -2314,14 +2314,14 @@ def parse_mjcf(
                         dof_idx = qd_start + i
                         builder.joint_target_ke[dof_idx] = kp
                         current_mode = builder.joint_act_mode[dof_idx]
-                        if current_mode == int(ActuatorMode.VELOCITY):
+                        if current_mode == int(JointTargetMode.VELOCITY):
                             # A velocity actuator was already parsed for this DOF - upgrade to POSITION_VELOCITY.
                             # We intentionally preserve the existing kd from the velocity actuator rather than
                             # overwriting it with this position actuator's kv, since the velocity actuator's
                             # kv takes precedence for velocity control.
-                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
-                        elif current_mode == int(ActuatorMode.NONE):
-                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION)
+                            builder.joint_act_mode[dof_idx] = int(JointTargetMode.POSITION_VELOCITY)
+                        elif current_mode == int(JointTargetMode.NONE):
+                            builder.joint_act_mode[dof_idx] = int(JointTargetMode.POSITION)
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
@@ -2337,10 +2337,10 @@ def parse_mjcf(
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
                         current_mode = builder.joint_act_mode[dof_idx]
-                        if current_mode == int(ActuatorMode.POSITION):
-                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.POSITION_VELOCITY)
-                        elif current_mode == int(ActuatorMode.NONE):
-                            builder.joint_act_mode[dof_idx] = int(ActuatorMode.VELOCITY)
+                        if current_mode == int(JointTargetMode.POSITION):
+                            builder.joint_act_mode[dof_idx] = int(JointTargetMode.POSITION_VELOCITY)
+                        elif current_mode == int(JointTargetMode.NONE):
+                            builder.joint_act_mode[dof_idx] = int(JointTargetMode.VELOCITY)
                         builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "motor":

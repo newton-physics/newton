@@ -67,8 +67,8 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .joints import (
-    ActuatorMode,
     EqType,
+    JointTargetMode,
     JointType,
 )
 from .model import Model
@@ -368,7 +368,7 @@ class ModelBuilder:
             effort_limit: float = 1e6,
             velocity_limit: float = 1e6,
             friction: float = 0.0,
-            actuator_mode: ActuatorMode | None = None,
+            actuator_mode: JointTargetMode | None = None,
         ):
             self.axis = wp.normalize(axis_to_vec3(axis))
             """The 3D joint axis in the joint parent anchor frame."""
@@ -399,7 +399,7 @@ class ModelBuilder:
             self.friction = friction
             """Friction coefficient for the joint axis. Defaults to 0.0."""
             self.actuator_mode = actuator_mode
-            """Actuator mode for this DOF. Determines which actuators are installed (see :class:`ActuatorMode`).
+            """Actuator mode for this DOF. Determines which actuators are installed (see :class:`JointTargetMode`).
             If None, the mode is inferred from gains and targets."""
 
             if self.target_pos > self.limit_upper or self.target_pos < self.limit_lower:
@@ -892,7 +892,7 @@ class ModelBuilder:
         self.joint_type = []
         self.joint_label = []
         self.joint_armature = []
-        self.joint_act_mode = []  # Actuator mode per DOF (ActuatorMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3, EFFORT=4)
+        self.joint_act_mode = []  # Actuator mode per DOF (JointTargetMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3, EFFORT=4)
         self.joint_target_ke = []
         self.joint_target_kd = []
         self.joint_limit_lower = []
@@ -1787,11 +1787,11 @@ class ModelBuilder:
             collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged.
             mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes.
             force_position_velocity_actuation (bool): If True and both position (stiffness) and velocity
-                (damping) gains are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
-                :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
-                damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
-                (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
+                (damping) gains are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
+                If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
+                :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
+                damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
+                (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -1952,11 +1952,11 @@ class ModelBuilder:
                 .. note::
                     Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
             force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
-                are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-                If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
-                :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
-                damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
-                (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
+                are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
+                If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
+                :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
+                damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
+                (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
         Returns:
             dict: Dictionary with the following entries:
@@ -3104,7 +3104,7 @@ class ModelBuilder:
                 # Infer has_drive from whether gains are non-zero: non-zero gains imply a drive exists.
                 # This ensures freejoints (gains=0) get NONE, while joints with gains get appropriate mode.
                 has_drive = dim.target_ke != 0.0 or dim.target_kd != 0.0
-                mode = int(ActuatorMode.from_gains(dim.target_ke, dim.target_kd, has_drive=has_drive))
+                mode = int(JointTargetMode.from_gains(dim.target_ke, dim.target_kd, has_drive=has_drive))
 
             # Store per-DOF actuator properties
             self.joint_act_mode.append(mode)
@@ -3192,7 +3192,7 @@ class ModelBuilder:
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
         friction: float | None = None,
-        actuator_mode: ActuatorMode | None = None,
+        actuator_mode: JointTargetMode | None = None,
         label: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -3285,7 +3285,7 @@ class ModelBuilder:
         effort_limit: float | None = None,
         velocity_limit: float | None = None,
         friction: float | None = None,
-        actuator_mode: ActuatorMode | None = None,
+        actuator_mode: JointTargetMode | None = None,
         label: str | None = None,
         collision_filter_parent: bool = True,
         enabled: bool = True,
@@ -3369,7 +3369,7 @@ class ModelBuilder:
         collision_filter_parent: bool = True,
         enabled: bool = True,
         custom_attributes: dict[str, Any] | None = None,
-        actuator_mode: ActuatorMode | None = None,
+        actuator_mode: JointTargetMode | None = None,
     ) -> int:
         """Adds a ball (spherical) joint to the model. Its position is defined by a 4D quaternion (xyzw) and its velocity is a 3D vector.
 

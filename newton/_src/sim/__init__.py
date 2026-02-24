@@ -19,21 +19,21 @@ from .collide import BroadPhaseInstance, BroadPhaseMode, CollisionPipeline
 from .contacts import Contacts
 from .control import Control
 from .joints import (
-    ActuatorMode,
     EqType,
+    JointTargetMode,
     JointType,
 )
 from .model import Model
 from .state import State
 
 __all__ = [
-    "ActuatorMode",
     "BroadPhaseInstance",
     "BroadPhaseMode",
     "CollisionPipeline",
     "Contacts",
     "Control",
     "EqType",
+    "JointTargetMode",
     "JointType",
     "Model",
     "ModelBuilder",
