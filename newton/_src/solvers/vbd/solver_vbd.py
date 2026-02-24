@@ -1928,16 +1928,19 @@ class SolverVBD(SolverBase):
         )
 
     def collect_rigid_contact_forces(
-        self, state: State, contacts: Contacts, dt: float
+        self, state: State, contacts: Contacts | None, dt: float
     ) -> tuple[wp.array, wp.array, wp.array, wp.array, wp.array, wp.array]:
         """Collect per-contact rigid contact forces and world-space application points.
 
         This produces a **contact-specific** buffer that coupling code can filter (e.g., proxy contacts only).
 
         Args:
-            state: Simulation state containing rigid body transforms/velocities used for contact-force evaluation.
-            contacts: Contact data buffers containing rigid contact geometry/material references.
-            dt: Time step size.
+            state (State): Simulation state containing rigid body transforms/velocities
+                used for contact-force evaluation.
+            contacts (Optional[Contacts]): Contact data buffers containing rigid
+                contact geometry/material references. If None, the function
+                returns default zero/sentinel outputs.
+            dt (float): Time step size [s].
 
         Returns:
             tuple[
@@ -1948,12 +1951,12 @@ class SolverVBD(SolverBase):
                 wp.array(dtype=wp.vec3),
                 wp.array(dtype=wp.int32),
             ]: Tuple of per-contact outputs:
-                - body0: Body index for shape0, int32.
-                - body1: Body index for shape1, int32.
-                - point0_world: World-space contact point on body0, wp.vec3.
-                - point1_world: World-space contact point on body1, wp.vec3.
-                - force_on_body1: Contact force applied to body1 in world frame, wp.vec3.
-                - rigid_contact_count: Length-1 active rigid-contact count, int32.
+                - body0: Body index for shape0, int32 [index].
+                - body1: Body index for shape1, int32 [index].
+                - point0_world: World-space contact point on body0, wp.vec3 [m].
+                - point1_world: World-space contact point on body1, wp.vec3 [m].
+                - force_on_body1: Contact force applied to body1 in world frame, wp.vec3 [N].
+                - rigid_contact_count: Length-1 active rigid-contact count, int32 [count].
         """
         # Allocate/resize persistent buffers to match contact capacity.
         max_contacts = int(contacts.rigid_contact_shape0.shape[0]) if contacts is not None else 0
@@ -2003,6 +2006,9 @@ class SolverVBD(SolverBase):
                 else wp.zeros(0, dtype=wp.vec3, device=self.device),
                 rigid_contact_count,
             )
+
+        # Type narrowing: remaining path requires a valid Contacts instance.
+        assert contacts is not None
 
         # Reuse the existing per-contact force buffer in Contacts (allocated by default).
         # Force convention: force is applied to body1, and -force is applied to body0.
