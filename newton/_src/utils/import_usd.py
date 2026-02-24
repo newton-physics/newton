@@ -21,20 +21,24 @@ import os
 import re
 import warnings
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from pxr import Usd
 
 import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis, Transform
-from ..geometry import GeoType, Mesh, ShapeFlags, compute_shape_inertia, compute_sphere_inertia
+from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
 from ..sim.joints import ActuatorMode
 from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
 from ..usd.schemas import SchemaResolverNewton
+from .import_utils import should_show_collider
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -62,6 +66,7 @@ def parse_usd(
     load_sites: bool = True,
     load_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
+    force_show_colliders: bool = False,
     parse_mujoco_options: bool = True,
     mesh_maxhullvert: int | None = None,
     schema_resolvers: list[SchemaResolver] | None = None,
@@ -158,6 +163,10 @@ def parse_usd(
         load_sites (bool): If True, sites (prims with MjcSiteAPI) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes (bool): If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         hide_collision_shapes (bool): If True, collision shapes are hidden. Default is False.
+        force_show_colliders (bool): If True, collision shapes get the VISIBLE flag
+            regardless of whether visual shapes exist on the same body. Note that
+            ``hide_collision_shapes=True`` still takes precedence and will suppress
+            the VISIBLE flag even when this option is set. Default is False.
         parse_mujoco_options (bool): Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         mesh_maxhullvert (int): Maximum vertices for convex hull approximation of meshes. Note that an authored ``newton:maxHullVertices`` attribute on any shape with a ``NewtonMeshCollisionAPI`` will take priority over this value.
         schema_resolvers (list[SchemaResolver]): Resolver instances in priority order. Default is to only parse Newton-specific attributes.
@@ -215,6 +224,8 @@ def parse_usd(
               - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
             * - ``"path_original_body_map"``
               - Mapping from prim path to original body index before ``collapse_fixed_joints``
+            * - ``"actuator_count"``
+              - Number of external actuators parsed from the USD stage
     """
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -360,6 +371,8 @@ def parse_usd(
         mesh_cache[key] = mesh
         return mesh
 
+    bodies_with_visual_shapes: set[int] = set()
+
     def _load_visual_shapes_impl(
         parent_body_id: int,
         prim: Usd.Prim,
@@ -410,19 +423,7 @@ def parse_usd(
 
         shape_id = -1
 
-        # Check if this prim is a site (has MjcSiteAPI applied)
-        # First check if the API is formally applied (schema is registered)
-        is_site = prim.HasAPI("MjcSiteAPI")
-        # If not, check the apiSchemas metadata directly (for unregistered schemas)
-        if not is_site:
-            schemas_listop = prim.GetMetadata("apiSchemas")
-            if schemas_listop:
-                all_schemas = (
-                    list(schemas_listop.prependedItems)
-                    + list(schemas_listop.appendedItems)
-                    + list(schemas_listop.explicitItems)
-                )
-                is_site = "MjcSiteAPI" in all_schemas
+        is_site = usd.has_applied_api_schema(prim, "MjcSiteAPI")
 
         # Skip based on granular loading flags
         if is_site and not load_sites:
@@ -550,6 +551,8 @@ def parse_usd(
             if shape_id >= 0:
                 path_shape_map[path_name] = shape_id
                 path_shape_scale[path_name] = scale
+                if not is_site:
+                    bodies_with_visual_shapes.add(parent_body_id)
                 if verbose:
                     print(f"Added visual shape {path_name} ({type_name}) with id {shape_id}.")
 
@@ -559,7 +562,9 @@ def parse_usd(
     def add_body(prim: Usd.Prim, xform: wp.transform, label: str, armature: float) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
         # Extract custom attributes for this body
-        body_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_body)
+        body_custom_attrs = usd.get_custom_attribute_values(
+            prim, builder_custom_attr_body, context={"builder": builder}
+        )
 
         b = builder.add_link(
             xform=xform,
@@ -667,7 +672,9 @@ def parse_usd(
         )
 
         # Extract custom attributes for this joint
-        joint_custom_attrs = usd.get_custom_attribute_values(joint_prim, builder_custom_attr_joint)
+        joint_custom_attrs = usd.get_custom_attribute_values(
+            joint_prim, builder_custom_attr_joint, context={"builder": builder}
+        )
         joint_params = {
             "parent": parent_id,
             "child": child_id,
@@ -1124,7 +1131,9 @@ def parse_usd(
             builder_custom_attr_model = [attr for attr in builder_custom_attr_model if attr.namespace != "mujoco"]
 
         # Read custom attribute values from the PhysicsScene prim
-        scene_custom_attrs = usd.get_custom_attribute_values(physics_scene_prim, builder_custom_attr_model)
+        scene_custom_attrs = usd.get_custom_attribute_values(
+            physics_scene_prim, builder_custom_attr_model, context={"builder": builder}
+        )
         scene_attributes.update(scene_custom_attrs)
 
         # Set values on builder's custom attributes
@@ -1203,7 +1212,7 @@ def parse_usd(
             body_specs[body_path] = rigid_body_desc
             prim = stage.GetPrimAtPath(prim_path)
 
-    # Bodies with MassAPI that need ComputeMassProperties fallback (missing mass or inertia).
+    # Bodies with MassAPI that need ComputeMassProperties fallback (missing mass, inertia, or CoM).
     bodies_requiring_mass_properties_fallback: set[str] = set()
     if UsdPhysics.ObjectType.RigidBody in ret_dict:
         prim_paths, rigid_body_descs = ret_dict[UsdPhysics.ObjectType.RigidBody]
@@ -1221,7 +1230,8 @@ def parse_usd(
             mass_api = UsdPhysics.MassAPI(prim)
             has_authored_mass = mass_api.GetMassAttr().HasAuthoredValue()
             has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
-            if not (has_authored_mass and has_authored_inertia):
+            has_authored_com = mass_api.GetCenterOfMassAttr().HasAuthoredValue()
+            if not (has_authored_mass and has_authored_inertia and has_authored_com):
                 bodies_requiring_mass_properties_fallback.add(body_path)
 
     # Collect joint descriptions regardless of whether articulations are authored.
@@ -1678,7 +1688,7 @@ def parse_usd(
             )
             return None
 
-        shape_volume, _, _ = compute_shape_inertia(shape_geo_type, shape_scale, shape_src, density=1.0)
+        shape_volume, _, _ = compute_inertia_shape(shape_geo_type, shape_scale, shape_src, density=1.0)
         if shape_volume <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: unable to derive positive collider volume from authored shape parameters.",
@@ -1763,7 +1773,7 @@ def parse_usd(
         geometry (box/sphere/capsule/cylinder/cone/mesh) when collider-authored MassAPI mass
         properties are not available.
         """
-        shape_mass, shape_com, shape_inertia = compute_shape_inertia(
+        shape_mass, shape_com, shape_inertia = compute_inertia_shape(
             shape_geo_type, shape_scale, shape_src, density=1.0
         )
         if shape_mass <= 0.0:
@@ -1849,7 +1859,9 @@ def parse_usd(
                 else:
                     shape_xform = local_xform
                 # Extract custom attributes for this shape
-                shape_custom_attrs = usd.get_custom_attribute_values(prim, builder_custom_attr_shape)
+                shape_custom_attrs = usd.get_custom_attribute_values(
+                    prim, builder_custom_attr_shape, context={"builder": builder}
+                )
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
@@ -1857,19 +1869,21 @@ def parse_usd(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="margin",
-                    default=builder.default_shape_cfg.thickness,
+                    default=builder.default_shape_cfg.margin,
                     verbose=verbose,
+                )
+                gap_default = (
+                    builder.default_shape_cfg.gap if builder.default_shape_cfg.gap is not None else builder.rigid_gap
                 )
                 gap_val = R.get_value(
                     prim,
                     prim_type=PrimType.SHAPE,
                     key="gap",
-                    default=builder.default_shape_cfg.contact_margin,
+                    default=gap_default,
                     verbose=verbose,
                 )
-                # Per schema docs: if gap is -inf (unset), use margin so contact_margin >= thickness.
-                if gap_val == float("-inf"):
-                    gap_val = margin_val
+                # When gap is -inf (unset), pass None so builder uses rigid_gap.
+                gap_cfg = None if gap_val == float("-inf") else gap_val
 
                 shape_params = {
                     "body": body_id,
@@ -1887,15 +1901,19 @@ def parse_usd(
                         ka=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
                         ),
-                        thickness=margin_val,
-                        contact_margin=gap_val,
+                        margin=margin_val,
+                        gap=gap_cfg,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
                         mu_torsional=material.torsionalFriction,
                         mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
-                        is_visible=not hide_collision_shapes,
+                        is_visible=should_show_collider(
+                            force_show_colliders,
+                            has_visual_shapes=load_visual_shapes and body_id in bodies_with_visual_shapes,
+                        )
+                        and not hide_collision_shapes,
                     ),
                     "label": path,
                     "custom_attributes": shape_custom_attrs,
@@ -2129,30 +2147,42 @@ def parse_usd(
             mass_api = UsdPhysics.MassAPI(prim)
             has_authored_mass = mass_api.GetMassAttr().HasAuthoredValue()
             has_authored_inertia = mass_api.GetDiagonalInertiaAttr().HasAuthoredValue()
+            has_authored_com = mass_api.GetCenterOfMassAttr().HasAuthoredValue()
 
-            if has_authored_mass and has_authored_inertia:
-                mass = float(mass_api.GetMassAttr().Get())
-                i_diag = mass_api.GetDiagonalInertiaAttr().Get()
-                if mass_api.GetCenterOfMassAttr().HasAuthoredValue():
-                    com = mass_api.GetCenterOfMassAttr().Get()
-                else:
-                    com = Gf.Vec3f(0.0, 0.0, 0.0)
-                if mass_api.GetPrincipalAxesAttr().HasAuthoredValue():
+            # Compute baseline mass properties via mass computer when at least one property needs resolving.
+            if not (has_authored_mass and has_authored_inertia and has_authored_com):
+                rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
+                cmp_mass, cmp_i_diag, cmp_com, cmp_principal_axes = rigid_body_api.ComputeMassProperties(
+                    _get_collision_mass_information
+                )
+
+            # Inertia: authored diagonal + principal axes take precedence over mass computer.
+            # When mass is authored but inertia is not, keep accumulated inertia
+            # (scaled to match authored mass below) instead of using mass computer
+            # inertia, which may already reflect the authored mass.
+            if has_authored_inertia:
+                i_diag_np = np.array(mass_api.GetDiagonalInertiaAttr().Get(), dtype=np.float32)
+                if np.any(i_diag_np < 0.0):
+                    warnings.warn(
+                        f"Body {body_path}: authored diagonal inertia contains negative values. "
+                        "Falling back to mass-computer result.",
+                        stacklevel=2,
+                    )
+                    has_authored_inertia = False
+                    i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
+                    principal_axes = cmp_principal_axes
+                elif mass_api.GetPrincipalAxesAttr().HasAuthoredValue():
                     principal_axes = mass_api.GetPrincipalAxesAttr().Get()
                 else:
                     principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
+            elif not has_authored_mass:
+                i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
+                principal_axes = cmp_principal_axes
             else:
-                rigid_body_api = UsdPhysics.RigidBodyAPI(prim)
-                mass, i_diag, com, principal_axes = rigid_body_api.ComputeMassProperties(
-                    _get_collision_mass_information
-                )
-            # MassAPI bodies should always override any previously accumulated shape mass.
-            builder.body_mass[body_id] = mass
-            builder.body_inv_mass[body_id] = 1.0 / mass if mass > 0.0 else 0.0
-            builder.body_com[body_id] = wp.vec3(*com)
-
-            i_diag_np = np.array(i_diag, dtype=np.float32)
-            if np.linalg.norm(i_diag_np) > 0.0:
+                # Mass authored, inertia not: keep accumulated inertia and scale
+                # to match authored mass in the mass block below.
+                i_diag_np = None
+            if i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
                 i_rot = usd.from_gfquat(principal_axes)
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag_np) @ rot.T
@@ -2162,7 +2192,34 @@ def parse_usd(
                 else:
                     builder.body_inv_inertia[body_id] = wp.mat33(0.0)
 
-            # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated
+            # Mass: authored value takes precedence over mass computer.
+            if has_authored_mass:
+                mass = float(mass_api.GetMassAttr().Get())
+                shape_accumulated_mass = builder.body_mass[body_id]
+                if not has_authored_inertia and mass_api.GetDensityAttr().HasAuthoredValue():
+                    warnings.warn(
+                        f"Body {body_path}: authored mass and density without authored diagonalInertia. "
+                        f"Ignoring body-level density.",
+                        stacklevel=2,
+                    )
+                # When mass is authored but inertia is not, scale the accumulated
+                # inertia to be consistent with the authored mass.
+                if not has_authored_inertia and shape_accumulated_mass > 0.0 and mass > 0.0:
+                    scale = mass / shape_accumulated_mass
+                    builder.body_inertia[body_id] = wp.mat33(np.array(builder.body_inertia[body_id]) * scale)
+                    builder.body_inv_inertia[body_id] = wp.inverse(builder.body_inertia[body_id])
+            else:
+                mass = cmp_mass
+            builder.body_mass[body_id] = mass
+            builder.body_inv_mass[body_id] = 1.0 / mass if mass > 0.0 else 0.0
+
+            # Center of mass: authored value takes precedence over mass computer.
+            if has_authored_com:
+                builder.body_com[body_id] = wp.vec3(*mass_api.GetCenterOfMassAttr().Get())
+            else:
+                builder.body_com[body_id] = wp.vec3(*cmp_com)
+
+            # Assign nonzero inertia if mass is nonzero to make sure the body can be simulated.
             I_m = np.array(builder.body_inertia[body_id])
             mass = builder.body_mass[body_id]
             if I_m.max() == 0.0:
@@ -2171,10 +2228,10 @@ def parse_usd(
                     # For a sphere: I = (2/5) * m * r^2
                     # Estimate radius from mass assuming reasonable density (e.g., water density ~1000 kg/m³)
                     # This gives r = (3*m/(4*π*p))^(1/3)
-                    density = default_shape_density  # kg/m³
+                    density = default_shape_density  # kg/m^3
                     volume = mass / density
                     radius = (3.0 * volume / (4.0 * np.pi)) ** (1.0 / 3.0)
-                    _, _, I_default = compute_sphere_inertia(density, radius)
+                    _, _, I_default = compute_inertia_sphere(density, radius)
 
                     # Apply parallel axis theorem if center of mass is offset
                     com = builder.body_com[body_id]
@@ -2294,7 +2351,25 @@ def parse_usd(
             label=joint_path,
         )
 
-    return {
+    # Parse Newton actuator prims from the USD stage.
+    from newton_actuators import parse_actuator_prim  # noqa: PLC0415
+
+    actuator_count = 0
+    path_to_dof = {
+        path: builder.joint_qd_start[idx] for path, idx in path_joint_map.items() if idx < len(builder.joint_qd_start)
+    }
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        parsed = parse_actuator_prim(prim)
+        if parsed is None:
+            continue
+        dof_indices = [path_to_dof[p] for p in parsed.target_paths if p in path_to_dof]
+        if dof_indices:
+            builder.add_actuator(parsed.actuator_class, input_indices=dof_indices, **parsed.kwargs)
+            actuator_count += 1
+    if verbose and actuator_count > 0:
+        print(f"Added {actuator_count} actuator(s) from USD")
+
+    result = {
         "fps": stage.GetFramesPerSecond(),
         "duration": stage.GetEndTimeCode() - stage.GetStartTimeCode(),
         "up_axis": stage_up_axis,
@@ -2312,7 +2387,72 @@ def parse_usd(
         # "articulation_bodies": articulation_bodies,
         "path_body_relative_transform": path_body_relative_transform,
         "max_solver_iterations": max_solver_iters,
+        "actuator_count": actuator_count,
     }
+
+    # Process custom frequencies with USD prim filters
+    # Collect frequencies with filters and their attributes, then traverse stage once
+    frequencies_with_filters = []
+    for freq_key, freq_obj in builder.custom_frequencies.items():
+        if freq_obj.usd_prim_filter is None:
+            continue
+        freq_attrs = [attr for attr in builder.custom_attributes.values() if attr.frequency == freq_key]
+        if not freq_attrs:
+            continue
+        frequencies_with_filters.append((freq_key, freq_obj, freq_attrs))
+
+    # Traverse stage once and check all filters for each prim
+    # Use TraverseInstanceProxies to include prims under instanceable prims
+    if frequencies_with_filters:
+        for prim in stage.Traverse(Usd.TraverseInstanceProxies()):
+            for freq_key, freq_obj, freq_attrs in frequencies_with_filters:
+                # Build per-frequency callback context and pass the same object to
+                # usd_prim_filter and usd_entry_expander.
+                callback_context = {"prim": prim, "result": result, "builder": builder}
+
+                try:
+                    matches_frequency = freq_obj.usd_prim_filter(prim, callback_context)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"usd_prim_filter for frequency '{freq_key}' raised an error on prim '{prim.GetPath()}': {e}"
+                    ) from e
+                if not matches_frequency:
+                    continue
+
+                if freq_obj.usd_entry_expander is not None:
+                    try:
+                        expanded_rows = list(freq_obj.usd_entry_expander(prim, callback_context))
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"usd_entry_expander for frequency '{freq_key}' raised an error on prim '{prim.GetPath()}': {e}"
+                        ) from e
+                    values_rows = [{attr.key: row.get(attr.key, None) for attr in freq_attrs} for row in expanded_rows]
+                    builder.add_custom_values_batch(values_rows)
+                    if verbose and len(expanded_rows) > 0:
+                        print(
+                            f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()} with {len(expanded_rows)} rows"
+                        )
+                    continue
+
+                prim_custom_attrs = usd.get_custom_attribute_values(
+                    prim,
+                    freq_attrs,
+                    context={"result": result, "builder": builder},
+                )
+
+                # Build a complete values dict for all attributes in this frequency
+                # Use None for missing values so add_custom_values can apply defaults
+                values_dict = {}
+                for attr in freq_attrs:
+                    # Use authored value if present, otherwise None (defaults applied at finalize)
+                    values_dict[attr.key] = prim_custom_attrs.get(attr.key, None)
+
+                # Always add values for this prim to increment the frequency count,
+                # even if all values are None (defaults will be applied during finalization)
+                builder.add_custom_values(**values_dict)
+                if verbose:
+                    print(f"Parsed custom frequency '{freq_key}' from prim {prim.GetPath()}")
+    return result
 
 
 def resolve_usd_from_url(url: str, target_folder_name: str | None = None, export_usda: bool = False) -> str:

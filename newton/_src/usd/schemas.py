@@ -17,10 +17,23 @@
 USD schema resolvers.
 """
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ..sim.builder import ModelBuilder
 from ..usd.schema_resolver import PrimType, SchemaAttribute, SchemaResolver
+from . import utils as usd
+
+
+def _physx_gap_from_prim(prim: Any) -> float | None:
+    """Compute Newton gap from PhysX: contactOffset - restOffset [m]. Returns None if either is unset (-inf)."""
+    contact_offset = usd.get_attribute(prim, "physxCollision:contactOffset")
+    rest_offset = usd.get_attribute(prim, "physxCollision:restOffset")
+    if contact_offset is None or rest_offset is None:
+        return None
+    inf = float("-inf")
+    if contact_offset == inf or rest_offset == inf:
+        return None
+    return float(contact_offset) - float(rest_offset)
 
 
 class SchemaResolverNewton(SchemaResolver):
@@ -66,7 +79,7 @@ class SchemaResolverNewton(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("newton:maxHullVertices", -1),
-            # Collisions (margin = inflation, gap = contact processing distance; aligned with schema defaults)
+            # Collisions: newton margin == newton:contactMargin, newton gap == newton:contactGap
             "margin": SchemaAttribute("newton:contactMargin", 0.0),
             "gap": SchemaAttribute("newton:contactGap", float("-inf")),
         },
@@ -151,9 +164,14 @@ class SchemaResolverPhysx(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
-            # Collisions (margin = inflation/restOffset, gap = contactOffset; PhysX uses -inf for simulation-determined)
+            # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset
             "margin": SchemaAttribute("physxCollision:restOffset", float("-inf")),
-            "gap": SchemaAttribute("physxCollision:contactOffset", float("-inf")),
+            "gap": SchemaAttribute(
+                "physxCollision:contactOffset",
+                float("-inf"),
+                usd_value_getter=_physx_gap_from_prim,
+                attribute_names=("physxCollision:contactOffset", "physxCollision:restOffset"),
+            ),
         },
         PrimType.MATERIAL: {
             "stiffness": SchemaAttribute("physxMaterial:compliantContactStiffness", 0.0),
@@ -262,7 +280,7 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
-            # Collisions (margin = inflation, gap = gap;)
+            # Collisions: newton margin == mjc margin, newton gap == mjc gap
             "margin": SchemaAttribute("mjc:margin", 0.0),
             "gap": SchemaAttribute("mjc:gap", 0.0),
         },

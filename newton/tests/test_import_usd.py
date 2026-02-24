@@ -25,6 +25,7 @@ import newton
 import newton.examples
 import newton.usd as usd
 from newton import JointType
+from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
@@ -236,6 +237,64 @@ def Xform "Root" (
         # finalize requires skip_validation_joints=True for orphan joints
         model = builder.finalize(skip_validation_joints=True)
         self.assertEqual(model.body_count, 4)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collapse_fixed_joints_preserves_orphan_joints(self):
+        """collapse_fixed_joints must not drop orphan joints or their bodies."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Three bodies connected by revolute joints, NO articulation root
+        body_a = UsdGeom.Xform.Define(stage, "/World/BodyA")
+        UsdPhysics.RigidBodyAPI.Apply(body_a.GetPrim())
+        body_a.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+        col_a = UsdGeom.Cube.Define(stage, "/World/BodyA/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_a.GetPrim())
+
+        body_b = UsdGeom.Xform.Define(stage, "/World/BodyB")
+        UsdPhysics.RigidBodyAPI.Apply(body_b.GetPrim())
+        body_b.AddTranslateOp().Set(Gf.Vec3d(1, 0, 0))
+        col_b = UsdGeom.Cube.Define(stage, "/World/BodyB/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_b.GetPrim())
+
+        body_c = UsdGeom.Xform.Define(stage, "/World/BodyC")
+        UsdPhysics.RigidBodyAPI.Apply(body_c.GetPrim())
+        body_c.AddTranslateOp().Set(Gf.Vec3d(2, 0, 0))
+        col_c = UsdGeom.Cube.Define(stage, "/World/BodyC/Collision")
+        UsdPhysics.CollisionAPI.Apply(col_c.GetPrim())
+
+        # Revolute: BodyA -> BodyB (body-to-body, no world connection)
+        rev1 = UsdPhysics.RevoluteJoint.Define(stage, "/World/RevJoint1")
+        rev1.CreateBody0Rel().SetTargets([body_a.GetPath()])
+        rev1.CreateBody1Rel().SetTargets([body_b.GetPath()])
+        rev1.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev1.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev1.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev1.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev1.CreateAxisAttr().Set("Z")
+
+        # Revolute: BodyB -> BodyC
+        rev2 = UsdPhysics.RevoluteJoint.Define(stage, "/World/RevJoint2")
+        rev2.CreateBody0Rel().SetTargets([body_b.GetPath()])
+        rev2.CreateBody1Rel().SetTargets([body_c.GetPath()])
+        rev2.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0))
+        rev2.CreateLocalPos1Attr().Set(Gf.Vec3f(-0.5, 0, 0))
+        rev2.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev2.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        rev2.CreateAxisAttr().Set("Z")
+
+        builder = newton.ModelBuilder()
+        with self.assertWarns(UserWarning):
+            builder.add_usd(stage, collapse_fixed_joints=True)
+
+        # All three bodies and both revolute joints must survive collapse
+        self.assertEqual(builder.body_count, 3)
+        self.assertEqual(builder.joint_count, 2)
+        self.assertIn("/World/RevJoint1", builder.joint_label)
+        self.assertIn("/World/RevJoint2", builder.joint_label)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_articulation_parent_offset(self):
@@ -4296,6 +4355,56 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
+        """Authored mass without inertia should produce inertia consistent with a uniform-density body.
+
+        Two identical 0.1 [m] cube bodies that should both end up with 8 [kg]
+        mass and inertia I_diag = (1/6) * m * s^2 [kg*m^2]:
+          A - density 8000 [kg/m^3] on the collider shape
+          B - mass 8 [kg] on the body only, inertia via scaling
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        density = 8000.0
+        size = 0.1
+        mass = density * size**3
+        expected_i = (1.0 / 6.0) * mass * size**2
+
+        def create_body(name):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
+            collider.CreateSizeAttr().Set(size)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            return body.GetPrim(), collider.GetPrim()
+
+        # A: density on the collider shape derives mass and inertia.
+        body_prim, collider_prim = create_body("A")
+        UsdPhysics.MassAPI.Apply(body_prim)
+        UsdPhysics.MassAPI.Apply(collider_prim).CreateDensityAttr().Set(density)
+
+        # B: only mass authored on body, inertia scaled from shape accumulation.
+        body_prim, _ = create_body("B")
+        UsdPhysics.MassAPI.Apply(body_prim).CreateMassAttr().Set(mass)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        idx_a = result["path_body_map"]["/World/A"]
+        idx_b = result["path_body_map"]["/World/B"]
+
+        for idx, name in ((idx_a, "A"), (idx_b, "B")):
+            self.assertAlmostEqual(builder.body_mass[idx], mass, places=5, msg=f"Body {name} mass")
+            inertia = np.array(builder.body_inertia[idx]).reshape(3, 3)
+            np.testing.assert_allclose(
+                np.diag(inertia), [expected_i] * 3, atol=1e-5, rtol=1e-5, err_msg=f"Body {name} inertia"
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_applies_axis_rotation_in_compute_callback(self):
         """Compute fallback must rotate cone/capsule/cylinder mass frame for non-Z axes."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -4433,7 +4542,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_contact_margin_parsing(self):
-        """Test that margin (inflation) and gap are parsed correctly from USD."""
+        """Test that margin and gap are parsed correctly from USD (newton:contactMargin, newton:contactGap)."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -4449,14 +4558,14 @@ def Xform "Articulation" (
         body_prim = body.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
 
-        # Collider1: newton:contactMargin (margin = inflation) -> thickness
+        # Collider1: newton:contactMargin -> shape margin
         collider1 = UsdGeom.Cube.Define(stage, "/Articulation/Body/Collider1")
         collider1_prim = collider1.GetPrim()
         collider1_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider1_prim)
         collider1_prim.GetAttribute("newton:contactMargin").Set(0.05)
 
-        # Collider2: newton:contactGap (gap) -> contact_margin
+        # Collider2: newton:contactGap -> shape gap
         collider2 = UsdGeom.Sphere.Define(stage, "/Articulation/Body/Collider2")
         collider2_prim = collider2.GetPrim()
         collider2_prim.ApplyAPI("NewtonCollisionAPI")
@@ -4469,8 +4578,9 @@ def Xform "Articulation" (
         UsdPhysics.CollisionAPI.Apply(collider3_prim)
 
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.thickness = 1e-5
-        builder.default_shape_cfg.contact_margin = 0.01
+        builder.default_shape_cfg.margin = 1e-5
+        builder.default_shape_cfg.gap = 0.01
+        builder.rigid_gap = 0.01
         result = builder.add_usd(stage)
         model = builder.finalize()
 
@@ -4478,13 +4588,10 @@ def Xform "Articulation" (
         shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
         shape3_idx = result["path_shape_map"]["/Articulation/Body/Collider3"]
 
-        # Collider1: margin (inflation) -> thickness
-        self.assertAlmostEqual(model.shape_thickness.numpy()[shape1_idx], 0.05, places=4)
-        # Collider2: gap -> contact_margin
-        self.assertAlmostEqual(model.shape_contact_margin.numpy()[shape2_idx], 0.02, places=4)
-        # Collider3: defaults
-        self.assertAlmostEqual(model.shape_thickness.numpy()[shape3_idx], 1e-5, places=6)
-        self.assertAlmostEqual(model.shape_contact_margin.numpy()[shape3_idx], 0.01, places=4)
+        self.assertAlmostEqual(model.shape_margin.numpy()[shape1_idx], 0.05, places=4)
+        self.assertAlmostEqual(model.shape_gap.numpy()[shape2_idx], 0.02, places=4)
+        self.assertAlmostEqual(model.shape_margin.numpy()[shape3_idx], 1e-5, places=6)
+        self.assertAlmostEqual(model.shape_gap.numpy()[shape3_idx], 0.01, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_constraint_parsing(self):
@@ -4693,10 +4800,156 @@ def Xform "Articulation" (
 
 class TestImportSampleAssetsComposition(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_floating_true_creates_free_joint(self):
-        """Test that floating=True creates a free joint for the root body."""
+    def test_custom_frequency_usd_defaults_when_no_authored_attrs(self):
+        """Test that custom frequency counts increment for prims with no authored custom attributes.
+
+        Regression test: when a usd_prim_filter returns True for prims that have no authored custom attributes,
+        the frequency count should still increment for each prim, and default values should be applied.
+        """
         from pxr import Usd, UsdGeom, UsdPhysics
 
+        # Create a minimal USD stage with physics scene and two custom prims
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Define two Xform prims that will be matched by our custom filter
+        # These prims have NO authored custom attributes
+        UsdGeom.Xform.Define(stage, "/World/CustomItem0")
+        UsdGeom.Xform.Define(stage, "/World/CustomItem1")
+
+        # Define a prim filter that matches these custom items
+        def is_custom_item(prim, context):
+            return prim.GetPath().pathString.startswith("/World/CustomItem")
+
+        builder = newton.ModelBuilder()
+
+        # Register custom frequency with the prim filter
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_filter=is_custom_item,
+            )
+        )
+
+        # Add a custom attribute with a non-zero default value
+        default_value = 42.0
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=default_value,
+                namespace="test",
+            )
+        )
+
+        # Parse the USD stage - this should find the 2 prims and increment count
+        builder.add_usd(stage)
+
+        # Finalize and verify
+        model = builder.finalize()
+
+        # Verify the custom frequency count equals the number of prims found
+        self.assertEqual(model.get_custom_frequency_count("test:item"), 2)
+
+        # Verify the attribute array has the correct length and default values
+        self.assertTrue(hasattr(model, "test"), "Model should have 'test' namespace")
+        self.assertTrue(hasattr(model.test, "item_value"), "Model should have 'item_value' attribute")
+
+        item_values = model.test.item_value.numpy()
+        self.assertEqual(len(item_values), 2)
+        self.assertAlmostEqual(item_values[0], default_value, places=5)
+        self.assertAlmostEqual(item_values[1], default_value, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_instance_proxy_traversal(self):
+        """Test that custom frequency parsing traverses instance proxy prims.
+
+        Regression test: prims under instanceable prims should be visited during
+        custom frequency USD parsing via TraverseInstanceProxies predicate.
+        """
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_floating_true_creates_free_joint(self):
+        """Test that floating=True creates a free joint for the root body."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        # Create a prototype prim with a child that will be matched by our filter
+        _proto_root = UsdGeom.Xform.Define(stage, "/Prototypes/MyProto")
+        proto_child = UsdGeom.Xform.Define(stage, "/Prototypes/MyProto/CustomChild")
+        proto_child_prim = proto_child.GetPrim()
+        # Author a custom attribute on the prototype child
+        # The USD attribute name defaults to "newton:<namespace>:<name>" = "newton:test:child_value"
+        proto_child_prim.CreateAttribute("newton:test:child_value", Sdf.ValueTypeNames.Float).Set(99.0)
+
+        # Create two instanceable prims that reference the prototype
+        for i in range(2):
+            instance = UsdGeom.Xform.Define(stage, f"/World/Instance{i}")
+            instance_prim = instance.GetPrim()
+            instance_prim.GetReferences().AddInternalReference("/Prototypes/MyProto")
+            instance_prim.SetInstanceable(True)
+
+        # Define a filter that matches prims named "CustomChild" (excluding the prototype)
+        def is_custom_child(prim, context):
+            path = prim.GetPath().pathString
+            return prim.GetName() == "CustomChild" and not path.startswith("/Prototypes")
+
+        builder = newton.ModelBuilder()
+
+        # Register custom frequency with the prim filter
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="child",
+                namespace="test",
+                usd_prim_filter=is_custom_child,
+            )
+        )
+
+        # Add a custom attribute
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="child_value",
+                frequency="test:child",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        # Parse the USD stage - should find CustomChild under each instance proxy
+        builder.add_usd(stage)
+
+        # Finalize and verify
+        model = builder.finalize()
+
+        # Should have 2 entries (one per instance proxy)
+        self.assertEqual(model.get_custom_frequency_count("test:child"), 2)
+
+        child_values = model.test.child_value.numpy()
+        self.assertEqual(len(child_values), 2)
+        # Both should have the authored value from the prototype
+        self.assertAlmostEqual(child_values[0], 99.0, places=5)
+        self.assertAlmostEqual(child_values[1], 99.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_wildcard_usd_attribute(self):
+        """Test that usd_attribute_name='*' calls the usd_value_transformer for every matching prim.
+
+        Registers a CustomFrequency that selects prims of a custom type, then uses
+        usd_attribute_name='*' with a usd_value_transformer to derive CustomAttribute
+        values from arbitrary prim data (not from a specific USD attribute).
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        # Create a USD stage with a physics scene and three "sensor" prims.
+        # Each sensor has a different "position" attribute that we will read
+        # through the wildcard transformer (not through the normal attribute path).
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
@@ -4716,6 +4969,124 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_floating_false_creates_fixed_joint(self):
         """Test that floating=False creates a fixed joint for the root body."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        sensor_positions = [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), (7.0, 8.0, 9.0)]
+        for i, pos in enumerate(sensor_positions):
+            xform = UsdGeom.Xform.Define(stage, f"/World/Sensor{i}")
+            prim = xform.GetPrim()
+            # Store the position as a custom (non-newton) attribute on the prim
+            attr = prim.CreateAttribute("sensor:position", Sdf.ValueTypeNames.Float3)
+            attr.Set(pos)
+
+        # Filter that matches our sensor prims
+        def is_sensor_prim(prim, context):
+            return prim.GetName().startswith("Sensor")
+
+        builder = newton.ModelBuilder()
+
+        # Register the custom frequency
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="sensor",
+                namespace="test",
+                usd_prim_filter=is_sensor_prim,
+            )
+        )
+
+        # Transformer that reads the prim's "sensor:position" attribute and computes
+        # the Euclidean distance from the origin
+        def compute_distance_from_origin(value, context):
+            prim = context["prim"]
+            pos = prim.GetAttribute("sensor:position").Get()
+            return wp.float32(float(np.sqrt(pos[0] ** 2 + pos[1] ** 2 + pos[2] ** 2)))
+
+        # Register a wildcard custom attribute: no specific USD attribute name,
+        # the transformer is called for every prim matching this frequency
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="distance",
+                frequency="test:sensor",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+                usd_attribute_name="*",
+                usd_value_transformer=compute_distance_from_origin,
+            )
+        )
+
+        # Also add a second wildcard attribute that extracts the raw position
+        def extract_position(value, context):
+            prim = context["prim"]
+            pos = prim.GetAttribute("sensor:position").Get()
+            return wp.vec3(float(pos[0]), float(pos[1]), float(pos[2]))
+
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="position",
+                frequency="test:sensor",
+                dtype=wp.vec3,
+                default=wp.vec3(0.0, 0.0, 0.0),
+                namespace="test",
+                usd_attribute_name="*",
+                usd_value_transformer=extract_position,
+            )
+        )
+
+        # Parse the USD stage
+        builder.add_usd(stage)
+
+        # Finalize and verify
+        model = builder.finalize()
+
+        # Should have found all 3 sensor prims
+        self.assertEqual(model.get_custom_frequency_count("test:sensor"), 3)
+
+        # Verify the distance attribute
+        distances = model.test.distance.numpy()
+        self.assertEqual(len(distances), 3)
+        for i, pos in enumerate(sensor_positions):
+            expected = np.sqrt(pos[0] ** 2 + pos[1] ** 2 + pos[2] ** 2)
+            self.assertAlmostEqual(float(distances[i]), expected, places=4)
+
+        # Verify the position attribute
+        positions = model.test.position.numpy()
+        self.assertEqual(len(positions), 3)
+        for i, pos in enumerate(sensor_positions):
+            assert_np_equal(positions[i], np.array(pos, dtype=np.float32), tol=1e-5)
+
+    def test_custom_frequency_wildcard_without_transformer_raises(self):
+        """Test that usd_attribute_name='*' without a usd_value_transformer raises ValueError."""
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="sensor",
+                namespace="test",
+            )
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name="bad_attr",
+                    frequency="test:sensor",
+                    dtype=wp.float32,
+                    default=0.0,
+                    namespace="test",
+                    usd_attribute_name="*",
+                    # No usd_value_transformer provided
+                )
+            )
+        self.assertIn("usd_attribute_name='*'", str(ctx.exception))
+        self.assertIn("usd_value_transformer", str(ctx.exception))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_entry_expander_multiple_rows(self):
+        """Test that usd_entry_expander can emit multiple rows per matched prim."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -4847,6 +5218,54 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
             - Position should reflect import position + rotated offset
             - Orientation should reflect import rotation
         """
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        item_counts = [2, 1]
+        for i, count in enumerate(item_counts):
+            prim = UsdGeom.Xform.Define(stage, f"/World/Emitter{i}").GetPrim()
+            prim.CreateAttribute("test:count", Sdf.ValueTypeNames.Int).Set(count)
+
+        def is_emitter(prim, context):
+            return prim.GetPath().pathString.startswith("/World/Emitter")
+
+        def expand_rows(prim, context):
+            count = int(prim.GetAttribute("test:count").Get())
+            return [{"test:item_value": float(i + 1)} for i in range(count)]
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_filter=is_emitter,
+                usd_entry_expander=expand_rows,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:item"), sum(item_counts))
+        values = model.test.item_value.numpy()
+        self.assertEqual(len(values), 3)
+        assert_np_equal(values, np.array([1.0, 2.0, 1.0], dtype=np.float32), tol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_filter_and_expander_context_unified(self):
+        """Test that usd_prim_filter and usd_entry_expander receive the same context contract."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -5403,11 +5822,136 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_base_joint_dict_conflicting_keys_fails(self):
         """Test that base_joint dict with conflicting keys raises ValueError."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        prim = UsdGeom.Xform.Define(stage, "/World/Emitter0").GetPrim()
+        prim.CreateAttribute("test:count", Sdf.ValueTypeNames.Int).Set(1)
+
+        captured_filter_contexts = []
+        captured_expander_contexts = []
+
+        def is_emitter(prim, context):
+            if not prim.GetPath().pathString.startswith("/World/Emitter"):
+                return False
+            captured_filter_contexts.append(context)
+            return True
+
+        def expand_rows(prim, context):
+            captured_expander_contexts.append(context)
+            count = int(prim.GetAttribute("test:count").Get())
+            return [{"test:item_value": float(i + 1)} for i in range(count)]
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item",
+                namespace="test",
+                usd_prim_filter=is_emitter,
+                usd_entry_expander=expand_rows,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+
+        import_result = builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:item"), 1)
+        self.assertEqual(len(captured_filter_contexts), 1)
+        self.assertEqual(len(captured_expander_contexts), 1)
+
+        filter_ctx = captured_filter_contexts[0]
+        expander_ctx = captured_expander_contexts[0]
+
+        self.assertIs(filter_ctx["builder"], builder)
+        self.assertIs(expander_ctx["builder"], builder)
+        self.assertIs(filter_ctx["result"], import_result)
+        self.assertIs(expander_ctx["result"], import_result)
+        self.assertEqual(filter_ctx["prim"].GetPath(), prim.GetPath())
+        self.assertEqual(expander_ctx["prim"].GetPath(), prim.GetPath())
+        self.assertEqual(set(filter_ctx.keys()), {"prim", "builder", "result"})
+        self.assertEqual(set(expander_ctx.keys()), {"prim", "builder", "result"})
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_custom_frequency_usd_ordering_producer_before_consumer(self):
+        """Test deterministic custom-frequency ordering for producer/consumer dependencies."""
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdPhysics.Scene.Define(stage, "/physicsScene")
+        UsdGeom.Xform.Define(stage, "/World/Item0")
+        UsdGeom.Xform.Define(stage, "/World/Item1")
+        UsdGeom.Xform.Define(stage, "/World/Item2")
+
+        def is_item(prim, context):
+            return prim.GetPath().pathString.startswith("/World/Item")
+
+        def expand_producer_rows(prim, context):
+            return [{"test:producer_value": 1.0}]
+
+        def read_producer_count(_value, context):
+            builder = context["builder"]
+            producer_attr = builder.custom_attributes["test:producer_value"]
+            if not isinstance(producer_attr.values, list):
+                return 0
+            return int(len(producer_attr.values))
+
+        builder = newton.ModelBuilder()
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="producer",
+                namespace="test",
+                usd_prim_filter=is_item,
+                usd_entry_expander=expand_producer_rows,
+            )
+        )
+        builder.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="consumer",
+                namespace="test",
+                usd_prim_filter=is_item,
+            )
+        )
+
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="producer_value",
+                frequency="test:producer",
+                dtype=wp.float32,
+                default=0.0,
+                namespace="test",
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="consumer_seen_producer_count",
+                frequency="test:consumer",
+                dtype=wp.int32,
+                default=0,
+                namespace="test",
+                usd_attribute_name="*",
+                usd_value_transformer=read_producer_count,
+            )
+        )
+
+        builder.add_usd(stage)
+        model = builder.finalize()
+
+        self.assertEqual(model.get_custom_frequency_count("test:producer"), 3)
+        self.assertEqual(model.get_custom_frequency_count("test:consumer"), 3)
+        seen_counts = model.test.consumer_seen_producer_count.numpy()
+        assert_np_equal(seen_counts, np.array([1, 2, 3], dtype=np.int32), tol=0)
 
         body = UsdGeom.Cube.Define(stage, "/Body")
         body_prim = body.GetPrim()
@@ -5521,6 +6065,166 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(model.joint_type.numpy()[0], newton.JointType.D6)
         self.assertEqual(model.joint_dof_count, 3)  # 3 rotational axes
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_collision_shape_visibility_flags(self):
+        """Collision shapes on bodies with visual shapes should not have the
+        VISIBLE flag so they are toggleable via the viewer's 'Show Collision'."""
+        from pxr import Usd
+
+        usd_content = """#usda 1.0
+(
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene"
+{
+}
+
+def Xform "BodyWithVisuals" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (0, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Cube "CollisionBox" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double size = 1.0
+    }
+
+    def Sphere "VisualSphere"
+    {
+        double radius = 0.3
+    }
+}
+
+def Xform "BodyWithoutVisuals" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+)
+{
+    double3 xformOp:translate = (2, 0, 1)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Sphere "CollisionSphere" (
+        prepend apiSchemas = ["PhysicsCollisionAPI"]
+    )
+    {
+        double radius = 0.5
+    }
+}
+"""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(usd_content)
+
+        # Default: collision shapes on bodies WITH visuals should NOT have VISIBLE
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        path_shape_map = result["path_shape_map"]
+
+        collision_with_visual = path_shape_map["/BodyWithVisuals/CollisionBox"]
+        flags_with_visual = builder.shape_flags[collision_with_visual]
+        self.assertTrue(flags_with_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertFalse(flags_with_visual & ShapeFlags.VISIBLE)
+
+        # Collision shapes on bodies WITHOUT visuals should auto-get VISIBLE
+        collision_no_visual = path_shape_map["/BodyWithoutVisuals/CollisionSphere"]
+        flags_no_visual = builder.shape_flags[collision_no_visual]
+        self.assertTrue(flags_no_visual & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_no_visual & ShapeFlags.VISIBLE)
+
+        # force_show_colliders=True: collision shapes always get VISIBLE
+        builder2 = newton.ModelBuilder()
+        result2 = builder2.add_usd(stage, force_show_colliders=True)
+        path_shape_map2 = result2["path_shape_map"]
+
+        collision_with_visual2 = path_shape_map2["/BodyWithVisuals/CollisionBox"]
+        flags_forced = builder2.shape_flags[collision_with_visual2]
+        self.assertTrue(flags_forced & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_forced & ShapeFlags.VISIBLE)
+
+        # hide_collision_shapes=True: no VISIBLE flag on any collision shape
+        builder3 = newton.ModelBuilder()
+        result3 = builder3.add_usd(stage, hide_collision_shapes=True)
+        path_shape_map3 = result3["path_shape_map"]
+
+        for path in ["/BodyWithVisuals/CollisionBox", "/BodyWithoutVisuals/CollisionSphere"]:
+            flags_hidden = builder3.shape_flags[path_shape_map3[path]]
+            self.assertFalse(flags_hidden & ShapeFlags.VISIBLE)
+
+        # load_visual_shapes=False: collision shapes auto-get VISIBLE (no visuals loaded)
+        builder4 = newton.ModelBuilder()
+        result4 = builder4.add_usd(stage, load_visual_shapes=False)
+        path_shape_map4 = result4["path_shape_map"]
+
+        collision_no_load = path_shape_map4["/BodyWithVisuals/CollisionBox"]
+        flags_no_load = builder4.shape_flags[collision_no_load]
+        self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
+        self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+
+class TestHasAppliedApiSchema(unittest.TestCase):
+    """Test the has_applied_api_schema helper in newton.usd.utils."""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unregistered_schema_via_metadata(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Sphere "WithSiteAPI" (
+    prepend apiSchemas = ["MjcSiteAPI"]
+)
+{
+    double radius = 0.1
+}
+
+def Sphere "WithoutSiteAPI"
+{
+    double radius = 0.1
+}
+"""
+        )
+
+        prim_with = stage.GetPrimAtPath("/WithSiteAPI")
+        prim_without = stage.GetPrimAtPath("/WithoutSiteAPI")
+
+        self.assertTrue(usd.has_applied_api_schema(prim_with, "MjcSiteAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim_without, "MjcSiteAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim_with, "NonExistentAPI"))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_registered_schema_via_has_api(self):
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        prim = stage.DefinePrim("/Body", "Xform")
+        UsdPhysics.RigidBodyAPI.Apply(prim)
+
+        self.assertTrue(usd.has_applied_api_schema(prim, "PhysicsRigidBodyAPI"))
+        self.assertFalse(usd.has_applied_api_schema(prim, "PhysicsMassAPI"))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_appended_and_explicit_items(self):
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Sphere "AppendedSchema" (
+    append apiSchemas = ["MjcSiteAPI"]
+)
+{
+    double radius = 0.1
+}
+"""
+        )
+
+        prim = stage.GetPrimAtPath("/AppendedSchema")
+        self.assertTrue(usd.has_applied_api_schema(prim, "MjcSiteAPI"))
 
 
 if __name__ == "__main__":

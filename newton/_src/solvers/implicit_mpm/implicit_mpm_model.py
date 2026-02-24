@@ -237,7 +237,7 @@ def _get_body_collision_shapes(model: newton.Model, body_index: int):
 
 def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
     """Returns the collision materials from the model for a list of shapes"""
-    thicknesses = model.shape_thickness.numpy()[shape_ids]
+    thicknesses = model.shape_margin.numpy()[shape_ids]
     friction = model.shape_material_mu.numpy()[shape_ids]
 
     return thicknesses, friction
@@ -515,13 +515,13 @@ class ImplicitMPMModel:
 
         for collider_id, body_id in enumerate(collider_body_ids):
             if body_id is not None:
-                for material_id, shape_thickness, shape_friction in zip(
+                for material_id, shape_margin, shape_friction in zip(
                     collider_material_ids[collider_id],
                     *_get_shape_collision_materials(model, body_shapes[body_id]),
                     strict=True,
                 ):
                     # use material from shapes as default
-                    assign_material(material_id, thickness=shape_thickness, friction=shape_friction)
+                    assign_material(material_id, thickness=shape_margin, friction=shape_friction)
                     # override with user-provided material
                     assign_collider_material(material_id, collider_id)
             else:

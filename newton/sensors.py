@@ -15,7 +15,6 @@
 
 # Contact sensors
 from ._src.sensors.sensor_contact import (
-    MatchKind,
     SensorContact,
 )
 
@@ -40,7 +39,6 @@ from ._src.sensors.sensor_tiled_camera import (
 )
 
 __all__ = [
-    "MatchKind",
     "SensorContact",
     "SensorFrameTransform",
     "SensorIMU",

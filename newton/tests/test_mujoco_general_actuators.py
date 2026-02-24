@@ -18,9 +18,11 @@
 import unittest
 
 import numpy as np
+from unittest_utils import USD_AVAILABLE
 
 from newton import ActuatorMode, ModelBuilder
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
+from newton.tests import get_asset
 
 MJCF_ACTUATORS = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_actuators">
@@ -515,7 +517,9 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         np.testing.assert_allclose(updated_gainprm[1, 5, 0], 200.0, atol=1e-5)
         np.testing.assert_allclose(updated_biasprm[1, 5, 1], -200.0, atol=1e-5)
-        np.testing.assert_allclose(updated_biasprm[1, 5, 2], -20.0, atol=1e-5)
+        # biasprm[2] is resolved from dampratio at compile time and sourced from
+        # world 0 for all worlds (no per-world dampratio variation).
+        np.testing.assert_allclose(updated_biasprm[1, 5, 2], -15.0, atol=1e-5)
         np.testing.assert_allclose(updated_gainprm[1, 6, 0], 120.0, atol=1e-5)
 
         for world in range(2):
@@ -592,6 +596,27 @@ class TestMuJoCoActuators(unittest.TestCase):
         # Verify freejoint DOFs (0-5) are not affected
         for i in range(6):
             self.assertEqual(builder.joint_act_mode[i], int(ActuatorMode.NONE))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_actuator_cartpole(self):
+        """Test basic actuator parsing from the MjcActuator schema"""
+        builder = ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        builder.add_usd(get_asset("cartpole_mjc.usda"))
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, separate_worlds=False)
+        self.assertTrue(hasattr(model, "mujoco"))
+        self.assertTrue(hasattr(model.mujoco, "actuator_gear"))
+        np.testing.assert_array_equal(model.mujoco.actuator_ctrllimited.numpy(), [True])
+        np.testing.assert_allclose(model.mujoco.actuator_ctrlrange.numpy(), [[-3.0, 3.0]])
+        np.testing.assert_allclose(model.mujoco.actuator_gear.numpy(), [[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]])
+        np.testing.assert_array_equal(solver.mjw_model.actuator_ctrllimited.numpy(), [True])
+        np.testing.assert_allclose(solver.mjw_model.actuator_ctrlrange.numpy(), [[[-3.0, 3.0]]])
+        np.testing.assert_allclose(solver.mjw_model.actuator_gear.numpy(), [[[50.0, 0.0, 0.0, 0.0, 0.0, 0.0]]])
+        np.testing.assert_array_equal(solver.mjw_model.actuator_trnid.numpy(), [[0, -1]])
+        np.testing.assert_array_equal(solver.mjw_model.actuator_trntype.numpy(), [0])
 
 
 if __name__ == "__main__":

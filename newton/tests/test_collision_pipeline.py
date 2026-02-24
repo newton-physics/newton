@@ -82,7 +82,7 @@ class CollisionSetup:
         self.builder = newton.ModelBuilder(gravity=0.0)
         # Set contact margin to match previous test expectations
         # Note: margins are now summed (margin_a + margin_b), so we use half the previous value
-        self.builder.rigid_contact_margin = 0.005
+        self.builder.rigid_gap = 0.005
 
         body_a = self.builder.add_body(xform=wp.transform(wp.vec3(-1.0, 0.0, 0.0)))
         self.add_shape(shape_type_a, body_a, sdf_max_resolution=sdf_max_resolution_a)
@@ -478,7 +478,7 @@ def test_shape_collision_filter_pairs(test, device, broad_phase: str):
     """
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(gravity=0.0)
-        builder.rigid_contact_margin = 0.01
+        builder.rigid_gap = 0.01
         # Two overlapping spheres (same position so they definitely overlap)
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))
         shape_a = builder.add_shape_sphere(body=body_a, radius=0.5)
@@ -530,7 +530,7 @@ def test_collision_filter_consistent_across_broadphases(test, device):
     """
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder(gravity=0.0)
-        builder.rigid_contact_margin = 0.01
+        builder.rigid_gap = 0.01
 
         # Three overlapping spheres at the same position
         body_a = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0)))

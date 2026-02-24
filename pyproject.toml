@@ -27,9 +27,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "warp-lang>=1.11.0",
+    "newton-actuators",
 ]
 
 [project.optional-dependencies]
+
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
@@ -261,6 +263,15 @@ arange = "arange"
 ba = "ba"
 HAA = "HAA"
 lod = "lod"
+# MuJoCo Menagerie brand/product names
+Pincher = "Pincher"
+Robotis = "Robotis"
+robotis = "robotis"
+Iit = "Iit"
+IIT = "IIT"
+iit = "iit"
+PN = "PN"
+pnd = "pnd"
 
 [tool.typos.default.extend-identifiers]
 PNGs = "PNGs"

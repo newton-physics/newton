@@ -15,9 +15,9 @@
 
 import warp as wp
 
+from ...geometry import GeoType
 from . import ray
 from .ray import MAXVAL
-from .types import RenderShapeType
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
 MAX_SHAPE_ID = wp.uint32(0xFFFFFFF0)
@@ -83,7 +83,7 @@ def closest_hit_shape(
                 hit_face_id = wp.int32(-1)
                 hit_mesh_id = wp.int32(-1)
 
-                if shape_types[si] == RenderShapeType.MESH:
+                if shape_types[si] == GeoType.MESH:
                     hit, hit_dist, hit_normal, hit_u, hit_v, hit_face_id, hit_mesh_id = ray.ray_mesh_with_bvh(
                         mesh_ids,
                         shape_mesh_indices[si],
@@ -94,7 +94,7 @@ def closest_hit_shape(
                         ray_dir_world,
                         closest_hit.distance,
                     )
-                elif shape_types[si] == RenderShapeType.PLANE:
+                elif shape_types[si] == GeoType.PLANE:
                     hit, hit_dist, hit_normal = ray.ray_plane_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
@@ -102,42 +102,42 @@ def closest_hit_shape(
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.SPHERE:
+                elif shape_types[si] == GeoType.SPHERE:
                     hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
                         wp.transform_get_translation(shape_transforms[si]),
                         shape_sizes[si][0] * shape_sizes[si][0],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.ELLIPSOID:
+                elif shape_types[si] == GeoType.ELLIPSOID:
                     hit, hit_dist, hit_normal = ray.ray_ellipsoid_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.CAPSULE:
+                elif shape_types[si] == GeoType.CAPSULE:
                     hit, hit_dist, hit_normal = ray.ray_capsule_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.CYLINDER:
+                elif shape_types[si] == GeoType.CYLINDER:
                     hit, hit_dist, hit_normal = ray.ray_cylinder_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.CONE:
+                elif shape_types[si] == GeoType.CONE:
                     hit, hit_dist, hit_normal = ray.ray_cone_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.BOX:
+                elif shape_types[si] == GeoType.BOX:
                     hit, hit_dist, hit_normal = ray.ray_box_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
@@ -329,7 +329,7 @@ def first_hit_shape(
 
                 dist = wp.float32(MAXVAL)
 
-                if shape_types[si] == RenderShapeType.MESH:
+                if shape_types[si] == GeoType.MESH:
                     _h, dist, _n, _u, _v, _f, _mesh_id = ray.ray_mesh_with_bvh(
                         mesh_ids,
                         shape_mesh_indices[si],
@@ -340,7 +340,7 @@ def first_hit_shape(
                         ray_dir_world,
                         max_dist,
                     )
-                elif shape_types[si] == RenderShapeType.PLANE:
+                elif shape_types[si] == GeoType.PLANE:
                     dist = ray.ray_plane(
                         shape_transforms[si],
                         shape_sizes[si],
@@ -348,42 +348,42 @@ def first_hit_shape(
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.SPHERE:
+                elif shape_types[si] == GeoType.SPHERE:
                     dist = ray.ray_sphere(
                         wp.transform_get_translation(shape_transforms[si]),
                         shape_sizes[si][0] * shape_sizes[si][0],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.ELLIPSOID:
+                elif shape_types[si] == GeoType.ELLIPSOID:
                     dist = ray.ray_ellipsoid(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.CAPSULE:
+                elif shape_types[si] == GeoType.CAPSULE:
                     dist = ray.ray_capsule(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.CYLINDER:
+                elif shape_types[si] == GeoType.CYLINDER:
                     dist, _ = ray.ray_cylinder(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.CONE:
+                elif shape_types[si] == GeoType.CONE:
                     dist = ray.ray_cone(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
-                elif shape_types[si] == RenderShapeType.BOX:
+                elif shape_types[si] == GeoType.BOX:
                     dist, _all = ray.ray_box(
                         shape_transforms[si],
                         shape_sizes[si],

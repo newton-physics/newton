@@ -20,9 +20,9 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ..geometry import ShapeFlags
+from ..geometry import GeoType, ShapeFlags
 from ..sim import Model, State
-from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderOrder, RenderShapeType
+from .warp_raytrace import ClearData, RenderContext, RenderLightType, RenderOrder
 
 DEFAULT_CLEAR_DATA = ClearData(clear_color=0xFF666666, clear_albedo=0xFF000000)
 
@@ -49,21 +49,21 @@ def convert_newton_transform(
 
 @wp.func
 def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
-    if shape_type == RenderShapeType.BOX:
+    if shape_type == GeoType.BOX:
         return True
-    if shape_type == RenderShapeType.CAPSULE:
+    if shape_type == GeoType.CAPSULE:
         return True
-    if shape_type == RenderShapeType.CYLINDER:
+    if shape_type == GeoType.CYLINDER:
         return True
-    if shape_type == RenderShapeType.ELLIPSOID:
+    if shape_type == GeoType.ELLIPSOID:
         return True
-    if shape_type == RenderShapeType.PLANE:
+    if shape_type == GeoType.PLANE:
         return True
-    if shape_type == RenderShapeType.SPHERE:
+    if shape_type == GeoType.SPHERE:
         return True
-    if shape_type == RenderShapeType.CONE:
+    if shape_type == GeoType.CONE:
         return True
-    if shape_type == RenderShapeType.MESH:
+    if shape_type == GeoType.MESH:
         return True
     wp.printf("Unsupported shape geom type: %d\n", shape_type)
     return False
@@ -105,7 +105,6 @@ class SensorTiledCamera:
 
     RenderContext = RenderContext
     RenderLightType = RenderLightType
-    RenderShapeType = RenderShapeType
     RenderOrder = RenderOrder
 
     @dataclass
@@ -117,7 +116,7 @@ class SensorTiledCamera:
         colors_per_shape: bool = False
         backface_culling: bool = True
 
-    def __init__(self, model: Model, options: Options | None = None):
+    def __init__(self, model: Model, *, options: Options | None = None):
         self.model = model
 
         self.render_context = RenderContext(
@@ -200,9 +199,9 @@ class SensorTiledCamera:
             elif options.colors_per_shape:
                 self.assign_random_colors_per_shape()
 
-    def update_from_state(self, state: State):
+    def sync_transforms(self, state: State):
         """
-        Update data from Newton State.
+        Synchronize transforms from the current simulation state.
 
         Args:
             state: The current simulation state containing body transforms.
@@ -228,11 +227,12 @@ class SensorTiledCamera:
         if self.render_context.has_particles:
             self.render_context.particles_position = state.particle_q
 
-    def render(
+    def update(
         self,
         state: State | None,
         camera_transforms: wp.array(dtype=wp.transformf, ndim=2),
         camera_rays: wp.array(dtype=wp.vec3f, ndim=4),
+        *,
         color_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
         depth_image: wp.array(dtype=wp.float32, ndim=4) | None = None,
         shape_index_image: wp.array(dtype=wp.uint32, ndim=4) | None = None,
@@ -264,7 +264,7 @@ class SensorTiledCamera:
             clear_data: The data to clear the image buffers with (or skip if None).
         """
         if state is not None:
-            self.update_from_state(state)
+            self.sync_transforms(state)
 
         self.render_context.render(
             camera_transforms,

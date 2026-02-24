@@ -816,6 +816,12 @@ class TestImportMjcfGeometry(unittest.TestCase):
             builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+        import mujoco
+
+        tendon_names = [
+            mujoco.mj_id2name(solver.mj_model, mujoco.mjtObj.mjOBJ_TENDON, i) for i in range(solver.mj_model.ntendon)
+        ]
+        self.assertEqual(tendon_names, ["coupling_tendon", "coupling_tendon_reversed"])
 
         expected_damping = [[2.0, 5.0]]
         expected_stiffness = [[1.0, 4.0]]
@@ -2248,16 +2254,16 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder.add_mjcf(mjcf_content, up_axis="Z")
 
         self.assertEqual(builder.shape_count, 3)
-        self.assertAlmostEqual(builder.shape_thickness[0], 0.003, places=6)
-        self.assertAlmostEqual(builder.shape_thickness[1], 0.01, places=6)
+        self.assertAlmostEqual(builder.shape_margin[0], 0.003, places=6)
+        self.assertAlmostEqual(builder.shape_margin[1], 0.01, places=6)
         # geom3 has no margin, should use ShapeConfig default (0.0)
-        self.assertAlmostEqual(builder.shape_thickness[2], 0.0, places=8)
+        self.assertAlmostEqual(builder.shape_margin[2], 0.0, places=8)
 
         # Verify scale is applied to margin
         builder_scaled = newton.ModelBuilder()
         builder_scaled.add_mjcf(mjcf_content, up_axis="Z", scale=2.0)
-        self.assertAlmostEqual(builder_scaled.shape_thickness[0], 0.006, places=6)
-        self.assertAlmostEqual(builder_scaled.shape_thickness[1], 0.02, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_margin[0], 0.006, places=6)
+        self.assertAlmostEqual(builder_scaled.shape_margin[1], 0.02, places=6)
 
     def test_mjcf_geom_solref_parsing(self):
         """Test MJCF geom solref parsing for contact stiffness/damping.
@@ -6287,6 +6293,158 @@ class TestMjcfIncludeOptionMerge(unittest.TestCase):
             self.assertEqual(int(ls_iters[0]), 10)
 
 
+class TestContypeConaffinityZero(unittest.TestCase):
+    """Verify MJCF geoms with contype=conaffinity=0 get collision_group=0."""
+
+    def test_collision_group_zero_for_zero_contype(self):
+        """Collision-class geoms with contype=conaffinity=0 get collision_group=0."""
+        mjcf = """<mujoco>
+            <default>
+                <default class="collision"><geom contype="0" conaffinity="0"/></default>
+            </default>
+            <worldbody>
+                <body name="a">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.shape_collision_group[0], 0)
+
+    def test_collision_group_default_for_nonzero_contype(self):
+        """Collision-class geoms with nonzero contype keep default collision_group=1."""
+        mjcf = """<mujoco>
+            <default>
+                <default class="collision"><geom contype="1" conaffinity="1"/></default>
+            </default>
+            <worldbody>
+                <body name="a">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.shape_collision_group[0], 1)
+
+    def test_collision_group_zero_from_global_default(self):
+        """Collision-class geoms inheriting contype=conaffinity=0 from global default."""
+        # Apollo pattern: global default sets contype=conaffinity=0, collision class inherits it
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="collision">
+                    <geom group="3"/>
+                </default>
+            </default>
+            <worldbody>
+                <body name="a">
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        self.assertEqual(builder.shape_collision_group[0], 0)
+
+    def test_solver_contype_zero_for_group_zero(self):
+        """Solver sets contype=conaffinity=0 on MuJoCo geoms with collision_group=0."""
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="collision"><geom group="3"/></default>
+            </default>
+            <worldbody>
+                <body name="a" pos="0 0 1">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                    <geom name="g1" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Find the geom (skip world body geom if any)
+        geom_idx = solver.mj_model.ngeom - 1
+        self.assertEqual(solver.mj_model.geom_contype[geom_idx], 0)
+        self.assertEqual(solver.mj_model.geom_conaffinity[geom_idx], 0)
+
+    def test_no_automatic_contacts_with_group_zero(self):
+        """Overlapping geoms with collision_group=0 produce no automatic contacts."""
+        # Two overlapping collision geoms with contype=conaffinity=0
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="collision"><geom group="3"/></default>
+            </default>
+            <worldbody>
+                <body name="a" pos="0 0 0">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="g1" type="sphere" size="0.2" class="collision"/>
+                </body>
+                <body name="b" pos="0 0 0.1">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="g2" type="sphere" size="0.2" class="collision"/>
+                </body>
+            </worldbody>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        # Spheres overlap but contype=conaffinity=0 should prevent automatic contacts
+        self.assertEqual(solver.mj_data.ncon, 0, "No automatic contacts for contype=conaffinity=0")
+
+    def test_explicit_pair_generates_contacts_with_group_zero(self):
+        """Explicit <pair> contacts work between collision_group=0 geoms.
+
+        Models like Apollo use contype=conaffinity=0 on all geoms and rely on
+        explicit <pair> elements for contacts. This test verifies that group-0
+        geoms still participate in <pair> contacts.
+        """
+        # Apollo pattern: all geoms contype=conaffinity=0, contacts via explicit pair only
+        mjcf = """<mujoco>
+            <default>
+                <geom contype="0" conaffinity="0"/>
+                <default class="collision"><geom group="3"/></default>
+            </default>
+            <worldbody>
+                <geom name="floor_geom" type="plane" size="5 5 0.1" class="collision"/>
+                <body name="ball" pos="0 0 0.05">
+                    <freejoint/>
+                    <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+                    <geom name="ball_geom" type="sphere" size="0.1" class="collision"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor_geom" geom2="ball_geom" condim="3"/>
+            </contact>
+        </mujoco>"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        # Verify the pair was exported and generates contacts
+        self.assertEqual(solver.mj_model.npair, 1, "Explicit pair should be in MuJoCo spec")
+        solver._mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        self.assertGreater(solver.mj_data.ncon, 0, "Explicit <pair> should generate contacts")
+
+
 class TestJointFrictionloss(unittest.TestCase):
     """Verify MJCF joint frictionloss is parsed into Newton's joint_friction."""
 
@@ -6748,3 +6906,74 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 2)
+
+
+class TestFromtoCapsuleOrientation(unittest.TestCase):
+    """Verify fromto capsules/cylinders get the correct position and orientation.
+
+    MuJoCo computes fromto orientation by aligning Z with (start - end) via
+    mjuu_z2quat. Position is the midpoint and half_height is half the length.
+    """
+
+    MJCF = """<mujoco>
+        <worldbody>
+            <body name="b" pos="0 0 1">
+                <freejoint/>
+                <geom type="sphere" size="0.1" mass="1"/>
+                <geom name="cap_diag" type="capsule" size="0.03"
+                      fromto="0.02 0 -0.4 -0.02 0 0.02"/>
+                <geom name="cap_down" type="capsule" size="0.03"
+                      fromto="0 0 0 0 0 -0.4"/>
+                <geom name="cap_up" type="capsule" size="0.03"
+                      fromto="0 0 -0.4 0 0 0"/>
+                <geom name="cyl_diag" type="cylinder" size="0.03"
+                      fromto="0.02 0 -0.4 -0.02 0 0.02"/>
+            </body>
+        </worldbody>
+    </mujoco>"""
+
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(cls.MJCF)
+        cls.model = builder.finalize()
+
+    def _get_shape_transform(self, substring):
+        for i in range(self.model.shape_count):
+            if substring in self.model.shape_label[i]:
+                tf = self.model.shape_transform.numpy()[i]
+                pos = wp.vec3(tf[0], tf[1], tf[2])
+                quat = wp.quat(tf[3], tf[4], tf[5], tf[6])
+                return pos, quat
+        self.fail(f"No shape matching '{substring}'")
+
+    def _assert_z_aligned(self, quat, expected_dir, msg=""):
+        """Assert the shape's Z axis (long axis) aligns with expected direction."""
+        rotated_z = wp.quat_rotate(quat, wp.vec3(0.0, 0.0, 1.0))
+        np.testing.assert_allclose([*rotated_z], [*expected_dir], atol=1e-4, err_msg=msg)
+
+    def test_diagonal_capsule(self):
+        """Diagonal fromto: pos = midpoint, Z aligned with start - end."""
+        pos, quat = self._get_shape_transform("cap_diag")
+        np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
+        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        self._assert_z_aligned(quat, expected)
+
+    def test_downward_capsule(self):
+        """Downward fromto: start - end = +Z, identity rotation."""
+        pos, quat = self._get_shape_transform("cap_down")
+        np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
+        self._assert_z_aligned(quat, wp.vec3(0, 0, 1))
+
+    def test_upward_capsule(self):
+        """Upward fromto: start - end = -Z, 180 deg rotation (anti-parallel case)."""
+        pos, quat = self._get_shape_transform("cap_up")
+        np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
+        self._assert_z_aligned(quat, wp.vec3(0, 0, -1))
+
+    def test_diagonal_cylinder(self):
+        """Diagonal fromto cylinder: same code path as capsule, verify it works for cylinders too."""
+        pos, quat = self._get_shape_transform("cyl_diag")
+        np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
+        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        self._assert_z_aligned(quat, expected)

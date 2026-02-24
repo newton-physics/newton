@@ -23,7 +23,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Vec3, nparray
-from .inertia import compute_mesh_inertia
+from .inertia import compute_inertia_mesh
 from .types import (
     GeoType,
     Heightfield,
@@ -226,7 +226,7 @@ def compute_inertia_obb(
     hull_indices = hull_faces.flatten()
 
     # Step 2: Compute mesh inertia
-    _mass, com, inertia_tensor, _volume = compute_mesh_inertia(
+    _mass, com, inertia_tensor, _volume = compute_inertia_mesh(
         density=1.0,  # Unit density
         vertices=hull_vertices.tolist(),
         indices=hull_indices.tolist(),
@@ -656,7 +656,7 @@ def remesh_mesh(
         mesh.vertices = vertices
         mesh.indices = indices.flatten()
         if recompute_inertia:
-            mesh.mass, mesh.com, mesh.I, _ = compute_mesh_inertia(1.0, vertices, indices, is_solid=mesh.is_solid)
+            mesh.mass, mesh.com, mesh.I, _ = compute_inertia_mesh(1.0, vertices, indices, is_solid=mesh.is_solid)
     else:
         return mesh.copy(vertices=vertices, indices=indices, recompute_inertia=recompute_inertia)
     return mesh

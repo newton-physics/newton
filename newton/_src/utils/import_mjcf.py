@@ -15,9 +15,9 @@
 
 from __future__ import annotations
 
-import math
 import os
 import re
+import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from typing import Any
@@ -34,7 +34,13 @@ from ..sim.model import Model
 from ..solvers.mujoco import SolverMuJoCo
 from ..usd.schemas import solref_to_stiffness_damping
 from .heightfield import load_heightfield_elevation
-from .import_utils import is_xml_content, parse_custom_attributes, sanitize_name, sanitize_xml_content
+from .import_utils import (
+    is_xml_content,
+    parse_custom_attributes,
+    sanitize_name,
+    sanitize_xml_content,
+    should_show_collider,
+)
 from .mesh import load_meshes_from_file
 
 
@@ -336,7 +342,7 @@ def parse_mjcf(
     )
     # MuJoCo actuator custom attributes (from "mujoco:actuator" frequency)
     builder_custom_attr_actuator: list[ModelBuilder.CustomAttribute] = [
-        attr for attr in builder.custom_attributes.values() if attr.frequency_key == "mujoco:actuator"
+        attr for attr in builder.custom_attributes.values() if attr.frequency == "mujoco:actuator"
     ]
 
     compiler = root.find("compiler")
@@ -594,6 +600,13 @@ def parse_mjcf(
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
 
+            # Respect MJCF contype/conaffinity=0: disable automatic broadphase contacts
+            # while keeping the shape as a collider for explicit <pair> contacts.
+            contype = int(geom_attrib.get("contype", 1))
+            conaffinity = int(geom_attrib.get("conaffinity", 1))
+            if contype == 0 and conaffinity == 0 and not just_visual:
+                shape_cfg.collision_group = 0
+
             # Parse MJCF friction: "slide [torsion [roll]]"
             # Can't use parse_vec - it would replicate single values to all dimensions
             if "friction" in geom_attrib:
@@ -618,9 +631,9 @@ def parse_mjcf(
                 if geom_kd is not None:
                     shape_cfg.kd = geom_kd
 
-            # Parse MJCF margin for collision thickness (only if explicitly specified)
+            # Parse MJCF margin for collision (only if explicitly specified)
             if "margin" in geom_attrib:
-                shape_cfg.thickness = float(geom_attrib["margin"]) * scale
+                shape_cfg.margin = float(geom_attrib["margin"]) * scale
 
             custom_attributes = parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
             shape_label = f"{label_prefix}/{geom_name}" if label_prefix else geom_name
@@ -730,26 +743,31 @@ def parse_mjcf(
                         start = wp.transform_point(incoming_xform, start)
                         end = wp.transform_point(incoming_xform, end)
 
-                    # compute rotation to align the Warp capsule (along x-axis), with mjcf fromto direction
-                    axis = wp.normalize(end - start)
-                    angle = math.acos(wp.dot(axis, wp.vec3(0.0, 1.0, 0.0)))
-                    axis = wp.normalize(wp.cross(axis, wp.vec3(0.0, 1.0, 0.0)))
-
+                    # Compute pos and quat matching MuJoCo's fromto convention:
+                    # direction = start - end, align Z axis with it (mjuu_z2quat).
+                    # quat_between_vectors degenerates for anti-parallel vectors,
+                    # so handle that case with an explicit 180° rotation around X.
+                    # Guard against zero-length fromto (start == end) which would
+                    # produce NaN from wp.quat_between_vectors.
                     geom_pos = (start + end) * 0.5
-                    geom_rot = wp.quat_from_axis_angle(axis, -angle)
+                    dir_vec = start - end
+                    dir_len = wp.length(dir_vec)
+                    if dir_len < 1.0e-6:
+                        geom_rot = wp.quat_identity()
+                    else:
+                        direction = dir_vec / dir_len
+                        if float(direction[2]) < -0.999999:
+                            geom_rot = wp.quat(1.0, 0.0, 0.0, 0.0)  # 180° around X
+                        else:
+                            geom_rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
                     tf = wp.transform(geom_pos, geom_rot)
 
                     geom_radius = geom_size[0]
-                    geom_height = wp.length(end - start) * 0.5
-                    geom_up_axis = Axis.Y
+                    geom_height = dir_len * 0.5
 
                 else:
                     geom_radius = geom_size[0]
                     geom_height = geom_size[1]
-                    geom_up_axis = up_axis
-
-                # Apply axis rotation to transform
-                tf = wp.transform(tf.p, tf.q * quat_between_axes(Axis.Z, geom_up_axis))
 
                 if geom_type == "cylinder":
                     s = builder.add_shape_cylinder(
@@ -1025,12 +1043,11 @@ def parse_mjcf(
             )
             visual_shape_indices.extend(s)
 
-        show_colliders = force_show_colliders
-        if parse_visuals_as_colliders:
-            show_colliders = True
-        elif len(visuals) == 0 or not parse_visuals:
-            # we need to show the collision shapes since there are no visual shapes (or we're not loading them)
-            show_colliders = True
+        show_colliders = should_show_collider(
+            force_show_colliders,
+            has_visual_shapes=len(visuals) > 0 and parse_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+        )
 
         parse_shapes(
             defaults,
@@ -1271,9 +1288,15 @@ def parse_mjcf(
                     if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
                         actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
                         autolimits_attr = builder.custom_attributes.get("mujoco:autolimits")
-                        autolimits_val = (
-                            autolimits_attr.values.get(0, autolimits_attr.default) if autolimits_attr else 1
-                        )
+                        autolimits_val = True
+                        if autolimits_attr is not None:
+                            autolimits_values = autolimits_attr.values
+                            autolimits_raw = (
+                                autolimits_values.get(0, autolimits_attr.default)
+                                if isinstance(autolimits_values, dict)
+                                else autolimits_attr.default
+                            )
+                            autolimits_val = bool(autolimits_raw)
                         if actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and autolimits_val):
                             effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
                         elif verbose:
@@ -1409,13 +1432,15 @@ def parse_mjcf(
             joint_label = f"{body_label_path}/{joint_label_name}"
             if joint_type == JointType.FREE:
                 assert parent == -1, "Free joints must have the world body as parent"
-                joint_indices.append(
-                    builder.add_joint_free(
-                        link,
-                        label=joint_label,
-                        custom_attributes=joint_custom_attributes,
-                    )
+                joint_idx = builder.add_joint_free(
+                    link,
+                    label=joint_label,
+                    custom_attributes=joint_custom_attributes,
                 )
+                joint_indices.append(joint_idx)
+                # Map free joint names so actuators can target them
+                for jn in joint_name:
+                    joint_name_to_idx[jn] = joint_idx
             else:
                 # When parent is world (-1), use world_xform to respect the xform argument
                 if parent == -1:
@@ -1740,7 +1765,7 @@ def parse_mjcf(
                     custom_attributes=custom_attrs,
                 )
 
-        # add support for types "tendon" and "flex" once Newton supports them
+        # TODO: add support for equality constraint type "flex" once Newton supports it
 
     # -----------------
     # start articulation
@@ -1846,7 +1871,7 @@ def parse_mjcf(
     builder_custom_attr_pair: list[ModelBuilder.CustomAttribute] = [
         attr
         for attr in builder.custom_attributes.values()
-        if isinstance(attr.frequency_key, str)
+        if isinstance(attr.frequency, str)
         and attr.name.startswith("pair_")
         and attr.name not in ("pair_geom1", "pair_geom2", "pair_world")
     ]
@@ -1948,16 +1973,30 @@ def parse_mjcf(
                 )
 
     # -----------------
-    # Parse all fixed tendons in a single tendon section.
+    # Parse fixed and spatial tendons.
 
-    # Get variable-length custom attributes for tendon parsing (frequency="tendon")
-    # Exclude tendon_world, tendon_joint_adr, tendon_joint_num as they're handled specially
+    # Get variable-length custom attributes for tendon parsing (frequency="mujoco:tendon")
+    # Exclude attributes that are handled specially during parsing
+    _tendon_special_attrs = {
+        "tendon_world",
+        "tendon_type",
+        "tendon_joint_adr",
+        "tendon_joint_num",
+        "tendon_joint",
+        "tendon_coef",
+        "tendon_wrap_adr",
+        "tendon_wrap_num",
+        "tendon_wrap_type",
+        "tendon_wrap_shape",
+        "tendon_wrap_sidesite",
+        "tendon_wrap_prm",
+    }
     builder_custom_attr_tendon: list[ModelBuilder.CustomAttribute] = [
         attr
         for attr in builder.custom_attributes.values()
-        if isinstance(attr.frequency_key, str)
+        if isinstance(attr.frequency, str)
         and attr.name.startswith("tendon_")
-        and attr.name not in ("tendon_world", "tendon_joint_adr", "tendon_joint_num", "tendon_joint", "tendon_coef")
+        and attr.name not in _tendon_special_attrs
     ]
 
     def parse_tendons(tendon_section):
@@ -2016,8 +2055,11 @@ def parse_mjcf(
             # Build values dict for tendon-level attributes
             tendon_values: dict[str, Any] = {
                 "mujoco:tendon_world": builder.current_world,
+                "mujoco:tendon_type": 0,  # fixed tendon
                 "mujoco:tendon_joint_adr": joint_start,
                 "mujoco:tendon_joint_num": len(joint_entries),
+                "mujoco:tendon_wrap_adr": 0,
+                "mujoco:tendon_wrap_num": 0,
             }
             # Add remaining attributes with parsed values or defaults
             for attr in builder_custom_attr_tendon:
@@ -2033,6 +2075,126 @@ def parse_mjcf(
             if verbose:
                 joint_names_str = ", ".join(f"{builder.joint_label[j]}*{c}" for j, c in joint_entries)
                 print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
+
+        def find_shape_by_name(name: str, want_site: bool) -> int:
+            """Find a shape index by name, disambiguating sites from geoms.
+
+            MuJoCo allows sites and geoms to share the same name (different namespaces).
+            Newton stores both as shapes in shape_label, so we need to pick the right one
+            based on whether we're looking for a site or a geom.
+
+            Returns -1 if no shape with the matching name and type is found.
+            """
+            for i, label in enumerate(builder.shape_label):
+                if label == name or label.endswith(f"/{name}"):
+                    is_site = bool(builder.shape_flags[i] & ShapeFlags.SITE)
+                    if is_site == want_site:
+                        return i
+            return -1
+
+        for spatial in tendon_section.findall("spatial"):
+            # Apply default class inheritance for spatial tendon attributes.
+            # MuJoCo defaults use <tendon> tag for both <fixed> and <spatial> tendons.
+            elem_class = get_class(spatial)
+            elem_defaults = class_defaults.get(elem_class, {}).get("tendon", {})
+            all_defaults = class_defaults.get("__all__", {}).get("tendon", {})
+            merged_attrib = merge_attrib(merge_attrib(all_defaults, elem_defaults), dict(spatial.attrib))
+
+            tendon_name = merged_attrib.get("name", "")
+
+            # Parse wrap path elements in order
+            wrap_entries: list[tuple[int, int, int, float]] = []  # (type, shape_idx, sidesite_idx, prm)
+            for child in spatial:
+                if child.tag == "site":
+                    site_name = child.attrib.get("site", "")
+                    if site_name:
+                        site_name = sanitize_name(site_name)
+                    site_idx = find_shape_by_name(site_name, want_site=True) if site_name else -1
+                    if site_idx < 0:
+                        warnings.warn(
+                            f"Spatial tendon '{tendon_name}' references unknown site '{site_name}', skipping element.",
+                            stacklevel=2,
+                        )
+                        continue
+                    wrap_entries.append((0, site_idx, -1, 0.0))
+
+                elif child.tag == "geom":
+                    geom_name = child.attrib.get("geom", "")
+                    if geom_name:
+                        geom_name = sanitize_name(geom_name)
+                    geom_idx = find_shape_by_name(geom_name, want_site=False) if geom_name else -1
+                    if geom_idx < 0:
+                        warnings.warn(
+                            f"Spatial tendon '{tendon_name}' references unknown geom '{geom_name}', skipping element.",
+                            stacklevel=2,
+                        )
+                        continue
+
+                    sidesite_name = child.attrib.get("sidesite", "")
+                    sidesite_idx = -1
+                    if sidesite_name:
+                        sidesite_name = sanitize_name(sidesite_name)
+                        sidesite_idx = find_shape_by_name(sidesite_name, want_site=True)
+                        if sidesite_idx < 0:
+                            warnings.warn(
+                                f"Spatial tendon '{tendon_name}' sidesite '{sidesite_name}' not found.",
+                                stacklevel=2,
+                            )
+                    wrap_entries.append((1, geom_idx, sidesite_idx, 0.0))
+
+                elif child.tag == "pulley":
+                    divisor = float(child.attrib.get("divisor", "0.0"))
+                    wrap_entries.append((2, -1, -1, divisor))
+
+            if not wrap_entries:
+                warnings.warn(
+                    f"Spatial tendon '{tendon_name}' has no valid wrap elements, skipping.",
+                    stacklevel=2,
+                )
+                continue
+
+            # Parse tendon-level attributes using the standard custom attribute parsing
+            tendon_attrs = parse_custom_attributes(merged_attrib, builder_custom_attr_tendon, parsing_mode="mjcf")
+
+            # Determine wrap array start index
+            tendon_wrap_type_attr = builder.custom_attributes.get("mujoco:tendon_wrap_type")
+            wrap_start = (
+                len(tendon_wrap_type_attr.values) if tendon_wrap_type_attr and tendon_wrap_type_attr.values else 0
+            )
+
+            # Add wrap entries to the wrap path arrays
+            for wrap_type, shape_idx, sidesite_idx, prm in wrap_entries:
+                builder.add_custom_values(
+                    **{
+                        "mujoco:tendon_wrap_type": wrap_type,
+                        "mujoco:tendon_wrap_shape": shape_idx,
+                        "mujoco:tendon_wrap_sidesite": sidesite_idx,
+                        "mujoco:tendon_wrap_prm": prm,
+                    }
+                )
+
+            # Build values dict for tendon-level attributes
+            tendon_values: dict[str, Any] = {
+                "mujoco:tendon_world": builder.current_world,
+                "mujoco:tendon_type": 1,  # spatial tendon
+                "mujoco:tendon_joint_adr": 0,
+                "mujoco:tendon_joint_num": 0,
+                "mujoco:tendon_wrap_adr": wrap_start,
+                "mujoco:tendon_wrap_num": len(wrap_entries),
+            }
+            # Add remaining attributes with parsed values or defaults
+            for attr in builder_custom_attr_tendon:
+                tendon_values[attr.key] = tendon_attrs.get(attr.key, attr.default)
+
+            indices = builder.add_custom_values(**tendon_values)
+
+            # Track tendon name for actuator resolution
+            if tendon_name:
+                tendon_idx = indices.get("mujoco:tendon_world", 0)
+                tendon_name_to_idx[sanitize_name(tendon_name)] = tendon_idx
+
+            if verbose:
+                print(f"Parsed spatial tendon: {tendon_name} ({len(wrap_entries)} wrap elements)")
 
     # -----------------
     # parse actuators
@@ -2134,6 +2296,18 @@ def parse_mjcf(
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                # Resolve inheritrange: copy target joint's range to ctrlrange.
+                # Uses only the first DOF (qd_start) since inheritrange is only
+                # meaningful for single-DOF joints (hinge, slide).
+                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
+                if inheritrange > 0 and joint_name and qd_start >= 0:
+                    lower = builder.joint_limit_lower[qd_start]
+                    upper = builder.joint_limit_upper[qd_start]
+                    if lower < upper:
+                        mean = (upper + lower) / 2.0
+                        radius = (upper - lower) / 2.0 * inheritrange
+                        merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
+                        merged_attrib["ctrllimited"] = "true"
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
                 if trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -26,6 +27,9 @@ from ..core.types import Devicelike
 from .contacts import Contacts
 from .control import Control
 from .state import State
+
+if TYPE_CHECKING:
+    from newton_actuators import Actuator
 
 
 class Model:
@@ -222,16 +226,16 @@ class Model:
         self.shape_material_kh = None
         """Shape hydroelastic stiffness coefficient [N/m^3], shape [shape_count], float.
         Contact stiffness is computed as ``area * kh``, yielding an effective spring constant [N/m]."""
-        self.shape_contact_margin = None
-        """Shape contact margin for collision detection [m], shape [shape_count], float."""
+        self.shape_gap = None
+        """Shape additional contact detection gap [m], shape [shape_count], float."""
 
         # Shape geometry properties
         self.shape_type = None
         """Shape geometry type, shape [shape_count], int32."""
         self.shape_is_solid = None
         """Whether shape is solid or hollow, shape [shape_count], bool."""
-        self.shape_thickness = None
-        """Shape thickness [m], shape [shape_count], float."""
+        self.shape_margin = None
+        """Shape surface margin [m], shape [shape_count], float."""
         self.shape_source = []
         """List of source geometry objects (e.g., :class:`~newton.Mesh`) used for rendering and broadphase, shape [shape_count]."""
         self.shape_source_ptr = None
@@ -405,6 +409,8 @@ class Model:
         """Generalized joint position targets [m or rad, depending on joint type], shape [joint_dof_count], float."""
         self.joint_target_vel = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type], shape [joint_dof_count], float."""
+        self.joint_act = None
+        """Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float."""
         self.joint_type = None
         """Joint type, shape [joint_count], int."""
         self.joint_articulation = None
@@ -703,6 +709,7 @@ class Model:
         self.attribute_frequency["joint_armature"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_pos"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_vel"] = Model.AttributeFrequency.JOINT_DOF
+        self.attribute_frequency["joint_act"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_axis"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_act_mode"] = Model.AttributeFrequency.JOINT_DOF
         self.attribute_frequency["joint_target_ke"] = Model.AttributeFrequency.JOINT_DOF
@@ -728,13 +735,16 @@ class Model:
         self.attribute_frequency["shape_material_mu_torsional"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_mu_rolling"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_material_kh"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_contact_margin"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_gap"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_type"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_is_solid"] = Model.AttributeFrequency.SHAPE
-        self.attribute_frequency["shape_thickness"] = Model.AttributeFrequency.SHAPE
+        self.attribute_frequency["shape_margin"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_source_ptr"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_scale"] = Model.AttributeFrequency.SHAPE
         self.attribute_frequency["shape_filter"] = Model.AttributeFrequency.SHAPE
+
+        self.actuators: list[Actuator] = []
+        """List of actuator instances for this model."""
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
@@ -779,6 +789,11 @@ class Model:
         if "body_parent_f" in requested:
             s.body_parent_f = wp.zeros_like(self.body_qd, requires_grad=requires_grad)
 
+        if "mujoco:qfrc_actuator" in requested:
+            if not hasattr(s, "mujoco"):
+                s.mujoco = Model.AttributeNamespace("mujoco")
+            s.mujoco.qfrc_actuator = wp.zeros_like(self.joint_qd, requires_grad=requires_grad)
+
         # attach custom attributes with assignment==STATE
         self._add_custom_attributes(s, Model.AttributeAssignment.STATE, requires_grad=requires_grad)
 
@@ -805,6 +820,7 @@ class Model:
             if self.joint_count:
                 c.joint_target_pos = wp.clone(self.joint_target_pos, requires_grad=requires_grad)
                 c.joint_target_vel = wp.clone(self.joint_target_vel, requires_grad=requires_grad)
+                c.joint_act = wp.clone(self.joint_act, requires_grad=requires_grad)
                 c.joint_f = wp.clone(self.joint_f, requires_grad=requires_grad)
             if self.tri_count:
                 c.tri_activations = wp.clone(self.tri_activations, requires_grad=requires_grad)
@@ -815,6 +831,7 @@ class Model:
         else:
             c.joint_target_pos = self.joint_target_pos
             c.joint_target_vel = self.joint_target_vel
+            c.joint_act = self.joint_act
             c.joint_f = self.joint_f
             c.tri_activations = self.tri_activations
             c.tet_activations = self.tet_activations
@@ -884,9 +901,9 @@ class Model:
         Call :meth:`collide` to run the collision detection and populate the contacts object.
 
         Note:
-            Rigid contact margins are controlled per-shape via :attr:`Model.shape_contact_margin`, which is populated
-            from ``ShapeConfig.contact_margin`` during model building. If a shape doesn't specify a contact margin,
-            it defaults to ``builder.rigid_contact_margin``. To adjust contact margins, set them before calling
+            Rigid contact gaps are controlled per-shape via :attr:`Model.shape_gap`, which is populated
+            from ``ShapeConfig.gap`` [m] during model building. If a shape doesn't specify a gap [m],
+            it defaults to ``builder.rigid_gap`` [m]. To adjust contact gaps [m], set them before calling
             :meth:`ModelBuilder.finalize`.
         Returns:
             Contacts: The contact object containing collision information.

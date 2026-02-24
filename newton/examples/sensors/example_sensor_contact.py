@@ -26,8 +26,6 @@
 #
 ###########################################################################
 
-import re
-
 import numpy as np
 import warp as wp
 
@@ -67,9 +65,8 @@ class Example:
 
         self.plate_contact_sensor = SensorContact(
             self.model,
-            sensing_obj_shapes=".*Plate.*",
-            counterpart_shapes=".*Cube.*|.*Sphere.*",
-            match_fn=lambda string, pat: re.match(pat, string),
+            sensing_obj_shapes="*Plate*",
+            counterpart_shapes=["*Cube*", "*Sphere*"],
             include_total=False,
             verbose=True,
         )
@@ -144,7 +141,7 @@ class Example:
                 self.simulate()
 
         self.solver.update_contacts(self.contacts, self.state_0)
-        self.plate_contact_sensor.eval(self.contacts)
+        self.plate_contact_sensor.update(self.contacts)
 
         net_force = self.plate_contact_sensor.net_force.numpy()
         for i in range(2):
@@ -161,7 +158,7 @@ class Example:
             print(f"Plate {self.model.shape_label[plate]} was touched by counterpart {obj_key}")
             self.viewer.update_shape_colors({plate: self.shape_colors[obj_key]})
 
-        self.flap_contact_sensor.eval(self.contacts)
+        self.flap_contact_sensor.update(self.contacts)
         self.plot_window.add_point(np.abs(self.flap_contact_sensor.net_force.numpy()[0, 0, 2]))
         self.sim_time += self.frame_dt
 

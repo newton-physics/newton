@@ -83,7 +83,7 @@ Collision shapes are attached to rigid bodies. Each shape has:
 - **Body index** (``shape_body``): The rigid body this shape is attached to. Use ``body=-1`` for static/world-fixed shapes.
 - **Local transform** (``shape_transform``): Position and orientation relative to the body frame.
 - **Scale** (``shape_scale``): 3D scale factors applied to the shape geometry.
-- **Thickness** (``shape_thickness``): Surface thickness used in contact generation (see :ref:`Shape Configuration`).
+- **Margin** (``shape_margin``): Surface margin used in contact generation (see :ref:`Shape Configuration`).
 - **Source geometry** (``shape_source``): Reference to the underlying geometry object (e.g., :class:`~newton.Mesh`).
 
 During collision detection, shapes are transformed to world space using their parent body's pose:
@@ -543,7 +543,7 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 1. Contacts are binned by normal direction (20 icosahedron face directions)
 2. Within each bin, contacts are scored by spatial distribution and penetration depth
-3. Representative contacts are selected using configurable depth thresholds (betas)
+3. Representative contacts are selected to preserve coverage and depth cues
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
@@ -557,28 +557,12 @@ For hydroelastic and SDF-based contacts, use :class:`~newton.geometry.Hydroelast
 
     config = HydroelasticSDF.Config(
         reduce_contacts=True,           # Enable contact reduction
-        betas=(10.0, -0.5),             # Scoring thresholds (default)
-        sticky_contacts=0.0,            # Temporal persistence (0 = disabled)
+        buffer_fraction=0.2,            # Reduce hydroelastic GPU buffer allocations
         normal_matching=True,           # Align reduced normals with aggregate force
-        moment_matching=False,          # Match friction moments (experimental)
+        anchor_contact=False,           # Optional center-of-pressure anchor contact
     )
 
     pipeline = CollisionPipeline(model, sdf_hydroelastic_config=config)
-
-**Understanding betas:**
-
-The ``betas`` tuple controls how contacts are scored for selection. Each beta value (first element, second element, etc.) produces a separate set of representative contacts per normal bin:
-
-- **Positive beta** (e.g., ``10.0``): Score = ``spatial_position + depth * beta``. Higher values favor deeper contacts.
-- **Negative beta** (e.g., ``-0.5``): Score = ``spatial_position * depth^(-beta)`` for penetrating contacts.
-  This weighs spatial distribution more heavily for shallow contacts.
-
-The default ``(10.0, -0.5)`` provides a balance: one set prioritizes penetration depth,
-another prioritizes spatial coverage. More betas = more contacts retained but better coverage.
-
-.. note::
-   The beta scoring behavior is subject to refinement. The collision pipeline 
-   is under active development and these parameters may change in future releases.
 
 **Other reduction options:**
 
@@ -588,15 +572,12 @@ another prioritizes spatial coverage. More betas = more contacts retained but be
 
    * - Parameter
      - Description
-   * - ``sticky_contacts``
-     - Temporal persistence threshold. When > 0, contacts from previous frames within this distance are preserved to prevent jittering. Default: 0.0 (disabled).
    * - ``normal_matching``
      - Rotates selected contact normals so their weighted sum aligns with the aggregate force direction 
        from all unreduced contacts. Preserves net force direction after reduction. Default: True.
-   * - ``moment_matching``
-     - Preserves torsional friction by adding an anchor contact at the depth-weighted centroid and 
-       scaling friction coefficients. This ensures the reduced contact set produces similar resistance 
-       to rotational sliding as the original contacts. Experimental. Default: False.
+   * - ``anchor_contact``
+     - Adds an anchor contact at the center of pressure for each normal bin to better preserve moments.
+       Default: False.
    * - ``margin_contact_area``
      - Lower bound on contact area. Hydroelastic stiffness is ``area * k_eff``, but contacts 
        within the contact margin that are not yet penetrating (speculative contacts) have zero 
@@ -634,10 +615,10 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
 
    * - Parameter
      - Description
-   * - ``thickness``
-     - Surface thickness. Pairwise: summed (``t_a + t_b``). Creates visible gap at rest. Essential for thin shells and cloth to improve simulation stability and reduce self-intersections. Default: 1e-5.
-   * - ``contact_margin``
-     - AABB expansion for early contact detection. Pairwise: max. The margin only affects contact generation; effective rest distance is not affected and is only governed by ``thickness``. Increasing the margin can help avoid tunneling of fast-moving objects because contacts are detected at a greater distance between objects. Must be >= ``thickness``. Default: None (uses ``builder.rigid_contact_margin``, which defaults to 0.1).
+   * - ``margin``
+     - Surface offset used by narrow phase. Pairwise effect is additive (``m_a + m_b``): contacts are evaluated against the signed distance to the margin-shifted surfaces, so resting separation is ``m_a + m_b``. Helps thin shells/cloth stability and reduces self-intersections. Default: 1e-5.
+   * - ``gap``
+     - Additional detection threshold. Pairwise effect is additive (``g_a + g_b``). Broad phase expands each shape AABB by ``(margin + gap)`` per shape; narrow phase then keeps a candidate contact when ``d <= g_a + g_b`` (with ``d`` measured relative to margin-shifted surfaces). Increasing gap detects contacts earlier and helps reduce tunneling. Default: None (uses ``builder.rigid_gap``, which defaults to 0.1).
    * - ``is_solid``
      - Whether shape is solid or hollow. Affects inertia and SDF sign. Default: True.
    * - ``is_hydroelastic``
@@ -646,9 +627,9 @@ Shape collision behavior is controlled via :class:`~newton.ModelBuilder.ShapeCon
      - Contact stiffness for hydroelastic collisions. Used by MuJoCo, Featherstone, SemiImplicit when ``is_hydroelastic=True``. Default: 1.0e10.
 
 .. note::
-   **Contact generation**: A contact is created when ``d < max(margin_a, margin_b)``, where 
-   ``d = surface_distance - (thickness_a + thickness_b)``. The solver enforces ``d >= 0``, 
-   so objects at rest settle with surfaces separated by ``thickness_a + thickness_b``.
+   **Contact generation**: A contact is created when ``d <= (gap_a + gap_b)``, where
+   ``d = surface_distance - (margin_a + margin_b)``. The solver enforces ``d >= 0``, 
+   so objects at rest settle with surfaces separated by ``margin_a + margin_b``.
 
 **SDF configuration (primitive generation defaults):**
 
@@ -671,15 +652,15 @@ Example (mesh SDF workflow):
 
     cfg = builder.ShapeConfig(
         collision_group=-1,           # Collide with everything
-        thickness=0.001,              # 1mm thickness
-        contact_margin=0.01,          # 1cm margin
+        margin=0.001,                 # 1mm margin
+        gap=0.01,                     # 1cm detection gap
     )
     my_mesh.build_sdf(max_resolution=64)
     builder.add_shape_mesh(body, mesh=my_mesh, cfg=cfg)
 
 **Builder default margin:**
 
-The builder's ``rigid_contact_margin`` (default 0.1) applies to shapes without explicit ``contact_margin``. Alternatively, use ``builder.default_shape_cfg.contact_margin``.
+The builder's ``rigid_gap`` (default 0.1) applies to shapes without explicit ``gap``. Alternatively, use ``builder.default_shape_cfg.gap``.
 
 .. _Common Patterns:
 
@@ -777,8 +758,8 @@ and is consumed by the solver :meth:`~newton.solvers.SolverBase.step` method for
      - Contact point offsets in body-local space.
    * - ``rigid_contact_normal``
      - Contact normal direction (from shape0 to shape1).
-   * - ``rigid_contact_thickness0``, ``rigid_contact_thickness1``
-     - Shape thickness at each contact point.
+   * - ``rigid_contact_margin0``, ``rigid_contact_margin1``
+     - Shape margin offsets at each contact point.
 
 **Soft contacts (particle-shape):**
 
@@ -907,6 +888,23 @@ The ``kh`` parameter on each shape controls area-dependent contact stiffness. Fo
 
 Contact reduction options for hydroelastic contacts are configured via :class:`~newton.geometry.HydroelasticSDF.Config` (see :ref:`Contact Reduction`).
 
+Hydroelastic memory can be tuned with ``buffer_fraction`` on
+:class:`~newton.geometry.HydroelasticSDF.Config`. This scales broadphase, iso-refinement,
+and hydroelastic face-contact buffer allocations as a fraction of the worst-case
+size. Lower values reduce memory usage but also reduce overflow headroom.
+
+.. code-block:: python
+
+    from newton.geometry import HydroelasticSDF
+
+    config = HydroelasticSDF.Config(
+        reduce_contacts=True,
+        buffer_fraction=0.2,  # 20% of worst-case hydroelastic buffers
+    )
+
+If runtime overflow warnings appear, increase ``buffer_fraction`` (or stage-specific
+``buffer_mult_*`` values) until warnings disappear in your target scenes.
+
 .. _Contact Material Properties:
 
 Contact Materials
@@ -998,7 +996,7 @@ Custom collision properties can be authored in USD:
         custom float newton:contact_kd = 1000.0
         custom float newton:contact_kf = 1000.0
         custom float newton:contact_ka = 0.0
-        custom float newton:contact_thickness = 0.00001
+        custom float newton:margin = 0.00001
     }
 
 See :doc:`custom_attributes` and :doc:`usd_parsing` for details.
@@ -1048,8 +1046,8 @@ See Also
 
 - :attr:`~newton.Model.shape_collision_group` - Per-shape collision groups
 - :attr:`~newton.Model.shape_world` - Per-shape world indices
-- :attr:`~newton.Model.shape_contact_margin` - Per-shape contact margins
-- :attr:`~newton.Model.shape_thickness` - Per-shape thickness values
+- :attr:`~newton.Model.shape_gap` - Per-shape contact gaps (detection threshold)
+- :attr:`~newton.Model.shape_margin` - Per-shape margin values (signed distance padding)
 
 **Related documentation:**
 

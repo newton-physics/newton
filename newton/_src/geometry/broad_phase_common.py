@@ -36,7 +36,7 @@ def check_aabb_overlap(
     box2_upper: wp.vec3,
     box2_cutoff: float,
 ) -> bool:
-    cutoff_combined = max(box1_cutoff, box2_cutoff)
+    cutoff_combined = box1_cutoff + box2_cutoff
     return (
         box1_lower[0] <= box2_upper[0] + cutoff_combined
         and box1_upper[0] >= box2_lower[0] - cutoff_combined
