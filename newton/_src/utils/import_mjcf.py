@@ -747,16 +747,23 @@ def parse_mjcf(
                     # direction = start - end, align Z axis with it (mjuu_z2quat).
                     # quat_between_vectors degenerates for anti-parallel vectors,
                     # so handle that case with an explicit 180° rotation around X.
+                    # Guard against zero-length fromto (start == end) which would
+                    # produce NaN from wp.quat_between_vectors.
                     geom_pos = (start + end) * 0.5
-                    direction = wp.normalize(start - end)
-                    if float(direction[2]) < -0.999999:
-                        geom_rot = wp.quat(1.0, 0.0, 0.0, 0.0)  # 180° around X
+                    dir_vec = start - end
+                    dir_len_sq = wp.length_sq(dir_vec)
+                    if dir_len_sq < 1.0e-16:
+                        geom_rot = wp.quat_identity()
                     else:
-                        geom_rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
+                        direction = wp.normalize(dir_vec)
+                        if float(direction[2]) < -0.999999:
+                            geom_rot = wp.quat(1.0, 0.0, 0.0, 0.0)  # 180° around X
+                        else:
+                            geom_rot = wp.quat_between_vectors(wp.vec3(0.0, 0.0, 1.0), direction)
                     tf = wp.transform(geom_pos, geom_rot)
 
                     geom_radius = geom_size[0]
-                    geom_height = wp.length(end - start) * 0.5
+                    geom_height = wp.sqrt(dir_len_sq) * 0.5
 
                 else:
                     geom_radius = geom_size[0]

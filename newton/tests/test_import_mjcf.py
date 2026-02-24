@@ -6926,6 +6926,8 @@ class TestFromtoCapsuleOrientation(unittest.TestCase):
                       fromto="0 0 0 0 0 -0.4"/>
                 <geom name="cap_up" type="capsule" size="0.03"
                       fromto="0 0 -0.4 0 0 0"/>
+                <geom name="cyl_diag" type="cylinder" size="0.03"
+                      fromto="0.02 0 -0.4 -0.02 0 0.02"/>
             </body>
         </worldbody>
     </mujoco>"""
@@ -6968,3 +6970,10 @@ class TestFromtoCapsuleOrientation(unittest.TestCase):
         pos, quat = self._get_shape_transform("cap_up")
         np.testing.assert_allclose([*pos], [0, 0, -0.2], atol=1e-5)
         self._assert_z_aligned(quat, wp.vec3(0, 0, -1))
+
+    def test_diagonal_cylinder(self):
+        """Diagonal fromto cylinder: same code path as capsule, verify it works for cylinders too."""
+        pos, quat = self._get_shape_transform("cyl_diag")
+        np.testing.assert_allclose([*pos], [0, 0, -0.19], atol=1e-5)
+        expected = wp.normalize(wp.vec3(0.04, 0, -0.42))
+        self._assert_z_aligned(quat, expected)
