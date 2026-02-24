@@ -1980,7 +1980,7 @@ class SolverVBD(SolverBase):
                 getattr(self, "body_body_contact_material_mu", None),
             )
         )
-        no_active_contacts = contacts is None or int(contacts.rigid_contact_count[0]) == 0
+        no_active_contacts = contacts is None or max_contacts == 0
 
         if contacts is not None and contacts.rigid_contact_force is not None:
             contacts.rigid_contact_force.zero_()
