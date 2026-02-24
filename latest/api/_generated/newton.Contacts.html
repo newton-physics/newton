@@ -811,7 +811,7 @@
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">Contacts</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">rigid_contact_max</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_max</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">per_contact_shape_properties</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">clear_buffers</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requested_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/contacts.py#L23"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.Contacts" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Stores contact information for rigid and soft body collisions, to be consumed by a solver.</p>
-<p>This class manages buffers for contact data such as positions, normals, thicknesses, and shape indices
+<p>This class manages buffers for contact data such as positions, normals, margins, and shape indices
 for both rigid-rigid and soft-rigid contacts. The buffers are allocated on the specified device and can
 optionally require gradients for differentiable simulation.</p>
 <div class="admonition note">
@@ -918,6 +918,18 @@ When both rigid and soft contacts are present, soft contact forces follow rigid 
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Contacts.rigid_contact_margin0">
+<span class="sig-name descname"><span class="pre">rigid_contact_margin0</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_margin0" title="Link to this definition">#</a></dt>
+<dd><p>Contact margin for shape 0 [m], shape (rigid_contact_max,), dtype float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Contacts.rigid_contact_margin1">
+<span class="sig-name descname"><span class="pre">rigid_contact_margin1</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_margin1" title="Link to this definition">#</a></dt>
+<dd><p>Contact margin for shape 1 [m], shape (rigid_contact_max,), dtype float.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Contacts.rigid_contact_normal">
 <span class="sig-name descname"><span class="pre">rigid_contact_normal</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_normal" title="Link to this definition">#</a></dt>
 <dd><p>Contact normal direction [unitless], shape (rigid_contact_max,), dtype <code class="xref py py-class docutils literal notranslate"><span class="pre">vec3</span></code>.</p>
@@ -951,18 +963,6 @@ When both rigid and soft contacts are present, soft contact forces follow rigid 
 <dt class="sig sig-object py" id="newton.Contacts.rigid_contact_stiffness">
 <span class="sig-name descname"><span class="pre">rigid_contact_stiffness</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_stiffness" title="Link to this definition">#</a></dt>
 <dd><p>Per-contact stiffness [N/m], shape (rigid_contact_max,), dtype float.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Contacts.rigid_contact_thickness0">
-<span class="sig-name descname"><span class="pre">rigid_contact_thickness0</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_thickness0" title="Link to this definition">#</a></dt>
-<dd><p>Contact thickness for shape 0 [m], shape (rigid_contact_max,), dtype float.</p>
-</dd></dl>
-
-<dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Contacts.rigid_contact_thickness1">
-<span class="sig-name descname"><span class="pre">rigid_contact_thickness1</span></span><a class="headerlink" href="#newton.Contacts.rigid_contact_thickness1" title="Link to this definition">#</a></dt>
-<dd><p>Contact thickness for shape 1 [m], shape (rigid_contact_max,), dtype float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -1020,14 +1020,14 @@ When both rigid and soft contacts are present, soft contact forces follow rigid 
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_damping"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_damping</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_force"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_force</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_friction"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_friction</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_margin0"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_margin0</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_margin1"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_margin1</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_normal"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_normal</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_offset0"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_offset0</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_offset1"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_offset1</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_point0"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_point0</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_point1"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_point1</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_stiffness"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_stiffness</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_thickness0"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_thickness0</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.rigid_contact_thickness1"><code class="docutils literal notranslate"><span class="pre">Contacts.rigid_contact_thickness1</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.soft_contact_body_pos"><code class="docutils literal notranslate"><span class="pre">Contacts.soft_contact_body_pos</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.soft_contact_body_vel"><code class="docutils literal notranslate"><span class="pre">Contacts.soft_contact_body_vel</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Contacts.soft_contact_normal"><code class="docutils literal notranslate"><span class="pre">Contacts.soft_contact_normal</span></code></a></li>
