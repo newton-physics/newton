@@ -489,7 +489,7 @@ class HydroelasticSDF:
         sdf_data: wp.array(dtype=SDFData),
         shape_sdf_index: wp.array(dtype=wp.int32),
         shape_transform: wp.array(dtype=wp.transform),
-        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_gap: wp.array(dtype=wp.float32),
         shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
         shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
@@ -503,7 +503,7 @@ class HydroelasticSDF:
             sdf_data: Compact SDF table.
             shape_sdf_index: Per-shape SDF index into sdf_data.
             shape_transform: World transforms for each shape.
-            shape_contact_margin: Contact margin for each shape.
+            shape_gap: Per-shape contact gap (detection threshold) for each shape.
             shape_collision_aabb_lower: Per-shape collision AABB lower bounds.
             shape_collision_aabb_upper: Per-shape collision AABB upper bounds.
             shape_voxel_resolution: Per-shape voxel grid resolution.
@@ -527,23 +527,23 @@ class HydroelasticSDF:
             shape_pairs_sdf_sdf_count,
         )
 
-        self._find_iso_voxels(shape_sdf_data, shape_transform, shape_contact_margin)
+        self._find_iso_voxels(shape_sdf_data, shape_transform, shape_gap)
 
         if self.config.reduce_contacts:
-            self._generate_contacts(shape_sdf_data, shape_transform, shape_contact_margin)
+            self._generate_contacts(shape_sdf_data, shape_transform, shape_gap)
             self._reduce_decode_contacts(
                 shape_transform,
                 shape_collision_aabb_lower,
                 shape_collision_aabb_upper,
                 shape_voxel_resolution,
-                shape_contact_margin,
+                shape_gap,
                 writer_data,
             )
         else:
-            self._generate_contacts(shape_sdf_data, shape_transform, shape_contact_margin)
+            self._generate_contacts(shape_sdf_data, shape_transform, shape_gap)
             self._decode_contacts(
                 shape_transform,
-                shape_contact_margin,
+                shape_gap,
                 writer_data,
             )
 
@@ -656,7 +656,7 @@ class HydroelasticSDF:
         self,
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_transform: wp.array(dtype=wp.transform),
-        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_gap: wp.array(dtype=wp.float32),
     ) -> None:
         # Find voxels which contain the isosurface between the shapes using octree-like pruning.
         # We do this by computing the difference between sdfs at the voxel/subblock center and comparing it to the voxel/subblock radius.
@@ -673,7 +673,7 @@ class HydroelasticSDF:
                     self.shape_material_kh,
                     self.iso_buffer_coords[i],
                     self.iso_buffer_shape_pairs[i],
-                    shape_contact_margin,
+                    shape_gap,
                     subblock_size,
                     n_blocks,
                     self.input_sizes[i],
@@ -717,7 +717,7 @@ class HydroelasticSDF:
         self,
         shape_sdf_data: wp.array(dtype=SDFData),
         shape_transform: wp.array(dtype=wp.transform),
-        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_gap: wp.array(dtype=wp.float32),
         shape_local_aabb_lower: wp.array | None = None,
         shape_local_aabb_upper: wp.array | None = None,
         shape_voxel_resolution: wp.array | None = None,
@@ -753,7 +753,7 @@ class HydroelasticSDF:
                 self.mc_tables[0],
                 self.mc_tables[4],
                 self.mc_tables[3],
-                shape_contact_margin,
+                shape_gap,
                 self.max_num_iso_voxels,
                 reducer_data,
                 shape_local_aabb_lower,
@@ -771,7 +771,7 @@ class HydroelasticSDF:
     def _decode_contacts(
         self,
         shape_transform: wp.array(dtype=wp.transform),
-        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_gap: wp.array(dtype=wp.float32),
         writer_data: Any,
     ) -> None:
         """Decode hydroelastic contacts without reduction.
@@ -787,7 +787,7 @@ class HydroelasticSDF:
                 self.contact_reduction.contact_count,
                 self.shape_material_kh,
                 shape_transform,
-                shape_contact_margin,
+                shape_gap,
                 self.contact_reduction.reducer.position_depth,
                 self.contact_reduction.reducer.normal,
                 self.contact_reduction.reducer.shape_pairs,
@@ -804,7 +804,7 @@ class HydroelasticSDF:
         shape_collision_aabb_lower: wp.array(dtype=wp.vec3),
         shape_collision_aabb_upper: wp.array(dtype=wp.vec3),
         shape_voxel_resolution: wp.array(dtype=wp.vec3i),
-        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_gap: wp.array(dtype=wp.float32),
         writer_data: Any,
     ) -> None:
         """Reduce buffered contacts and export the winners.
@@ -825,7 +825,7 @@ class HydroelasticSDF:
             ),
         )
         self.contact_reduction.export(
-            shape_contact_margin=shape_contact_margin,
+            shape_gap=shape_gap,
             shape_transform=shape_transform,
             writer_data=writer_data,
             grid_size=self.grid_size,
@@ -1047,7 +1047,7 @@ def count_iso_voxels_block(
     shape_material_kh: wp.array(dtype=float),
     in_buffer_collide_coords: wp.array(dtype=wp.vec3us),
     in_buffer_collide_shape_pair: wp.array(dtype=wp.vec2i),
-    shape_contact_margin: wp.array(dtype=wp.float32),
+    shape_gap: wp.array(dtype=wp.float32),
     subblock_size: int,
     n_blocks: int,
     max_input_buffer_size: int,
@@ -1070,8 +1070,8 @@ def count_iso_voxels_block(
         X_ws_a = shape_transform[shape_a]
         X_ws_b = shape_transform[shape_b]
 
-        margin_a = shape_contact_margin[shape_a]
-        margin_b = shape_contact_margin[shape_b]
+        margin_a = shape_gap[shape_a]
+        margin_b = shape_gap[shape_b]
 
         voxel_radius = sdf_data_b.sparse_voxel_radius
         r = float(subblock_size) * voxel_radius
@@ -1211,7 +1211,7 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
         contact_count: wp.array(dtype=int),
         shape_material_kh: wp.array(dtype=wp.float32),
         shape_transform: wp.array(dtype=wp.transform),
-        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_gap: wp.array(dtype=wp.float32),
         position_depth: wp.array(dtype=wp.vec4),
         normal: wp.array(dtype=wp.vec2),  # Octahedral-encoded
         shape_pairs: wp.array(dtype=wp.vec2i),
@@ -1262,8 +1262,8 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             pos_world = wp.transform_point(transform_b, pos)
 
             # Sum margins for consistency with thickness summing
-            margin_a = shape_contact_margin[shape_a]
-            margin_b = shape_contact_margin[shape_b]
+            margin_a = shape_gap[shape_a]
+            margin_b = shape_gap[shape_b]
             margin = margin_a + margin_b
 
             k_a = shape_material_kh[shape_a]
@@ -1286,8 +1286,8 @@ def get_decode_contacts_kernel(margin_contact_area: float = 1e-4, writer_func: A
             contact_data.contact_distance = 2.0 * depth
             contact_data.radius_eff_a = 0.0
             contact_data.radius_eff_b = 0.0
-            contact_data.thickness_a = 0.0
-            contact_data.thickness_b = 0.0
+            contact_data.margin_a = 0.0
+            contact_data.margin_b = 0.0
             contact_data.shape_a = shape_a
             contact_data.shape_b = shape_b
             contact_data.margin = margin
@@ -1345,7 +1345,7 @@ def get_generate_contacts_kernel(
         tri_range_table: wp.array(dtype=wp.int32),
         flat_edge_verts_table: wp.array(dtype=wp.vec2ub),
         corner_offsets_table: wp.array(dtype=wp.vec3ub),
-        shape_contact_margin: wp.array(dtype=wp.float32),
+        shape_gap: wp.array(dtype=wp.float32),
         max_num_iso_voxels: int,
         reducer_data: GlobalContactReducerData,
         # Unused — kept for signature compatibility with prior callers
@@ -1373,8 +1373,8 @@ def get_generate_contacts_kernel(
 
             iso_coords = iso_voxel_coords[tid]
 
-            margin_a = shape_contact_margin[shape_a]
-            margin_b = shape_contact_margin[shape_b]
+            margin_a = shape_gap[shape_a]
+            margin_b = shape_gap[shape_b]
             margin = margin_a + margin_b
 
             k_a = shape_material_kh[shape_a]
