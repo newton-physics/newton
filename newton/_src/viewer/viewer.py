@@ -951,7 +951,7 @@ class ViewerBase:
         shape_geo_src = self.model.shape_source
         shape_geo_type = self.model.shape_type.numpy()
         shape_geo_scale = self.model.shape_scale.numpy()
-        shape_geo_thickness = self.model.shape_thickness.numpy()
+        shape_geo_thickness = self.model.shape_margin.numpy()
         shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()

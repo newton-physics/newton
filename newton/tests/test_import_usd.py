@@ -4355,6 +4355,56 @@ def Xform "Articulation" (
         )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
+        """Authored mass without inertia should produce inertia consistent with a uniform-density body.
+
+        Two identical 0.1 [m] cube bodies that should both end up with 8 [kg]
+        mass and inertia I_diag = (1/6) * m * s^2 [kg*m^2]:
+          A - density 8000 [kg/m^3] on the collider shape
+          B - mass 8 [kg] on the body only, inertia via scaling
+        """
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        density = 8000.0
+        size = 0.1
+        mass = density * size**3
+        expected_i = (1.0 / 6.0) * mass * size**2
+
+        def create_body(name):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            collider = UsdGeom.Cube.Define(stage, f"/World/{name}/Collider")
+            collider.CreateSizeAttr().Set(size)
+            UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+            return body.GetPrim(), collider.GetPrim()
+
+        # A: density on the collider shape derives mass and inertia.
+        body_prim, collider_prim = create_body("A")
+        UsdPhysics.MassAPI.Apply(body_prim)
+        UsdPhysics.MassAPI.Apply(collider_prim).CreateDensityAttr().Set(density)
+
+        # B: only mass authored on body, inertia scaled from shape accumulation.
+        body_prim, _ = create_body("B")
+        UsdPhysics.MassAPI.Apply(body_prim).CreateMassAttr().Set(mass)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+        idx_a = result["path_body_map"]["/World/A"]
+        idx_b = result["path_body_map"]["/World/B"]
+
+        for idx, name in ((idx_a, "A"), (idx_b, "B")):
+            self.assertAlmostEqual(builder.body_mass[idx], mass, places=5, msg=f"Body {name} mass")
+            inertia = np.array(builder.body_inertia[idx]).reshape(3, 3)
+            np.testing.assert_allclose(
+                np.diag(inertia), [expected_i] * 3, atol=1e-5, rtol=1e-5, err_msg=f"Body {name} inertia"
+            )
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_partial_body_applies_axis_rotation_in_compute_callback(self):
         """Compute fallback must rotate cone/capsule/cylinder mass frame for non-Z axes."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -4491,8 +4541,13 @@ def Xform "Articulation" (
             builder.add_usd(stage)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_contact_margin_parsing(self):
-        """Test that contact_margin is parsed correctly from USD."""
+    def test_gap_parsing(self):
+        """Verify USD contact margin parsing into shape gap values [m].
+
+        The ``newton:contactMargin`` USD attribute should map to per-shape
+        ``gap`` values [m], while colliders without an explicit value should
+        fall back to the configured default gap [m].
+        """
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -4508,35 +4563,35 @@ def Xform "Articulation" (
         body_prim = body.GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(body_prim)
 
-        # Create a collider with newton:contactMargin
+        # Create a collider with newton:contactMargin (mapped to internal "gap")
         collider1 = UsdGeom.Cube.Define(stage, "/Articulation/Body/Collider1")
         collider1_prim = collider1.GetPrim()
         collider1_prim.ApplyAPI("NewtonCollisionAPI")
         UsdPhysics.CollisionAPI.Apply(collider1_prim)
         collider1_prim.GetAttribute("newton:contactMargin").Set(0.05)
 
-        # Create another collider without contact_margin (should use default)
+        # Create another collider without gap (should use default)
         collider2 = UsdGeom.Sphere.Define(stage, "/Articulation/Body/Collider2")
         collider2_prim = collider2.GetPrim()
         UsdPhysics.CollisionAPI.Apply(collider2_prim)
 
         # Import the USD
         builder = newton.ModelBuilder()
-        builder.default_shape_cfg.contact_margin = 0.01  # set a known default
+        builder.default_shape_cfg.gap = 0.01  # set a known default
         result = builder.add_usd(stage)
         model = builder.finalize()
 
-        # Verify contact_margin was parsed correctly
+        # Verify gap was parsed correctly
         shape1_idx = result["path_shape_map"]["/Articulation/Body/Collider1"]
         shape2_idx = result["path_shape_map"]["/Articulation/Body/Collider2"]
 
         # Collider1 should have the authored value
-        margin1 = model.shape_contact_margin.numpy()[shape1_idx]
-        self.assertAlmostEqual(margin1, 0.05, places=4)
+        gap1 = model.shape_gap.numpy()[shape1_idx]
+        self.assertAlmostEqual(gap1, 0.05, places=4)
 
         # Collider2 should have the default value
-        margin2 = model.shape_contact_margin.numpy()[shape2_idx]
-        self.assertAlmostEqual(margin2, 0.01, places=4)
+        gap2 = model.shape_gap.numpy()[shape2_idx]
+        self.assertAlmostEqual(gap2, 0.01, places=4)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_gravity_enabled_parsing(self):

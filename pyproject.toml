@@ -27,9 +27,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "warp-lang>=1.11.0",
+    "newton-actuators",
 ]
 
 [project.optional-dependencies]
+
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation

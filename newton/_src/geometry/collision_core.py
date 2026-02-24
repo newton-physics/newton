@@ -271,11 +271,11 @@ def create_compute_gjk_mpr_contacts(
         rot_b: wp.quat,
         pos_a_adjusted: wp.vec3,
         pos_b_adjusted: wp.vec3,
-        rigid_contact_margin: float,
+        rigid_gap: float,
         shape_a: int,
         shape_b: int,
-        thickness_a: float,
-        thickness_b: float,
+        margin_a: float,
+        margin_b: float,
         writer_data: Any,
     ):
         """
@@ -288,11 +288,11 @@ def create_compute_gjk_mpr_contacts(
             rot_b: Orientation of shape B
             pos_a_adjusted: Adjusted position of shape A
             pos_b_adjusted: Adjusted position of shape B
-            rigid_contact_margin: Contact margin for rigid bodies
+            rigid_gap: Contact gap for rigid bodies
             shape_a: Index of shape A
             shape_b: Index of shape B
-            thickness_a: Thickness of shape A
-            thickness_b: Thickness of shape B
+            margin_a: Per-shape margin offset for shape A (signed distance padding)
+            margin_b: Per-shape margin offset for shape B (signed distance padding)
             writer_data: Data structure for contact writer
         """
         data_provider = SupportMapDataProvider()
@@ -319,11 +319,11 @@ def create_compute_gjk_mpr_contacts(
         contact_template = ContactData()
         contact_template.radius_eff_a = radius_eff_a
         contact_template.radius_eff_b = radius_eff_b
-        contact_template.thickness_a = thickness_a
-        contact_template.thickness_b = thickness_b
+        contact_template.margin_a = margin_a
+        contact_template.margin_b = margin_b
         contact_template.shape_a = shape_a
         contact_template.shape_b = shape_b
-        contact_template.margin = rigid_contact_margin
+        contact_template.margin = rigid_gap
 
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(create_solve_convex_multi_contact(support_map, writer_func, post_process_contact))(
@@ -335,7 +335,7 @@ def create_compute_gjk_mpr_contacts(
                 pos_b_adjusted,
                 0.0,  # sum_of_contact_offsets - gap
                 data_provider,
-                rigid_contact_margin + radius_eff_a + radius_eff_b,
+                rigid_gap + radius_eff_a + radius_eff_b,
                 type_a == GeoType.SPHERE
                 or type_b == GeoType.SPHERE
                 or type_a == GeoType.ELLIPSOID
@@ -353,7 +353,7 @@ def create_compute_gjk_mpr_contacts(
                 pos_b_adjusted,
                 0.0,  # sum_of_contact_offsets - gap
                 data_provider,
-                rigid_contact_margin + radius_eff_a + radius_eff_b,
+                rigid_gap + radius_eff_a + radius_eff_b,
                 writer_data,
                 contact_template,
             )
@@ -579,11 +579,11 @@ def create_find_contacts(writer_func: Any):
         is_infinite_plane_b: bool,
         bsphere_radius_a: float,
         bsphere_radius_b: float,
-        rigid_contact_margin: float,
+        rigid_gap: float,
         shape_a: int,
         shape_b: int,
-        thickness_a: float,
-        thickness_b: float,
+        margin_a: float,
+        margin_b: float,
         writer_data: Any,
     ):
         """
@@ -600,11 +600,11 @@ def create_find_contacts(writer_func: Any):
             is_infinite_plane_b: Whether shape B is an infinite plane
             bsphere_radius_a: Bounding sphere radius of shape A
             bsphere_radius_b: Bounding sphere radius of shape B
-            rigid_contact_margin: Contact margin for rigid bodies
+            rigid_gap: Contact gap for rigid bodies
             shape_a: Index of shape A
             shape_b: Index of shape B
-            thickness_a: Thickness of shape A
-            thickness_b: Thickness of shape B
+            margin_a: Per-shape margin offset for shape A (signed distance padding)
+            margin_b: Per-shape margin offset for shape B (signed distance padding)
             writer_data: Data structure for contact writer
         """
         if writer_data.contact_count[0] >= writer_data.contact_max:
@@ -618,7 +618,7 @@ def create_find_contacts(writer_func: Any):
             # Position the cube based on the OTHER object's position (pos_b)
             # Note: convert_infinite_plane_to_cube modifies shape_data_a.shape_type to BOX
             shape_data_a, pos_a_adjusted = convert_infinite_plane_to_cube(
-                shape_data_a, quat_a, pos_a, pos_b, bsphere_radius_b + rigid_contact_margin
+                shape_data_a, quat_a, pos_a, pos_b, bsphere_radius_b + rigid_gap
             )
 
         pos_b_adjusted = pos_b
@@ -626,7 +626,7 @@ def create_find_contacts(writer_func: Any):
             # Position the cube based on the OTHER object's position (pos_a)
             # Note: convert_infinite_plane_to_cube modifies shape_data_b.shape_type to BOX
             shape_data_b, pos_b_adjusted = convert_infinite_plane_to_cube(
-                shape_data_b, quat_b, pos_b, pos_a, bsphere_radius_a + rigid_contact_margin
+                shape_data_b, quat_b, pos_b, pos_a, bsphere_radius_a + rigid_gap
             )
 
         # Compute and write contacts using GJK/MPR
@@ -637,11 +637,11 @@ def create_find_contacts(writer_func: Any):
             quat_b,
             pos_a_adjusted,
             pos_b_adjusted,
-            rigid_contact_margin,
+            rigid_gap,
             shape_a,
             shape_b,
-            thickness_a,
-            thickness_b,
+            margin_a,
+            margin_b,
             writer_data,
         )
 
@@ -788,7 +788,7 @@ def mesh_vs_convex_midphase(
     shape_type: wp.array(dtype=int),
     shape_data: wp.array(dtype=wp.vec4),
     shape_source_ptr: wp.array(dtype=wp.uint64),
-    rigid_contact_margin: float,
+    rigid_gap: float,
     triangle_pairs: wp.array(dtype=wp.vec3i),
     triangle_pairs_count: wp.array(dtype=int),
 ):
@@ -806,9 +806,9 @@ def mesh_vs_convex_midphase(
         X_ws: Non-mesh shape world-space transform
         mesh_id: Mesh BVH ID
         shape_type: Array of shape types
-        shape_data: Array of shape data (vec4: scale.xyz, thickness.w)
+        shape_data: Array of shape data (vec4: scale.xyz, margin.w)
         shape_source_ptr: Array of mesh/SDF source pointers
-        rigid_contact_margin: Contact margin for rigid bodies
+        rigid_gap: Contact gap for rigid bodies
         triangle_pairs: Output array for triangle pairs (mesh_shape, non_mesh_shape, tri_index)
         triangle_pairs_count: Counter for triangle pairs
     """
@@ -843,7 +843,7 @@ def mesh_vs_convex_midphase(
     )
 
     # Add small margin for contact detection
-    margin_vec = wp.vec3(rigid_contact_margin, rigid_contact_margin, rigid_contact_margin)
+    margin_vec = wp.vec3(rigid_gap, rigid_gap, rigid_gap)
     aabb_lower = aabb_lower - margin_vec
     aabb_upper = aabb_upper + margin_vec
 

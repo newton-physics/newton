@@ -37,8 +37,8 @@ class ContactData:
         contact_distance: Signed distance between shapes (negative indicates penetration)
         radius_eff_a: Effective radius of shape A (for rounded shapes like spheres/capsules)
         radius_eff_b: Effective radius of shape B (for rounded shapes like spheres/capsules)
-        thickness_a: Collision thickness offset for shape A
-        thickness_b: Collision thickness offset for shape B
+        margin_a: Collision surface margin offset for shape A
+        margin_b: Collision surface margin offset for shape B
         shape_a: Index of the first shape in the collision pair
         shape_b: Index of the second shape in the collision pair
         margin: Contact detection margin/threshold
@@ -52,8 +52,8 @@ class ContactData:
     contact_distance: float
     radius_eff_a: float
     radius_eff_b: float
-    thickness_a: float
-    thickness_b: float
+    margin_a: float
+    margin_b: float
     shape_a: int
     shape_b: int
     margin: float
@@ -76,7 +76,7 @@ def contact_passes_margin_check(
         True if the contact distance is within the contact margin, False otherwise
     """
     total_separation_needed = (
-        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.thickness_a + contact_data.thickness_b
+        contact_data.radius_eff_a + contact_data.radius_eff_b + contact_data.margin_a + contact_data.margin_b
     )
 
     # Distance calculation matching box_plane_collision

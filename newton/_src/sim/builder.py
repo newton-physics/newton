@@ -74,6 +74,7 @@ from .joints import (
 from .model import Model
 
 if TYPE_CHECKING:
+    from newton_actuators import Actuator
     from pxr import Usd
 
 
@@ -153,6 +154,19 @@ class ModelBuilder:
     """
 
     @dataclass
+    class ActuatorEntry:
+        """Stores accumulated indices and arguments for one actuator type + scalar params combo.
+
+        Each element in input_indices/output_indices represents one actuator.
+        For single-input actuators: [[idx1], [idx2], ...] → flattened to 1D array
+        For multi-input actuators: [[idx1, idx2], [idx3, idx4], ...] → 2D array
+        """
+
+        input_indices: list[list[int]]  # Per-actuator input indices
+        output_indices: list[list[int]]  # Per-actuator output indices
+        args: list[dict[str, Any]]  # Per-actuator array params (scalar params in dict key)
+
+    @dataclass
     class ShapeConfig:
         """
         Represents the properties of a collision shape used in simulation.
@@ -176,14 +190,14 @@ class ModelBuilder:
         """The coefficient of torsional friction (resistance to spinning at contact point). Used by XPBD, MuJoCo."""
         mu_rolling: float = 0.0001
         """The coefficient of rolling friction (resistance to rolling motion). Used by XPBD, MuJoCo."""
-        thickness: float = 0.0
-        """Outward offset from the shape's surface for collision detection.
+        margin: float = 0.0
+        """Outward offset from the shape's surface [m] for collision detection.
         Extends the effective collision surface outward by this amount. When two shapes collide,
-        their thicknesses are summed (thickness_a + thickness_b) to determine the total separation."""
-        contact_margin: float | None = None
-        """The contact margin for collision detection. If None, uses builder.rigid_contact_margin as default.
-        AABBs are expanded by this value for broad phase detection. Must be >= thickness to ensure
-        collisions are not missed when thickened surfaces approach each other."""
+        their margins are summed (margin_a + margin_b) to determine the total separation [m].
+        This value is also used when computing inertia for hollow shapes (``is_solid=False``)."""
+        gap: float | None = None
+        """Additional contact detection gap [m]. If None, uses builder.rigid_gap as default.
+        Broad phase uses (margin + gap) [m] for AABB expansion and pair filtering."""
         is_solid: bool = True
         """Indicates whether the shape is solid or hollow. Defaults to True."""
         collision_group: int = 1
@@ -799,7 +813,7 @@ class ModelBuilder:
         self.shape_scale = []
         self.shape_source = []
         self.shape_is_solid = []
-        self.shape_thickness = []
+        self.shape_margin = []
         self.shape_material_ke = []
         self.shape_material_kd = []
         self.shape_material_kf = []
@@ -809,7 +823,7 @@ class ModelBuilder:
         self.shape_material_mu_torsional = []
         self.shape_material_mu_rolling = []
         self.shape_material_kh = []
-        self.shape_contact_margin = []
+        self.shape_gap = []
         # collision groups within collisions are handled
         self.shape_collision_group = []
         # radius to use for broadphase collision checking
@@ -888,6 +902,7 @@ class ModelBuilder:
         self.joint_qd = []
         self.joint_cts = []
         self.joint_f = []
+        self.joint_act = []
 
         self.joint_type = []
         self.joint_label = []
@@ -938,7 +953,7 @@ class ModelBuilder:
 
         # contacts to be generated within the given distance margin to be generated at
         # every simulation substep (can be 0 if only one PBD solver iteration is used)
-        self.rigid_contact_margin = 0.1
+        self.rigid_gap = 0.1
 
         # number of rigid contact points to allocate in the model during self.finalize() per world
         # if setting is None, the number of worst-case number of contacts will be calculated in self.finalize()
@@ -984,6 +999,10 @@ class ModelBuilder:
         self.custom_frequencies: dict[str, ModelBuilder.CustomFrequency] = {}
         # Incrementally maintained counts for custom string frequencies
         self._custom_frequency_counts: dict[str, int] = {}
+
+        # Actuator entries (accumulated during add_actuator calls)
+        # Key is (actuator_class, scalar_params_tuple) to separate instances with different scalar params
+        self.actuator_entries: dict[tuple[type, tuple], ActuatorEntry] = {}
 
     def add_shape_collision_filter_pair(self, shape_a: int, shape_b: int) -> None:
         """Add a collision filter pair in canonical order.
@@ -1436,6 +1455,126 @@ class ModelBuilder:
                 raise ValueError(
                     f"Custom attribute '{attr_key}' has unsupported frequency {custom_attr.frequency} for joints"
                 )
+
+    def add_actuator(
+        self,
+        actuator_class: type[Actuator],
+        input_indices: list[int],
+        output_indices: list[int] | None = None,
+        **kwargs,
+    ) -> None:
+        """Add an external actuator, independent of any ``UsdPhysics`` joint drives.
+
+        External actuators (e.g. :class:`newton_actuators.ActuatorPD`) apply
+        forces computed outside the physics engine. Multiple calls with the same
+        *actuator_class* and identical scalar parameters are accumulated into one
+        entry; the actuator instance is created during :meth:`finalize`.
+
+        Args:
+            actuator_class: The actuator class (must derive from
+                :class:`newton_actuators.Actuator`).
+            input_indices: DOF indices this actuator reads from. Length 1 for single-input,
+                length > 1 for multi-input actuators.
+            output_indices: DOF indices for writing output. Defaults to *input_indices*.
+            **kwargs: Actuator parameters (e.g., ``kp``, ``kd``, ``max_force``).
+        """
+        if output_indices is None:
+            output_indices = input_indices.copy()
+
+        resolved = actuator_class.resolve_arguments(kwargs)
+
+        # Extract scalar params to form the entry key
+        scalar_param_names = getattr(actuator_class, "SCALAR_PARAMS", set())
+        scalar_key = tuple(sorted((k, resolved[k]) for k in scalar_param_names if k in resolved))
+
+        # Key is (class, scalar_params) so different scalar values create separate entries
+        entry_key = (actuator_class, scalar_key)
+        entry = self.actuator_entries.setdefault(
+            entry_key,
+            ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+        )
+
+        # Filter out scalar params from args (they're already in the key)
+        array_params = {k: v for k, v in resolved.items() if k not in scalar_param_names}
+
+        # Validate dimension consistency before appending
+        if entry.input_indices:
+            expected_input_dim = len(entry.input_indices[0])
+            if len(input_indices) != expected_input_dim:
+                raise ValueError(
+                    f"Input indices dimension mismatch for {actuator_class.__name__}: "
+                    f"expected {expected_input_dim}, got {len(input_indices)}. "
+                    f"All actuators of the same type must have the same number of inputs."
+                )
+        if entry.output_indices:
+            expected_output_dim = len(entry.output_indices[0])
+            if len(output_indices) != expected_output_dim:
+                raise ValueError(
+                    f"Output indices dimension mismatch for {actuator_class.__name__}: "
+                    f"expected {expected_output_dim}, got {len(output_indices)}. "
+                    f"All actuators of the same type must have the same number of outputs."
+                )
+
+        # Each call adds one actuator with its input/output indices
+        entry.input_indices.append(input_indices)
+        entry.output_indices.append(output_indices)
+        entry.args.append(array_params)
+
+    def _stack_args_to_arrays(self, args_list: list[dict], device=None, requires_grad: bool = False) -> dict:
+        """Convert list of per-index arg dicts into dict of warp arrays.
+
+        Args:
+            args_list: List of dicts, one per index. Each dict has same keys.
+            device: Device for warp arrays.
+            requires_grad: Whether the arrays require gradients.
+
+        Returns:
+            Dict mapping param names to warp arrays.
+        """
+        if not args_list:
+            return {}
+
+        result = {}
+        for key in args_list[0].keys():
+            values = [args[key] for args in args_list]
+            result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
+
+        return result
+
+    @staticmethod
+    def _build_index_array(indices: list[list[int]], device) -> wp.array:
+        """Build a warp array from nested index lists.
+
+        If all inner lists have length 1, creates a 1D array (N,).
+        Otherwise, creates a 2D array (N, M) where M is the inner list length.
+
+        Args:
+            indices: Nested list of indices, one inner list per actuator.
+            device: Device for the warp array.
+
+        Returns:
+            wp.array with shape (N,) or (N, M).
+
+        Raises:
+            ValueError: If inner lists have inconsistent lengths (for 2D case).
+        """
+        if not indices:
+            return wp.array([], dtype=wp.uint32, device=device)
+
+        inner_lengths = [len(idx_list) for idx_list in indices]
+        max_len = max(inner_lengths)
+
+        if max_len == 1:
+            # All single-input: flatten to 1D
+            flat = [idx_list[0] for idx_list in indices]
+            return wp.array(flat, dtype=wp.uint32, device=device)
+        else:
+            # Multi-input: create 2D array
+            if not all(length == max_len for length in inner_lengths):
+                raise ValueError(
+                    f"All actuators must have the same number of inputs for 2D indexing. Got lengths: {inner_lengths}"
+                )
+            return wp.array(indices, dtype=wp.uint32, device=device)
 
     @property
     def default_site_cfg(self) -> ShapeConfig:
@@ -1996,6 +2135,8 @@ class ModelBuilder:
                   - Mapping from prim path to relative transform for bodies merged via ``collapse_fixed_joints``
                 * - ``"path_original_body_map"``
                   - Mapping from prim path to original body index before ``collapse_fixed_joints``
+                * - ``"actuator_count"``
+                  - Number of external actuators parsed from the USD stage
         """
         from ..utils.import_usd import parse_usd  # noqa: PLC0415
 
@@ -2624,6 +2765,7 @@ class ModelBuilder:
             "joint_qd",
             "joint_cts",
             "joint_f",
+            "joint_act",
             "joint_target_pos",
             "joint_target_vel",
             "joint_limit_lower",
@@ -2641,7 +2783,7 @@ class ModelBuilder:
             "shape_scale",
             "shape_source",
             "shape_is_solid",
-            "shape_thickness",
+            "shape_margin",
             "shape_material_ke",
             "shape_material_kd",
             "shape_material_kf",
@@ -2652,7 +2794,7 @@ class ModelBuilder:
             "shape_material_mu_rolling",
             "shape_material_kh",
             "shape_collision_radius",
-            "shape_contact_margin",
+            "shape_gap",
             "shape_sdf_narrow_band_range",
             "shape_sdf_max_resolution",
             "shape_sdf_target_voxel_size",
@@ -2820,6 +2962,19 @@ class ModelBuilder:
         for freq_key, builder_count in builder._custom_frequency_counts.items():
             offset = custom_frequency_offsets.get(freq_key, 0)
             self._custom_frequency_counts[freq_key] = offset + builder_count
+
+        # Merge actuator entries from the sub-builder with offset DOF indices
+        for entry_key, sub_entry in builder.actuator_entries.items():
+            entry = self.actuator_entries.setdefault(
+                entry_key,
+                ModelBuilder.ActuatorEntry(input_indices=[], output_indices=[], args=[]),
+            )
+            # Offset indices by start_joint_dof_idx (each actuator's indices are a list)
+            for idx_list in sub_entry.input_indices:
+                entry.input_indices.append([idx + start_joint_dof_idx for idx in idx_list])
+            for idx_list in sub_entry.output_indices:
+                entry.output_indices.append([idx + start_joint_dof_idx for idx in idx_list])
+            entry.args.extend(sub_entry.args)
 
     @staticmethod
     def _coerce_mat33(value: Any) -> wp.mat33:
@@ -3138,6 +3293,7 @@ class ModelBuilder:
         for _ in range(dof_count):
             self.joint_qd.append(0.0)
             self.joint_f.append(0.0)
+            self.joint_act.append(0.0)
         for _ in range(cts_count):
             self.joint_cts.append(0.0)
 
@@ -4689,7 +4845,7 @@ class ModelBuilder:
         self.shape_type.append(type)
         self.shape_scale.append((scale[0], scale[1], scale[2]))
         self.shape_source.append(src)
-        self.shape_thickness.append(cfg.thickness)
+        self.shape_margin.append(cfg.margin)
         self.shape_is_solid.append(cfg.is_solid)
         self.shape_material_ke.append(cfg.ke)
         self.shape_material_kd.append(cfg.kd)
@@ -4700,9 +4856,7 @@ class ModelBuilder:
         self.shape_material_mu_torsional.append(cfg.mu_torsional)
         self.shape_material_mu_rolling.append(cfg.mu_rolling)
         self.shape_material_kh.append(cfg.kh)
-        self.shape_contact_margin.append(
-            cfg.contact_margin if cfg.contact_margin is not None else self.rigid_contact_margin
-        )
+        self.shape_gap.append(cfg.gap if cfg.gap is not None else self.rigid_gap)
         self.shape_collision_group.append(cfg.collision_group)
         self.shape_collision_radius.append(compute_shape_radius(type, scale, src))
         self.shape_world.append(self.current_world)
@@ -4722,7 +4876,7 @@ class ModelBuilder:
                     self.add_shape_collision_filter_pair(shape, child_shape)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
-            (m, c, I) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.thickness)
+            (m, c, I) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
             com_body = wp.transform_point(xform, c)
             self._update_body_mass(body, m, I, com_body, xform.q)
 
@@ -5376,7 +5530,7 @@ class ModelBuilder:
                 xform = self.shape_transform[shape]
                 cfg = ModelBuilder.ShapeConfig(
                     density=0.0,  # do not add extra mass / inertia
-                    thickness=self.shape_thickness[shape],
+                    margin=self.shape_margin[shape],
                     is_solid=self.shape_is_solid[shape],
                     has_shape_collision=False,
                     has_particle_collision=False,
@@ -5458,7 +5612,7 @@ class ModelBuilder:
                             mu_torsional=self.shape_material_mu_torsional[shape],
                             mu_rolling=self.shape_material_mu_rolling[shape],
                             kh=self.shape_material_kh[shape],
-                            thickness=self.shape_thickness[shape],
+                            margin=self.shape_margin[shape],
                             is_solid=self.shape_is_solid[shape],
                             collision_group=self.shape_collision_group[shape],
                             collision_filter_parent=self.default_shape_cfg.collision_filter_parent,
@@ -7987,44 +8141,44 @@ class ModelBuilder:
                 )
 
     def _validate_shapes(self) -> bool:
-        """Validate shape contact margins against thickness for stable broad phase detection.
+        """Validate shape gaps for stable broad phase detection.
 
-        Thickness is an outward offset from a shape's surface, while AABBs are expanded
-        by `contact_margin`. For reliable broad phase detection, each colliding shape
-        should satisfy `contact_margin >= thickness` so that thickened surfaces produce
-        overlapping AABBs.
+        Margin is an outward offset from a shape's surface [m], while broad phase uses
+        ``margin + gap`` [m] for expansion/filtering. For reliable detection, ``gap`` [m]
+        should be non-negative so effective expansion is not reduced below the shape
+        margin.
 
         This check only considers shapes that participate in collisions (with the
         `COLLIDE_SHAPES` or `COLLIDE_PARTICLES` flag).
 
         Warns:
-            UserWarning: If any colliding shape has `thickness > contact_margin`.
+            UserWarning: If any colliding shape has ``gap < 0``.
 
         Returns:
-            bool: True if no shapes with thickness > contact_margin, False otherwise.
+            bool: True if no shapes with negative gaps, False otherwise.
         """
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
-        shapes_with_bad_margin = []
+        shapes_with_bad_gap = []
         for i in range(self.shape_count):
             # Skip shapes that don't participate in any collisions (e.g., sites, visual-only)
             if not (self.shape_flags[i] & collision_flags_mask):
                 continue
-            thickness = self.shape_thickness[i]
-            margin = self.shape_contact_margin[i]
-            if thickness > margin:
-                shapes_with_bad_margin.append(
-                    f"{self.shape_label[i] or f'shape_{i}'} (thickness={thickness:.6g}, margin={margin:.6g})"
+            margin = self.shape_margin[i]
+            gap = self.shape_gap[i]
+            if gap < 0.0:
+                shapes_with_bad_gap.append(
+                    f"{self.shape_label[i] or f'shape_{i}'} (margin={margin:.6g}, gap={gap:.6g})"
                 )
-        if shapes_with_bad_margin:
-            example_shapes = shapes_with_bad_margin[:5]
+        if shapes_with_bad_gap:
+            example_shapes = shapes_with_bad_gap[:5]
             warnings.warn(
-                f"Found {len(shapes_with_bad_margin)} shape(s) with thickness > contact_margin. "
-                f"This can cause missed collisions in broad phase since AABBs are only expanded by contact_margin. "
-                f"Set contact_margin >= thickness for each shape. "
-                f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_margin) > 5 else ""),
+                f"Found {len(shapes_with_bad_gap)} shape(s) with gap < 0. "
+                f"This can cause missed collisions in broad phase because effective expansion uses margin + gap. "
+                f"Set gap >= 0 for each shape. "
+                f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_gap) > 5 else ""),
                 stacklevel=2,
             )
-        return len(shapes_with_bad_margin) == 0
+        return len(shapes_with_bad_gap) == 0
 
     def _validate_structure(self) -> None:
         """Validate structural invariants of the model.
@@ -8635,7 +8789,7 @@ class ModelBuilder:
             m.shape_source_ptr = wp.array(geo_sources, dtype=wp.uint64)
             m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
-            m.shape_thickness = wp.array(self.shape_thickness, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_margin = wp.array(self.shape_margin, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_collision_radius = wp.array(
                 self.shape_collision_radius, dtype=wp.float32, requires_grad=requires_grad
             )
@@ -8658,7 +8812,7 @@ class ModelBuilder:
                 self.shape_material_mu_rolling, dtype=wp.float32, requires_grad=requires_grad
             )
             m.shape_material_kh = wp.array(self.shape_material_kh, dtype=wp.float32, requires_grad=requires_grad)
-            m.shape_contact_margin = wp.array(self.shape_contact_margin, dtype=wp.float32, requires_grad=requires_grad)
+            m.shape_gap = wp.array(self.shape_gap, dtype=wp.float32, requires_grad=requires_grad)
 
             m.shape_collision_filter_pairs = {
                 (min(s1, s2), max(s1, s2)) for s1, s2 in self.shape_collision_filter_pairs
@@ -8841,8 +8995,8 @@ class ModelBuilder:
                 shape_src = self.shape_source[i]
                 shape_flags = self.shape_flags[i]
                 shape_scale = self.shape_scale[i]
-                shape_thickness = self.shape_thickness[i]
-                shape_contact_margin = self.shape_contact_margin[i]
+                shape_margin = self.shape_margin[i]
+                shape_gap = self.shape_gap[i]
                 sdf_narrow_band_range = self.shape_sdf_narrow_band_range[i]
                 sdf_target_voxel_size = self.shape_sdf_target_voxel_size[i]
                 sdf_max_resolution = self.shape_sdf_max_resolution[i]
@@ -8872,8 +9026,8 @@ class ModelBuilder:
                     cache_key = (
                         "primitive_generated",
                         shape_type,
-                        shape_thickness,
-                        shape_contact_margin,
+                        shape_margin,
+                        shape_gap,
                         tuple(sdf_narrow_band_range),
                         sdf_target_voxel_size,
                         effective_max_resolution,
@@ -8884,9 +9038,9 @@ class ModelBuilder:
                             shape_type=shape_type,
                             shape_geo=None,
                             shape_scale=shape_scale,
-                            shape_thickness=shape_thickness,
+                            shape_margin=shape_margin,
                             narrow_band_distance=sdf_narrow_band_range,
-                            margin=shape_contact_margin,
+                            margin=shape_gap,
                             target_voxel_size=sdf_target_voxel_size,
                             max_resolution=effective_max_resolution,
                             bake_scale=bake_scale,
@@ -9145,6 +9299,7 @@ class ModelBuilder:
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_vel = wp.array(self.joint_target_vel, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_effort_limit = wp.array(self.joint_effort_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_velocity_limit = wp.array(self.joint_velocity_limit, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_friction = wp.array(self.joint_friction, dtype=wp.float32, requires_grad=requires_grad)
@@ -9260,6 +9415,21 @@ class ModelBuilder:
                 device=device,
                 requires_grad=requires_grad,
             )
+
+            # Create actuators from accumulated entries
+            m.actuators = []
+            for (actuator_class, scalar_key), entry in self.actuator_entries.items():
+                input_indices = self._build_index_array(entry.input_indices, device)
+                output_indices = self._build_index_array(entry.output_indices, device)
+                param_arrays = self._stack_args_to_arrays(entry.args, device=device, requires_grad=requires_grad)
+                scalar_params = dict(scalar_key)
+                actuator = actuator_class(
+                    input_indices=input_indices,
+                    output_indices=output_indices,
+                    **param_arrays,
+                    **scalar_params,
+                )
+                m.actuators.append(actuator)
 
             # Add custom attributes onto the model (with lazy evaluation)
             # Early return if no custom attributes exist to avoid overhead
