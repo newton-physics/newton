@@ -808,7 +808,7 @@
 <h1>newton.ModelBuilder<a class="headerlink" href="#newton-modelbuilder" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.ModelBuilder">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">ModelBuilder</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Axis.Z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gravity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-9.81</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/builder.py#L80"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.ModelBuilder" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">ModelBuilder</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Axis.Z</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gravity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-9.81</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/builder.py#L81"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.ModelBuilder" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>A helper class for building simulation models at runtime.</p>
 <p>Use the ModelBuilder to construct a simulation scene. The ModelBuilder
@@ -880,6 +880,40 @@ Each entity (particle, body, shape, joint, articulation) has an associated world
 than creating your own Model object directly, however it is possible to do so if
 desired.</p>
 </div>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.ModelBuilder.ActuatorEntry">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">ActuatorEntry</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">input_indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">args</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.ActuatorEntry" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
+<p>Stores accumulated indices and arguments for one actuator type + scalar params combo.</p>
+<p>Each element in input_indices/output_indices represents one actuator.
+For single-input actuators: [[idx1], [idx2], …] → flattened to 1D array
+For multi-input actuators: [[idx1, idx2], [idx3, idx4], …] → 2D array</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.ModelBuilder.ActuatorEntry.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">input_indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">args</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.ActuatorEntry.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.ModelBuilder.ActuatorEntry.args">
+<span class="sig-name descname"><span class="pre">args</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#dict" title="(in Python v3.14)"><span class="pre">dict</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><span class="pre">str</span></a><span class="p"><span class="pre">,</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><span class="pre">Any</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.ModelBuilder.ActuatorEntry.args" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.ModelBuilder.ActuatorEntry.input_indices">
+<span class="sig-name descname"><span class="pre">input_indices</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.ModelBuilder.ActuatorEntry.input_indices" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.ModelBuilder.ActuatorEntry.output_indices">
+<span class="sig-name descname"><span class="pre">output_indices</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><span class="pre">int</span></a><span class="p"><span class="pre">]</span></span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.ModelBuilder.ActuatorEntry.output_indices" title="Link to this definition">#</a></dt>
+<dd></dd></dl>
+
+</dd></dl>
+
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.ModelBuilder.CustomAttribute">
 <em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">CustomAttribute</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dtype</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frequency</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">assignment</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">AttributeAssignment.MODEL</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">namespace</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">references</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">default</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">values</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">usd_attribute_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mjcf_attribute_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">urdf_attribute_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">usd_value_transformer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mjcf_value_transformer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">urdf_value_transformer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.CustomAttribute" title="Link to this definition">#</a></dt>
@@ -1344,6 +1378,28 @@ their thicknesses are summed (thickness_a + thickness_b) to determine the total 
 Defaults to Axis.Z.</p></li>
 <li><p><strong>gravity</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><em>optional</em>) – The magnitude of gravity to apply along the up axis.
 Defaults to -9.81.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.ModelBuilder.add_actuator">
+<span class="sig-name descname"><span class="pre">add_actuator</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">actuator_class</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">input_indices</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_indices</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.ModelBuilder.add_actuator" title="Link to this definition">#</a></dt>
+<dd><p>Add an external actuator, independent of any <code class="docutils literal notranslate"><span class="pre">UsdPhysics</span></code> joint drives.</p>
+<p>External actuators (e.g. <code class="xref py py-class docutils literal notranslate"><span class="pre">newton_actuators.ActuatorPD</span></code>) apply
+forces computed outside the physics engine. Multiple calls with the same
+<em>actuator_class</em> and identical scalar parameters are accumulated into one
+entry; the actuator instance is created during <a class="reference internal" href="#newton.ModelBuilder.finalize" title="newton.ModelBuilder.finalize"><code class="xref py py-meth docutils literal notranslate"><span class="pre">finalize()</span></code></a>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>actuator_class</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#type" title="(in Python v3.14)"><em>type</em></a><em>[</em><em>Actuator</em><em>]</em>) – The actuator class (must derive from
+<code class="xref py py-class docutils literal notranslate"><span class="pre">newton_actuators.Actuator</span></code>).</p></li>
+<li><p><strong>input_indices</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>]</em>) – DOF indices this actuator reads from. Length 1 for single-input,
+length &gt; 1 for multi-input actuators.</p></li>
+<li><p><strong>output_indices</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em>] </em><em>| </em><em>None</em>) – DOF indices for writing output. Defaults to <em>input_indices</em>.</p></li>
+<li><p><strong>**kwargs</strong> – Actuator parameters (e.g., <code class="docutils literal notranslate"><span class="pre">kp</span></code>, <code class="docutils literal notranslate"><span class="pre">kd</span></code>, <code class="docutils literal notranslate"><span class="pre">max_force</span></code>).</p></li>
 </ul>
 </dd>
 </dl>
@@ -3485,6 +3541,9 @@ damping &gt; 0, <a class="reference internal" href="newton.ActuatorMode.html#new
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">&quot;path_original_body_map&quot;</span></code></p></td>
 <td><p>Mapping from prim path to original body index before <code class="docutils literal notranslate"><span class="pre">collapse_fixed_joints</span></code></p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&quot;actuator_count&quot;</span></code></p></td>
+<td><p>Number of external actuators parsed from the USD stage</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -4157,6 +4216,13 @@ Default: False.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder"><code class="docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.ActuatorEntry"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.ActuatorEntry</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.ActuatorEntry.__init__"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.ActuatorEntry.__init__()</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.ActuatorEntry.args"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.ActuatorEntry.args</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.ActuatorEntry.input_indices"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.ActuatorEntry.input_indices</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.ActuatorEntry.output_indices"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.ActuatorEntry.output_indices</span></code></a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.CustomAttribute"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.CustomAttribute</span></code></a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.CustomAttribute.__init__"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.CustomAttribute.__init__()</span></code></a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.CustomAttribute.build_array"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.CustomAttribute.build_array()</span></code></a></li>
@@ -4222,6 +4288,7 @@ Default: False.</p>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.__init__"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_actuator"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_actuator()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_articulation"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_articulation()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_body"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_body()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.ModelBuilder.add_builder"><code class="docutils literal notranslate"><span class="pre">ModelBuilder.add_builder()</span></code></a></li>

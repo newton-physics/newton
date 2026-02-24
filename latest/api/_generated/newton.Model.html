@@ -810,7 +810,7 @@
 <h1>newton.Model<a class="headerlink" href="#newton-model" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.Model">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">Model</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/model.py#L31"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.Model" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">Model</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">device</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/model.py#L35"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.Model" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Represents the static (non-time-varying) definition of a simulation model in Newton.</p>
 <p>The Model class encapsulates all geometry, constraints, and parameters that describe a physical system
@@ -1233,6 +1233,12 @@ If None, uses the model’s <a class="reference internal" href="#newton.Model.re
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.actuators">
+<span class="sig-name descname"><span class="pre">actuators</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><span class="pre">list</span></a><span class="p"><span class="pre">[</span></span><span class="pre">Actuator</span><span class="p"><span class="pre">]</span></span></em><a class="headerlink" href="#newton.Model.actuators" title="Link to this definition">#</a></dt>
+<dd><p>List of actuator instances for this model.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.articulation_count">
 <span class="sig-name descname"><span class="pre">articulation_count</span></span><a class="headerlink" href="#newton.Model.articulation_count" title="Link to this definition">#</a></dt>
 <dd><p>Total number of articulations in the system.</p>
@@ -1590,6 +1596,12 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dt class="sig sig-object py" id="newton.Model.joint_X_p">
 <span class="sig-name descname"><span class="pre">joint_X_p</span></span><a class="headerlink" href="#newton.Model.joint_X_p" title="Link to this definition">#</a></dt>
 <dd><p>Joint transform in parent frame [m, unitless quaternion], shape [joint_count, 7], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_act">
+<span class="sig-name descname"><span class="pre">joint_act</span></span><a class="headerlink" href="#newton.Model.joint_act" title="Link to this definition">#</a></dt>
+<dd><p>Per-DOF feedforward actuation input for control initialization, shape [joint_dof_count], float.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2528,6 +2540,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.request_state_attributes"><code class="docutils literal notranslate"><span class="pre">Model.request_state_attributes()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.set_gravity"><code class="docutils literal notranslate"><span class="pre">Model.set_gravity()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.state"><code class="docutils literal notranslate"><span class="pre">Model.state()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.actuators"><code class="docutils literal notranslate"><span class="pre">Model.actuators</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_count"><code class="docutils literal notranslate"><span class="pre">Model.articulation_count</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_label"><code class="docutils literal notranslate"><span class="pre">Model.articulation_label</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.articulation_start"><code class="docutils literal notranslate"><span class="pre">Model.articulation_start</span></code></a></li>
@@ -2583,6 +2596,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.heightfield_elevation_data"><code class="docutils literal notranslate"><span class="pre">Model.heightfield_elevation_data</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_c"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_p"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_act"><code class="docutils literal notranslate"><span class="pre">Model.joint_act</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_act_mode"><code class="docutils literal notranslate"><span class="pre">Model.joint_act_mode</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_ancestor"><code class="docutils literal notranslate"><span class="pre">Model.joint_ancestor</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_armature"><code class="docutils literal notranslate"><span class="pre">Model.joint_armature</span></code></a></li>

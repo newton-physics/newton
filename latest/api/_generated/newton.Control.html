@@ -829,6 +829,14 @@ should generally be created using the <a class="reference internal" href="newton
 </dd></dl>
 
 <dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Control.joint_act">
+<span class="sig-name descname"><span class="pre">joint_act</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Control.joint_act" title="Link to this definition">#</a></dt>
+<dd><p>Per-DOF feedforward actuation input, shape <code class="docutils literal notranslate"><span class="pre">(joint_dof_count,)</span></code>, type <code class="docutils literal notranslate"><span class="pre">float</span></code> (optional).</p>
+<p>This is an additive feedforward term used by actuators (e.g. <code class="xref py py-class docutils literal notranslate"><span class="pre">ActuatorPD</span></code>) in their control law
+before PD/PID correction is applied.</p>
+</dd></dl>
+
+<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Control.joint_f">
 <span class="sig-name descname"><span class="pre">joint_f</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><span class="pre">array</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/library/constants.html#None" title="(in Python v3.14)"><span class="pre">None</span></a></em><a class="headerlink" href="#newton.Control.joint_f" title="Link to this definition">#</a></dt>
 <dd><p>Array of generalized joint forces [N or N·m, depending on joint type] with shape <code class="docutils literal notranslate"><span class="pre">(joint_dof_count,)</span></code>
@@ -910,6 +918,7 @@ center-of-mass frame, which can lead to unexpected rotation when applying linear
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Control"><code class="docutils literal notranslate"><span class="pre">Control</span></code></a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Control.__init__"><code class="docutils literal notranslate"><span class="pre">Control.__init__()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Control.clear"><code class="docutils literal notranslate"><span class="pre">Control.clear()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Control.joint_act"><code class="docutils literal notranslate"><span class="pre">Control.joint_act</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Control.joint_f"><code class="docutils literal notranslate"><span class="pre">Control.joint_f</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Control.joint_target_pos"><code class="docutils literal notranslate"><span class="pre">Control.joint_target_pos</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Control.joint_target_vel"><code class="docutils literal notranslate"><span class="pre">Control.joint_target_vel</span></code></a></li>

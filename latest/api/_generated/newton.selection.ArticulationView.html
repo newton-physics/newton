@@ -811,7 +811,7 @@
 <h1>newton.selection.ArticulationView<a class="headerlink" href="#newton-selection-articulationview" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.selection.ArticulationView">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.selection.</span></span><span class="sig-name descname"><span class="pre">ArticulationView</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pattern</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_joint_types</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_joint_types</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/utils/selection.py#L313"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.selection.ArticulationView" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.selection.</span></span><span class="sig-name descname"><span class="pre">ArticulationView</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">pattern</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_joints</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_links</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_joint_types</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">exclude_joint_types</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">verbose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/utils/selection.py#L431"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.selection.ArticulationView" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>ArticulationView provides a flexible interface for selecting and manipulating
 subsets of articulations and their joints, links, and shapes within a Model.
@@ -909,6 +909,26 @@ If None, allocates internally.</p></li>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
 <dd class="field-even"><p>The mass matrix array H, or None if the model has no articulations.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.selection.ArticulationView.get_actuator_parameter">
+<span class="sig-name descname"><span class="pre">get_actuator_parameter</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">actuator</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">name</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.selection.ArticulationView.get_actuator_parameter" title="Link to this definition">#</a></dt>
+<dd><p>Get actuator parameter values for actuators corresponding to this view’s DOFs.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>actuator</strong> (<em>Actuator</em>) – An actuator instance with input_indices and parameter arrays.</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Parameter name (e.g., ‘kp’, ‘kd’, ‘max_force’, ‘gear’, ‘constant_force’).</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>Parameter values shaped (world_count, dofs_per_world).</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>wp.array</p>
 </dd>
 </dl>
 </dd></dl>
@@ -1064,6 +1084,22 @@ If None, allocates internally.</p></li>
 </dd></dl>
 
 <dl class="py method">
+<dt class="sig sig-object py" id="newton.selection.ArticulationView.set_actuator_parameter">
+<span class="sig-name descname"><span class="pre">set_actuator_parameter</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">actuator</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">values</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.selection.ArticulationView.set_actuator_parameter" title="Link to this definition">#</a></dt>
+<dd><p>Set actuator parameter values for actuators corresponding to this view’s DOFs.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>actuator</strong> (<em>Actuator</em>) – An actuator instance with input_indices and parameter arrays.</p></li>
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Parameter name (e.g., ‘kp’, ‘kd’, ‘max_force’, ‘gear’, ‘constant_force’).</p></li>
+<li><p><strong>values</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a>) – New parameter values shaped (world_count, dofs_per_world). Non-actuated DOFs are ignored.</p></li>
+<li><p><strong>mask</strong> (<em>array</em><em>, </em><em>optional</em>) – Per-world mask (world_count,). Only masked worlds are updated.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
 <dt class="sig sig-object py" id="newton.selection.ArticulationView.set_attribute">
 <span class="sig-name descname"><span class="pre">set_attribute</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">values</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">mask</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.selection.ArticulationView.set_attribute" title="Link to this definition">#</a></dt>
 <dd><p>Set an attribute in the target (Model, State, or Control).</p>
@@ -1205,6 +1241,7 @@ Call <a class="reference internal" href="#newton.selection.ArticulationView.eval
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_fk"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_fk()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_jacobian"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_jacobian()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.eval_mass_matrix"><code class="docutils literal notranslate"><span class="pre">ArticulationView.eval_mass_matrix()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_actuator_parameter"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_actuator_parameter()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_attribute"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_attribute()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_forces"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_dof_forces()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_dof_positions"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_dof_positions()</span></code></a></li>
@@ -1214,6 +1251,7 @@ Call <a class="reference internal" href="#newton.selection.ArticulationView.eval
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_model_articulation_mask"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_model_articulation_mask()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_root_transforms"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_root_transforms()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.get_root_velocities"><code class="docutils literal notranslate"><span class="pre">ArticulationView.get_root_velocities()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_actuator_parameter"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_actuator_parameter()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_attribute"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_attribute()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_dof_forces"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_dof_forces()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.selection.ArticulationView.set_dof_positions"><code class="docutils literal notranslate"><span class="pre">ArticulationView.set_dof_positions()</span></code></a></li>
