@@ -168,8 +168,11 @@ class SchemaResolverPhysx(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
-            # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset
-            "margin": SchemaAttribute("physxCollision:restOffset", float("-inf")),
+            # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset.
+            # PhysX uses -inf to mean "engine default"; treat as unset (None).
+            "margin": SchemaAttribute(
+                "physxCollision:restOffset", 0.0, lambda v: None if v == float("-inf") else float(v)
+            ),
             "gap": SchemaAttribute(
                 "physxCollision:contactOffset",
                 float("-inf"),
