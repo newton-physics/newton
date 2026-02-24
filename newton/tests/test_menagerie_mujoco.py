@@ -500,6 +500,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     "geom_rgba",
     # Size: Compared via compare_geom_fields_unordered() which understands type-specific semantics
     "geom_size",
+    # Site size: Only a subset of the 3 elements is meaningful per type (sphere=1,
+    # capsule/cylinder=2, box=3). Compared via _compare_sites() instead.
+    "site_size",
     # Range: Compared via compare_jnt_range() which only checks limited joints
     # (MuJoCo ignores range when jnt_limited=False, Newton stores [-1e10, 1e10])
     "jnt_range",
@@ -753,62 +756,6 @@ def compare_solref_physics(
     )
 
 
-def compare_geom_sizes(
-    newton_mjw: Any,
-    native_mjw: Any,
-    tol: float = 1e-6,
-) -> None:
-    """Compare geom_size with type-specific semantics (direct index comparison).
-
-    MuJoCo stores 3 floats per geom in geom_size, but only a subset is
-    meaningful depending on the geom type:
-        - Plane (0): skip (infinite extent, size is cosmetic).
-        - Sphere (2): only radius (size[0]).
-        - Capsule (3), Cylinder (5): radius and half-length (size[:2]).
-        - All others: all 3 components.
-    """
-    ngeom = newton_mjw.ngeom
-    assert ngeom == native_mjw.ngeom, f"ngeom mismatch: newton={ngeom} vs native={native_mjw.ngeom}"
-
-    GEOM_PLANE = 0
-
-    newton_type = newton_mjw.geom_type.numpy()
-    newton_size = newton_mjw.geom_size.numpy()
-    native_size = native_mjw.geom_size.numpy()
-
-    for w in range(newton_size.shape[0]):
-        for g in range(ngeom):
-            gtype = newton_type[g]
-            n_sz = newton_size[w, g]
-            nat_sz = native_size[w, g]
-            if gtype == GEOM_PLANE:
-                continue
-            elif gtype == 2:  # SPHERE
-                np.testing.assert_allclose(
-                    n_sz[0],
-                    nat_sz[0],
-                    atol=tol,
-                    rtol=0,
-                    err_msg=f"geom_size[{w},{g}] (SPHERE) radius",
-                )
-            elif gtype in (3, 5):  # CAPSULE, CYLINDER
-                np.testing.assert_allclose(
-                    n_sz[:2],
-                    nat_sz[:2],
-                    atol=tol,
-                    rtol=0,
-                    err_msg=f"geom_size[{w},{g}] (CAPSULE/CYLINDER)",
-                )
-            else:
-                np.testing.assert_allclose(
-                    n_sz,
-                    nat_sz,
-                    atol=tol,
-                    rtol=0,
-                    err_msg=f"geom_size[{w},{g}] (type={gtype})",
-                )
-
-
 def compare_geom_fields_unordered(
     newton_mjw: Any,
     native_mjw: Any,
@@ -925,7 +872,7 @@ def compare_geom_fields_unordered(
                     err_msg=f"{field_name}[geom={g}]",
                 )
 
-    # Compare geom_size with type-specific semantics (reusing compare_geom_sizes logic)
+    # Compare geom_size with type-specific semantics
     if not any("geom_size" in s for s in skip_fields):
         newton_size = newton_mjw.geom_size.numpy()
         native_size = native_mjw.geom_size.numpy()
@@ -960,6 +907,68 @@ def compare_geom_fields_unordered(
                         rtol=0,
                         err_msg=f"geom_size[{w},{g}] (type={gtype})",
                     )
+
+
+def compare_site_sizes(
+    newton_mjw: Any,
+    native_mjw: Any,
+    tol: float = 1e-6,
+) -> None:
+    """Compare site_size with type-specific semantics.
+
+    MuJoCo stores 3 floats per site in site_size, but only a subset is
+    meaningful depending on the site type:
+        - Sphere (2): only radius (size[0]).
+        - Capsule (3), Cylinder (5): radius and half-length (size[:2]).
+        - Box (6): all 3 half-extents.
+    """
+    nsite = newton_mjw.nsite
+    if nsite == 0:
+        return
+    assert nsite == native_mjw.nsite, f"nsite mismatch: newton={nsite} vs native={native_mjw.nsite}"
+
+    newton_type = newton_mjw.site_type.numpy()
+    newton_size = newton_mjw.site_size.numpy()
+    native_size = native_mjw.site_size.numpy()
+
+    # Flatten type to 1D: may be (nsite,) or (nworld, nsite)
+    if newton_type.ndim == 2:
+        newton_type = newton_type[0]
+
+    # Normalize size to 3D (nworld, nsite, 3): may be (nsite, 3) or (nworld, nsite, 3)
+    if newton_size.ndim == 2:
+        newton_size = newton_size[np.newaxis]
+        native_size = native_size[np.newaxis]
+
+    for w in range(newton_size.shape[0]):
+        for s in range(nsite):
+            stype = newton_type[s]
+            n_sz = newton_size[w, s]
+            nat_sz = native_size[w, s]
+            if stype == 2:  # SPHERE
+                np.testing.assert_allclose(
+                    n_sz[0],
+                    nat_sz[0],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"site_size[{w},{s}] (SPHERE) radius",
+                )
+            elif stype in (3, 5):  # CAPSULE, CYLINDER
+                np.testing.assert_allclose(
+                    n_sz[:2],
+                    nat_sz[:2],
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"site_size[{w},{s}] (CAPSULE/CYLINDER)",
+                )
+            else:
+                np.testing.assert_allclose(
+                    n_sz,
+                    nat_sz,
+                    atol=tol,
+                    rtol=0,
+                    err_msg=f"site_size[{w},{s}] (type={stype})",
+                )
 
 
 def compare_jnt_range(
@@ -1914,14 +1923,15 @@ class TestMenagerieBase(unittest.TestCase):
     def _compare_geoms(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare geom fields between Newton and native models.
 
-        Default: unordered matching when parse_visuals is set, otherwise direct index comparison.
-        Override in subclasses where geom ordering may differ.
+        Uses unordered matching by (body_id, geom_type) to handle models where
+        Newton and native MuJoCo may order geoms differently.
         """
         if newton_mjw.ngeom == native_mjw.ngeom:
-            if self.parse_visuals:
-                compare_geom_fields_unordered(newton_mjw, native_mjw, skip_fields=self.model_skip_fields)
-            else:
-                compare_geom_sizes(newton_mjw, native_mjw)
+            compare_geom_fields_unordered(newton_mjw, native_mjw, skip_fields=self.model_skip_fields)
+
+    def _compare_sites(self, newton_mjw: Any, native_mjw: Any) -> None:
+        """Compare site sizes between Newton and native models."""
+        compare_site_sizes(newton_mjw, native_mjw)
 
     def _compare_jnt_range(self, newton_mjw: Any, native_mjw: Any) -> None:
         """Compare joint ranges between Newton and native models.
@@ -2107,6 +2117,9 @@ class TestMenagerieBase(unittest.TestCase):
 
         # Compare geom fields
         self._compare_geoms(newton_solver.mjw_model, native_mjw_model)
+
+        # Compare site sizes (type-aware: only meaningful elements per site type)
+        self._compare_sites(newton_solver.mjw_model, native_mjw_model)
 
         # Compare joint ranges
         self._compare_jnt_range(newton_solver.mjw_model, native_mjw_model)

@@ -121,10 +121,6 @@ class Example:
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverMuJoCo.register_custom_attributes(robot_builder)
 
-        robot_builder.default_shape_cfg.mu = 1.0
-        robot_builder.default_shape_cfg.mu_torsional = 0.005
-        robot_builder.default_shape_cfg.mu_rolling = 0.0001
-
         initial_height = robot_config["initial_height"]  # [m]
         robot_builder.add_usd(
             str(asset_path),
@@ -140,8 +136,6 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.replicate(robot_builder, self.num_worlds)
 
-        builder.default_shape_cfg.ke = 1.0e3
-        builder.default_shape_cfg.kd = 1.0e2
         builder.add_ground_plane()
 
         self.model = builder.finalize()
@@ -152,7 +146,7 @@ class Example:
             ls_iterations=50,
             njmax=300,
             nconmax=150,
-            use_mujoco_contacts=args.use_mujoco_contacts if args else False,
+            use_mujoco_contacts=True,
         )
 
         self.state_0 = self.model.state()
@@ -160,10 +154,6 @@ class Example:
         self.control = self.model.control()
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
-
-        self.collision_pipeline = newton.examples.create_collision_pipeline(self.model, args)
-        self.contacts = self.collision_pipeline.contacts()
-        self.collision_pipeline.collide(self.state_0, self.contacts)
 
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets((3.0, 3.0, 0.0))
@@ -179,12 +169,11 @@ class Example:
             self.graph = capture.graph
 
     def simulate(self):
-        """Run one frame of simulation (collision + substeps)."""
-        self.collision_pipeline.collide(self.state_0, self.contacts)
+        """Run one frame of simulation (substeps with MuJoCo contacts)."""
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -200,7 +189,6 @@ class Example:
         """Render the current simulation state to the viewer."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
 
     def test_final(self):

@@ -4039,25 +4039,12 @@ class SolverMuJoCo(SolverBase):
                     }
 
                     size = shape_size[shape]
-                    # MuJoCo site_size is always 3 elements. Only the first N
-                    # are meaningful per type (sphere=1, capsule/cylinder=2,
-                    # box=3). Unused elements must be MuJoCo's default (0.005)
-                    # since the spec API does not auto-fill them.
-                    MJC_DEFAULT_SITE_SIZE = 0.005
                     if np.any(size > 0.0):
-                        if site_geom_type == GeoType.SPHERE:
-                            r = size[0] if size[0] > 0 else size[size > 0][0]
-                            site_params["size"] = [r, MJC_DEFAULT_SITE_SIZE, MJC_DEFAULT_SITE_SIZE]
-                        elif site_geom_type in (GeoType.CAPSULE, GeoType.CYLINDER):
-                            r = size[0] if size[0] > 0 else size[size > 0][0]
-                            h = size[1] if size[1] > 0 else r
-                            site_params["size"] = [r, h, MJC_DEFAULT_SITE_SIZE]
-                        else:
-                            nonzero = size[size > 0.0][0]
-                            size[size == 0.0] = nonzero
-                            site_params["size"] = size
+                        nonzero = size[size > 0.0][0]
+                        size[size == 0.0] = nonzero
+                        site_params["size"] = size
                     else:
-                        site_params["size"] = [MJC_DEFAULT_SITE_SIZE] * 3
+                        site_params["size"] = [0.01, 0.01, 0.01]
 
                     if shape_flags[shape] & ShapeFlags.VISIBLE:
                         site_params["rgba"] = [0.0, 1.0, 0.0, 0.5]
@@ -4782,6 +4769,12 @@ class SolverMuJoCo(SolverBase):
             # create the MuJoCo Warp model
             self.mjw_model = mujoco_warp.put_model(self.mj_model)
 
+            # Sync compiler-resolved actuator params back to Newton custom
+            # attributes. MuJoCo's compiler resolves dampratio into biasprm[2]
+            # during compilation; without this sync, update_actuator_properties
+            # would overwrite the resolved values with the unresolved originals.
+            self._sync_compiled_actuator_params()
+
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):
                 self.mjw_model.mesh_pos = wp.array(self.mj_model.mesh_pos, dtype=wp.vec3)
@@ -5024,12 +5017,6 @@ class SolverMuJoCo(SolverBase):
                 nconmax=nconmax,
                 njmax=njmax,
             )
-
-            # Sync compiler-resolved actuator params back to Newton custom
-            # attributes. MuJoCo's compiler resolves dampratio into biasprm[2]
-            # during compilation; without this sync, update_actuator_properties
-            # would overwrite the resolved values with the unresolved originals.
-            self._sync_compiled_actuator_params()
 
             # expand model fields that can be expanded:
             self._expand_model_fields(self.mjw_model, nworld)

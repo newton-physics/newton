@@ -83,10 +83,6 @@ def create_newton_model_from_usd(
     robot_builder = newton.ModelBuilder()
     SolverMuJoCo.register_custom_attributes(robot_builder)
 
-    robot_builder.default_shape_cfg.mu = 1.0
-    robot_builder.default_shape_cfg.mu_torsional = 0.005
-    robot_builder.default_shape_cfg.mu_rolling = 0.0001
-
     robot_builder.add_usd(
         str(usd_path),
         collapse_fixed_joints=False,
@@ -151,9 +147,6 @@ class TestMenagerieUsdImport(unittest.TestCase):
 
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.default_shape_cfg.mu = 1.0
-        builder.default_shape_cfg.mu_torsional = 0.005
-        builder.default_shape_cfg.mu_rolling = 0.0001
 
         builder.add_usd(
             str(usd_path),
