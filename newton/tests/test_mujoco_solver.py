@@ -7139,7 +7139,7 @@ class TestMuJoCoSolverQpos0(unittest.TestCase):
 
 
 class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
-    def test_duplicated_body_names(self):
+    def test_body_actuator_with_duplicated_body_names(self):
         """Test that duplicated body names resolve correctly for BODY actuators."""
         mjcf = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="duplication_test">
@@ -7163,6 +7163,149 @@ class TestMuJoCoSolverDuplicateBodyNames(unittest.TestCase):
         trnid = solver.mjw_model.actuator_trnid.numpy()
         np.testing.assert_equal(trnid[0][0], 1)
         np.testing.assert_equal(trnid[1][0], 2)
+
+    def test_equality_connect_constraint_with_duplicated_body_names(self):
+        """Test that duplicated body names resolve correctly for equality connect constraints."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+  <mujoco model="equality_connect_constraint">
+  <option timestep="0.002" gravity="0 0 0"/>
+  <worldbody>
+  <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+
+      <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- Equality constraint tying the two bodies together -->
+  <equality>
+  <!-- type="connect" constrains body positions; here link1 follows link2 -->
+    <connect name="body_couple" anchor="0 0 0"  body1="link1" body2="link2"/>
+  </equality>
+</mujoco>
+"""
+
+        # Add the mjcf three times so that we have duplicates of joint1, link1, joint2, link2.
+        # We want the equality constraint coupling link1 and link2 to work for all duplicates.
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        # Set joint1 (all of them) to have a non-zero speed.
+        start_joint_q = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        state_0.joint_q.assign(start_joint_q)
+
+        # If the de-duplication is not working properly we will end up with the equality constraint
+        # applied only to the first link1/link2 and not to the duplicates.
+        # We'd therefore expect a joint speed of [0.5, 0.5, 1.0, 0.0, 1.0, 0.0]
+        # If the de-duplication is working properly the outcome will be that all duplicates of
+        # joint1/joint2 will have the same speed and the expected outcome will be
+        # [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+        expected_joint_q = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+
+        # Run the sim and test the joint speed outcome against the expected outcome.
+        for _i in range(100):
+            solver.step(state_0, state_1, control, contacts, 0.02)
+            state_0, state_1 = state_1, state_0
+        measured_joint_q = state_0.joint_q.numpy()
+        for i in range(0, 6):
+            measured = measured_joint_q[i]
+            expected = expected_joint_q[i]
+            self.assertAlmostEqual(
+                expected,
+                measured,
+                places=3,
+                msg=f"Expected joint_q value: {expected}, Measured value: {measured}",
+            )
+
+    def test_equality_weld_constraint_with_duplicated_body_names(self):
+        """Test that duplicated body names resolve correctly for equality weld constraints."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+    <mujoco model="equality_weld_constraint">
+    <option timestep="0.002" gravity="0 0 0"/>
+
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+     <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+
+     <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+      </body>
+    </body>
+  </worldbody>
+
+    <!-- Equality constraint tying the two bodies together -->
+  <equality>
+    <!-- type="weld" constrains body positions; here link1 follows link2 -->
+    <weld name="body_couple" anchor="0 0 0" torquescale="1.0" body1="link1" body2="link2"/>
+  </equality>
+</mujoco>
+"""
+
+        # Add the mjcf three times so that we have duplicates of joint1, link1, joint2, link2.
+        # We want the equality weld constraint coupling link1 and link2 to work for all duplicates.
+        builder = newton.ModelBuilder()
+        for _i in range(0, 3):
+            builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        state_0 = model.state()
+        state_1 = model.state()
+        control = model.control()
+        contacts = model.contacts()
+
+        # Set joint1 (all of them) to have a non-zero speed.
+        start_joint_q = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        state_0.joint_q.assign(start_joint_q)
+
+        # If the de-duplication is not working properly we will end up with the equality constraint
+        # applied only to the first link1/link2 and not to the duplicates.
+        # We'd therefore expect a joint speed of [0.5, 0.5, 1.0, 0.0, 1.0, 0.0]
+        # If the de-duplication is working properly the outcome will be that all duplicates of
+        # joint1/joint2 will have the same speed and the expected outcome will be
+        # [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+        expected_joint_q = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+
+        # Run the sim and test the joint speed outcome against the expected outcome.
+        for _i in range(100):
+            solver.step(state_0, state_1, control, contacts, 0.02)
+            state_0, state_1 = state_1, state_0
+        measured_joint_q = state_0.joint_q.numpy()
+        for i in range(0, 6):
+            measured = measured_joint_q[i]
+            expected = expected_joint_q[i]
+            self.assertAlmostEqual(
+                expected,
+                measured,
+                places=3,
+                msg=f"Expected joint_q value: {expected}, Measured value: {measured}",
+            )
 
 
 if __name__ == "__main__":

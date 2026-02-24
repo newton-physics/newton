@@ -2242,8 +2242,8 @@ class SolverMuJoCo(SolverBase):
                 Used to resolve CTRL_DIRECT joint actuators to their MuJoCo targets.
             mjc_joint_names: List of MuJoCo joint names indexed by MuJoCo joint index.
                 Used together with dof_to_mjc_joint to get the correct joint name.
-
-        Returns:
+            body_name_mapping: Mapping from Newton body index to de-duplicated MuJoCo body name
+            Returns:
             int: Number of actuators added.
         """
         import mujoco
@@ -4230,7 +4230,7 @@ class SolverMuJoCo(SolverBase):
             """Get body name, handling world body (-1) correctly."""
             if body_idx == -1:
                 return "world"
-            return model.body_label[body_idx].replace("/", "_")
+            return body_name_mapping.get(body_idx, model.body_label[body_idx].replace("/", "_"))
 
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
