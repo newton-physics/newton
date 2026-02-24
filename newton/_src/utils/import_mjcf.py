@@ -1066,6 +1066,7 @@ def parse_mjcf(
         world_xform: wp.transform,
         body_relative_xform: wp.transform | None = None,
         label_prefix: str = "",
+        track_root_boundaries: bool = False,
     ):
         """Process frame elements, composing transforms with children.
 
@@ -1080,6 +1081,7 @@ def parse_mjcf(
             body_relative_xform: Body-relative transform for geoms/sites. If None, uses world_xform
                 (appropriate for static geoms at worldbody level).
             label_prefix: Hierarchical label prefix for child entity labels.
+            track_root_boundaries: If True, record root body boundaries for articulation splitting.
         """
         # Stack entries: (frame, world_xform, body_relative_xform, frame_defaults, frame_childclass)
         # For worldbody frames, body_relative equals world (static geoms use world coords)
@@ -1105,6 +1107,9 @@ def parse_mjcf(
 
             # Process child bodies (need world transform)
             for child_body in frame.findall("body"):
+                if track_root_boundaries:
+                    cb_name = sanitize_name(child_body.attrib.get("name", f"body_{builder.body_count}"))
+                    root_body_boundaries.append((len(joint_indices), cb_name))
                 parse_body(
                     child_body,
                     parent_body,
@@ -1769,6 +1774,7 @@ def parse_mjcf(
     visual_shapes = []
     start_shape_count = len(builder.shape_type)
     joint_indices = []  # Collect joint indices as we create them
+    root_body_boundaries = []  # (start_idx, body_name) for each root body under <worldbody>
     # Mapping from individual MJCF joint name to (qd_start, dof_count) for actuator resolution
     # This allows actuators to target specific DOFs when multiple MJCF joints are combined into one Newton joint
     # Maps individual MJCF joint names to their specific DOF index.
@@ -1808,6 +1814,8 @@ def parse_mjcf(
             effective_xform = xform
 
         for body in world.findall("body"):
+            body_name = sanitize_name(body.attrib.get("name", f"body_{builder.body_count}"))
+            root_body_boundaries.append((len(joint_indices), body_name))
             parse_body(
                 body,
                 root_parent,
@@ -1850,6 +1858,7 @@ def parse_mjcf(
             world_xform=effective_xform,
             body_relative_xform=None,  # Static geoms use world coords
             label_prefix=root_label_path,
+            track_root_boundaries=True,
         )
 
     # -----------------
@@ -2438,12 +2447,27 @@ def parse_mjcf(
             for j in range(i + 1, end_shape_count):
                 builder.add_shape_collision_filter_pair(i, j)
 
-    # Create articulation from all collected joints
-    builder._finalize_imported_articulation(
-        joint_indices=joint_indices,
-        parent_body=parent_body,
-        articulation_label=articulation_label,
-    )
+    # Create articulations from collected joints
+    if parent_body != -1 or len(root_body_boundaries) <= 1:
+        # Hierarchical composition or single root body: one articulation
+        builder._finalize_imported_articulation(
+            joint_indices=joint_indices,
+            parent_body=parent_body,
+            articulation_label=articulation_label,
+        )
+    else:
+        # Multiple root bodies: create one articulation per root body
+        for i, (start_idx, body_name) in enumerate(root_body_boundaries):
+            end_idx = root_body_boundaries[i + 1][0] if i + 1 < len(root_body_boundaries) else len(joint_indices)
+            root_joints = joint_indices[start_idx:end_idx]
+            if not root_joints:
+                continue
+            label = f"{articulation_label}/{body_name}" if articulation_label else body_name
+            builder._finalize_imported_articulation(
+                joint_indices=root_joints,
+                parent_body=-1,
+                articulation_label=label,
+            )
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

@@ -6906,3 +6906,188 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 2)
+
+
+class TestMjcfMultiRootArticulations(unittest.TestCase):
+    """Tests for issue #736: MJCF importer should create separate articulations per root body."""
+
+    def test_multi_root_bodies_separate_articulations(self):
+        """Multiple root bodies under worldbody should each get their own articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="multi_root">
+    <worldbody>
+        <body name="robot_a" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link_a" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+        <body name="robot_b" pos="2 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link_b" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False)
+        model = builder.finalize()
+
+        # Should have 2 articulations, one per root body
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # Each articulation has 2 joints (fixed base + hinge)
+        self.assertEqual(model.joint_count, 4)
+
+        # Joints from different root bodies should be in different articulations
+        joint_art = model.joint_articulation.numpy()
+        self.assertEqual(joint_art[0], joint_art[1])  # robot_a joints together
+        self.assertEqual(joint_art[2], joint_art[3])  # robot_b joints together
+        self.assertNotEqual(joint_art[0], joint_art[2])  # different articulations
+
+    def test_multi_root_bodies_with_free_joints(self):
+        """Root bodies with <freejoint> should each get their own articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="free_bodies">
+    <worldbody>
+        <body name="box_a" pos="0 0 1">
+            <freejoint name="free_a"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="box_b" pos="1 0 1">
+            <freejoint name="free_b"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="box_c" pos="2 0 1">
+            <freejoint name="free_c"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Should have 3 articulations
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 3)
+
+        # Each articulation has 1 free joint
+        self.assertEqual(model.joint_count, 3)
+
+        # Each joint in its own articulation
+        joint_art = model.joint_articulation.numpy()
+        self.assertEqual(len(set(joint_art)), 3)
+
+    def test_single_root_body_unchanged(self):
+        """Single root body MJCF should still produce exactly 1 articulation with model name label."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="single_robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False)
+        model = builder.finalize()
+
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 1)
+        # Label should be the model name (backward compatible)
+        self.assertEqual(model.articulation_label[0], "single_robot")
+
+    def test_multi_root_articulation_labels(self):
+        """Multi-root articulations should get model_name/body_name labels."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <worldbody>
+        <body name="robot1" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="robot2" pos="1 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False)
+        model = builder.finalize()
+
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+        self.assertEqual(model.articulation_label[0], "scene/robot1")
+        self.assertEqual(model.articulation_label[1], "scene/robot2")
+
+    def test_multi_root_with_floating_option(self):
+        """floating=True with multiple roots: each gets own free-joint articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="floating_multi">
+    <worldbody>
+        <body name="obj_a" pos="0 0 1">
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="obj_b" pos="1 0 1">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=True)
+        model = builder.finalize()
+
+        # Should have 2 separate articulations
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # Each has 1 free joint
+        self.assertEqual(model.joint_count, 2)
+
+    def test_multi_root_with_parent_body_keeps_single_articulation(self):
+        """Hierarchical composition (parent_body != -1) should keep all joints in one articulation."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        attachment_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="attachment">
+    <worldbody>
+        <body name="part_a" pos="0 0 0">
+            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+        </body>
+        <body name="part_b" pos="0.5 0 0">
+            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        base_idx = builder.body_label.index("robot/worldbody/base")
+
+        # Attach multi-root MJCF to existing body
+        builder.add_mjcf(attachment_mjcf, parent_body=base_idx, floating=False)
+        model = builder.finalize()
+
+        # All joints should be in one articulation (hierarchical composition)
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 1)
