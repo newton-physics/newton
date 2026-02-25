@@ -6357,8 +6357,9 @@ class TestXformIgnoresAncestorTransforms(unittest.TestCase):
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
 
         body_q = state.body_q.numpy()
+        base_indices = [j for j, lbl in enumerate(builder.body_label) if lbl.endswith("/Robot/Base")]
         for i, expected_pos in enumerate(clone_positions):
-            base_pos = body_q[i * 2, :3]
+            base_pos = body_q[base_indices[i], :3]
             assert_np_equal(
                 base_pos,
                 np.array(expected_pos, dtype=np.float32),

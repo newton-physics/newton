@@ -1994,11 +1994,10 @@ class ModelBuilder:
         Args:
             source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
             xform (Transform): The world-space transform at which to place the imported
-                articulations. When provided, ancestor transforms from the USD hierarchy are
-                stripped so each articulation is positioned exactly at ``xform``, preserving
-                only the internal structure (relative body positions) of the articulation.
-                When ``None`` (default), articulations keep their original USD world-space
-                positions (including ancestor transforms).
+                articulations. When provided, the articulation root's world-space transform
+                is replaced by ``xform``, preserving only the internal structure (relative
+                body positions) of the articulation. When ``None`` (default), articulations
+                keep their original USD world-space positions.
             floating (bool or None): Controls the base joint type for the root body (bodies not connected as
                 a child to any joint).
 

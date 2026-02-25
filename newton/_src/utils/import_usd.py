@@ -82,11 +82,10 @@ def parse_usd(
         builder (ModelBuilder): The :class:`ModelBuilder` to add the bodies and joints to.
         source (str | pxr.Usd.Stage): The file path to the USD file, or an existing USD stage instance.
         xform (Transform): The world-space transform at which to place the imported
-            articulations. When provided, ancestor transforms from the USD hierarchy are
-            stripped so each articulation is positioned exactly at ``xform``, preserving
-            only the internal structure (relative body positions) of the articulation.
-            When ``None`` (default), articulations keep their original USD world-space
-            positions (including ancestor transforms).
+            articulations. When provided, the articulation root's world-space transform
+            is replaced by ``xform``, preserving only the internal structure (relative
+            body positions) of the articulation. When ``None`` (default), articulations
+            keep their original USD world-space positions.
         floating (bool or None): Controls the base joint type for the root body (bodies not connected as
             a child to any joint).
 
@@ -1275,6 +1274,9 @@ def parse_usd(
                 continue
             articulation_prim = stage.GetPrimAtPath(path)
             articulation_root_xform = usd.get_transform(articulation_prim, local=False, xform_cache=xform_cache)
+            root_joint_xform = (
+                incoming_world_xform if xform is not None else incoming_world_xform * articulation_root_xform
+            )
             # Collect engine-specific attributes for the articulation root on first encounter
             if collect_schema_attrs:
                 R.collect_prim_attrs(articulation_prim)
@@ -1332,6 +1334,7 @@ def parse_usd(
                     desc_xform = wp.transform(body_desc.position, usd.value_to_warp(body_desc.rotation))
                     body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
                     if xform is not None:
+                        # Strip the articulation root's world-space pose and rebase at the user-specified xform.
                         body_in_root_frame = wp.transform_inverse(articulation_root_xform) * body_world
                         desired_world = incoming_world_xform * body_in_root_frame
                     else:
@@ -1546,11 +1549,6 @@ def parse_usd(
                             )
                             articulation_joint_indices.append(base_joint_id)
                             continue  # Skip parsing the USD's root joint
-                        root_joint_xform = (
-                            incoming_world_xform
-                            if xform is not None
-                            else incoming_world_xform * articulation_root_xform
-                        )
                         joint = parse_joint(
                             joint_descriptions[joint_names[i]],
                             incoming_xform=root_joint_xform,
@@ -1569,16 +1567,13 @@ def parse_usd(
                         joint_descriptions[joint_path], path_body_map, get_transforms=False
                     )
                     if parent_id == -1:
-                        root_joint_xform = (
-                            incoming_world_xform
-                            if xform is not None
-                            else incoming_world_xform * articulation_root_xform
-                        )
                         joint = parse_joint(
                             joint_descriptions[joint_path],
                             incoming_xform=root_joint_xform,
                         )
                     else:
+                        # localPose0 is already in the parent body's local frame;
+                        # body positions were correctly set during body parsing above.
                         joint = parse_joint(
                             joint_descriptions[joint_path],
                         )
