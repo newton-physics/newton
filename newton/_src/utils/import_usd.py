@@ -1565,13 +1565,23 @@ def parse_usd(
 
                 # insert loop joints
                 for joint_path in joint_excluded:
-                    root_joint_xform = (
-                        incoming_world_xform if xform is not None else incoming_world_xform * articulation_root_xform
+                    parent_id, _ = resolve_joint_parent_child(
+                        joint_descriptions[joint_path], path_body_map, get_transforms=False
                     )
-                    joint = parse_joint(
-                        joint_descriptions[joint_path],
-                        incoming_xform=root_joint_xform,
-                    )
+                    if parent_id == -1:
+                        root_joint_xform = (
+                            incoming_world_xform
+                            if xform is not None
+                            else incoming_world_xform * articulation_root_xform
+                        )
+                        joint = parse_joint(
+                            joint_descriptions[joint_path],
+                            incoming_xform=root_joint_xform,
+                        )
+                    else:
+                        joint = parse_joint(
+                            joint_descriptions[joint_path],
+                        )
                     if joint is not None:
                         processed_joints.add(joint_path)
 
