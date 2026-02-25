@@ -223,7 +223,7 @@ def main(argv=None):
         "universal_robots_ur10",
         "wonik_allegro",
         "shadow_hand",
-        "robotiq_2f85",
+        "robotiq_2f85_v4",
         "apptronik_apollo",
         "booster_t1",
     ]

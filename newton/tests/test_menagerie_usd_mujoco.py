@@ -117,7 +117,7 @@ MENAGERIE_USD_ASSETS = {
     "h1": {"asset_folder": "unitree_h1", "scene_file": "usd_structured/h1.usda"},
     "g1_with_hands": {"asset_folder": "unitree_g1", "scene_file": "usd_structured/g1_29dof_with_hand_rev_1_0.usda"},
     "shadow_hand": {"asset_folder": "shadow_hand", "scene_file": "usd_structured/left_shadow_hand.usda"},
-    "robotiq_2f85_v4": {"asset_folder": "robotiq_2f85", "scene_file": "usd_structured/robotiq_2f85.usda"},
+    "robotiq_2f85_v4": {"asset_folder": "robotiq_2f85_v4", "scene_file": "usd_structured/Dual_wrist_camera.usda"},
     "apptronik_apollo": {"asset_folder": "apptronik_apollo", "scene_file": "usd_structured/apptronik_apollo.usda"},
     "booster_t1": {"asset_folder": "booster_t1", "scene_file": "usd_structured/T1.usda"},
     "wonik_allegro": {"asset_folder": "wonik_allegro", "scene_file": "usd_structured/allegro_left.usda"},
@@ -198,7 +198,7 @@ class TestMenagerieUsdImport(unittest.TestCase):
     def test_import_robotiq_2f85_v4(self):
         builder, model = self._load_robot("robotiq_2f85_v4")
         self.assertEqual(builder.body_count, 11)
-        self.assertEqual(builder.joint_count, 11)
+        self.assertEqual(builder.joint_count, 13)
         self.assertEqual(builder.shape_count, 28)
         self._assert_no_nan(model, "robotiq_2f85_v4")
 
@@ -1102,8 +1102,8 @@ class TestMenagerieUSD_Robotiq2f85V4(TestMenagerieUSD):
 
     robot_folder = "robotiq_2f85_v4"
     robot_xml = "2f85.xml"
-    usd_asset_folder = "robotiq_2f85"
-    usd_scene_file = "usd_structured/robotiq_2f85.usda"
+    usd_asset_folder = "robotiq_2f85_v4"
+    usd_scene_file = "usd_structured/Dual_wrist_camera.usda"
 
     num_worlds = 2
     num_steps = 100
