@@ -33,7 +33,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.joints import ActuatorMode
+from ..sim.joints import JointTargetMode
 from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -180,11 +180,11 @@ def parse_usd(
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
         force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
-            are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-            If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
-            :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
-            damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
-            (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
+            are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
+            If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
+            :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
+            damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
+            (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -594,7 +594,7 @@ def parse_usd(
             return -1
 
         rot = rigid_body_desc.rotation
-        origin = wp.transform(rigid_body_desc.position, usd.from_gfquat(rot))
+        origin = wp.transform(rigid_body_desc.position, usd.value_to_warp(rot))
         if incoming_xform is not None:
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
@@ -620,8 +620,8 @@ def parse_usd(
     ):
         """Resolve the parent and child of a joint and return their parent + child transforms if requested."""
         if get_transforms:
-            parent_tf = wp.transform(joint_desc.localPose0Position, usd.from_gfquat(joint_desc.localPose0Orientation))
-            child_tf = wp.transform(joint_desc.localPose1Position, usd.from_gfquat(joint_desc.localPose1Orientation))
+            parent_tf = wp.transform(joint_desc.localPose0Position, usd.value_to_warp(joint_desc.localPose0Orientation))
+            child_tf = wp.transform(joint_desc.localPose1Position, usd.value_to_warp(joint_desc.localPose1Orientation))
         else:
             parent_tf = None
             child_tf = None
@@ -729,11 +729,11 @@ def parse_usd(
                 joint_params["target_kd"] = target_kd
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
-                joint_params["actuator_mode"] = ActuatorMode.from_gains(
+                joint_params["actuator_mode"] = JointTargetMode.from_gains(
                     target_ke, target_kd, force_position_velocity_actuation, has_drive=True
                 )
             else:
-                joint_params["actuator_mode"] = ActuatorMode.NONE
+                joint_params["actuator_mode"] = JointTargetMode.NONE
 
             # Read initial joint state BEFORE creating/overwriting USD attributes
             initial_position = None
@@ -821,7 +821,7 @@ def parse_usd(
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    actuator_mode = ActuatorMode.from_gains(
+                    actuator_mode = JointTargetMode.from_gains(
                         target_ke, target_kd, force_position_velocity_actuation, has_drive=has_drive
                     )
                     return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
@@ -1326,7 +1326,7 @@ def parse_usd(
 
                 if key in body_specs:
                     body_desc = body_specs[key]
-                    desc_xform = wp.transform(body_desc.position, usd.from_gfquat(body_desc.rotation))
+                    desc_xform = wp.transform(body_desc.position, usd.value_to_warp(body_desc.rotation))
                     body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
                     desired_world = incoming_world_xform * body_world
                     body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
@@ -1721,7 +1721,7 @@ def parse_usd(
         else:
             center_of_mass = Gf.Vec3f(0.0, 0.0, 0.0)
 
-        i_rot = usd.from_gfquat(principal_axes)
+        i_rot = usd.value_to_warp(principal_axes)
         rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
         inertia_full_unit = rot @ np.diag(inertia_diag_unit) @ rot.T
 
@@ -1749,7 +1749,7 @@ def parse_usd(
         if axis is None or axis == Axis.Z:
             return local_rot
 
-        local_rot_wp = usd.from_gfquat(local_rot)
+        local_rot_wp = usd.value_to_warp(local_rot)
         corrected_rot = wp.mul(local_rot_wp, quat_between_axes(Axis.Z, axis))
         return Gf.Quatf(
             float(corrected_rot[3]),
@@ -1853,7 +1853,7 @@ def parse_usd(
                 else:
                     shape_density = default_shape_density
                 prim_and_scene = (prim, physics_scene_prim)
-                local_xform = wp.transform(shape_spec.localPos, usd.from_gfquat(shape_spec.localRot))
+                local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
                 if body_id == -1:
                     shape_xform = incoming_world_xform * local_xform
                 else:
@@ -2180,7 +2180,7 @@ def parse_usd(
                 # to match authored mass in the mass block below.
                 i_diag_np = None
             if i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
-                i_rot = usd.from_gfquat(principal_axes)
+                i_rot = usd.value_to_warp(principal_axes)
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag_np) @ rot.T
                 builder.body_inertia[body_id] = wp.mat33(inertia)
@@ -2308,7 +2308,84 @@ def parse_usd(
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {label: idx for idx, label in enumerate(builder.joint_label)}
 
-    # Mimic constraints (run after collapse so joint indices in path_joint_map are final).
+    # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
+    # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
+    # that couples a follower joint to a leader (reference) joint with a gearing ratio.
+    # PhysX convention: jointPos + gearing * refJointPos + offset = 0
+    # Newton/URDF convention: joint0 = coef0 + coef1 * joint1
+    # Therefore: coef1 = -gearing, coef0 = -offset
+    for joint_path, joint_idx in path_joint_map.items():
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if not joint_prim or not joint_prim.IsValid():
+            continue
+
+        # Skip if NewtonMimicAPI is present — it takes precedence over PhysxMimicJointAPI.
+        if joint_prim.HasAPI("NewtonMimicAPI") or usd.has_applied_api_schema(joint_prim, "NewtonMimicAPI"):
+            continue
+
+        schemas_listop = joint_prim.GetMetadata("apiSchemas")
+        if not schemas_listop:
+            continue
+
+        all_schemas = (
+            list(schemas_listop.prependedItems)
+            + list(schemas_listop.appendedItems)
+            + list(schemas_listop.explicitItems)
+        )
+
+        for schema in all_schemas:
+            schema_str = str(schema)
+            if not schema_str.startswith("PhysxMimicJointAPI"):
+                continue
+
+            # Extract the axis instance name (e.g. "rotZ" from "PhysxMimicJointAPI:rotZ")
+            parts = schema_str.split(":")
+            if len(parts) < 2:
+                continue
+            axis_instance = parts[1]
+
+            ref_joint_rel = joint_prim.GetRelationship(f"physxMimicJoint:{axis_instance}:referenceJoint")
+            if not ref_joint_rel:
+                continue
+            targets = ref_joint_rel.GetTargets()
+            if not targets:
+                continue
+            leader_path = targets[0]
+            if not leader_path.IsAbsolutePath():
+                leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
+            leader_path = str(leader_path)
+
+            leader_idx = path_joint_map.get(leader_path)
+            if leader_idx is None:
+                warnings.warn(
+                    f"PhysxMimicJointAPI on '{joint_path}' references '{leader_path}' "
+                    f"but leader joint was not found, skipping mimic constraint",
+                    stacklevel=2,
+                )
+                continue
+
+            gearing_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:gearing")
+            gearing = float(gearing_attr.Get()) if gearing_attr and gearing_attr.HasValue() else 1.0
+
+            offset_attr = joint_prim.GetAttribute(f"physxMimicJoint:{axis_instance}:offset")
+            offset = float(offset_attr.Get()) if offset_attr and offset_attr.HasValue() else 0.0
+
+            builder.add_constraint_mimic(
+                joint0=joint_idx,
+                joint1=leader_idx,
+                coef0=-offset,
+                coef1=-gearing,
+                enabled=True,
+                label=joint_path,
+            )
+
+            if verbose:
+                print(
+                    f"Added PhysxMimicJointAPI constraint: '{joint_path}' follows '{leader_path}' "
+                    f"(gearing={gearing}, offset={offset}, axis={axis_instance})"
+                )
+
+    # Mimic constraints from NewtonMimicAPI (run after collapse so joint indices are final).
     for joint_path, joint_idx in path_joint_map.items():
         joint_prim = stage.GetPrimAtPath(joint_path)
         if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):

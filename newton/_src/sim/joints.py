@@ -122,7 +122,7 @@ class EqType(IntEnum):
     """Constrains the position or angle of one joint to be a quartic polynomial of another joint (like a prismatic or revolute joint)."""
 
 
-class ActuatorMode(IntEnum):
+class JointTargetMode(IntEnum):
     """
     Enumeration of actuator modes for joint degrees of freedom.
 
@@ -158,7 +158,7 @@ class ActuatorMode(IntEnum):
         target_kd: float,
         force_position_velocity: bool = False,
         has_drive: bool = False,
-    ) -> "ActuatorMode":
+    ) -> "JointTargetMode":
         """Infer actuator mode from position and velocity gains.
 
         Args:
@@ -171,7 +171,7 @@ class ActuatorMode(IntEnum):
                 When False, returns NONE regardless of gains.
 
         Returns:
-            The inferred ActuatorMode based on which gains are non-zero:
+            The inferred JointTargetMode based on which gains are non-zero:
             - NONE: No drive applied
             - EFFORT: Drive applied but both gains are 0 (direct torque control)
             - POSITION: Only position gain is non-zero
@@ -179,20 +179,20 @@ class ActuatorMode(IntEnum):
             - POSITION_VELOCITY: Both gains non-zero (or forced)
         """
         if not has_drive:
-            return ActuatorMode.NONE
+            return JointTargetMode.NONE
 
         if force_position_velocity and (target_ke != 0.0 and target_kd != 0.0):
-            return ActuatorMode.POSITION_VELOCITY
+            return JointTargetMode.POSITION_VELOCITY
         elif target_ke != 0.0:
-            return ActuatorMode.POSITION
+            return JointTargetMode.POSITION
         elif target_kd != 0.0:
-            return ActuatorMode.VELOCITY
+            return JointTargetMode.VELOCITY
         else:
-            return ActuatorMode.EFFORT
+            return JointTargetMode.EFFORT
 
 
 __all__ = [
-    "ActuatorMode",
     "EqType",
+    "JointTargetMode",
     "JointType",
 ]

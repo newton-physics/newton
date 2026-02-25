@@ -7320,5 +7320,99 @@ class TestActuatorInheritrangeFractional(unittest.TestCase):
         np.testing.assert_allclose(cr, [-1.0, 1.0], atol=1e-6)
 
 
+class TestEqualityWeldConstraintDefaults(unittest.TestCase):
+    def test_equality_weld_constraint_defaults(self):
+        """Test the default values of equality weld constraints."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+    <mujoco model="equality_weld_constraint">
+    <option timestep="0.002" gravity="0 0 0"/>
+
+    <worldbody>
+    <!-- Root body (fixed to world) -->
+    <body name="root" pos="0 0 0">
+     <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+
+     <!-- First child link with prismatic joint along x -->
+      <body name="link1" pos="0.0 -0.5 0">
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+      </body>
+
+      <!-- Second child link with prismatic joint along x -->
+      <body name="link2" pos="-0.0 -0.7 0">
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1.0 1.0 1.0"/>
+      </body>
+    </body>
+  </worldbody>
+
+    <!-- Equality constraint tying the two bodies together -->
+  <equality>
+    <!-- type="weld" constrains body positions; here link1 follows link2 -->
+    <weld name="body_couple" body1="link1"/>
+  </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, ignore_inertial_definitions=False)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+
+        measured_torquescale = model.equality_constraint_torquescale.numpy()[0]
+        expected_torquescale = 1.0
+        self.assertAlmostEqual(
+            expected_torquescale,
+            measured_torquescale,
+            places=4,
+            msg=f"expected_torquescale is {expected_torquescale}, measured_torquescale is {measured_torquescale}",
+        )
+
+        measured_body2 = model.equality_constraint_body2.numpy()[0]
+        expected_body2 = -1
+        self.assertEqual(
+            expected_body2,
+            measured_body2,
+            msg=f"expected_body2 is {expected_body2}, measured_body2 is {measured_body2}",
+        )
+
+        measured_anchor = model.equality_constraint_anchor.numpy()[0]
+        expected_anchor = [0, 0, 0]
+        for i in range(0, 3):
+            self.assertEqual(
+                measured_anchor[i],
+                expected_anchor[i],
+                msg=f"expected_anchor[{i}] is {expected_anchor[i]}, measured_anchor[{i}] is {measured_anchor[i]}",
+            )
+
+        measured_relpose = model.equality_constraint_relpose.numpy()[0]
+        expected_relpose = [0, 1, 0, 0, 0, 0, 0]
+        for i in range(0, 7):
+            self.assertEqual(
+                measured_relpose[i],
+                expected_relpose[i],
+                msg=f"expected_relpose[{i}] is {expected_relpose[i]}, measured_relpose[{i}] is {measured_relpose[i]}",
+            )
+
+        measured_solimp = solver.mjw_model.eq_solimp.numpy()[0]
+        expected_solimp = [0.9, 0.95, 0.001, 0.5, 2]
+        for i in range(0, 5):
+            self.assertAlmostEqual(
+                measured_solimp[0][i],
+                expected_solimp[i],
+                places=4,
+                msg=f"expected_solimp[{i}] is {expected_solimp[i]}, measured_solimp[{i}] is {measured_solimp[0][i]}",
+            )
+
+        measured_solref = solver.mjw_model.eq_solref.numpy()[0]
+        expected_solref = [0.02, 1]
+        for i in range(0, 2):
+            self.assertAlmostEqual(
+                measured_solref[0][i],
+                expected_solref[i],
+                places=4,
+                msg=f"expected_solref[{i}] is {expected_solref[i]}, measured_solref[{i}] is {measured_solref[0][i]}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

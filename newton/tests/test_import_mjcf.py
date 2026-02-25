@@ -258,6 +258,35 @@ class TestImportMjcfBasic(unittest.TestCase):
         # So [0.7071068, 0, 0, 0.7071068] becomes [0, 0, 0.7071068, 0.7071068]
         np.testing.assert_allclose(body_quat, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+    def test_site_euler_sequence_matches_mujoco(self):
+        """Non-default compiler eulerseq should match MuJoCo site orientation."""
+        import mujoco
+
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian" eulerseq="zyx"/>
+    <worldbody>
+        <body name="test_body">
+            <site name="test_site" euler="0.3 -1.2 0.7" size="0.01"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content, parse_sites=True)
+
+        site_indices = [i for i, flags in enumerate(builder.shape_flags) if flags & ShapeFlags.SITE]
+        self.assertEqual(len(site_indices), 1, "Expected exactly one parsed site shape")
+        site_idx = site_indices[0]
+        newton_xyzw = np.array(builder.shape_transform[site_idx][3:7], dtype=np.float64)
+
+        native_wxyz = np.array(mujoco.MjModel.from_xml_string(mjcf_content).site_quat[0], dtype=np.float64)
+        native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
+
+        same = np.allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+        negated = np.allclose(newton_xyzw, -native_xyzw, rtol=1e-6, atol=1e-6)
+        self.assertTrue(same or negated, "Site quaternion mismatch (accounting for q/-q equivalence)")
+
     def test_root_body_with_custom_xform(self):
         """Test 1: Root body with custom xform parameter (with rotation) → verify transform is properly applied."""
         # Add a 45-degree rotation around Z to the body
@@ -674,6 +703,136 @@ class TestImportMjcfGeometry(unittest.TestCase):
         shape_scale = builder.shape_scale[0]
         self.assertAlmostEqual(shape_scale[0], 0.75)  # radius
         self.assertAlmostEqual(shape_scale[1], 1.5)  # half_height
+
+    def test_ellipsoid_shape_gets_mass(self):
+        """Regression: ellipsoid geoms are imported as shapes so the body gets density-based mass.
+
+        Previously ellipsoid was unsupported and no shape was added, so the body had zero mass
+        and finalize could raise or produce invalid dynamics.
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="ellipsoid_test">
+    <worldbody>
+        <body name="object">
+            <freejoint/>
+            <geom type="ellipsoid" size="0.03 0.04 0.02"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        self.assertEqual(builder.shape_count, 1)
+        self.assertEqual(builder.shape_type[0], GeoType.ELLIPSOID)
+        np.testing.assert_allclose(builder.shape_scale[0], [0.03, 0.04, 0.02], atol=1e-12)
+        model = builder.finalize()
+        body_idx = model.body_label.index("ellipsoid_test/worldbody/object")
+        body_mass = model.body_mass.numpy()
+        self.assertGreater(body_mass[body_idx], 0.0, msg="Ellipsoid body must have positive mass")
+
+    def test_explicit_geom_mass(self):
+        """Regression test: explicit geom mass attributes are correctly handled.
+
+        When a geom has an explicit 'mass' attribute in MJCF, it should:
+        1. Contribute that exact mass to the body (not density-based)
+        2. Compute correct inertia tensor for the explicit mass
+        3. Not use density-based mass calculation for that geom
+        """
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="explicit_mass_test">
+    <worldbody>
+        <!-- Body with explicit mass on sphere geom -->
+        <body name="body1" pos="0 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="2.5"/>
+        </body>
+
+        <!-- Body with explicit mass on box geom -->
+        <body name="body2" pos="1 0 1">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+
+        <!-- Body with explicit mass on cylinder geom -->
+        <body name="body3" pos="2 0 1">
+            <freejoint/>
+            <geom type="cylinder" size="0.05 0.1" mass="0.5"/>
+        </body>
+
+        <!-- Body with explicit mass on capsule geom -->
+        <body name="body4" pos="3 0 1">
+            <freejoint/>
+            <geom type="capsule" size="0.05 0.1" mass="0.75"/>
+        </body>
+
+        <!-- Body with multiple geoms, some with explicit mass -->
+        <body name="body5" pos="4 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.05" mass="0.3"/>
+            <geom type="box" size="0.05 0.05 0.05" mass="0.2"/>
+        </body>
+
+        <!-- Body with mixed explicit mass and density-based mass -->
+        <!-- Explicit mass should win even when a conflicting density is specified -->
+        <body name="body6" pos="5 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="1.5" density="5000"/>
+            <geom type="box" size="0.1 0.1 0.1" density="1000"/>
+        </body>
+
+        <!-- Body with mass="0" — should contribute zero mass and zero inertia -->
+        <body name="body7" pos="6 0 1">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+        model = builder.finalize()
+
+        # Get body masses
+        body_mass = model.body_mass.numpy()
+
+        # Bodies with freejoint start at index 0 (no separate world body)
+        # Body 0: single sphere with mass=2.5
+        self.assertAlmostEqual(body_mass[0], 2.5, places=6, msg="Body 0 mass should be 2.5")
+
+        # Body 1: single box with mass=1.0
+        self.assertAlmostEqual(body_mass[1], 1.0, places=6, msg="Body 1 mass should be 1.0")
+
+        # Body 2: single cylinder with mass=0.5
+        self.assertAlmostEqual(body_mass[2], 0.5, places=6, msg="Body 2 mass should be 0.5")
+
+        # Body 3: single capsule with mass=0.75
+        self.assertAlmostEqual(body_mass[3], 0.75, places=6, msg="Body 3 mass should be 0.75")
+
+        # Body 4: two geoms with explicit masses (0.3 + 0.2 = 0.5)
+        self.assertAlmostEqual(body_mass[4], 0.5, places=6, msg="Body 4 mass should be 0.5 (sum of explicit masses)")
+
+        # Body 5: one explicit mass (1.5) + one density-based mass
+        # Box volume = 8 * 0.1 * 0.1 * 0.1 = 0.008 m³
+        # Density-based mass = 1000 * 0.008 = 8.0 kg
+        # Total = 1.5 + 8.0 = 9.5 kg
+        expected_body5_mass = 1.5 + (1000.0 * 8.0 * 0.1 * 0.1 * 0.1)
+        self.assertAlmostEqual(
+            body_mass[5], expected_body5_mass, places=4, msg="Body 5 mass should combine explicit and density-based"
+        )
+
+        # Body 6: mass="0" — zero mass zeroes density, m_computed guard skips inertia → no contribution
+        self.assertAlmostEqual(body_mass[6], 0.0, places=6, msg="Body 6 (mass=0) should have zero mass")
+
+        # Verify that bodies with explicit mass have non-zero inertia
+        # (inertia should be computed from the explicit mass, not zero)
+        body_inertia = model.body_inertia.numpy()
+        for i in range(5):  # Bodies 0-4 have only explicit mass
+            inertia_trace = np.trace(body_inertia[i])
+            self.assertGreater(inertia_trace, 0.0, msg=f"Body {i} should have non-zero inertia from explicit mass")
+
+        # Body 6: mass="0" should also have zero inertia
+        self.assertAlmostEqual(np.trace(body_inertia[6]), 0.0, places=6, msg="Body 6 (mass=0) should have zero inertia")
 
     def test_solreflimit_parsing(self):
         """Test that solreflimit joint attribute is correctly parsed and converted to limit_ke/limit_kd."""
@@ -3224,8 +3383,8 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         self.assertAlmostEqual(geom_xform[2], 0.0, places=5)
 
     def test_actuator_mode_inference_from_actuator_type(self):
-        """Test that ActuatorMode is correctly inferred from MJCF actuator types."""
-        from newton._src.sim.joints import ActuatorMode  # noqa: PLC0415
+        """Test that JointTargetMode is correctly inferred from MJCF actuator types."""
+        from newton._src.sim.joints import JointTargetMode  # noqa: PLC0415
 
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
 <mujoco model="test_actuator_modes">
@@ -3277,20 +3436,20 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             joint_idx = b.joint_label.index(joint_name)
             return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
 
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jm)], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jp)], int(ActuatorMode.POSITION))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jv)], int(ActuatorMode.VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jpv)], int(ActuatorMode.POSITION_VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jpa)], int(ActuatorMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jm)], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jp)], int(JointTargetMode.POSITION))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jv)], int(JointTargetMode.VELOCITY))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jpv)], int(JointTargetMode.POSITION_VELOCITY))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jpa)], int(JointTargetMode.NONE))
 
         builder2 = newton.ModelBuilder()
         builder2.add_mjcf(mjcf_content, ctrl_direct=True)
 
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jm)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jp)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jv)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jpv)], int(ActuatorMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jpa)], int(ActuatorMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jm)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jp)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jv)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jpv)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jpa)], int(JointTargetMode.NONE))
 
     def test_frame_transform_composition_geoms(self):
         """Test that frame transforms are correctly composed with child geom positions.
@@ -6906,6 +7065,202 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 2)
+
+
+class TestMjcfMultiRootArticulations(unittest.TestCase):
+    """Tests for issue #736: MJCF importer should create separate articulations per root body."""
+
+    def test_multi_root_bodies_separate_articulations(self):
+        """Multiple root bodies under worldbody should each get their own articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="multi_root">
+    <worldbody>
+        <body name="robot_a" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link_a" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+        <body name="robot_b" pos="2 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link_b" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False)
+        model = builder.finalize()
+
+        # Should have 2 articulations, one per root body
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # Each articulation has 2 joints (fixed base + hinge)
+        self.assertEqual(model.joint_count, 4)
+
+        # Joints from different root bodies should be in different articulations
+        joint_art = model.joint_articulation.numpy()
+        self.assertEqual(joint_art[0], joint_art[1])  # robot_a joints together
+        self.assertEqual(joint_art[2], joint_art[3])  # robot_b joints together
+        self.assertNotEqual(joint_art[0], joint_art[2])  # different articulations
+
+    def test_multi_root_bodies_with_free_joints(self):
+        """Root bodies with <freejoint> should each get their own articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="free_bodies">
+    <worldbody>
+        <body name="box_a" pos="0 0 1">
+            <freejoint name="free_a"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="box_b" pos="1 0 1">
+            <freejoint name="free_b"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="box_c" pos="2 0 1">
+            <freejoint name="free_c"/>
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        # Should have 3 articulations
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 3)
+
+        # Each articulation has 1 free joint
+        self.assertEqual(model.joint_count, 3)
+
+        # Each joint in its own articulation
+        joint_art = model.joint_articulation.numpy()
+        self.assertEqual(len(set(joint_art)), 3)
+
+    def test_multi_root_articulation_labels(self):
+        """Multi-root articulations should get model_name/body_name labels."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <worldbody>
+        <body name="robot1" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+        <body name="robot2" pos="1 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False)
+        model = builder.finalize()
+
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+        self.assertEqual(model.articulation_label[0], "scene/robot1")
+        self.assertEqual(model.articulation_label[1], "scene/robot2")
+
+    def test_multi_root_with_floating_option(self):
+        """floating=True with multiple roots: each gets own free-joint articulation."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="floating_multi">
+    <worldbody>
+        <body name="obj_a" pos="0 0 1">
+            <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        </body>
+        <body name="obj_b" pos="1 0 1">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=True)
+        model = builder.finalize()
+
+        # Should have 2 separate articulations
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # Each has 1 free joint
+        self.assertEqual(model.joint_count, 2)
+
+    def test_multi_root_with_parent_body_keeps_single_articulation(self):
+        """Hierarchical composition (parent_body != -1) should keep all joints in one articulation."""
+        robot_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="robot">
+    <worldbody>
+        <body name="base" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        attachment_mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="attachment">
+    <worldbody>
+        <body name="part_a" pos="0 0 0">
+            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+        </body>
+        <body name="part_b" pos="0.5 0 0">
+            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(robot_mjcf, floating=False)
+        base_idx = builder.body_label.index("robot/worldbody/base")
+
+        # Attach multi-root MJCF to existing body
+        builder.add_mjcf(attachment_mjcf, parent_body=base_idx, floating=False)
+        model = builder.finalize()
+
+        # All joints should be in one articulation (hierarchical composition)
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 1)
+
+    def test_multi_root_with_ignore_classes(self):
+        """ignore_classes should correctly interact with multi-root articulation splitting."""
+        mjcf = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="scene">
+    <worldbody>
+        <body name="robot" pos="0 0 0">
+            <geom type="sphere" size="0.1" mass="1.0"/>
+            <body name="link" pos="0.5 0 0">
+                <joint type="hinge" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="0.5"/>
+            </body>
+        </body>
+        <body name="visual_marker" childclass="visual" pos="1 0 0">
+            <geom type="sphere" size="0.05" mass="0.1"/>
+        </body>
+        <body name="obstacle" pos="2 0 0">
+            <geom type="box" size="0.2 0.2 0.2" mass="2.0"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        # Ignore the "visual" class — only robot and obstacle should produce articulations
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, floating=False, ignore_classes=["visual"])
+        model = builder.finalize()
+
+        # visual_marker is ignored, so 2 articulations (robot + obstacle)
+        articulation_count = len(model.articulation_start.numpy()) - 1
+        self.assertEqual(articulation_count, 2)
+
+        # visual_marker body should not exist
+        self.assertNotIn("scene/worldbody/visual_marker", builder.body_label)
+        self.assertIn("scene/worldbody/robot", builder.body_label)
+        self.assertIn("scene/worldbody/obstacle", builder.body_label)
 
 
 class TestFromtoCapsuleOrientation(unittest.TestCase):

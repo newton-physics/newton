@@ -27,9 +27,9 @@ import newton.usd as usd
 from newton import JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
+from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
-from newton.utils import quat_between_axes
 
 devices = get_test_devices()
 
@@ -2108,10 +2108,10 @@ def PhysicsRevoluteJoint "Joint2"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_actuator_mode_inference_from_drive(self):
-        """Test that ActuatorMode is correctly inferred from USD joint drives."""
+        """Test that JointTargetMode is correctly inferred from USD joint drives."""
         from pxr import Usd
 
-        from newton._src.sim.joints import ActuatorMode  # noqa: PLC0415
+        from newton._src.sim.joints import JointTargetMode  # noqa: PLC0415
 
         usd_content = """#usda 1.0
 (
@@ -2268,24 +2268,24 @@ def Xform "Root" (
             return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
 
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_effort")],
-            int(ActuatorMode.EFFORT),
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_effort")],
+            int(JointTargetMode.EFFORT),
         )
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_passive")],
-            int(ActuatorMode.NONE),
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_passive")],
+            int(JointTargetMode.NONE),
         )
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_position")],
-            int(ActuatorMode.POSITION),
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_position")],
+            int(JointTargetMode.POSITION),
         )
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_velocity")],
-            int(ActuatorMode.VELOCITY),
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_velocity")],
+            int(JointTargetMode.VELOCITY),
         )
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_both_gains")],
-            int(ActuatorMode.POSITION),
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_both_gains")],
+            int(JointTargetMode.POSITION),
         )
 
         stage2 = Usd.Stage.CreateInMemory()
@@ -2295,16 +2295,16 @@ def Xform "Root" (
         builder2.add_usd(stage2, force_position_velocity_actuation=True)
 
         self.assertEqual(
-            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_both_gains")],
-            int(ActuatorMode.POSITION_VELOCITY),
+            builder2.joint_target_mode[get_qd_start(builder2, "/Root/joint_both_gains")],
+            int(JointTargetMode.POSITION_VELOCITY),
         )
         self.assertEqual(
-            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_position")],
-            int(ActuatorMode.POSITION),
+            builder2.joint_target_mode[get_qd_start(builder2, "/Root/joint_position")],
+            int(JointTargetMode.POSITION),
         )
         self.assertEqual(
-            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_velocity")],
-            int(ActuatorMode.VELOCITY),
+            builder2.joint_target_mode[get_qd_start(builder2, "/Root/joint_velocity")],
+            int(JointTargetMode.VELOCITY),
         )
 
     def test__add_base_joints_to_floating_bodies_default(self):
@@ -2808,7 +2808,7 @@ def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating
             f"Shape {sid} collision mismatch: USD={collision_enabled_usd}, Newton={collision_enabled_newton}",
         )
 
-        usd_quat = usd.from_gfquat(shape_spec.localRot)
+        usd_quat = usd.value_to_warp(shape_spec.localRot)
         newton_pos = newton_transform[:3]
         newton_quat = newton_transform[3:7]
 
@@ -6184,6 +6184,134 @@ def Xform "BodyWithoutVisuals" (
         flags_no_load = builder4.shape_flags[collision_no_load]
         self.assertTrue(flags_no_load & ShapeFlags.COLLIDE_SHAPES)
         self.assertTrue(flags_no_load & ShapeFlags.VISIBLE)
+
+
+class TestImportUsdMimicJoint(unittest.TestCase):
+    """Tests for PhysxMimicJointAPI parsing during USD import."""
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_mimic_joint_basic(self):
+        """PhysxMimicJointAPI on a revolute joint creates a mimic constraint."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+        root = stage.DefinePrim("/Root", "Xform")
+        stage.SetDefaultPrim(root)
+
+        art = stage.DefinePrim("/Root/Robot", "Xform")
+        UsdPhysics.ArticulationRootAPI.Apply(art)
+
+        # base body
+        base = stage.DefinePrim("/Root/Robot/base", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(base)
+        UsdPhysics.MassAPI.Apply(base).CreateMassAttr(1.0)
+
+        # link1
+        link1 = stage.DefinePrim("/Root/Robot/link1", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(link1)
+        UsdPhysics.MassAPI.Apply(link1).CreateMassAttr(1.0)
+
+        # link2
+        link2 = stage.DefinePrim("/Root/Robot/link2", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(link2)
+        UsdPhysics.MassAPI.Apply(link2).CreateMassAttr(1.0)
+
+        # leader joint: base -> link1
+        leader = UsdPhysics.RevoluteJoint.Define(stage, "/Root/Robot/Joints/leader")
+        leader.CreateAxisAttr("Z")
+        leader.CreateBody0Rel().SetTargets(["/Root/Robot/base"])
+        leader.CreateBody1Rel().SetTargets(["/Root/Robot/link1"])
+        leader.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0.5))
+        leader.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -0.5))
+        leader.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        leader.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        # follower joint: base -> link2
+        follower = UsdPhysics.RevoluteJoint.Define(stage, "/Root/Robot/Joints/follower")
+        follower.CreateAxisAttr("Z")
+        follower.CreateBody0Rel().SetTargets(["/Root/Robot/base"])
+        follower.CreateBody1Rel().SetTargets(["/Root/Robot/link2"])
+        follower.CreateLocalPos0Attr().Set(Gf.Vec3f(0.5, 0, 0.5))
+        follower.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -0.5))
+        follower.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        follower.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        # Apply PhysxMimicJointAPI:rotZ to follower via metadata
+        # (PhysxMimicJointAPI is not in usd-core, so use raw metadata)
+        follower_prim = follower.GetPrim()
+        from pxr import Sdf
+
+        follower_prim.SetMetadata("apiSchemas", Sdf.TokenListOp.Create(prependedItems=["PhysxMimicJointAPI:rotZ"]))
+        follower_prim.CreateRelationship("physxMimicJoint:rotZ:referenceJoint").SetTargets(
+            ["/Root/Robot/Joints/leader"]
+        )
+        follower_prim.CreateAttribute("physxMimicJoint:rotZ:gearing", Sdf.ValueTypeNames.Float).Set(-2.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(len(builder.constraint_mimic_joint0), 1)
+
+        model = builder.finalize()
+        self.assertEqual(model.constraint_mimic_count, 1)
+
+        joint0 = model.constraint_mimic_joint0.numpy()[0]
+        joint1 = model.constraint_mimic_joint1.numpy()[0]
+        coef0 = model.constraint_mimic_coef0.numpy()[0]
+        coef1 = model.constraint_mimic_coef1.numpy()[0]
+
+        follower_idx = model.joint_label.index("/Root/Robot/Joints/follower")
+        leader_idx = model.joint_label.index("/Root/Robot/Joints/leader")
+
+        self.assertEqual(joint0, follower_idx)
+        self.assertEqual(joint1, leader_idx)
+        # PhysX: jointPos + gearing * refPos + offset = 0
+        # Newton: joint0 = coef0 + coef1 * joint1
+        # So coef1 = -gearing = -(-2.0) = 2.0, coef0 = -offset = 0.0
+        self.assertAlmostEqual(coef0, 0.0, places=5)
+        self.assertAlmostEqual(coef1, 2.0, places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_mimic_joint_no_api_no_constraint(self):
+        """Joints without PhysxMimicJointAPI produce no mimic constraints."""
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.SetStageKilogramsPerUnit(stage, 1.0)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+
+        root = stage.DefinePrim("/Root", "Xform")
+        stage.SetDefaultPrim(root)
+
+        art = stage.DefinePrim("/Root/Robot", "Xform")
+        UsdPhysics.ArticulationRootAPI.Apply(art)
+
+        base = stage.DefinePrim("/Root/Robot/base", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(base)
+        UsdPhysics.MassAPI.Apply(base).CreateMassAttr(1.0)
+
+        link1 = stage.DefinePrim("/Root/Robot/link1", "Cube")
+        UsdPhysics.RigidBodyAPI.Apply(link1)
+        UsdPhysics.MassAPI.Apply(link1).CreateMassAttr(1.0)
+
+        joint = UsdPhysics.RevoluteJoint.Define(stage, "/Root/Robot/Joints/joint1")
+        joint.CreateAxisAttr("Z")
+        joint.CreateBody0Rel().SetTargets(["/Root/Robot/base"])
+        joint.CreateBody1Rel().SetTargets(["/Root/Robot/link1"])
+        joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0.5))
+        joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -0.5))
+        joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        joint.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        self.assertEqual(len(builder.constraint_mimic_joint0), 0)
 
 
 class TestHasAppliedApiSchema(unittest.TestCase):

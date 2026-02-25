@@ -67,8 +67,8 @@ class TestViewerRerunHidden(unittest.TestCase):
         arr.__len__ = lambda self_: len(np_data)
         return arr
 
-    def test_log_mesh_hidden_skips_registration(self):
-        """log_mesh(hidden=True) should not store the mesh in _meshes."""
+    def test_log_mesh_hidden_skips_log(self):
+        """log_mesh(hidden=True) should store the mesh in _meshes but not render them."""
         viewer = self._create_viewer()
 
         points = self._make_mock_wp_array([[0, 0, 0], [1, 0, 0], [0, 1, 0]])
@@ -77,7 +77,8 @@ class TestViewerRerunHidden(unittest.TestCase):
         with patch("newton._src.viewer.viewer_rerun.rr", self.mock_rr):
             viewer.log_mesh("hidden_mesh", points, indices, hidden=True)
 
-        self.assertNotIn("hidden_mesh", viewer._meshes)
+        self.assertIn("hidden_mesh", viewer._meshes)
+        self.mock_rr.log.assert_not_called()
 
     def test_log_instances_hidden_clears_entity(self):
         """log_instances(hidden=True) should clear a previously visible entity."""

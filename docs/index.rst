@@ -49,7 +49,6 @@ Newton Physics
    api/newton_utils
    api/newton_viewer
 
-
 .. toctree::
    :hidden:
    :caption: Further Reading

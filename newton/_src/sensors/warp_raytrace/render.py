@@ -15,7 +15,7 @@
 
 import warp as wp
 
-from . import lighting, ray_cast, textures
+from . import lighting, raytrace, textures
 from .types import RenderOrder
 
 
@@ -95,7 +95,7 @@ def pack_rgba_to_uint32(rgb: wp.vec3f, alpha: wp.float32) -> wp.uint32:
 
 @wp.kernel(enable_backward=False)
 def render_megakernel(
-    # Model and Options
+    # Model and Config
     world_count: wp.int32,
     camera_count: wp.int32,
     light_count: wp.int32,
@@ -196,7 +196,7 @@ def render_megakernel(
         camera_transforms[camera_index, world_index], camera_rays[camera_index, py, px, 1]
     )
 
-    closest_hit = ray_cast.closest_hit(
+    closest_hit = raytrace.closest_hit(
         bvh_shapes_size,
         bvh_shapes_id,
         bvh_shapes_group_roots,
@@ -221,7 +221,7 @@ def render_megakernel(
         ray_dir_world,
     )
 
-    if closest_hit.shape_index == ray_cast.NO_HIT_SHAPE_ID:
+    if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
         return
 
     if render_depth:
@@ -240,7 +240,7 @@ def render_megakernel(
     hit_point = ray_origin_world + ray_dir_world * closest_hit.distance
 
     color = wp.vec4f(1.0)
-    if closest_hit.shape_index < ray_cast.MAX_SHAPE_ID:
+    if closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
         color = shape_colors[closest_hit.shape_index]
         if shape_materials[closest_hit.shape_index] > -1:
             color = wp.cw_mul(color, material_rgba[shape_materials[closest_hit.shape_index]])
@@ -248,7 +248,7 @@ def render_megakernel(
     base_color = wp.vec3f(color[0], color[1], color[2])
     out_color = wp.vec3f(0.0)
 
-    if enable_textures and closest_hit.shape_index < ray_cast.MAX_SHAPE_ID:
+    if enable_textures and closest_hit.shape_index < raytrace.MAX_SHAPE_ID:
         material_index = shape_materials[closest_hit.shape_index]
         if material_index > -1:
             texture_index = material_texture_ids[material_index]
