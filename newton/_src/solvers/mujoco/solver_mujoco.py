@@ -2526,7 +2526,7 @@ class SolverMuJoCo(SolverBase):
         dampratio_arr = mujoco_attrs.actuator_dampratio.numpy() if hasattr(mujoco_attrs, "actuator_dampratio") else None
 
         for mujoco_act_idx in range(mujoco_actuator_count):
-            # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
+            # Skip JOINT_TARGET actuators - they're already added via joint_target_mode path
             if ctrl_source_arr is not None:
                 ctrl_source = int(ctrl_source_arr[mujoco_act_idx])
                 if ctrl_source == SolverMuJoCo.CtrlSource.JOINT_TARGET:
@@ -3762,7 +3762,7 @@ class SolverMuJoCo(SolverBase):
         joint_armature = model.joint_armature.numpy()
         joint_effort_limit = model.joint_effort_limit.numpy()
         # Per-DOF actuator arrays
-        joint_act_mode = model.joint_act_mode.numpy()
+        joint_target_mode = model.joint_target_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
         # MoJoCo doesn't have velocity limit
@@ -4279,7 +4279,7 @@ class SolverMuJoCo(SolverBase):
                 # Add actuators for the ball joint using per-DOF arrays
                 for i in range(3):
                     ai = qd_start + i
-                    mode = joint_act_mode[ai]
+                    mode = joint_target_mode[ai]
 
                     if (actuated_axes is None or ai in actuated_axes) and mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
@@ -4392,7 +4392,7 @@ class SolverMuJoCo(SolverBase):
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
 
-                    mode = joint_act_mode[ai]
+                    mode = joint_target_mode[ai]
                     if (actuated_axes is None or ai in actuated_axes) and mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
@@ -4498,7 +4498,7 @@ class SolverMuJoCo(SolverBase):
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
 
-                    mode = joint_act_mode[ai]
+                    mode = joint_target_mode[ai]
                     if (actuated_axes is None or ai in actuated_axes) and mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
@@ -5286,7 +5286,7 @@ class SolverMuJoCo(SolverBase):
                     self.mjc_actuator_to_newton_idx,
                     self.model.joint_target_ke,
                     self.model.joint_target_kd,
-                    self.model.joint_act_mode,
+                    self.model.joint_target_mode,
                     dofs_per_world,
                 ],
                 outputs=[

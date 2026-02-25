@@ -2313,15 +2313,15 @@ def parse_mjcf(
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
                         builder.joint_target_ke[dof_idx] = kp
-                        current_mode = builder.joint_act_mode[dof_idx]
+                        current_mode = builder.joint_target_mode[dof_idx]
                         if current_mode == int(JointTargetMode.VELOCITY):
                             # A velocity actuator was already parsed for this DOF - upgrade to POSITION_VELOCITY.
                             # We intentionally preserve the existing kd from the velocity actuator rather than
                             # overwriting it with this position actuator's kv, since the velocity actuator's
                             # kv takes precedence for velocity control.
-                            builder.joint_act_mode[dof_idx] = int(JointTargetMode.POSITION_VELOCITY)
+                            builder.joint_target_mode[dof_idx] = int(JointTargetMode.POSITION_VELOCITY)
                         elif current_mode == int(JointTargetMode.NONE):
-                            builder.joint_act_mode[dof_idx] = int(JointTargetMode.POSITION)
+                            builder.joint_target_mode[dof_idx] = int(JointTargetMode.POSITION)
                             builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "velocity":
@@ -2336,11 +2336,11 @@ def parse_mjcf(
                 if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
-                        current_mode = builder.joint_act_mode[dof_idx]
+                        current_mode = builder.joint_target_mode[dof_idx]
                         if current_mode == int(JointTargetMode.POSITION):
-                            builder.joint_act_mode[dof_idx] = int(JointTargetMode.POSITION_VELOCITY)
+                            builder.joint_target_mode[dof_idx] = int(JointTargetMode.POSITION_VELOCITY)
                         elif current_mode == int(JointTargetMode.NONE):
-                            builder.joint_act_mode[dof_idx] = int(JointTargetMode.VELOCITY)
+                            builder.joint_target_mode[dof_idx] = int(JointTargetMode.VELOCITY)
                         builder.joint_target_kd[dof_idx] = kv
 
             elif actuator_type == "motor":

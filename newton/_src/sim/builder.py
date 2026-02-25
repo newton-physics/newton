@@ -893,7 +893,7 @@ class ModelBuilder:
         self.joint_type = []
         self.joint_label = []
         self.joint_armature = []
-        self.joint_act_mode = []  # Actuator mode per DOF (JointTargetMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3, EFFORT=4)
+        self.joint_target_mode = []  # Joint target mode per DOF (JointTargetMode.NONE=0, POSITION=1, VELOCITY=2, POSITION_VELOCITY=3, EFFORT=4)
         self.joint_target_ke = []
         self.joint_target_kd = []
         self.joint_limit_lower = []
@@ -2633,7 +2633,7 @@ class ModelBuilder:
             "joint_limit_kd",
             "joint_target_ke",
             "joint_target_kd",
-            "joint_act_mode",
+            "joint_target_mode",
             "joint_effort_limit",
             "joint_velocity_limit",
             "joint_friction",
@@ -3108,7 +3108,7 @@ class ModelBuilder:
                 mode = int(JointTargetMode.from_gains(dim.target_ke, dim.target_kd, has_drive=has_drive))
 
             # Store per-DOF actuator properties
-            self.joint_act_mode.append(mode)
+            self.joint_target_mode.append(mode)
             self.joint_target_ke.append(dim.target_ke)
             self.joint_target_kd.append(dim.target_kd)
             self.joint_limit_ke.append(dim.limit_ke)
@@ -4161,7 +4161,7 @@ class ModelBuilder:
                 data["axes"].append(
                     {
                         "axis": self.joint_axis[j],
-                        "actuator_mode": self.joint_act_mode[j],
+                        "actuator_mode": self.joint_target_mode[j],
                         "target_ke": self.joint_target_ke[j],
                         "target_kd": self.joint_target_kd[j],
                         "limit_ke": self.joint_limit_ke[j],
@@ -4397,7 +4397,7 @@ class ModelBuilder:
         self.joint_X_p.clear()
         self.joint_X_c.clear()
         self.joint_axis.clear()
-        self.joint_act_mode.clear()
+        self.joint_target_mode.clear()
         self.joint_target_ke.clear()
         self.joint_target_kd.clear()
         self.joint_limit_lower.clear()
@@ -4439,7 +4439,7 @@ class ModelBuilder:
                 self.joint_articulation.append(-1)
             for axis in joint["axes"]:
                 self.joint_axis.append(axis["axis"])
-                self.joint_act_mode.append(axis["actuator_mode"])
+                self.joint_target_mode.append(axis["actuator_mode"])
                 self.joint_target_ke.append(axis["target_ke"])
                 self.joint_target_kd.append(axis["target_kd"])
                 self.joint_limit_lower.append(axis["limit_lower"])
@@ -8192,7 +8192,7 @@ class ModelBuilder:
                 ("joint_effort_limit", self.joint_effort_limit),
                 ("joint_velocity_limit", self.joint_velocity_limit),
                 ("joint_friction", self.joint_friction),
-                ("joint_act_mode", self.joint_act_mode),
+                ("joint_target_mode", self.joint_target_mode),
             ]
             for name, arr in dof_arrays:
                 if len(arr) != self.joint_dof_count:
@@ -9140,7 +9140,7 @@ class ModelBuilder:
 
             # dynamics properties
             m.joint_armature = wp.array(self.joint_armature, dtype=wp.float32, requires_grad=requires_grad)
-            m.joint_act_mode = wp.array(self.joint_act_mode, dtype=wp.int32)
+            m.joint_target_mode = wp.array(self.joint_target_mode, dtype=wp.int32)
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_pos = wp.array(self.joint_target_pos, dtype=wp.float32, requires_grad=requires_grad)

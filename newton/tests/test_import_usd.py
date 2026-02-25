@@ -2268,23 +2268,23 @@ def Xform "Root" (
             return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
 
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_effort")],
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_effort")],
             int(JointTargetMode.EFFORT),
         )
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_passive")],
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_passive")],
             int(JointTargetMode.NONE),
         )
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_position")],
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_position")],
             int(JointTargetMode.POSITION),
         )
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_velocity")],
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_velocity")],
             int(JointTargetMode.VELOCITY),
         )
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "/Root/joint_both_gains")],
+            builder.joint_target_mode[get_qd_start(builder, "/Root/joint_both_gains")],
             int(JointTargetMode.POSITION),
         )
 
@@ -2295,15 +2295,15 @@ def Xform "Root" (
         builder2.add_usd(stage2, force_position_velocity_actuation=True)
 
         self.assertEqual(
-            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_both_gains")],
+            builder2.joint_target_mode[get_qd_start(builder2, "/Root/joint_both_gains")],
             int(JointTargetMode.POSITION_VELOCITY),
         )
         self.assertEqual(
-            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_position")],
+            builder2.joint_target_mode[get_qd_start(builder2, "/Root/joint_position")],
             int(JointTargetMode.POSITION),
         )
         self.assertEqual(
-            builder2.joint_act_mode[get_qd_start(builder2, "/Root/joint_velocity")],
+            builder2.joint_target_mode[get_qd_start(builder2, "/Root/joint_velocity")],
             int(JointTargetMode.VELOCITY),
         )
 

@@ -3277,20 +3277,20 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             joint_idx = b.joint_label.index(joint_name)
             return sum(b.joint_dof_dim[i][0] + b.joint_dof_dim[i][1] for i in range(joint_idx))
 
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jm)], int(JointTargetMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jp)], int(JointTargetMode.POSITION))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jv)], int(JointTargetMode.VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jpv)], int(JointTargetMode.POSITION_VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, jpa)], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jm)], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jp)], int(JointTargetMode.POSITION))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jv)], int(JointTargetMode.VELOCITY))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jpv)], int(JointTargetMode.POSITION_VELOCITY))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, jpa)], int(JointTargetMode.NONE))
 
         builder2 = newton.ModelBuilder()
         builder2.add_mjcf(mjcf_content, ctrl_direct=True)
 
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jm)], int(JointTargetMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jp)], int(JointTargetMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jv)], int(JointTargetMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jpv)], int(JointTargetMode.NONE))
-        self.assertEqual(builder2.joint_act_mode[get_qd_start(builder2, jpa)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jm)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jp)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jv)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jpv)], int(JointTargetMode.NONE))
+        self.assertEqual(builder2.joint_target_mode[get_qd_start(builder2, jpa)], int(JointTargetMode.NONE))
 
     def test_frame_transform_composition_geoms(self):
         """Test that frame transforms are correctly composed with child geom positions.
