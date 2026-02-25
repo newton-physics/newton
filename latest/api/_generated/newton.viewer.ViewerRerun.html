@@ -811,7 +811,7 @@
 <h1>newton.viewer.ViewerRerun<a class="headerlink" href="#newton-viewer-viewerrerun" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.viewer.ViewerRerun">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerRerun</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">app_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">address</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serve_web_viewer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">web_port</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">9090</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grpc_port</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">9876</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">keep_historical_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">keep_scalar_history</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record_to_rrd</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer_rerun.py#L37"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerRerun" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerRerun</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">app_id</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">address</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">serve_web_viewer</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">web_port</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">9090</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">grpc_port</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">9876</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">keep_historical_data</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">keep_scalar_history</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">record_to_rrd</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer_rerun.py#L40"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerRerun" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerBase</span></code></p>
 <p>ViewerRerun provides a backend for visualizing Newton simulations using the rerun visualization library.</p>
 <p>This viewer logs mesh and instance data to rerun, enabling real-time or offline visualization of simulation
@@ -846,8 +846,19 @@ If False, the web viewer will only show the current frame to keep the memory usa
 This is useful for visualizing long and complex simulations that would quickly fill up the web viewer’s memory if the historical data was kept.
 If True, the historical simulation data is kept in the viewer to be able to scrub through the simulation timeline. Defaults to False.</p></li>
 <li><p><strong>keep_scalar_history</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, historical scala data logged via <a class="reference internal" href="#newton.viewer.ViewerRerun.log_scalar" title="newton.viewer.ViewerRerun.log_scalar"><code class="xref py py-meth docutils literal notranslate"><span class="pre">ViewerRerun.log_scalar()</span></code></a> is kept in the viewer.</p></li>
-<li><p><strong>record_to_rrd</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Path to record the viewer to a <code class="docutils literal notranslate"><span class="pre">*.rrd</span></code> recording file (e.g. “my_recording.rrd”). If None, the viewer will not record to a file.</p></li>
+<li><p><strong>record_to_rrd</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Path to record the viewer to a <code class="docutils literal notranslate"><span class="pre">*.rrd</span></code> recording file (e.g. “my_recording.rrd”). If None, the viewer will not record to a file.</p></li>
 </ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.viewer.ViewerRerun.apply_forces">
+<span class="sig-name descname"><span class="pre">apply_forces</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">state</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerRerun.apply_forces" title="Link to this definition">#</a></dt>
+<dd><p>Rerun backend does not apply interactive forces.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Current simulation state.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -902,7 +913,7 @@ If True, the historical simulation data is kept in the viewer to be able to scru
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Name of the array.</p></li>
-<li><p><strong>array</strong> – The array data (can be a wp.array or a numpy array).</p></li>
+<li><p><strong>array</strong> (<em>wp.array</em><em>(</em><em>dtype=Any</em><em>) </em><em>| </em><em>nparray</em>) – The array data (can be a wp.array or a numpy array).</p></li>
 </ul>
 </dd>
 </dl>
@@ -911,7 +922,19 @@ If True, the historical simulation data is kept in the viewer to be able to scru
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerRerun.log_geo">
 <span class="sig-name descname"><span class="pre">log_geo</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geo_type</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geo_scale</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geo_thickness</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geo_is_solid</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">geo_src</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hidden</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerRerun.log_geo" title="Link to this definition">#</a></dt>
-<dd><dl class="field-list simple">
+<dd><p>Log a geometry primitive, with plane expansion for infinite planes.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the geometry asset.</p></li>
+<li><p><strong>geo_type</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Geometry type value from <cite>newton.GeoType</cite>.</p></li>
+<li><p><strong>geo_scale</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><em>...</em><em>]</em>) – Geometry scale tuple interpreted by <cite>geo_type</cite>.</p></li>
+<li><p><strong>geo_thickness</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Shell thickness for mesh-like geometry.</p></li>
+<li><p><strong>geo_is_solid</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether mesh geometry is treated as solid.</p></li>
+<li><p><strong>geo_src</strong> (<a class="reference internal" href="newton.Mesh.html#newton.Mesh" title="newton._src.geometry.types.Mesh"><em>Mesh</em></a><em> | </em><a class="reference internal" href="newton.Heightfield.html#newton.Heightfield" title="newton._src.geometry.types.Heightfield"><em>Heightfield</em></a><em> | </em><em>None</em>) – Optional source geometry for mesh-backed types.</p></li>
+<li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the resulting geometry is hidden.</p></li>
+</ul>
+</dd>
 </dl>
 </dd></dl>
 
@@ -924,10 +947,10 @@ If True, the historical simulation data is kept in the viewer to be able to scru
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Entity path for the instances.</p></li>
 <li><p><strong>mesh</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Name of the mesh asset to instance.</p></li>
-<li><p><strong>xforms</strong> (<em>wp.array</em>) – Instance transforms (wp.transform).</p></li>
-<li><p><strong>scales</strong> (<em>wp.array</em>) – Instance scales (wp.vec3).</p></li>
-<li><p><strong>colors</strong> (<em>wp.array</em>) – Instance colors (wp.vec3).</p></li>
-<li><p><strong>materials</strong> (<em>wp.array</em>) – Instance materials (wp.vec4).</p></li>
+<li><p><strong>xforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>) </em><em>| </em><em>None</em>) – Instance transforms.</p></li>
+<li><p><strong>scales</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Instance scales.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Instance colors.</p></li>
+<li><p><strong>materials</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>) </em><em>| </em><em>None</em>) – Instance materials.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the instances are hidden.</p></li>
 </ul>
 </dd>
@@ -942,9 +965,9 @@ If True, the historical simulation data is kept in the viewer to be able to scru
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Name of the line batch.</p></li>
-<li><p><strong>starts</strong> – Line start points.</p></li>
-<li><p><strong>ends</strong> – Line end points.</p></li>
-<li><p><strong>colors</strong> – Line colors.</p></li>
+<li><p><strong>starts</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Line start points.</p></li>
+<li><p><strong>ends</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Line end points.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Line colors.</p></li>
 <li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Line width.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the lines are hidden.</p></li>
 </ul>
@@ -960,10 +983,11 @@ If True, the historical simulation data is kept in the viewer to be able to scru
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Entity path for the mesh.</p></li>
-<li><p><strong>points</strong> (<em>wp.array</em>) – Vertex positions (wp.vec3).</p></li>
-<li><p><strong>indices</strong> (<em>wp.array</em>) – Triangle indices (wp.uint32).</p></li>
-<li><p><strong>normals</strong> (<em>wp.array</em><em>, </em><em>optional</em>) – Vertex normals (wp.vec3).</p></li>
-<li><p><strong>uvs</strong> (<em>wp.array</em><em>, </em><em>optional</em>) – UV coordinates (wp.vec2).</p></li>
+<li><p><strong>points</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>)</em>) – Vertex positions.</p></li>
+<li><p><strong>indices</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>)</em>) – Triangle indices.</p></li>
+<li><p><strong>normals</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Vertex normals.</p></li>
+<li><p><strong>uvs</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2</em><em>) </em><em>| </em><em>None</em>) – UV coordinates.</p></li>
+<li><p><strong>texture</strong> (<em>np.ndarray</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Optional texture path/URL or image array.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the mesh is hidden.</p></li>
 <li><p><strong>backface_culling</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to enable backface culling (unused).</p></li>
 </ul>
@@ -979,9 +1003,9 @@ If True, the historical simulation data is kept in the viewer to be able to scru
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Name of the point batch.</p></li>
-<li><p><strong>points</strong> – Point positions (can be a wp.array or a numpy array).</p></li>
-<li><p><strong>radii</strong> – Point radii (can be a wp.array or a numpy array).</p></li>
-<li><p><strong>colors</strong> – Point colors (can be a wp.array or a numpy array).</p></li>
+<li><p><strong>points</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Point positions (can be a wp.array or a numpy array).</p></li>
+<li><p><strong>radii</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Point radii (can be a wp.array or a numpy array).</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Point colors (can be a wp.array or a numpy array).</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the points are hidden.</p></li>
 </ul>
 </dd>
@@ -996,7 +1020,7 @@ If True, the historical simulation data is kept in the viewer to be able to scru
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Name of the scalar.</p></li>
-<li><p><strong>value</strong> – The scalar value.</p></li>
+<li><p><strong>value</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><a class="reference external" href="https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.number" title="(in NumPy v2.4)"><em>number</em></a>) – The scalar value.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1046,6 +1070,7 @@ If True, the historical simulation data is kept in the viewer to be able to scru
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerRerun"><code class="docutils literal notranslate"><span class="pre">ViewerRerun</span></code></a><ul class="visible nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerRerun.__init__"><code class="docutils literal notranslate"><span class="pre">ViewerRerun.__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerRerun.apply_forces"><code class="docutils literal notranslate"><span class="pre">ViewerRerun.apply_forces()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerRerun.begin_frame"><code class="docutils literal notranslate"><span class="pre">ViewerRerun.begin_frame()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerRerun.close"><code class="docutils literal notranslate"><span class="pre">ViewerRerun.close()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.viewer.ViewerRerun.end_frame"><code class="docutils literal notranslate"><span class="pre">ViewerRerun.end_frame()</span></code></a></li>

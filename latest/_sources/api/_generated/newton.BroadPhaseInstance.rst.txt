@@ -1,6 +1,0 @@
-﻿newton.BroadPhaseInstance
-=========================
-
-.. currentmodule:: newton
-
-.. autodata:: BroadPhaseInstance

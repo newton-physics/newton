@@ -814,6 +814,27 @@
 <p>This class encapsulates a triangle mesh, including its geometry, physical properties,
 and utility methods for simulation. Meshes are typically used for collision detection,
 visualization, and inertia computation in physics simulation.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Mesh.mass">
+<span class="sig-name descname"><span class="pre">mass</span></span><span class="sig-paren">[</span><em class="sig-param"><span class="n"><span class="pre">kg</span></span></em><span class="sig-paren">]</span><a class="headerlink" href="#newton.Mesh.mass" title="Link to this definition">#</a></dt>
+<dd><p>Mesh mass in local coordinates, computed with density 1.0 when
+<code class="docutils literal notranslate"><span class="pre">compute_inertia</span></code> is <code class="docutils literal notranslate"><span class="pre">True</span></code>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Mesh.com">
+<span class="sig-name descname"><span class="pre">com</span></span><span class="sig-paren">[</span><em class="sig-param"><span class="n"><span class="pre">m</span></span></em><span class="sig-paren">]</span><a class="headerlink" href="#newton.Mesh.com" title="Link to this definition">#</a></dt>
+<dd><p>Mesh center of mass in local coordinates.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Mesh.inertia">
+<span class="sig-name descname"><span class="pre">inertia</span></span><span class="sig-paren">[</span><em class="sig-param"><span class="n"><span class="pre">kg</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">m</span></span></em><span class="sig-paren">]</span><a class="headerlink" href="#newton.Mesh.inertia" title="Link to this definition">#</a></dt>
+<dd><p>Mesh inertia tensor about <a class="reference internal" href="#newton.Mesh.com" title="newton.Mesh.com"><code class="xref py py-attr docutils literal notranslate"><span class="pre">com</span></code></a> in local coordinates.</p>
+</dd></dl>
+
 <p class="rubric">Example</p>
 <p>Load a mesh from an OBJ file using OpenMesh and create a Newton Mesh:</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
@@ -826,8 +847,6 @@ visualization, and inertia computation in physics simulation.</p>
 <span class="n">mesh</span> <span class="o">=</span> <span class="n">newton</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">mesh_points</span><span class="p">,</span> <span class="n">mesh_indices</span><span class="p">)</span>
 </pre></div>
 </div>
-<dl class="field-list simple">
-</dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.Mesh.create_arrow">
 <em class="property"><span class="k"><span class="pre">static</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">create_arrow</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">base_radius</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_height</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">cap_radius</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cap_height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">up_axis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Axis.Y</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">segments</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">32</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_normals</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_uvs</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">compute_inertia</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.Mesh.create_arrow" title="Link to this definition">#</a></dt>
@@ -1254,6 +1273,9 @@ If False, return a new Mesh for the convex hull.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh"><code class="docutils literal notranslate"><span class="pre">Mesh</span></code></a><ul class="visible nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.mass"><code class="docutils literal notranslate"><span class="pre">Mesh.mass</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.com"><code class="docutils literal notranslate"><span class="pre">Mesh.com</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.inertia"><code class="docutils literal notranslate"><span class="pre">Mesh.inertia</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_arrow"><code class="docutils literal notranslate"><span class="pre">Mesh.create_arrow()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_box"><code class="docutils literal notranslate"><span class="pre">Mesh.create_box()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Mesh.create_capsule"><code class="docutils literal notranslate"><span class="pre">Mesh.create_capsule()</span></code></a></li>

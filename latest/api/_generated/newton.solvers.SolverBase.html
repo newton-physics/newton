@@ -811,7 +811,7 @@
 <h1>newton.solvers.SolverBase<a class="headerlink" href="#newton-solvers-solverbase" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.solvers.SolverBase">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverBase</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/solver.py#L162"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverBase" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.</span></span><span class="sig-name descname"><span class="pre">SolverBase</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/solver.py#L163"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.SolverBase" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Generic base class for solvers.</p>
 <p>The implementation provides helper kernels to integrate rigid bodies and
@@ -926,12 +926,12 @@ properties changed.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>state_in</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a>) – The input state.</p></li>
-<li><p><strong>state_out</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton.State"><em>State</em></a>) – The output state.</p></li>
-<li><p><strong>control</strong> (<a class="reference internal" href="newton.Control.html#newton.Control" title="newton.Control"><em>Control</em></a>) – The control input.
+<li><p><strong>state_in</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The input state.</p></li>
+<li><p><strong>state_out</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The output state.</p></li>
+<li><p><strong>control</strong> (<a class="reference internal" href="newton.Control.html#newton.Control" title="newton._src.sim.control.Control"><em>Control</em></a><em> | </em><em>None</em>) – The control input.
 Defaults to <cite>None</cite> which means the control values from the
 <code class="xref py py-class docutils literal notranslate"><span class="pre">Model</span></code> are used.</p></li>
-<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><em>Contacts</em></a>) – The contact information.</p></li>
+<li><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a><em> | </em><em>None</em>) – The contact information.</p></li>
 <li><p><strong>dt</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The time step (typically in seconds).</p></li>
 </ul>
 </dd>
@@ -945,7 +945,7 @@ Defaults to <cite>None</cite> which means the control values from the
 other contact data, convert that data to the Contacts format.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><em>Contacts</em></a>) – The object to update from the solver state.</p>
+<dd class="field-odd"><p><strong>contacts</strong> (<a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a>) – The object to update from the solver state.</p>
 </dd>
 </dl>
 </dd></dl>

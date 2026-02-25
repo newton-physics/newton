@@ -808,7 +808,7 @@
 <h1>newton.CollisionPipeline<a class="headerlink" href="#newton-collisionpipeline" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.CollisionPipeline">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">CollisionPipeline</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduce_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rigid_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_pairs_filtered</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">broad_phase</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">narrow_phase</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_hydroelastic_config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/collide.py#L379"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.CollisionPipeline" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.</span></span><span class="sig-name descname"><span class="pre">CollisionPipeline</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">model</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">reduce_contacts</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">rigid_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape_pairs_filtered</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_max</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">soft_contact_margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.01</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">requires_grad</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">broad_phase</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">narrow_phase</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sdf_hydroelastic_config</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/sim/collide.py#L378"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.CollisionPipeline" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <a class="reference external" href="https://docs.python.org/3/library/functions.html#object" title="(in Python v3.14)"><code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></a></p>
 <p>Full-featured collision pipeline with GJK/MPR narrow phase and pluggable broad phase.</p>
 <dl class="simple">
@@ -831,24 +831,24 @@
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton.Model"><em>Model</em></a>) – The simulation model.</p></li>
-<li><p><strong>reduce_contacts</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em>, </em><em>optional</em>) – Whether to reduce contacts for mesh-mesh collisions. Defaults to True.</p></li>
-<li><p><strong>rigid_contact_max</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em><em>, </em><em>optional</em>) – Maximum number of rigid contacts to allocate.
+<li><p><strong>reduce_contacts</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to reduce contacts for mesh-mesh collisions. Defaults to True.</p></li>
+<li><p><strong>rigid_contact_max</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum number of rigid contacts to allocate.
 Resolution order:
 - If provided, use this value.
 - Else if <code class="docutils literal notranslate"><span class="pre">model.rigid_contact_max</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>, use the model value.
 - Else estimate automatically from model shape and pair metadata.</p></li>
-<li><p><strong>soft_contact_max</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em><em>, </em><em>optional</em>) – Maximum number of soft contacts to allocate.
+<li><p><strong>soft_contact_max</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum number of soft contacts to allocate.
 If None, computed as shape_count * particle_count.</p></li>
-<li><p><strong>soft_contact_margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><em>optional</em>) – Margin for soft contact generation. Defaults to 0.01.</p></li>
-<li><p><strong>requires_grad</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><em>None</em><em>, </em><em>optional</em>) – Whether to enable gradient computation. If None, uses model.requires_grad.</p></li>
-<li><p><strong>broad_phase</strong> (<em>BroadPhaseMode</em><em> | </em><a class="reference internal" href="newton.geometry.BroadPhaseAllPairs.html#newton.geometry.BroadPhaseAllPairs" title="newton.geometry.BroadPhaseAllPairs"><em>BroadPhaseAllPairs</em></a><em> | </em><a class="reference internal" href="newton.geometry.BroadPhaseSAP.html#newton.geometry.BroadPhaseSAP" title="newton.geometry.BroadPhaseSAP"><em>BroadPhaseSAP</em></a><em> | </em><a class="reference internal" href="newton.geometry.BroadPhaseExplicit.html#newton.geometry.BroadPhaseExplicit" title="newton.geometry.BroadPhaseExplicit"><em>BroadPhaseExplicit</em></a><em> | </em><em>None</em><em>, </em><em>optional</em>) – Either a broad phase mode string (“explicit”, “nxn”, “sap”) or
+<li><p><strong>soft_contact_margin</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Margin for soft contact generation. Defaults to 0.01.</p></li>
+<li><p><strong>requires_grad</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><em>None</em>) – Whether to enable gradient computation. If None, uses model.requires_grad.</p></li>
+<li><p><strong>broad_phase</strong> (<em>Literal</em><em>[</em><em>'nxn'</em><em>, </em><em>'sap'</em><em>, </em><em>'explicit'</em><em>] </em><em>| </em><em>BroadPhaseAllPairs</em><em> | </em><em>BroadPhaseSAP</em><em> | </em><em>BroadPhaseExplicit</em><em> | </em><em>None</em>) – Either a broad phase mode string (“explicit”, “nxn”, “sap”) or
 a prebuilt broad phase instance for expert usage.</p></li>
-<li><p><strong>narrow_phase</strong> (<a class="reference internal" href="newton.geometry.NarrowPhase.html#newton.geometry.NarrowPhase" title="newton.geometry.NarrowPhase"><em>NarrowPhase</em></a><em> | </em><em>None</em><em>, </em><em>optional</em>) – Optional prebuilt narrow phase instance. Must be
+<li><p><strong>narrow_phase</strong> (<a class="reference internal" href="newton.geometry.NarrowPhase.html#newton.geometry.NarrowPhase" title="newton.geometry.NarrowPhase"><em>NarrowPhase</em></a><em> | </em><em>None</em>) – Optional prebuilt narrow phase instance. Must be
 provided together with a broad phase instance for expert usage.</p></li>
-<li><p><strong>shape_pairs_filtered</strong> (<em>wp.array</em><em> | </em><em>None</em><em>, </em><em>optional</em>) – Precomputed shape pairs for EXPLICIT mode.
+<li><p><strong>shape_pairs_filtered</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2i</em><em>) </em><em>| </em><em>None</em>) – Precomputed shape pairs for EXPLICIT mode.
 When broad_phase is “explicit”, uses model.shape_contact_pairs if not provided. For
 “nxn”/”sap” modes, ignored.</p></li>
-<li><p><strong>sdf_hydroelastic_config</strong> (<a class="reference internal" href="newton.geometry.NarrowPhase.html#newton.geometry.NarrowPhase.HydroelasticSDF.Config" title="newton.geometry.NarrowPhase.HydroelasticSDF.Config"><em>NarrowPhase.HydroelasticSDF.Config</em></a><em> | </em><em>None</em><em>, </em><em>optional</em>) – Configuration for
+<li><p><strong>sdf_hydroelastic_config</strong> (<a class="reference internal" href="newton.geometry.HydroelasticSDF.html#newton.geometry.HydroelasticSDF.Config" title="newton.geometry.HydroelasticSDF.Config"><em>HydroelasticSDF.Config</em></a><em> | </em><em>None</em>) – Configuration for
 hydroelastic collision handling. Defaults to None.</p></li>
 </ul>
 </dd>
@@ -873,39 +873,13 @@ hydroelastic collision handling. Defaults to None.</p></li>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.CollisionPipeline.contacts">
 <span class="sig-name descname"><span class="pre">contacts</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.CollisionPipeline.contacts" title="Link to this definition">#</a></dt>
-<dd><p>Allocate and return a new <a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">Contacts</span></code></a> object for this pipeline.</p>
+<dd><p>Allocate and return a new <a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.Contacts</span></code></a> object for this pipeline.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Returns<span class="colon">:</span></dt>
 <dd class="field-odd"><p>A newly allocated contacts buffer sized for this pipeline.</p>
 </dd>
 <dt class="field-even">Return type<span class="colon">:</span></dt>
-<dd class="field-even"><p><a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton.Contacts">Contacts</a></p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.CollisionPipeline.get_hydro_contact_surface">
-<span class="sig-name descname"><span class="pre">get_hydro_contact_surface</span></span><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#newton.CollisionPipeline.get_hydro_contact_surface" title="Link to this definition">#</a></dt>
-<dd><p>Get hydroelastic contact surface data for visualization, if available.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Returns<span class="colon">:</span></dt>
-<dd class="field-odd"><p>HydroelasticContactSurfaceData if hydroelastic_sdf is configured, None otherwise.</p>
-</dd>
-</dl>
-</dd></dl>
-
-<dl class="py method">
-<dt class="sig sig-object py" id="newton.CollisionPipeline.set_output_contact_surface">
-<span class="sig-name descname"><span class="pre">set_output_contact_surface</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">enabled</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.CollisionPipeline.set_output_contact_surface" title="Link to this definition">#</a></dt>
-<dd><p>Enable or disable contact surface visualization.</p>
-<p>Note: When <code class="docutils literal notranslate"><span class="pre">output_contact_surface=True</span></code> in the config, the kernel always
-writes debug surface data. This method is provided for API compatibility but
-the actual display is controlled by the viewer’s <code class="docutils literal notranslate"><span class="pre">show_hydro_contact_surface</span></code> flag.</p>
-<dl class="field-list simple">
-<dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>enabled</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – If True, visualization is enabled (viewer will display the data).
-If False, visualization is disabled (viewer will hide the data).</p>
+<dd class="field-even"><p><a class="reference internal" href="newton.Contacts.html#newton.Contacts" title="newton._src.sim.contacts.Contacts"><em>Contacts</em></a></p>
 </dd>
 </dl>
 </dd></dl>
@@ -953,8 +927,6 @@ If False, visualization is disabled (viewer will hide the data).</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.CollisionPipeline.__init__"><code class="docutils literal notranslate"><span class="pre">CollisionPipeline.__init__()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.CollisionPipeline.collide"><code class="docutils literal notranslate"><span class="pre">CollisionPipeline.collide()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.CollisionPipeline.contacts"><code class="docutils literal notranslate"><span class="pre">CollisionPipeline.contacts()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.CollisionPipeline.get_hydro_contact_surface"><code class="docutils literal notranslate"><span class="pre">CollisionPipeline.get_hydro_contact_surface()</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.CollisionPipeline.set_output_contact_surface"><code class="docutils literal notranslate"><span class="pre">CollisionPipeline.set_output_contact_surface()</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.CollisionPipeline.rigid_contact_max"><code class="docutils literal notranslate"><span class="pre">CollisionPipeline.rigid_contact_max</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.CollisionPipeline.soft_contact_max"><code class="docutils literal notranslate"><span class="pre">CollisionPipeline.soft_contact_max</span></code></a></li>
 </ul>

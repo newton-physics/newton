@@ -811,7 +811,7 @@
 <h1>newton.viewer.ViewerGL<a class="headerlink" href="#newton-viewer-viewergl" title="Link to this heading">#</a></h1>
 <dl class="py class">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerGL</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1920</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1080</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vsync</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">headless</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer_gl.py#L160"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerGL" title="Link to this definition">#</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.viewer.</span></span><span class="sig-name descname"><span class="pre">ViewerGL</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">width</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1920</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">height</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1080</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vsync</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">headless</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/viewer/viewer_gl.py#L162"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.viewer.ViewerGL" title="Link to this definition">#</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">ViewerBase</span></code></p>
 <p>OpenGL-based interactive viewer for Newton physics models.</p>
 <p>This class provides a graphical interface for visualizing and interacting with
@@ -830,6 +830,8 @@ model introspection and visualization options.</p>
 <li><p>Extensible logging of meshes, lines, points, and arrays for custom visualization.</p></li>
 </ul>
 </dd>
+</dl>
+<dl class="field-list simple">
 </dl>
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.__init__">
@@ -853,7 +855,7 @@ model introspection and visualization options.</p>
 <dd><p>Apply viewer-driven forces (picking, wind) to the model.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>state</strong> – The current simulation state.</p>
+<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – The current simulation state.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -864,7 +866,7 @@ model introspection and visualization options.</p>
 <dd><p>Begin a new frame (calls parent implementation).</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>time</strong> – Current simulation time.</p>
+<dd class="field-odd"><p><strong>time</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Current simulation time.</p>
 </dd>
 </dl>
 </dd></dl>
@@ -896,7 +898,7 @@ to transfer pixel data entirely on the GPU, avoiding expensive CPU-GPU transfers
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>target_image</strong> (<em>wp.array</em><em>, </em><em>optional</em>) – Optional pre-allocated Warp array with shape <cite>(height, width, 3)</cite>
+<li><p><strong>target_image</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.array.html#warp.array" title="(in Warp v1.11.1)"><em>array</em></a><em> | </em><em>None</em>) – Optional pre-allocated Warp array with shape <cite>(height, width, 3)</cite>
 and dtype <cite>wp.uint8</cite>. If <cite>None</cite>, a new array will be created.</p></li>
 <li><p><strong>render_ui</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether to render the UI.</p></li>
 </ul>
@@ -920,7 +922,7 @@ and dtype <cite>wp.uint8</cite>. If <cite>None</cite>, a new array will be creat
 <dd><p>Check if a key is currently pressed.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
-<dd class="field-odd"><p><strong>key</strong> – <p>Either a string representing a character/key name, or an int
+<dd class="field-odd"><p><strong>key</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – <p>Either a string representing a character/key name, or an int
 representing a pyglet key constant.</p>
 <p>String examples: ‘w’, ‘a’, ‘s’, ‘d’, ‘space’, ‘escape’, ‘enter’
 Int examples: pyglet.window.key.W, pyglet.window.key.SPACE</p>
@@ -967,6 +969,14 @@ Int examples: pyglet.window.key.W, pyglet.window.key.SPACE</p>
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.log_array">
 <span class="sig-name descname"><span class="pre">log_array</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">array</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.log_array" title="Link to this definition">#</a></dt>
 <dd><p>Log a generic array for visualization (not implemented).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the array signal.</p></li>
+<li><p><strong>array</strong> (<em>wp.array</em><em>(</em><em>dtype=Any</em><em>) </em><em>| </em><em>nparray</em>) – Array data to visualize.</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
@@ -979,11 +989,11 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique name for the capsule instancer group.</p></li>
-<li><p><strong>mesh</strong> – Capsule prototype mesh path from ViewerBase (unused in this backend).</p></li>
-<li><p><strong>xforms</strong> – Capsule instance transforms (wp.transform), length N.</p></li>
-<li><p><strong>scales</strong> – Capsule body instance scales, expected (radius, radius, half_height), length N.</p></li>
-<li><p><strong>colors</strong> – Capsule instance colors (wp.vec3), length N or None (no update).</p></li>
-<li><p><strong>materials</strong> – Capsule instance materials (wp.vec4), length N or None (no update).</p></li>
+<li><p><strong>mesh</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Capsule prototype mesh path from ViewerBase (unused in this backend).</p></li>
+<li><p><strong>xforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>) </em><em>| </em><em>None</em>) – Capsule instance transforms (wp.transform), length N.</p></li>
+<li><p><strong>scales</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Capsule body instance scales, expected (radius, radius, half_height), length N.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Capsule instance colors (wp.vec3), length N or None (no update).</p></li>
+<li><p><strong>materials</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>) </em><em>| </em><em>None</em>) – Capsule instance materials (wp.vec4), length N or None (no update).</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the instances are hidden.</p></li>
 </ul>
 </dd>
@@ -993,7 +1003,16 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.log_gizmo">
 <span class="sig-name descname"><span class="pre">log_gizmo</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">transform</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.log_gizmo" title="Link to this definition">#</a></dt>
-<dd></dd></dl>
+<dd><p>Log or update a transform gizmo for the current frame.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique gizmo path/name.</p></li>
+<li><p><strong>transform</strong> (<a class="reference external" href="https://nvidia.github.io/warp/api_reference/_generated/warp.transformf.html#warp.transformf" title="(in Warp v1.11.1)"><em>transformf</em></a>) – Gizmo world transform.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.log_instances">
@@ -1004,11 +1023,11 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique name for the instancer.</p></li>
 <li><p><strong>mesh</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Name of the base mesh.</p></li>
-<li><p><strong>xforms</strong> – Array of transforms.</p></li>
-<li><p><strong>scales</strong> – Array of scales.</p></li>
-<li><p><strong>colors</strong> – Array of colors.</p></li>
-<li><p><strong>materials</strong> – Array of materials.</p></li>
-<li><p><strong>hidden</strong> – Whether the instances are hidden.</p></li>
+<li><p><strong>xforms</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.transform</em><em>) </em><em>| </em><em>None</em>) – Array of transforms.</p></li>
+<li><p><strong>scales</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Array of scales.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Array of colors.</p></li>
+<li><p><strong>materials</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec4</em><em>) </em><em>| </em><em>None</em>) – Array of materials.</p></li>
+<li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the instances are hidden.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1022,10 +1041,10 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique identifier for the line batch.</p></li>
-<li><p><strong>starts</strong> (<em>wp.array</em>) – Array of line start positions (shape: [N, 3]) or None for empty.</p></li>
-<li><p><strong>ends</strong> (<em>wp.array</em>) – Array of line end positions (shape: [N, 3]) or None for empty.</p></li>
-<li><p><strong>colors</strong> – Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.</p></li>
-<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The width of the lines (float)</p></li>
+<li><p><strong>starts</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Array of line start positions (shape: [N, 3]) or None for empty.</p></li>
+<li><p><strong>ends</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Array of line end positions (shape: [N, 3]) or None for empty.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Array of line colors (shape: [N, 3]) or tuple/list of RGB or None for empty.</p></li>
+<li><p><strong>width</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – The width of the lines.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the lines are initially hidden.</p></li>
 </ul>
 </dd>
@@ -1040,11 +1059,11 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique name for the mesh.</p></li>
-<li><p><strong>points</strong> (<em>wp.array</em>) – Vertex positions.</p></li>
-<li><p><strong>indices</strong> (<em>wp.array</em>) – Triangle indices.</p></li>
-<li><p><strong>normals</strong> (<em>wp.array</em><em>, </em><em>optional</em>) – Vertex normals.</p></li>
-<li><p><strong>uvs</strong> (<em>wp.array</em><em>, </em><em>optional</em>) – Vertex UVs.</p></li>
-<li><p><strong>texture</strong> (<em>np.ndarray</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em>, </em><em>optional</em>) – Texture path/URL or image array (H, W, C).</p></li>
+<li><p><strong>points</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>)</em>) – Vertex positions.</p></li>
+<li><p><strong>indices</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.int32</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.uint32</em><em>)</em>) – Triangle indices.</p></li>
+<li><p><strong>normals</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Vertex normals.</p></li>
+<li><p><strong>uvs</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec2</em><em>) </em><em>| </em><em>None</em>) – Vertex UVs.</p></li>
+<li><p><strong>texture</strong> (<em>np.ndarray</em><em> | </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – Texture path/URL or image array (H, W, C).</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the mesh is hidden.</p></li>
 <li><p><strong>backface_culling</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Enable backface culling.</p></li>
 </ul>
@@ -1054,15 +1073,15 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 
 <dl class="py method">
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.log_points">
-<span class="sig-name descname"><span class="pre">log_points</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">points</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radii</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hidden</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.log_points" title="Link to this definition">#</a></dt>
+<span class="sig-name descname"><span class="pre">log_points</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">points</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">radii</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">colors</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">hidden</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.log_points" title="Link to this definition">#</a></dt>
 <dd><p>Log a batch of points for rendering as spheres.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
 <li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique name for the point batch.</p></li>
-<li><p><strong>points</strong> – Array of point positions.</p></li>
-<li><p><strong>radii</strong> – Array of point radius values.</p></li>
-<li><p><strong>colors</strong> – Array of point colors.</p></li>
+<li><p><strong>points</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>None</em>) – Array of point positions.</p></li>
+<li><p><strong>radii</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><em>None</em>) – Array of point radius values.</p></li>
+<li><p><strong>colors</strong> (<em>wp.array</em><em>(</em><em>dtype=wp.vec3</em><em>) </em><em>| </em><em>wp.array</em><em>(</em><em>dtype=wp.float32</em><em>) </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#tuple" title="(in Python v3.14)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#list" title="(in Python v3.14)"><em>list</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Array of point colors.</p></li>
 <li><p><strong>hidden</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a>) – Whether the points are hidden.</p></li>
 </ul>
 </dd>
@@ -1073,6 +1092,14 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.log_scalar">
 <span class="sig-name descname"><span class="pre">log_scalar</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">name</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">value</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.log_scalar" title="Link to this definition">#</a></dt>
 <dd><p>Log a scalar value for visualization (not implemented).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>name</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a>) – Unique path/name for the scalar signal.</p></li>
+<li><p><strong>value</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/library/functions.html#bool" title="(in Python v3.14)"><em>bool</em></a><em> | </em><a class="reference external" href="https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.number" title="(in NumPy v2.4)"><em>number</em></a>) – Scalar value to visualize.</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
@@ -1082,6 +1109,11 @@ prototype meshes (unit cylinder + unit sphere) and applying per-instance transfo
 <p>For shape instances on CUDA, uses a batched path: 2 kernel launches +
 1 D2H copy to a shared pinned buffer, then uploads slices per instancer.
 Everything else (capsules, SDF, particles, joints, …) uses the standard path.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>state</strong> (<a class="reference internal" href="newton.State.html#newton.State" title="newton._src.sim.state.State"><em>State</em></a>) – Current simulation state for all rendered bodies/shapes.</p>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
@@ -1091,8 +1123,8 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>symbol</strong> – Key symbol.</p></li>
-<li><p><strong>modifiers</strong> – Modifier keys.</p></li>
+<li><p><strong>symbol</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Key symbol.</p></li>
+<li><p><strong>modifiers</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Modifier keys.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1102,6 +1134,14 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.on_key_release">
 <span class="sig-name descname"><span class="pre">on_key_release</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">symbol</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">modifiers</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.on_key_release" title="Link to this definition">#</a></dt>
 <dd><p>Handle key release events (not used).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>symbol</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Released key code.</p></li>
+<li><p><strong>modifiers</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Active modifier bitmask for this event.</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
@@ -1111,12 +1151,12 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> – Mouse position.</p></li>
-<li><p><strong>y</strong> – Mouse position.</p></li>
-<li><p><strong>dx</strong> – Mouse movement deltas.</p></li>
-<li><p><strong>dy</strong> – Mouse movement deltas.</p></li>
-<li><p><strong>buttons</strong> – Mouse buttons pressed.</p></li>
-<li><p><strong>modifiers</strong> – Modifier keys.</p></li>
+<li><p><strong>x</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse X position in window coordinates.</p></li>
+<li><p><strong>y</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse Y position in window coordinates.</p></li>
+<li><p><strong>dx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse delta along X since previous event.</p></li>
+<li><p><strong>dy</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse delta along Y since previous event.</p></li>
+<li><p><strong>buttons</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Mouse buttons pressed.</p></li>
+<li><p><strong>modifiers</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Modifier keys.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1126,6 +1166,16 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dt class="sig sig-object py" id="newton.viewer.ViewerGL.on_mouse_motion">
 <span class="sig-name descname"><span class="pre">on_mouse_motion</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">x</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">y</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dx</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dy</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.viewer.ViewerGL.on_mouse_motion" title="Link to this definition">#</a></dt>
 <dd><p>Handle mouse motion events (not used).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>x</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse X position in window coordinates.</p></li>
+<li><p><strong>y</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse Y position in window coordinates.</p></li>
+<li><p><strong>dx</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse delta along X since previous event.</p></li>
+<li><p><strong>dy</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse delta along Y since previous event.</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 <dl class="py method">
@@ -1135,10 +1185,10 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> – Mouse position.</p></li>
-<li><p><strong>y</strong> – Mouse position.</p></li>
-<li><p><strong>button</strong> – Mouse button pressed.</p></li>
-<li><p><strong>modifiers</strong> – Modifier keys.</p></li>
+<li><p><strong>x</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse X position in window coordinates.</p></li>
+<li><p><strong>y</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse Y position in window coordinates.</p></li>
+<li><p><strong>button</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Mouse button pressed.</p></li>
+<li><p><strong>modifiers</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Modifier keys.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1151,10 +1201,10 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> – Mouse position.</p></li>
-<li><p><strong>y</strong> – Mouse position.</p></li>
-<li><p><strong>button</strong> – Mouse button released.</p></li>
-<li><p><strong>modifiers</strong> – Modifier keys.</p></li>
+<li><p><strong>x</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse X position in window coordinates.</p></li>
+<li><p><strong>y</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse Y position in window coordinates.</p></li>
+<li><p><strong>button</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Mouse button released.</p></li>
+<li><p><strong>modifiers</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a>) – Modifier keys.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1167,10 +1217,10 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>x</strong> – Mouse position.</p></li>
-<li><p><strong>y</strong> – Mouse position.</p></li>
-<li><p><strong>scroll_x</strong> – Scroll deltas.</p></li>
-<li><p><strong>scroll_y</strong> – Scroll deltas.</p></li>
+<li><p><strong>x</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse X position in window coordinates.</p></li>
+<li><p><strong>y</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Mouse Y position in window coordinates.</p></li>
+<li><p><strong>scroll_x</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Horizontal scroll delta.</p></li>
+<li><p><strong>scroll_y</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#float" title="(in Python v3.14)"><em>float</em></a>) – Vertical scroll delta.</p></li>
 </ul>
 </dd>
 </dl>
@@ -1197,8 +1247,8 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>callback</strong> – Function to be called during UI rendering</p></li>
-<li><p><strong>position</strong> – Position where the UI should be rendered. One of:
+<li><p><strong>callback</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Callable" title="(in Python v3.14)"><em>Callable</em></a><em>[</em><em>[</em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.14)"><em>Any</em></a><em>]</em><em>, </em><em>None</em><em>]</em>) – Function to be called during UI rendering</p></li>
+<li><p><strong>position</strong> (<a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Literal" title="(in Python v3.14)"><em>Literal</em></a><em>[</em><em>'side'</em><em>, </em><em>'stats'</em><em>, </em><em>'free'</em><em>]</em>) – Position where the UI should be rendered. One of:
 “side” - Side callback (default)
 “stats” - Stats/metrics area
 “free” - Free-floating UI elements</p></li>
@@ -1229,7 +1279,7 @@ Everything else (capsules, SDF, particles, joints, …) uses the standard path.<
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>model</strong> – The Newton model instance.</p></li>
+<li><p><strong>model</strong> (<a class="reference internal" href="newton.Model.html#newton.Model" title="newton._src.sim.model.Model"><em>Model</em></a><em> | </em><em>None</em>) – The Newton model instance.</p></li>
 <li><p><strong>max_worlds</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum number of worlds to render (None = all).</p></li>
 </ul>
 </dd>

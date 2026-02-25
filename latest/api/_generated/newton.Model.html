@@ -1605,12 +1605,6 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 </dd></dl>
 
 <dl class="py attribute">
-<dt class="sig sig-object py" id="newton.Model.joint_act_mode">
-<span class="sig-name descname"><span class="pre">joint_act_mode</span></span><a class="headerlink" href="#newton.Model.joint_act_mode" title="Link to this definition">#</a></dt>
-<dd><p>Actuator mode per DOF, see <a class="reference internal" href="newton.ActuatorMode.html#newton.ActuatorMode" title="newton.ActuatorMode"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.ActuatorMode</span></code></a>. Shape [joint_dof_count], dtype int32.</p>
-</dd></dl>
-
-<dl class="py attribute">
 <dt class="sig sig-object py" id="newton.Model.joint_ancestor">
 <span class="sig-name descname"><span class="pre">joint_ancestor</span></span><a class="headerlink" href="#newton.Model.joint_ancestor" title="Link to this definition">#</a></dt>
 <dd><p>Maps from joint index to the index of the joint that has the current joint parent body as child (-1 if no such joint ancestor exists), shape [joint_count], int.</p>
@@ -1809,6 +1803,12 @@ world index <cite>-1</cite>) added to the end of the model, and the last element
 <dt class="sig sig-object py" id="newton.Model.joint_target_ke">
 <span class="sig-name descname"><span class="pre">joint_target_ke</span></span><a class="headerlink" href="#newton.Model.joint_target_ke" title="Link to this definition">#</a></dt>
 <dd><p>Joint stiffness [N/m or N·m/rad, depending on joint type], shape [joint_dof_count], float.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.Model.joint_target_mode">
+<span class="sig-name descname"><span class="pre">joint_target_mode</span></span><a class="headerlink" href="#newton.Model.joint_target_mode" title="Link to this definition">#</a></dt>
+<dd><p>Joint target mode per DOF, see <a class="reference internal" href="newton.JointTargetMode.html#newton.JointTargetMode" title="newton.JointTargetMode"><code class="xref py py-class docutils literal notranslate"><span class="pre">newton.JointTargetMode</span></code></a>. Shape [joint_dof_count], dtype int32.</p>
 </dd></dl>
 
 <dl class="py attribute">
@@ -2597,7 +2597,6 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_c"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_c</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_X_p"><code class="docutils literal notranslate"><span class="pre">Model.joint_X_p</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_act"><code class="docutils literal notranslate"><span class="pre">Model.joint_act</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_act_mode"><code class="docutils literal notranslate"><span class="pre">Model.joint_act_mode</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_ancestor"><code class="docutils literal notranslate"><span class="pre">Model.joint_ancestor</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_armature"><code class="docutils literal notranslate"><span class="pre">Model.joint_armature</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_articulation"><code class="docutils literal notranslate"><span class="pre">Model.joint_articulation</span></code></a></li>
@@ -2627,6 +2626,7 @@ Stored per-element; kernels multiply by rest area internally.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_qd_start"><code class="docutils literal notranslate"><span class="pre">Model.joint_qd_start</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_kd"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_kd</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_ke"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_ke</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_mode"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_mode</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_pos"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_pos</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_target_vel"><code class="docutils literal notranslate"><span class="pre">Model.joint_target_vel</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.Model.joint_twist_lower"><code class="docutils literal notranslate"><span class="pre">Model.joint_twist_lower</span></code></a></li>
