@@ -61,7 +61,7 @@ class SensorTiledCameraBenchmark:
 
         self.tiled_camera_sensor = SensorTiledCamera(
             model=self.model,
-            options=SensorTiledCamera.Options(default_light=True, colors_per_shape=True, checkerboard_texture=True),
+            config=SensorTiledCamera.Config(default_light=True, colors_per_shape=True, checkerboard_texture=True),
         )
         self.camera_rays = self.tiled_camera_sensor.compute_pinhole_camera_rays(
             resolution, resolution, math.radians(45.0)
@@ -87,7 +87,7 @@ class SensorTiledCameraBenchmark:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_pixel(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.options.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
+        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.PIXEL_PRIORITY
         with wp.ScopedTimer("Rendering", synchronize=True, print=True) as timer:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
@@ -103,9 +103,9 @@ class SensorTiledCameraBenchmark:
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
     def time_rendering_tiled(self, resolution: int, world_count: int, iterations: int):
-        self.tiled_camera_sensor.render_context.options.render_order = SensorTiledCamera.RenderOrder.TILED
-        self.tiled_camera_sensor.render_context.options.tile_width = 8
-        self.tiled_camera_sensor.render_context.options.tile_height = 8
+        self.tiled_camera_sensor.render_context.config.render_order = SensorTiledCamera.RenderOrder.TILED
+        self.tiled_camera_sensor.render_context.config.tile_width = 8
+        self.tiled_camera_sensor.render_context.config.tile_height = 8
         with wp.ScopedTimer("Tiled Rendering", synchronize=True, print=False) as timer:
             for _ in range(iterations):
                 self.tiled_camera_sensor.update(
