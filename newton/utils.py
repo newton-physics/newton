@@ -71,6 +71,7 @@ __all__ += [
 # TODO: move these to Warp?
 # ==================================================================================
 from ._src.core.spatial import (  # noqa: E402
+    SpatialVectorForm,
     quat_between_axes,
     quat_between_vectors_robust,
     quat_decompose,
@@ -79,12 +80,16 @@ from ._src.core.spatial import (  # noqa: E402
     quat_to_rpy,
     quat_twist,
     quat_twist_angle,
+    swap_spatial_halves,
     transform_twist,
     transform_wrench,
     velocity_at_point,
 )
+from ._src.utils.spatial_conversion import convert_spatial_vector_batch  # noqa: E402
 
 __all__ += [
+    "SpatialVectorForm",
+    "convert_spatial_vector_batch",
     "quat_between_axes",
     "quat_between_vectors_robust",
     "quat_decompose",
@@ -93,6 +98,7 @@ __all__ += [
     "quat_to_rpy",
     "quat_twist",
     "quat_twist_angle",
+    "swap_spatial_halves",
     "transform_twist",
     "transform_wrench",
     "velocity_at_point",

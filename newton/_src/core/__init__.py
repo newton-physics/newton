@@ -14,6 +14,7 @@
 # limitations under the License.
 
 from .spatial import (
+    SpatialVectorForm,
     quat_between_axes,
     quat_decompose,
     quat_from_euler,
@@ -21,6 +22,7 @@ from .spatial import (
     quat_to_rpy,
     quat_twist,
     quat_twist_angle,
+    swap_spatial_halves,
     transform_twist,
     transform_wrench,
     velocity_at_point,
@@ -35,6 +37,7 @@ __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
+    "SpatialVectorForm",
     "quat_between_axes",
     "quat_decompose",
     "quat_from_euler",
@@ -42,6 +45,7 @@ __all__ = [
     "quat_to_rpy",
     "quat_twist",
     "quat_twist_angle",
+    "swap_spatial_halves",
     "transform_twist",
     "transform_wrench",
     "velocity_at_point",
