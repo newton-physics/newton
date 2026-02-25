@@ -20,7 +20,7 @@ import unittest
 import numpy as np
 from unittest_utils import USD_AVAILABLE
 
-from newton import ActuatorMode, ModelBuilder
+from newton import JointTargetMode, ModelBuilder
 from newton.solvers import SolverMuJoCo, SolverNotifyFlags
 from newton.tests import get_asset
 
@@ -94,16 +94,20 @@ class TestMuJoCoActuators(unittest.TestCase):
         builder = ModelBuilder()
         builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=False)
 
-        self.assertEqual(len(builder.joint_act_mode), 11)
+        self.assertEqual(len(builder.joint_target_mode), 11)
         for i in range(6):
-            self.assertEqual(builder.joint_act_mode[i], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
+            self.assertEqual(builder.joint_target_mode[i], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, "joint_motor")], int(JointTargetMode.NONE))
         self.assertEqual(
-            builder.joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.POSITION_VELOCITY)
+            builder.joint_target_mode[get_qd_start(builder, "joint_pos_vel")], int(JointTargetMode.POSITION_VELOCITY)
         )
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_position")], int(ActuatorMode.POSITION))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_velocity")], int(ActuatorMode.VELOCITY))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_general")], int(ActuatorMode.NONE))
+        self.assertEqual(
+            builder.joint_target_mode[get_qd_start(builder, "joint_position")], int(JointTargetMode.POSITION)
+        )
+        self.assertEqual(
+            builder.joint_target_mode[get_qd_start(builder, "joint_velocity")], int(JointTargetMode.VELOCITY)
+        )
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, "joint_general")], int(JointTargetMode.NONE))
 
         self.assertEqual(builder.joint_target_ke[get_qd_start(builder, "joint_pos_vel")], 100.0)
         self.assertEqual(builder.joint_target_kd[get_qd_start(builder, "joint_pos_vel")], 10.0)
@@ -114,17 +118,19 @@ class TestMuJoCoActuators(unittest.TestCase):
 
         self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 8)
 
-        joint_act_mode = model.joint_act_mode.numpy()
+        joint_target_mode = model.joint_target_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
 
         for i in range(6):
-            self.assertEqual(joint_act_mode[i], int(ActuatorMode.NONE))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.POSITION_VELOCITY))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_position")], int(ActuatorMode.POSITION))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_velocity")], int(ActuatorMode.VELOCITY))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_general")], int(ActuatorMode.NONE))
+            self.assertEqual(joint_target_mode[i], int(JointTargetMode.NONE))
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_motor")], int(JointTargetMode.NONE))
+        self.assertEqual(
+            joint_target_mode[get_qd_start(builder, "joint_pos_vel")], int(JointTargetMode.POSITION_VELOCITY)
+        )
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_position")], int(JointTargetMode.POSITION))
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_velocity")], int(JointTargetMode.VELOCITY))
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_general")], int(JointTargetMode.NONE))
 
         self.assertEqual(joint_target_ke[get_qd_start(builder, "joint_pos_vel")], 100.0)
         self.assertEqual(joint_target_kd[get_qd_start(builder, "joint_pos_vel")], 10.0)
@@ -196,12 +202,12 @@ class TestMuJoCoActuators(unittest.TestCase):
                 if idx >= 0:
                     kp = joint_target_ke[idx]
                     kd = joint_target_kd[idx]
-                    mode = joint_act_mode[idx]
-                    if mode == int(ActuatorMode.POSITION):
+                    mode = joint_target_mode[idx]
+                    if mode == int(JointTargetMode.POSITION):
                         np.testing.assert_allclose(mj_model.actuator_gainprm[mj_idx, 0], kp, atol=1e-5)
                         np.testing.assert_allclose(mj_model.actuator_biasprm[mj_idx, 1], -kp, atol=1e-5)
                         np.testing.assert_allclose(mj_model.actuator_biasprm[mj_idx, 2], -kd, atol=1e-5)
-                    elif mode == int(ActuatorMode.POSITION_VELOCITY):
+                    elif mode == int(JointTargetMode.POSITION_VELOCITY):
                         np.testing.assert_allclose(mj_model.actuator_gainprm[mj_idx, 0], kp, atol=1e-5)
                         np.testing.assert_allclose(mj_model.actuator_biasprm[mj_idx, 1], -kp, atol=1e-5)
                 else:
@@ -215,22 +221,22 @@ class TestMuJoCoActuators(unittest.TestCase):
         builder = ModelBuilder()
         builder.add_mjcf(MJCF_ACTUATORS, ctrl_direct=True)
 
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_position")], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_velocity")], int(ActuatorMode.NONE))
-        self.assertEqual(builder.joint_act_mode[get_qd_start(builder, "joint_general")], int(ActuatorMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, "joint_motor")], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, "joint_pos_vel")], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, "joint_position")], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, "joint_velocity")], int(JointTargetMode.NONE))
+        self.assertEqual(builder.joint_target_mode[get_qd_start(builder, "joint_general")], int(JointTargetMode.NONE))
 
         model = builder.finalize()
 
         self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 8)
 
-        joint_act_mode = model.joint_act_mode.numpy()
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_motor")], int(ActuatorMode.NONE))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_pos_vel")], int(ActuatorMode.NONE))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_position")], int(ActuatorMode.NONE))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_velocity")], int(ActuatorMode.NONE))
-        self.assertEqual(joint_act_mode[get_qd_start(builder, "joint_general")], int(ActuatorMode.NONE))
+        joint_target_mode = model.joint_target_mode.numpy()
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_motor")], int(JointTargetMode.NONE))
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_pos_vel")], int(JointTargetMode.NONE))
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_position")], int(JointTargetMode.NONE))
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_velocity")], int(JointTargetMode.NONE))
+        self.assertEqual(joint_target_mode[get_qd_start(builder, "joint_general")], int(JointTargetMode.NONE))
 
         ctrl_source = model.mujoco.ctrl_source.numpy()
         for i in range(8):
@@ -581,21 +587,21 @@ class TestMuJoCoActuators(unittest.TestCase):
         # DOF 6 (shoulder_x): kp=100, kv=0 -> POSITION mode
         self.assertEqual(builder.joint_target_ke[6], 100.0)
         self.assertEqual(builder.joint_target_kd[6], 0.0)
-        self.assertEqual(builder.joint_act_mode[6], int(ActuatorMode.POSITION))
+        self.assertEqual(builder.joint_target_mode[6], int(JointTargetMode.POSITION))
 
         # DOF 7 (shoulder_y): kp=200, kv=0 -> POSITION mode
         self.assertEqual(builder.joint_target_ke[7], 200.0)
         self.assertEqual(builder.joint_target_kd[7], 0.0)
-        self.assertEqual(builder.joint_act_mode[7], int(ActuatorMode.POSITION))
+        self.assertEqual(builder.joint_target_mode[7], int(JointTargetMode.POSITION))
 
         # DOF 8 (shoulder_z): kp=0, kv=30 -> VELOCITY mode
         self.assertEqual(builder.joint_target_ke[8], 0.0)
         self.assertEqual(builder.joint_target_kd[8], 30.0)
-        self.assertEqual(builder.joint_act_mode[8], int(ActuatorMode.VELOCITY))
+        self.assertEqual(builder.joint_target_mode[8], int(JointTargetMode.VELOCITY))
 
         # Verify freejoint DOFs (0-5) are not affected
         for i in range(6):
-            self.assertEqual(builder.joint_act_mode[i], int(ActuatorMode.NONE))
+            self.assertEqual(builder.joint_target_mode[i], int(JointTargetMode.NONE))
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_usd_actuator_cartpole(self):

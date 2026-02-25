@@ -1288,10 +1288,8 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertAlmostEqual(pd_gains[0][0], 2.0, places=5)
         self.assertAlmostEqual(pd_gains[0][1], 0.2, places=5)
 
-    def test_gap(self):
-        """
-        Test gap priority.
-        """
+    def test_margin(self):
+        """Test margin resolution: newton:contactMargin, physx restOffset, mjc:margin priority."""
         stage = Usd.Stage.CreateInMemory()
         xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
         UsdPhysics.RigidBodyAPI.Apply(xform)
@@ -1300,38 +1298,34 @@ class TestSchemaResolver(unittest.TestCase):
         self.assertTrue(collider.HasAPI("NewtonCollisionAPI"))
         self.assertTrue(collider.HasAPI("PhysicsCollisionAPI"))
         self.assertTrue(UsdPhysics.CollisionAPI(collider).GetCollisionEnabledAttr().Get())
-        # redundant, but required to make UsdPhysics.LoadUsdPhysicsFromRange() work correctly
         UsdPhysics.CollisionAPI.Apply(collider)
 
-        # Create resolver
         resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
-
-        # there is no authored gap in the asset, so it should be the physx default (-inf)
-        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
-        self.assertEqual(gap, float("-inf"))
-
-        # an explicit newton value should be used
         collider.GetAttribute("newton:contactMargin").Set(0.2)
-        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
-        self.assertAlmostEqual(gap, 0.2)
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.2)
 
-        # an explicit physx value should override the newton value
-        collider.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.3)
-        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
-        self.assertAlmostEqual(gap, 0.3)
+        collider.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.15)
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.15)
 
-        # reversed resolver priority should use the newton value
+        # PhysX restOffset authored as -inf -> treated as unset, falls through to Newton
+        collider.GetAttribute("physxCollision:restOffset").Set(float("-inf"))
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.2)
+
+        # Restore finite value for subsequent tests
+        collider.GetAttribute("physxCollision:restOffset").Set(0.15)
+
         resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
-        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
-        self.assertAlmostEqual(gap, 0.2)
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.2)
 
-        # mujoco mjc:margin is not equivalent to newton:gap, so it is ignored
         resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
         collider.CreateAttribute("mjc:margin", Sdf.ValueTypeNames.Float).Set(0.4)
-        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
-        self.assertAlmostEqual(gap, 0.2)
+        margin = resolver.get_value(collider, PrimType.SHAPE, "margin")
+        self.assertAlmostEqual(margin, 0.4)
 
-        # mjc:margin is available instead via custom solver attributes
         builder = ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         result = builder.add_usd(
@@ -1341,6 +1335,165 @@ class TestSchemaResolver(unittest.TestCase):
         )
         schema_attrs = result.get("schema_attrs", {})
         self.assertAlmostEqual(schema_attrs["mjc"]["/xform/collider"]["mjc:margin"], 0.4)
+
+    def test_gap(self):
+        """Test gap resolution: newton:contactGap, physx contactOffset-restOffset, mjc:gap priority."""
+        stage = Usd.Stage.CreateInMemory()
+        xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(xform)
+
+        # --- Collider A: test newton:contactGap + PhysX partial/full authoring ---
+        collider_a = UsdGeom.Cube.Define(stage, "/xform/collider_a").GetPrim()
+        collider_a.ApplyAPI("NewtonCollisionAPI")
+        UsdPhysics.CollisionAPI.Apply(collider_a)
+
+        resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+
+        # No gap authored anywhere -> schema default -inf
+        gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
+        self.assertEqual(gap, float("-inf"))
+
+        # Newton contactGap only -> PhysX getter returns None, falls through to Newton
+        collider_a.GetAttribute("newton:contactGap").Set(0.07)
+        gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.07)
+
+        # PhysX only contactOffset (no restOffset) -> getter returns None, still Newton
+        collider_a.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.25)
+        gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.07)
+
+        # PhysX both set -> getter returns 0.25 - 0.15 = 0.10; PhysX is first, so PhysX wins
+        collider_a.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.15)
+        gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.10)
+
+        # Newton first -> Newton wins: 0.07
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.07)
+
+        # --- Collider B: PhysX-only (no Newton contactGap) ---
+        collider_b = UsdGeom.Cube.Define(stage, "/xform/collider_b").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_b)
+
+        resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+
+        # PhysX only restOffset (no contactOffset) -> getter returns None -> default -inf
+        collider_b.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.01)
+        gap = resolver.get_value(collider_b, PrimType.SHAPE, "gap")
+        self.assertEqual(gap, float("-inf"))
+
+        # PhysX both -> 0.04 - 0.01 = 0.03
+        collider_b.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.04)
+        gap = resolver.get_value(collider_b, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.03)
+
+        # --- Collider C: PhysX -inf values ---
+        collider_c = UsdGeom.Cube.Define(stage, "/xform/collider_c").GetPrim()
+        UsdPhysics.CollisionAPI.Apply(collider_c)
+        collider_c.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(float("-inf"))
+        collider_c.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.05)
+        gap = resolver.get_value(collider_c, PrimType.SHAPE, "gap")
+        self.assertEqual(gap, float("-inf"))
+
+        # --- Mjc ---
+        resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        collider_a.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Float).Set(0.05)
+        gap = resolver.get_value(collider_a, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.05)
+
+    def test_contact_gap(self):
+        """
+        Test gap (contact processing distance) priority: Newton, PhysX contactOffset, Mjc.
+        """
+        stage = Usd.Stage.CreateInMemory()
+        xform = UsdGeom.Xform.Define(stage, "/xform").GetPrim()
+        UsdPhysics.RigidBodyAPI.Apply(xform)
+        collider = UsdGeom.Cube.Define(stage, "/xform/collider").GetPrim()
+        collider.ApplyAPI("NewtonCollisionAPI")
+        UsdPhysics.CollisionAPI.Apply(collider)
+
+        resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+
+        collider.CreateAttribute("newton:contactGap", Sdf.ValueTypeNames.Float).Set(0.02)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.02)
+
+        # PhysX gap = contactOffset - restOffset; both must be set
+        collider.CreateAttribute("physxCollision:restOffset", Sdf.ValueTypeNames.Float).Set(0.01)
+        collider.CreateAttribute("physxCollision:contactOffset", Sdf.ValueTypeNames.Float).Set(0.03)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.02)
+
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.02)
+
+        resolver = SchemaResolverManager([SchemaResolverMjc(), SchemaResolverNewton()])
+        collider.CreateAttribute("mjc:gap", Sdf.ValueTypeNames.Float).Set(0.01)
+        gap = resolver.get_value(collider, PrimType.SHAPE, "gap")
+        self.assertAlmostEqual(gap, 0.01)
+
+    def test_self_collision_enabled(self):
+        """
+        Test self_collision_enabled on articulation root: Newton vs PhysX priority.
+        """
+        stage = Usd.Stage.CreateInMemory()
+        articulation_prim = UsdGeom.Xform.Define(stage, "/articulation").GetPrim()
+        UsdPhysics.ArticulationRootAPI.Apply(articulation_prim)
+
+        resolver = SchemaResolverManager([SchemaResolverPhysx(), SchemaResolverNewton()])
+
+        # No attributes: schema default True from first resolver (PhysX)
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, True)
+
+        # Newton only (False): PhysX first so PhysX default True is used
+        articulation_prim.CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, False)
+
+        # PhysX only (False): PhysX attribute overrides
+        articulation_prim.RemoveProperty("newton:selfCollisionEnabled")
+        articulation_prim.CreateAttribute("physxArticulation:enabledSelfCollisions", Sdf.ValueTypeNames.Bool).Set(False)
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, False)
+
+        # Both set: Newton True, PhysX False; PhysX first -> False
+        articulation_prim.CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(True)
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, False)
+
+        # Newton first: same prim, Newton wins -> True
+        resolver = SchemaResolverManager([SchemaResolverNewton(), SchemaResolverPhysx()])
+        val = resolver.get_value(
+            articulation_prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=True,
+        )
+        self.assertIs(val, True)
 
     def test_max_hull_vertices(self):
         """

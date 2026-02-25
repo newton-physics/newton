@@ -35,6 +35,7 @@ newton.utils
    plot_graph
    quat_between_axes
    quat_between_vectors_robust
+   remesh_mesh
    run_benchmark
    smooth_max
    smooth_min

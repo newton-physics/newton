@@ -269,8 +269,8 @@ def write_module_page(mod_name: str) -> None:
 
             lines.extend(
                 [
-                    f"   * - {const}",
-                    f"     - {value}",
+                    f"   * - ``{const}``",
+                    f"     - ``{value}``",
                 ]
             )
 

@@ -26,6 +26,7 @@ __all__ = [
 # ==================================================================================
 # mesh utils
 # ==================================================================================
+from ._src.geometry.utils import remesh_mesh
 from ._src.utils.mesh import (
     MeshAdjacency,
     solidify_mesh,
@@ -33,6 +34,7 @@ from ._src.utils.mesh import (
 
 __all__ += [
     "MeshAdjacency",
+    "remesh_mesh",
     "solidify_mesh",
 ]
 
