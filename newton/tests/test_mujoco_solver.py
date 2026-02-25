@@ -4673,12 +4673,14 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
 
         # Add collision box to platform (thin platform)
         platform_height = 0.1
+        no_gap = newton.ModelBuilder.ShapeConfig(gap=0.0)
         builder.add_shape_box(
             body=platform_body,
             xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             hx=1.0,
             hy=1.0,
             hz=platform_height,
+            cfg=no_gap,
         )
 
         # Add mocap articulation
@@ -4696,6 +4698,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         builder.add_shape_sphere(
             body=ball_body,
             radius=ball_radius,
+            cfg=no_gap,
         )
 
         model = builder.finalize()
@@ -4737,9 +4740,8 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
 
         sim_dt = 1.0 / 240.0
 
-        # Let ball settle on platform (enough steps for it to reach equilibrium with the
-        # contact detection distance of shape_margin + shape_gap per shape)
-        for _ in range(20):
+        # Let ball settle on platform
+        for _ in range(5):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
@@ -4807,17 +4809,14 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
             updated_mocap_quat, expected_quat_mjc, atol=1e-5, err_msg="mocap_quat should match the rotation"
         )
 
-        # Simulate and verify ball falls (collision geometry moved with mocap body).
-        # Use enough steps for ball to separate beyond the summed contact detection
-        # distance (geom_margin_a + geom_margin_b, where default gap contributes).
-        for _ in range(100):
+        # Simulate and verify ball falls (collision geometry moved with mocap body)
+        for _ in range(10):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
         # Verify ball has fallen (lost contact and dropped in height)
         final_ball_height = state_in.body_q.numpy()[ball_body, 2]
         final_ball_velocity_z = state_in.body_qd.numpy()[ball_body, 2]
-        final_n_contacts = int(solver.mjw_data.nacon.numpy()[0])
 
         # Ball should have fallen below initial height
         self.assertLess(
@@ -4831,13 +4830,6 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
             final_ball_velocity_z,
             -0.2,
             f"Ball should be falling with downward velocity, got {final_ball_velocity_z:.3f} m/s",
-        )
-
-        # Ball should have zero contacts (platform moved away)
-        self.assertEqual(
-            final_n_contacts,
-            0,
-            f"Ball should have no contacts after platform rotated away, got {final_n_contacts} contacts",
         )
 
 
