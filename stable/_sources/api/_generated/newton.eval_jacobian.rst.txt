@@ -1,0 +1,6 @@
+﻿newton.eval\_jacobian
+=====================
+
+.. currentmodule:: newton
+
+.. autofunction:: eval_jacobian

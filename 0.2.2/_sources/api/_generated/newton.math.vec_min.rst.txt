@@ -1,0 +1,6 @@
+﻿newton.math.vec\_min
+====================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: vec_min

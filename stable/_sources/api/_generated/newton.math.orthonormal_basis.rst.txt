@@ -1,0 +1,6 @@
+﻿newton.math.orthonormal\_basis
+==============================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: orthonormal_basis

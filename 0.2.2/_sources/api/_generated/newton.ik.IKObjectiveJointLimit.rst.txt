@@ -1,0 +1,8 @@
+﻿newton.ik.IKObjectiveJointLimit
+===============================
+
+.. autoclass:: newton.ik.IKObjectiveJointLimit
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

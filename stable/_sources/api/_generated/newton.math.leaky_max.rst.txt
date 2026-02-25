@@ -1,0 +1,6 @@
+﻿newton.math.leaky\_max
+======================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: leaky_max
