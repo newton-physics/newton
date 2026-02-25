@@ -82,7 +82,11 @@ def get_attributes_in_namespace(prim: Usd.Prim, namespace: str) -> dict[str, Any
     """
     out: dict[str, Any] = {}
     for prop in prim.GetAuthoredPropertiesInNamespace(namespace):
-        if isinstance(prop, Usd.Attribute) and prop.IsValid() and prop.HasAuthoredValue():
+        if not prop.IsValid():
+            continue
+        if hasattr(prop, "GetTargets"):
+            continue
+        if hasattr(prop, "HasAuthoredValue") and prop.HasAuthoredValue():
             out[prop.GetName()] = prop.Get()
     return out
 

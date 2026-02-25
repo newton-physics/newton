@@ -463,13 +463,31 @@ def build_body_index_map(
     return body_map
 
 
+def _normalize_name(name: str) -> str:
+    """Extract the last path component from a USD prim path.
+
+    USD-imported models may store full prim paths (e.g.
+    ``/World/robot/MjcTendons/lh_T_FFJ0``) as entity names.
+    This extracts the leaf component so it can be compared against
+    clean MJCF names like ``lh_T_FFJ0``.
+    """
+    if "/" in name:
+        return name.rsplit("/", 1)[-1]
+    return name
+
+
 def _suffix_match(nw_name: str, native_name: str) -> bool:
     """Check if nw_name matches native_name by exact or boundary-aligned suffix.
 
     The USD converter may append ``_N`` (numeric) to avoid name collisions
     (e.g., MJCF joint ``torso`` becomes USD prim ``torso_1``).  We strip
     trailing ``_<digits>`` from the Newton name before the suffix check.
+
+    Names that look like USD prim paths (containing ``/``) are reduced to
+    their last path component before comparison.
     """
+    nw_name = _normalize_name(nw_name)
+    native_name = _normalize_name(native_name)
     if nw_name == native_name:
         return True
     suffix = "_" + native_name

@@ -185,7 +185,7 @@ class SDF:
             shape_type=GeoType.MESH,
             shape_geo=mesh,
             shape_scale=effective_scale,
-            shape_thickness=thickness,
+            shape_margin=thickness,
             narrow_band_distance=narrow_band_range,
             margin=margin,
             target_voxel_size=target_voxel_size,
@@ -459,7 +459,7 @@ def _compute_sdf_from_shape_impl(
     shape_type: int,
     shape_geo: Mesh | None = None,
     shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
-    shape_thickness: float = 0.0,
+    shape_margin: float = 0.0,
     narrow_band_distance: Sequence[float] = (-0.1, 0.1),
     margin: float = 0.05,
     target_voxel_size: float | None = None,
@@ -477,7 +477,7 @@ def _compute_sdf_from_shape_impl(
         shape_type: Type of the shape.
         shape_geo: Optional source geometry. Required for mesh shapes.
         shape_scale: Scale factors for the mesh. Applied before SDF generation if bake_scale is True.
-        shape_thickness: Thickness offset to subtract from SDF values.
+        shape_margin: Margin offset to subtract from SDF values.
         narrow_band_distance: Tuple of (inner, outer) distances for narrow band.
         margin: Margin to add to bounding box. Must be > 0.
         target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_resolution.
@@ -512,7 +512,7 @@ def _compute_sdf_from_shape_impl(
     # Determine effective scale based on bake_scale flag
     effective_scale = tuple(shape_scale) if bake_scale else (1.0, 1.0, 1.0)
 
-    offset = margin + shape_thickness
+    offset = margin + shape_margin
 
     if shape_type == GeoType.MESH:
         if shape_geo is None:
@@ -616,13 +616,13 @@ def _compute_sdf_from_shape_impl(
         wp.launch(
             sdf_from_mesh_kernel,
             dim=(num_allocated_tiles, 8, 8, 8),
-            inputs=[m_id, sparse_volume.id, tile_points_wp, shape_thickness, winding_threshold],
+            inputs=[m_id, sparse_volume.id, tile_points_wp, shape_margin, winding_threshold],
         )
     else:
         wp.launch(
             sdf_from_primitive_kernel,
             dim=(num_allocated_tiles, 8, 8, 8),
-            inputs=[shape_type, effective_scale, sparse_volume.id, tile_points_wp, shape_thickness],
+            inputs=[shape_type, effective_scale, sparse_volume.id, tile_points_wp, shape_margin],
         )
 
     tiles = sparse_volume.get_tiles().numpy()
@@ -646,13 +646,13 @@ def _compute_sdf_from_shape_impl(
         wp.launch(
             sdf_from_mesh_kernel,
             dim=(1, 8, 8, 8),
-            inputs=[m_id, coarse_volume.id, coarse_tile_points_wp, shape_thickness, winding_threshold],
+            inputs=[m_id, coarse_volume.id, coarse_tile_points_wp, shape_margin, winding_threshold],
         )
     else:
         wp.launch(
             sdf_from_primitive_kernel,
             dim=(1, 8, 8, 8),
-            inputs=[shape_type, effective_scale, coarse_volume.id, coarse_tile_points_wp, shape_thickness],
+            inputs=[shape_type, effective_scale, coarse_volume.id, coarse_tile_points_wp, shape_margin],
         )
 
     if verbose:
@@ -677,7 +677,7 @@ def compute_sdf_from_shape(
     shape_type: int,
     shape_geo: Mesh | None = None,
     shape_scale: Sequence[float] = (1.0, 1.0, 1.0),
-    shape_thickness: float = 0.0,
+    shape_margin: float = 0.0,
     narrow_band_distance: Sequence[float] = (-0.1, 0.1),
     margin: float = 0.05,
     target_voxel_size: float | None = None,
@@ -693,7 +693,7 @@ def compute_sdf_from_shape(
         shape_type: Geometry type identifier from :class:`GeoType`.
         shape_geo: Source mesh geometry when ``shape_type`` is ``GeoType.MESH``.
         shape_scale: Shape scale [unitless].
-        shape_thickness: Shape thickness offset [m] subtracted from sampled SDF.
+        shape_margin: Shape margin offset [m] subtracted from sampled SDF.
         narrow_band_distance: Signed narrow-band distance range [m] as ``(inner, outer)``.
         margin: Extra AABB padding [m] added before discretization.
         target_voxel_size: Target sparse-grid voxel size [m]. If provided, takes
@@ -716,7 +716,7 @@ def compute_sdf_from_shape(
             target_voxel_size=target_voxel_size,
             max_resolution=max_resolution,
             margin=margin,
-            thickness=shape_thickness,
+            thickness=shape_margin,
             scale=tuple(shape_scale) if bake_scale else None,
         )
         return sdf.to_kernel_data(), sdf.sparse_volume, sdf.coarse_volume, (sdf.block_coords or [])
@@ -725,7 +725,7 @@ def compute_sdf_from_shape(
         shape_type=shape_type,
         shape_geo=shape_geo,
         shape_scale=shape_scale,
-        shape_thickness=shape_thickness,
+        shape_margin=shape_margin,
         narrow_band_distance=narrow_band_distance,
         margin=margin,
         target_voxel_size=target_voxel_size,
