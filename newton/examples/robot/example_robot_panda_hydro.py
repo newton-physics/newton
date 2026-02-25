@@ -286,7 +286,6 @@ class Example:
 
         # Create collision pipeline with SDF hydroelastic config
         # Enable output_contact_surface so the kernel code is compiled (allows runtime toggle)
-        # The actual writing is controlled by hydroelastic_sdf.set_output_contact_surface() at runtime
         sdf_hydroelastic_config = HydroelasticSDF.Config(
             output_contact_surface=hasattr(viewer, "renderer"),  # Compile in if viewer supports it
         )
@@ -418,7 +417,7 @@ class Example:
         # and will clear the lines when disabled
         self.viewer.log_hydro_contact_surface(
             (
-                self.collision_pipeline.hydroelastic_sdf.get_hydro_contact_surface()
+                self.collision_pipeline.hydroelastic_sdf.get_contact_surface()
                 if self.collision_pipeline.hydroelastic_sdf is not None
                 else None
             ),
@@ -430,9 +429,6 @@ class Example:
         changed, self.show_isosurface = imgui.checkbox("Show Isosurface", self.show_isosurface)
         if changed:
             self.viewer.show_hydro_contact_surface = self.show_isosurface
-            # Toggle whether to compute/write the isosurface data in the collision pipeline
-            if self.collision_pipeline.hydroelastic_sdf is not None:
-                self.collision_pipeline.hydroelastic_sdf.set_output_contact_surface(self.show_isosurface)
 
     def test_final(self):
         # Verify that the object was picked up by checking the maximum height reached
