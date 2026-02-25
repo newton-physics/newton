@@ -15,9 +15,8 @@
 
 import warp as wp
 
-from ...geometry import GeoType
-from . import ray
-from .ray import MAXVAL
+from ...geometry import GeoType, raycast
+from . import ray_intersect
 
 NO_HIT_SHAPE_ID = wp.uint32(0xFFFFFFFF)
 MAX_SHAPE_ID = wp.uint32(0xFFFFFFF0)
@@ -39,10 +38,10 @@ class ClosestHit:
 @wp.func
 def get_group_roots(
     group_roots: wp.array(dtype=wp.int32), world_index: wp.int32, want_global_world: wp.int32
-) -> tuple[wp.int32, wp.int32]:
+) -> wp.int32:
     if want_global_world != 0:
-        return group_roots.shape[0] - 1, group_roots[group_roots.shape[0] - 1]
-    return world_index, group_roots[world_index]
+        return group_roots[group_roots.shape[0] - 1]
+    return group_roots[world_index]
 
 
 @wp.func
@@ -65,7 +64,7 @@ def closest_hit_shape(
 ) -> ClosestHit:
     if bvh_shapes_size:
         for i in range(2 if enable_global_world else 1):
-            world_index, group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
+            group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
             if group_root < 0:
                 continue
 
@@ -75,27 +74,25 @@ def closest_hit_shape(
             while wp.bvh_query_next(query, shape_index, closest_hit.distance):
                 si = shape_enabled[shape_index]
 
-                hit = wp.bool(False)
-                hit_dist = wp.float32(MAXVAL)
-                hit_normal = wp.vec3f(0.0)
+                geom_hit = ray_intersect.GeomHit()
                 hit_u = wp.float32(0.0)
                 hit_v = wp.float32(0.0)
                 hit_face_id = wp.int32(-1)
                 hit_mesh_id = wp.int32(-1)
 
                 if shape_types[si] == GeoType.MESH:
-                    hit, hit_dist, hit_normal, hit_u, hit_v, hit_face_id, hit_mesh_id = ray.ray_mesh_with_bvh(
-                        mesh_ids,
-                        shape_mesh_indices[si],
+                    hit_mesh_id = shape_mesh_indices[si]
+                    geom_hit, hit_u, hit_v, hit_face_id = ray_intersect.ray_intersect_mesh(
                         shape_transforms[si],
                         shape_sizes[si],
-                        enable_backface_culling,
                         ray_origin_world,
                         ray_dir_world,
+                        mesh_ids[hit_mesh_id],
+                        enable_backface_culling,
                         closest_hit.distance,
                     )
                 elif shape_types[si] == GeoType.PLANE:
-                    hit, hit_dist, hit_normal = ray.ray_plane_with_normal(
+                    geom_hit = ray_intersect.ray_intersect_plane_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         enable_backface_culling,
@@ -103,51 +100,51 @@ def closest_hit_shape(
                         ray_dir_world,
                     )
                 elif shape_types[si] == GeoType.SPHERE:
-                    hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
-                        wp.transform_get_translation(shape_transforms[si]),
-                        shape_sizes[si][0] * shape_sizes[si][0],
+                    geom_hit = ray_intersect.ray_intersect_sphere_with_normal(
+                        shape_transforms[si],
+                        shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif shape_types[si] == GeoType.ELLIPSOID:
-                    hit, hit_dist, hit_normal = ray.ray_ellipsoid_with_normal(
+                    geom_hit = ray_intersect.ray_intersect_ellipsoid_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif shape_types[si] == GeoType.CAPSULE:
-                    hit, hit_dist, hit_normal = ray.ray_capsule_with_normal(
+                    geom_hit = ray_intersect.ray_intersect_capsule_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif shape_types[si] == GeoType.CYLINDER:
-                    hit, hit_dist, hit_normal = ray.ray_cylinder_with_normal(
+                    geom_hit = ray_intersect.ray_intersect_cylinder_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif shape_types[si] == GeoType.CONE:
-                    hit, hit_dist, hit_normal = ray.ray_cone_with_normal(
+                    geom_hit = ray_intersect.ray_intersect_cone_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
                 elif shape_types[si] == GeoType.BOX:
-                    hit, hit_dist, hit_normal = ray.ray_box_with_normal(
+                    geom_hit = ray_intersect.ray_intersect_box_with_normal(
                         shape_transforms[si],
                         shape_sizes[si],
                         ray_origin_world,
                         ray_dir_world,
                     )
 
-                if hit and hit_dist < closest_hit.distance:
-                    closest_hit.distance = hit_dist
-                    closest_hit.normal = hit_normal
+                if geom_hit.hit and geom_hit.distance < closest_hit.distance:
+                    closest_hit.distance = geom_hit.distance
+                    closest_hit.normal = geom_hit.normal
                     closest_hit.shape_index = si
                     closest_hit.bary_u = hit_u
                     closest_hit.bary_v = hit_v
@@ -172,29 +169,24 @@ def closest_hit_particles(
 ) -> ClosestHit:
     if bvh_particles_size:
         for i in range(2 if enable_global_world else 1):
-            world_index, group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
+            group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
             if group_root < 0:
                 continue
 
             query = wp.bvh_query_ray(bvh_particles_id, ray_origin_world, ray_dir_world, group_root)
-            bounds_nr = wp.int32(0)
+            si = wp.int32(0)
 
-            while wp.bvh_query_next(query, bounds_nr, closest_hit.distance):
-                # The BVH is built over the *global* particle arrays (position/radius), and the query
-                # is restricted to a world/group via the group_root. Therefore, the index returned by
-                # wp.bvh_query_next() is already a valid index into particles_position/particles_radius.
-                si = bounds_nr
-
-                hit, hit_dist, hit_normal = ray.ray_sphere_with_normal(
-                    particles_position[si],
-                    particles_radius[si] * particles_radius[si],
+            while wp.bvh_query_next(query, si, closest_hit.distance):
+                geom_hit = ray_intersect.ray_intersect_particle_sphere_with_normal(
                     ray_origin_world,
                     ray_dir_world,
+                    particles_position[si],
+                    particles_radius[si],
                 )
 
-                if hit and hit_dist < closest_hit.distance:
-                    closest_hit.distance = hit_dist
-                    closest_hit.normal = hit_normal
+                if geom_hit.hit and geom_hit.distance < closest_hit.distance:
+                    closest_hit.distance = geom_hit.distance
+                    closest_hit.normal = geom_hit.normal
                     closest_hit.shape_index = PARTICLES_SHAPE_ID
                     closest_hit.shape_mesh_index = -1
 
@@ -210,12 +202,12 @@ def closest_hit_triangle_mesh(
     ray_dir_world: wp.vec3f,
 ) -> ClosestHit:
     if triangle_mesh_id:
-        hit, max_distance, normal, bary_u, bary_v, face_idx = ray.ray_mesh(
-            triangle_mesh_id, enable_backface_culling, ray_origin_world, ray_dir_world, closest_hit.distance
+        geom_hit, bary_u, bary_v, face_idx = ray_intersect.ray_intersect_mesh_no_transform(
+            triangle_mesh_id, ray_origin_world, ray_dir_world, enable_backface_culling, closest_hit.distance
         )
-        if hit:
-            closest_hit.distance = max_distance
-            closest_hit.normal = normal
+        if geom_hit.hit:
+            closest_hit.distance = geom_hit.distance
+            closest_hit.normal = geom_hit.normal
             closest_hit.shape_index = TRIANGLE_MESH_SHAPE_ID
             closest_hit.bary_u = bary_u
             closest_hit.bary_v = bary_v
@@ -318,7 +310,7 @@ def first_hit_shape(
 ) -> wp.bool:
     if bvh_shapes_size:
         for i in range(2 if enable_global_world else 1):
-            world_index, group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
+            group_root = get_group_roots(bvh_shapes_group_roots, world_index, i)
             if group_root < 0:
                 continue
 
@@ -328,21 +320,22 @@ def first_hit_shape(
             while wp.bvh_query_next(query, shape_index, max_dist):
                 si = shape_enabled[shape_index]
 
-                dist = wp.float32(MAXVAL)
+                dist = wp.float32(-1)
 
                 if shape_types[si] == GeoType.MESH:
-                    _h, dist, _n, _u, _v, _f, _mesh_id = ray.ray_mesh_with_bvh(
-                        mesh_ids,
-                        shape_mesh_indices[si],
+                    geom_hit, _u, _v, _f = ray_intersect.ray_intersect_mesh(
                         shape_transforms[si],
                         shape_sizes[si],
-                        enable_backface_culling,
                         ray_origin_world,
                         ray_dir_world,
+                        mesh_ids[shape_mesh_indices[si]],
+                        enable_backface_culling,
                         max_dist,
                     )
+                    if geom_hit.hit:
+                        dist = geom_hit.distance
                 elif shape_types[si] == GeoType.PLANE:
-                    dist = ray.ray_plane(
+                    dist = ray_intersect.ray_intersect_plane(
                         shape_transforms[si],
                         shape_sizes[si],
                         enable_backface_culling,
@@ -350,49 +343,30 @@ def first_hit_shape(
                         ray_dir_world,
                     )
                 elif shape_types[si] == GeoType.SPHERE:
-                    dist = ray.ray_sphere(
-                        wp.transform_get_translation(shape_transforms[si]),
-                        shape_sizes[si][0] * shape_sizes[si][0],
-                        ray_origin_world,
-                        ray_dir_world,
+                    dist = raycast.ray_intersect_sphere(
+                        shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si][0]
                     )
                 elif shape_types[si] == GeoType.ELLIPSOID:
-                    dist = ray.ray_ellipsoid(
-                        shape_transforms[si],
-                        shape_sizes[si],
-                        ray_origin_world,
-                        ray_dir_world,
+                    dist = raycast.ray_intersect_ellipsoid(
+                        shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
                     )
                 elif shape_types[si] == GeoType.CAPSULE:
-                    dist = ray.ray_capsule(
-                        shape_transforms[si],
-                        shape_sizes[si],
-                        ray_origin_world,
-                        ray_dir_world,
+                    dist = raycast.ray_intersect_capsule(
+                        shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si][0], shape_sizes[si][1]
                     )
                 elif shape_types[si] == GeoType.CYLINDER:
-                    dist, _ = ray.ray_cylinder(
-                        shape_transforms[si],
-                        shape_sizes[si],
-                        ray_origin_world,
-                        ray_dir_world,
+                    dist = raycast.ray_intersect_cylinder(
+                        shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si][0], shape_sizes[si][1]
                     )
                 elif shape_types[si] == GeoType.CONE:
-                    dist = ray.ray_cone(
-                        shape_transforms[si],
-                        shape_sizes[si],
-                        ray_origin_world,
-                        ray_dir_world,
+                    dist = raycast.ray_intersect_cone(
+                        shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si][0], shape_sizes[si][1]
                     )
                 elif shape_types[si] == GeoType.BOX:
-                    dist, _all = ray.ray_box(
-                        shape_transforms[si],
-                        shape_sizes[si],
-                        ray_origin_world,
-                        ray_dir_world,
+                    dist = raycast.ray_intersect_box(
+                        shape_transforms[si], ray_origin_world, ray_dir_world, shape_sizes[si]
                     )
-
-                if dist < max_dist:
+                if dist > -1 and dist < max_dist:
                     return True
 
     return False
@@ -413,25 +387,22 @@ def first_hit_particles(
 ) -> wp.bool:
     if bvh_particles_size:
         for i in range(2 if enable_global_world else 1):
-            world_index, group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
+            group_root = get_group_roots(bvh_particles_group_roots, world_index, i)
             if group_root < 0:
                 continue
 
             query = wp.bvh_query_ray(bvh_particles_id, ray_origin_world, ray_dir_world, group_root)
-            bounds_nr = wp.int32(0)
+            si = wp.int32(0)
 
-            while wp.bvh_query_next(query, bounds_nr, max_dist):
-                # See closest_hit_particles(): BVH indices are global indices into particle arrays.
-                si = bounds_nr
-
-                hit, hit_dist, _hit_normal = ray.ray_sphere_with_normal(
-                    particles_position[si],
-                    particles_radius[si] * particles_radius[si],
+            while wp.bvh_query_next(query, si, max_dist):
+                geom_hit = ray_intersect.ray_intersect_particle_sphere_with_normal(
                     ray_origin_world,
                     ray_dir_world,
+                    particles_position[si],
+                    particles_radius[si],
                 )
 
-                if hit and hit_dist <= max_dist:
+                if geom_hit.hit and geom_hit.distance <= max_dist:
                     return True
 
     return False
@@ -446,10 +417,10 @@ def first_hit_triangle_mesh(
     max_dist: wp.float32,
 ) -> wp.bool:
     if triangle_mesh_id:
-        hit, _max_distance, _normal, _bary_u, _bary_v, _face_idx = ray.ray_mesh(
-            triangle_mesh_id, enable_backface_culling, ray_origin_world, ray_dir_world, max_dist
+        geom_hit, _bary_u, _bary_v, _face_idx = ray_intersect.ray_intersect_mesh_no_transform(
+            triangle_mesh_id, ray_origin_world, ray_dir_world, enable_backface_culling, max_dist
         )
-        return hit
+        return geom_hit.hit
     return False
 
 
