@@ -1951,12 +1951,12 @@ class SolverVBD(SolverBase):
                 wp.array(dtype=wp.vec3),
                 wp.array(dtype=wp.int32),
             ]: Tuple of per-contact outputs:
-                - body0: Body index for shape0, int32 [index].
-                - body1: Body index for shape1, int32 [index].
+                - body0: Body index for shape0, int32.
+                - body1: Body index for shape1, int32.
                 - point0_world: World-space contact point on body0, wp.vec3 [m].
                 - point1_world: World-space contact point on body1, wp.vec3 [m].
                 - force_on_body1: Contact force applied to body1 in world frame, wp.vec3 [N].
-                - rigid_contact_count: Length-1 active rigid-contact count, int32 [count].
+                - rigid_contact_count: Length-1 active rigid-contact count, int32.
         """
         # Allocate/resize persistent buffers to match contact capacity.
         max_contacts = int(contacts.rigid_contact_shape0.shape[0]) if contacts is not None else 0
