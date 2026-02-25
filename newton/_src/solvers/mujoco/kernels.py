@@ -222,12 +222,12 @@ def convert_newton_contacts_to_mjwarp_kernel(
     rigid_contact_point0: wp.array(dtype=wp.vec3),
     rigid_contact_point1: wp.array(dtype=wp.vec3),
     rigid_contact_normal: wp.array(dtype=wp.vec3),
-    rigid_contact_thickness0: wp.array(dtype=wp.float32),
-    rigid_contact_thickness1: wp.array(dtype=wp.float32),
+    rigid_contact_margin0: wp.array(dtype=wp.float32),
+    rigid_contact_margin1: wp.array(dtype=wp.float32),
     rigid_contact_stiffness: wp.array(dtype=wp.float32),
     rigid_contact_damping: wp.array(dtype=wp.float32),
-    rigid_contact_friction_scale: wp.array(dtype=wp.float32),
-    shape_thickness: wp.array(dtype=float),
+    rigid_contact_friction: wp.array(dtype=wp.float32),
+    shape_margin: wp.array(dtype=float),
     bodies_per_world: int,
     newton_shape_to_mjc_geom: wp.array(dtype=wp.int32),
     # Mujoco warp contacts
@@ -293,11 +293,11 @@ def convert_newton_contacts_to_mjwarp_kernel(
     bx_a = wp.transform_point(X_wb_a, rigid_contact_point0[tid])
     bx_b = wp.transform_point(X_wb_b, rigid_contact_point1[tid])
 
-    # rigid_contact_thickness = radius_eff + shape_thickness per shape.
+    # rigid_contact_margin0/1 = radius_eff + shape_margin per shape.
     # Subtract only radius_eff so dist is the surface-to-surface distance.
-    # shape_thickness is handled by geom_margin (MuJoCo's includemargin threshold).
-    radius_eff = (rigid_contact_thickness0[tid] - shape_thickness[shape_a]) + (
-        rigid_contact_thickness1[tid] - shape_thickness[shape_b]
+    # shape_margin is handled by geom_margin (MuJoCo's includemargin threshold).
+    radius_eff = (rigid_contact_margin0[tid] - shape_margin[shape_a]) + (
+        rigid_contact_margin1[tid] - shape_margin[shape_b]
     )
 
     n = -rigid_contact_normal[tid]
@@ -357,7 +357,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
             solref = wp.vec2(timeconst, dampratio)
 
-        friction_scale = rigid_contact_friction_scale[tid]
+        friction_scale = rigid_contact_friction[tid]
         if friction_scale > 0.0:
             friction = vec5(
                 friction[0] * friction_scale,
@@ -1648,7 +1648,7 @@ def update_geom_properties_kernel(
     shape_geom_solimp: wp.array(dtype=vec5),
     shape_geom_solmix: wp.array(dtype=float),
     shape_geom_gap: wp.array(dtype=float),
-    shape_thickness: wp.array(dtype=float),
+    shape_margin: wp.array(dtype=float),
     # outputs
     geom_friction: wp.array2d(dtype=wp.vec3f),
     geom_solref: wp.array2d(dtype=wp.vec2f),
@@ -1669,7 +1669,7 @@ def update_geom_properties_kernel(
     this internally based on the geometry, and Newton's shape_collision_radius
     is not compatible with MuJoCo's bounding sphere calculation.
 
-    Note: geom_margin is always updated from shape_thickness (unconditionally,
+    Note: geom_margin is always updated from shape_margin (unconditionally,
     unlike the optional shape_geom_gap/solimp/solmix fields).
     """
     world, geom_idx = wp.tid()
@@ -1701,8 +1701,8 @@ def update_geom_properties_kernel(
     if shape_geom_gap:
         geom_gap[world, geom_idx] = shape_geom_gap[shape_idx]
 
-    # update geom_margin from shape thickness
-    geom_margin[world, geom_idx] = shape_thickness[shape_idx]
+    # update geom_margin from shape_margin
+    geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
     # update size
     geom_size[world, geom_idx] = shape_size[shape_idx]

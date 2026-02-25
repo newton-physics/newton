@@ -150,7 +150,7 @@ def test_finite_difference_collider_velocity(test, device):
             compute_inertia=False,
         )
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)  # kinematic
-        shape_cfg.thickness = 0.02
+        shape_cfg.margin = 0.02
         builder.add_shape_mesh(
             body=platform_body,
             mesh=platform_mesh,

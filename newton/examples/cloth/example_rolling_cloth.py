@@ -186,16 +186,7 @@ def cylinder_mesh(radius=9.5, height=120.0, segments=64):
 
 
 class Example:
-    def __init__(
-        self,
-        viewer,
-        args=None,
-        cloth_length=800.0,
-        cloth_nu=300,
-        cloth_thickness=0.4,
-        angular_speed=2 * np.pi,
-        spin_duration=20.0,
-    ):
+    def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.sim_time = 0.0
         self.args = args
@@ -210,7 +201,13 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.iterations = 12
 
-        # Cloth parameters
+        # Cloth parameters (hardcoded)
+        cloth_length = 800.0
+        cloth_nu = 300
+        cloth_thickness = 0.4
+        angular_speed = 2 * np.pi
+        spin_duration = 20.0
+
         self.cloth_thickness = cloth_thickness
         self.nv = 15  # vertices per row
 
@@ -539,18 +536,10 @@ if __name__ == "__main__":
     # Create parser with base arguments
     parser = newton.examples.create_parser()
 
-    parser.add_argument("--angular-speed", type=float, default=2 * np.pi, help="Base rotation speed (rad/sec)")
-    parser.add_argument("--spin-duration", type=float, default=20.0, help="Duration of spinning (seconds)")
-
     # Parse arguments and initialize viewer
     viewer, args = newton.examples.init(parser)
 
     # Create example and run
-    example = Example(
-        viewer=viewer,
-        args=args,
-        angular_speed=args.angular_speed,
-        spin_duration=args.spin_duration,
-    )
+    example = Example(viewer=viewer, args=args)
 
     newton.examples.run(example, args)

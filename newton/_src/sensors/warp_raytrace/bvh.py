@@ -15,8 +15,8 @@
 
 import warp as wp
 
+from ...geometry import GeoType
 from .ray import MAXVAL
-from .types import RenderShapeType
 
 
 @wp.func
@@ -178,23 +178,23 @@ def compute_shape_bvh_bounds(
     lower = wp.vec3f()
     upper = wp.vec3f()
 
-    if geom_type == RenderShapeType.SPHERE:
+    if geom_type == GeoType.SPHERE:
         lower, upper = compute_sphere_bounds(wp.transform_get_translation(transform), size[0])
-    elif geom_type == RenderShapeType.CAPSULE:
+    elif geom_type == GeoType.CAPSULE:
         lower, upper = compute_capsule_bounds(transform, size)
-    elif geom_type == RenderShapeType.CYLINDER:
+    elif geom_type == GeoType.CYLINDER:
         lower, upper = compute_cylinder_bounds(transform, size)
-    elif geom_type == RenderShapeType.CONE:
+    elif geom_type == GeoType.CONE:
         lower, upper = compute_cone_bounds(transform, size)
-    elif geom_type == RenderShapeType.PLANE:
+    elif geom_type == GeoType.PLANE:
         lower, upper = compute_plane_bounds(transform, size)
-    elif geom_type == RenderShapeType.MESH:
+    elif geom_type == GeoType.MESH:
         min_bounds = mesh_bounds[shape_mesh_indices[shape_index], 0]
         max_bounds = mesh_bounds[shape_mesh_indices[shape_index], 1]
         lower, upper = compute_mesh_bounds(transform, size, min_bounds, max_bounds)
-    elif geom_type == RenderShapeType.ELLIPSOID:
+    elif geom_type == GeoType.ELLIPSOID:
         lower, upper = compute_ellipsoid_bounds(transform, size)
-    elif geom_type == RenderShapeType.BOX:
+    elif geom_type == GeoType.BOX:
         lower, upper = compute_box_bounds(transform, size)
 
     out_bvh_lowers[bvh_index_local] = lower
