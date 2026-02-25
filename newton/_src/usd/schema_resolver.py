@@ -19,7 +19,7 @@ USD schema resolver system. Currently not used.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -57,16 +57,18 @@ class SchemaAttribute:
     Specifies a USD attribute and its transformation function.
 
     Args:
-        name (str): The name of the USD attribute.
-        default (Any | None): Default USD-authored value from schema, if any.
-        usd_value_transformer (Callable[[Any], Any] | None): A function to transform the raw USD attribute value
-            into the format expected by Newton. Takes the USD value as input and returns the transformed
-            value. For example, converting PhysX timeStepsPerSecond to Newton's timestep by computing 1/Hz.
+        name: The name of the USD attribute (or primary attribute when using a getter).
+        default: Default USD-authored value from schema, if any.
+        usd_value_transformer: Optional function to transform the raw value into the format expected by Newton.
+        usd_value_getter: Optional function (prim) -> value used instead of reading a single attribute (e.g. to compute gap from contactOffset - restOffset).
+        attribute_names: When set, names used for collect_prim_attrs; otherwise [name] is used.
     """
 
     name: str
     default: Any | None = None
     usd_value_transformer: Callable[[Any], Any] | None = None
+    usd_value_getter: Callable[[Any], Any] | None = None
+    attribute_names: Sequence[str] = ()
 
 
 class SchemaResolver:
@@ -97,7 +99,10 @@ class SchemaResolver:
             except AttributeError:
                 continue
             for _var, spec in var_items:
-                names.add(spec.name)
+                if spec.attribute_names:
+                    names.update(spec.attribute_names)
+                else:
+                    names.add(spec.name)
         self._solver_attributes: list[str] = list(names)
 
     def get_value(self, prim: Usd.Prim, prim_type: PrimType, key: str) -> Any | None:
@@ -116,7 +121,10 @@ class SchemaResolver:
             return None
         spec = self.mapping.get(prim_type, {}).get(key)
         if spec is not None:
-            v = usd.get_attribute(prim, spec.name)
+            if spec.usd_value_getter is not None:
+                v = spec.usd_value_getter(prim)
+            else:
+                v = usd.get_attribute(prim, spec.name)
             if v is not None:
                 return spec.usd_value_transformer(v) if spec.usd_value_transformer is not None else v
         return None

@@ -2828,12 +2828,12 @@ requires-dist = [
     { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=3.0.1" },
     { name = "nbsphinx", marker = "extra == 'docs'", specifier = ">=0.9.0" },
     { name = "newton-actuators" },
-    { name = "newton-usd-schemas", marker = "extra == 'dev'", specifier = ">=0.1.0a2" },
-    { name = "newton-usd-schemas", marker = "extra == 'docs'", specifier = ">=0.1.0a2" },
-    { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0a2" },
-    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.1.0a2" },
-    { name = "newton-usd-schemas", marker = "extra == 'notebook'", specifier = ">=0.1.0a2" },
-    { name = "newton-usd-schemas", marker = "extra == 'torch-cu12'", specifier = ">=0.1.0a2" },
+    { name = "newton-usd-schemas", marker = "extra == 'dev'", specifier = ">=0.1.0rc3" },
+    { name = "newton-usd-schemas", marker = "extra == 'docs'", specifier = ">=0.1.0rc3" },
+    { name = "newton-usd-schemas", marker = "extra == 'examples'", specifier = ">=0.1.0rc3" },
+    { name = "newton-usd-schemas", marker = "extra == 'importers'", specifier = ">=0.1.0rc3" },
+    { name = "newton-usd-schemas", marker = "extra == 'notebook'", specifier = ">=0.1.0rc3" },
+    { name = "newton-usd-schemas", marker = "extra == 'torch-cu12'", specifier = ">=0.1.0rc3" },
     { name = "open3d", marker = "extra == 'remesh'", specifier = ">=0.18.0" },
     { name = "pycollada", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "pycollada", marker = "extra == 'docs'", specifier = ">=0.9" },
@@ -2917,11 +2917,11 @@ wheels = [
 
 [[package]]
 name = "newton-usd-schemas"
-version = "0.1.0rc2"
+version = "0.1.0rc3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5f/18/3ac84dab96569f8e28ec868ffe492286401990804d94902fea2b91dec9cb/newton_usd_schemas-0.1.0rc2.tar.gz", hash = "sha256:c97ce5e8d87fab4c20e7815a469da870a6fb102663a185fa85868fcb163ecf29", size = 61019, upload-time = "2026-02-13T20:28:26.08Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/3b/702d7abec081b7c183feee38747bc358f262ceb67d9c8f7542edea6a8903/newton_usd_schemas-0.1.0rc3.tar.gz", hash = "sha256:a613e89f4de1ea0c3429093e798ee752c6701879353d4440eb5fe7b8c13bfc04", size = 61041, upload-time = "2026-02-24T20:52:19.099Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/43/e4e4623135a447445000fa93dd5d24024c113ce13512f8f10cf8f9597b2f/newton_usd_schemas-0.1.0rc2-py3-none-any.whl", hash = "sha256:55246b1c1164b3d7a6dffa7a2597dc0dde1e38894445a48a543bc039032d18ae", size = 12595, upload-time = "2026-02-13T20:28:24.715Z" },
+    { url = "https://files.pythonhosted.org/packages/95/9f/541d01f136db03f9ac4f92ea01c0ba086178b64e0d82e088c7bfefaff25e/newton_usd_schemas-0.1.0rc3-py3-none-any.whl", hash = "sha256:ee4070b20a6f143fc25af15f6713302964a5d5a596616b4443657394ed95d54b", size = 12628, upload-time = "2026-02-24T20:52:17.65Z" },
 ]
 
 [[package]]

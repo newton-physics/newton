@@ -33,7 +33,7 @@ from ..core import quat_between_axes
 from ..core.types import Axis, Transform
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
-from ..sim.joints import ActuatorMode
+from ..sim.joints import JointTargetMode
 from ..sim.model import Model
 from ..usd import utils as usd
 from ..usd.schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
@@ -154,7 +154,7 @@ def parse_usd(
         verbose (bool): If True, print additional information about the parsed USD file. Default is False.
         ignore_paths (List[str]): A list of regular expressions matching prim paths to ignore.
         collapse_fixed_joints (bool): If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions (bool): Determines the default behavior of whether self-collisions are enabled for all shapes within an articulation. If an articulation has the attribute ``physxArticulation:enabledSelfCollisions`` defined, this attribute takes precedence.
+        enable_self_collisions (bool): Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage (bool): If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path (str): The USD path to import, defaults to "/".
         joint_ordering (str): The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
@@ -180,11 +180,11 @@ def parse_usd(
             .. note::
                 Using the ``schema_resolvers`` argument is an experimental feature that may be removed or changed significantly in the future.
         force_position_velocity_actuation (bool): If True and both stiffness (kp) and damping (kd)
-            are non-zero, joints use :attr:`~newton.ActuatorMode.POSITION_VELOCITY` actuation mode.
-            If False (default), actuator modes are inferred per joint via :func:`newton.ActuatorMode.from_gains`:
-            :attr:`~newton.ActuatorMode.POSITION` if stiffness > 0, :attr:`~newton.ActuatorMode.VELOCITY` if only
-            damping > 0, :attr:`~newton.ActuatorMode.EFFORT` if a drive is present but both gains are zero
-            (direct torque control), or :attr:`~newton.ActuatorMode.NONE` if no drive/actuation is applied.
+            are non-zero, joints use :attr:`~newton.JointTargetMode.POSITION_VELOCITY` actuation mode.
+            If False (default), actuator modes are inferred per joint via :func:`newton.JointTargetMode.from_gains`:
+            :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
+            damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
+            (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
 
     Returns:
         dict: Dictionary with the following entries:
@@ -594,7 +594,7 @@ def parse_usd(
             return -1
 
         rot = rigid_body_desc.rotation
-        origin = wp.transform(rigid_body_desc.position, usd.from_gfquat(rot))
+        origin = wp.transform(rigid_body_desc.position, usd.value_to_warp(rot))
         if incoming_xform is not None:
             origin = wp.mul(incoming_xform, origin)
         path = str(prim.GetPath())
@@ -620,8 +620,8 @@ def parse_usd(
     ):
         """Resolve the parent and child of a joint and return their parent + child transforms if requested."""
         if get_transforms:
-            parent_tf = wp.transform(joint_desc.localPose0Position, usd.from_gfquat(joint_desc.localPose0Orientation))
-            child_tf = wp.transform(joint_desc.localPose1Position, usd.from_gfquat(joint_desc.localPose1Orientation))
+            parent_tf = wp.transform(joint_desc.localPose0Position, usd.value_to_warp(joint_desc.localPose0Orientation))
+            child_tf = wp.transform(joint_desc.localPose1Position, usd.value_to_warp(joint_desc.localPose1Orientation))
         else:
             parent_tf = None
             child_tf = None
@@ -729,11 +729,11 @@ def parse_usd(
                 joint_params["target_kd"] = target_kd
                 joint_params["effort_limit"] = joint_desc.drive.forceLimit
 
-                joint_params["actuator_mode"] = ActuatorMode.from_gains(
+                joint_params["actuator_mode"] = JointTargetMode.from_gains(
                     target_ke, target_kd, force_position_velocity_actuation, has_drive=True
                 )
             else:
-                joint_params["actuator_mode"] = ActuatorMode.NONE
+                joint_params["actuator_mode"] = JointTargetMode.NONE
 
             # Read initial joint state BEFORE creating/overwriting USD attributes
             initial_position = None
@@ -821,7 +821,7 @@ def parse_usd(
                             target_ke = drive.second.stiffness
                             target_kd = drive.second.damping
                             effort_limit = drive.second.forceLimit
-                    actuator_mode = ActuatorMode.from_gains(
+                    actuator_mode = JointTargetMode.from_gains(
                         target_ke, target_kd, force_position_velocity_actuation, has_drive=has_drive
                     )
                     return target_pos, target_vel, target_ke, target_kd, effort_limit, actuator_mode
@@ -1326,7 +1326,7 @@ def parse_usd(
 
                 if key in body_specs:
                     body_desc = body_specs[key]
-                    desc_xform = wp.transform(body_desc.position, usd.from_gfquat(body_desc.rotation))
+                    desc_xform = wp.transform(body_desc.position, usd.value_to_warp(body_desc.rotation))
                     body_world = usd.get_transform(usd_prim, local=False, xform_cache=xform_cache)
                     desired_world = incoming_world_xform * body_world
                     body_incoming_xform = desired_world * wp.transform_inverse(desc_xform)
@@ -1570,11 +1570,14 @@ def parse_usd(
                 )
 
             articulation_bodies[articulation_id] = art_bodies
-            # determine if self-collisions are enabled
-            articulation_has_self_collision[articulation_id] = usd.get_attribute(
-                articulation_prim,
-                "physxArticulation:enabledSelfCollisions",
-                default=enable_self_collisions,
+            articulation_has_self_collision[articulation_id] = bool(
+                R.get_value(
+                    articulation_prim,
+                    prim_type=PrimType.ARTICULATION,
+                    key="self_collision_enabled",
+                    default=enable_self_collisions,
+                    verbose=verbose,
+                )
             )
             articulation_id += 1
     no_articulations = UsdPhysics.ObjectType.Articulation not in ret_dict
@@ -1718,7 +1721,7 @@ def parse_usd(
         else:
             center_of_mass = Gf.Vec3f(0.0, 0.0, 0.0)
 
-        i_rot = usd.from_gfquat(principal_axes)
+        i_rot = usd.value_to_warp(principal_axes)
         rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
         inertia_full_unit = rot @ np.diag(inertia_diag_unit) @ rot.T
 
@@ -1746,7 +1749,7 @@ def parse_usd(
         if axis is None or axis == Axis.Z:
             return local_rot
 
-        local_rot_wp = usd.from_gfquat(local_rot)
+        local_rot_wp = usd.value_to_warp(local_rot)
         corrected_rot = wp.mul(local_rot_wp, quat_between_axes(Axis.Z, axis))
         return Gf.Quatf(
             float(corrected_rot[3]),
@@ -1850,7 +1853,7 @@ def parse_usd(
                 else:
                     shape_density = default_shape_density
                 prim_and_scene = (prim, physics_scene_prim)
-                local_xform = wp.transform(shape_spec.localPos, usd.from_gfquat(shape_spec.localRot))
+                local_xform = wp.transform(shape_spec.localPos, usd.value_to_warp(shape_spec.localRot))
                 if body_id == -1:
                     shape_xform = incoming_world_xform * local_xform
                 else:
@@ -1862,9 +1865,22 @@ def parse_usd(
                 if collect_schema_attrs:
                     R.collect_prim_attrs(prim)
 
-                gap = R.get_value(prim, prim_type=PrimType.SHAPE, key="gap", verbose=verbose)
-                if gap == float("-inf"):
-                    gap = builder.default_shape_cfg.gap
+                margin_val = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="margin",
+                    default=builder.default_shape_cfg.margin,
+                    verbose=verbose,
+                )
+                gap_val = R.get_value(
+                    prim,
+                    prim_type=PrimType.SHAPE,
+                    key="gap",
+                    verbose=verbose,
+                )
+                if gap_val == float("-inf"):
+                    gap_val = builder.default_shape_cfg.gap
+                gap_cfg = gap_val
 
                 shape_params = {
                     "body": body_id,
@@ -1882,14 +1898,8 @@ def parse_usd(
                         ka=usd.get_float_with_fallback(
                             prim_and_scene, "newton:contact_ka", builder.default_shape_cfg.ka
                         ),
-                        margin=usd.get_float_with_fallback(
-                            prim_and_scene,
-                            "newton:margin",
-                            usd.get_float_with_fallback(
-                                prim_and_scene, "newton:contact_thickness", builder.default_shape_cfg.margin
-                            ),
-                        ),
-                        gap=gap,
+                        margin=margin_val,
+                        gap=gap_cfg,
                         mu=material.dynamicFriction,
                         restitution=material.restitution,
                         mu_torsional=material.torsionalFriction,
@@ -2170,7 +2180,7 @@ def parse_usd(
                 # to match authored mass in the mass block below.
                 i_diag_np = None
             if i_diag_np is not None and np.linalg.norm(i_diag_np) > 0.0:
-                i_rot = usd.from_gfquat(principal_axes)
+                i_rot = usd.value_to_warp(principal_axes)
                 rot = np.array(wp.quat_to_matrix(i_rot), dtype=np.float32).reshape(3, 3)
                 inertia = rot @ np.diag(i_diag_np) @ rot.T
                 builder.body_inertia[body_id] = wp.mat33(inertia)
@@ -2297,6 +2307,46 @@ def parse_usd(
 
         # Joint indices may have shifted after collapsing fixed joints; refresh the joint path map accordingly.
         path_joint_map = {label: idx for idx, label in enumerate(builder.joint_label)}
+
+    # Mimic constraints (run after collapse so joint indices in path_joint_map are final).
+    for joint_path, joint_idx in path_joint_map.items():
+        joint_prim = stage.GetPrimAtPath(joint_path)
+        if not joint_prim.IsValid() or not joint_prim.HasAPI("NewtonMimicAPI"):
+            continue
+        mimic_enabled = usd.get_attribute(joint_prim, "newton:mimicEnabled", default=True)
+        if not mimic_enabled:
+            continue
+        mimic_rel = joint_prim.GetRelationship("newton:mimicJoint")
+        if not mimic_rel or not mimic_rel.HasAuthoredTargets():
+            if verbose:
+                print(f"NewtonMimicAPI on {joint_path} has no newton:mimicJoint target; skipping")
+            continue
+        targets = mimic_rel.GetTargets()
+        if not targets:
+            if verbose:
+                print(f"NewtonMimicAPI on {joint_path}: newton:mimicJoint has no targets; skipping")
+            continue
+        leader_path = targets[0]
+        if not leader_path.IsAbsolutePath():
+            leader_path = joint_prim.GetPath().GetParentPath().AppendPath(leader_path)
+        leader_path_str = str(leader_path)
+        if leader_path_str not in path_joint_map:
+            warnings.warn(
+                f"NewtonMimicAPI on {joint_path}: leader {leader_path_str} not in path_joint_map; skipping mimic constraint.",
+                stacklevel=2,
+            )
+            continue
+        coef0 = usd.get_attribute(joint_prim, "newton:mimicCoef0", default=0.0)
+        coef1 = usd.get_attribute(joint_prim, "newton:mimicCoef1", default=1.0)
+        leader_idx = path_joint_map[leader_path_str]
+        builder.add_constraint_mimic(
+            joint0=joint_idx,
+            joint1=leader_idx,
+            coef0=coef0,
+            coef1=coef1,
+            enabled=True,
+            label=joint_path,
+        )
 
     # Parse Newton actuator prims from the USD stage.
     from newton_actuators import parse_actuator_prim  # noqa: PLC0415

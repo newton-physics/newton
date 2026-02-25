@@ -32,7 +32,6 @@ newton
    :toctree: _generated
    :nosignatures:
 
-   ActuatorMode
    Axis
    CollisionPipeline
    Contacts
@@ -40,6 +39,7 @@ newton
    EqType
    GeoType
    Heightfield
+   JointTargetMode
    JointType
    Mesh
    Model
@@ -56,8 +56,6 @@ newton
    :signatures: long
 
    AxisType
-   BroadPhaseInstance
-   BroadPhaseMode
    eval_fk
    eval_ik
    eval_jacobian
@@ -70,7 +68,7 @@ newton
 
    * - Name
      - Value
-   * - MAXVAL
-     - 10000000000.0
-   * - __version__
-     - 0.2.0
+   * - ``MAXVAL``
+     - ``10000000000.0``
+   * - ``__version__``
+     - ``0.2.0``

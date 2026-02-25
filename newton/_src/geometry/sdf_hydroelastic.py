@@ -113,27 +113,6 @@ def get_effective_stiffness(k_a: wp.float32, k_b: wp.float32) -> wp.float32:
     return (k_a * k_b) / denom
 
 
-@dataclass
-class HydroelasticContactSurfaceData:
-    """
-    Data container for hydroelastic contact surface visualization.
-
-    Contains the vertex arrays and metadata needed for rendering
-    the contact surface triangles from hydroelastic collision detection.
-    """
-
-    contact_surface_point: wp.array(dtype=wp.vec3f)
-    """World-space positions of contact surface triangle vertices (3 per face)."""
-    contact_surface_depth: wp.array(dtype=wp.float32)
-    """Penetration depth at each face centroid."""
-    contact_surface_shape_pair: wp.array(dtype=wp.vec2i)
-    """Shape pair indices (shape_a, shape_b) for each face."""
-    face_contact_count: wp.array(dtype=wp.int32)
-    """Array containing the number of face contacts."""
-    max_num_face_contacts: int
-    """Maximum number of face contacts (buffer size)."""
-
-
 class HydroelasticSDF:
     """Hydroelastic contact generation with SDF-based collision detection.
 
@@ -230,6 +209,26 @@ class HydroelasticSDF:
         fast local compaction path for contact storage. The default keeps the current
         fastest behavior (aggregates from retained contacts only).
         """
+
+    @dataclass
+    class ContactSurfaceData:
+        """
+        Data container for hydroelastic contact surface visualization.
+
+        Contains the vertex arrays and metadata needed for rendering
+        the contact surface triangles from hydroelastic collision detection.
+        """
+
+        contact_surface_point: wp.array(dtype=wp.vec3f)
+        """World-space positions of contact surface triangle vertices (3 per face)."""
+        contact_surface_depth: wp.array(dtype=wp.float32)
+        """Penetration depth at each face centroid."""
+        contact_surface_shape_pair: wp.array(dtype=wp.vec2i)
+        """Shape pair indices (shape_a, shape_b) for each face."""
+        face_contact_count: wp.array(dtype=wp.int32)
+        """Array containing the number of face contacts."""
+        max_num_face_contacts: int
+        """Maximum number of face contacts (buffer size)."""
 
     def __init__(
         self,
@@ -457,32 +456,22 @@ class HydroelasticSDF:
             writer_func=writer_func,
         )
 
-    def get_hydro_contact_surface(self) -> HydroelasticContactSurfaceData | None:
-        """Get the hydroelastic contact surface data for visualization.
+    def get_contact_surface(self) -> ContactSurfaceData | None:
+        """Get hydroelastic :class:`ContactSurfaceData` for visualization.
 
         Returns:
-            HydroelasticContactSurfaceData containing vertex arrays and metadata for rendering,
-            or None if `output_contact_surface` is False in the config.
+            A :class:`ContactSurfaceData` instance containing vertex arrays and metadata for rendering,
+            or None if :attr:`config.output_contact_surface` is False.
         """
         if not self.config.output_contact_surface:
             return None
-        return HydroelasticContactSurfaceData(
+        return self.ContactSurfaceData(
             contact_surface_point=self.iso_vertex_point,
             contact_surface_depth=self.iso_vertex_depth,
             contact_surface_shape_pair=self.iso_vertex_shape_pair,
             face_contact_count=self.contact_reduction.contact_count,
             max_num_face_contacts=self.max_num_face_contacts,
         )
-
-    def set_output_contact_surface(self, enabled: bool) -> None:
-        """Toggle contact surface visualization at runtime.
-
-        Note: This is a no-op. When `output_contact_surface=True` in the config,
-        the kernel always writes surface data. Display is controlled by the
-        viewer's `show_hydro_contact_surface` flag. This method exists for API
-        compatibility with ``CollisionPipeline``.
-        """
-        pass
 
     def launch(
         self,
