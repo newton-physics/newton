@@ -547,22 +547,47 @@ before ``pxr`` initializes its thread pool.
    globally and may degrade performance of other OpenUSD workloads in the same
    process.
 
+Choose **one** of the two approaches below — do not combine them.
+``PXR_WORK_THREAD_LIMIT`` is evaluated once when ``pxr`` is first imported and
+cached for the lifetime of the process; after that point,
+``Work.SetConcurrencyLimit()`` cannot override it.  Conversely, if the env var
+*is* set, calling ``Work.SetConcurrencyLimit()`` has no effect.
+
+**Option A — environment variable (before any USD import):**
+
 .. code-block:: python
 
-   # Limit USD worker threads to 1 to avoid a thread-safety crash in
-   # UsdPhysics.LoadUsdPhysicsFromRange. Must run before any other USD code.
-   try:
-       from pxr import Work
-       Work.SetConcurrencyLimit(1)
-   except Exception:
-       import os
-       os.environ.setdefault("PXR_WORK_THREAD_LIMIT", "1")
+   import os
+   os.environ["PXR_WORK_THREAD_LIMIT"] = "1"  # must precede any pxr import
 
    from newton import ModelBuilder
 
    builder = ModelBuilder()
-
-   # Import the USD file with many mesh colliders under the same rigid body
    result = builder.add_usd(
        source="rigid_body_with_many_mesh_colliders.usda",
    )
+
+**Option B —** ``Work.SetConcurrencyLimit`` **(only when the env var is not set):**
+
+.. code-block:: python
+
+   from pxr import Work
+   import os
+
+   if "PXR_WORK_THREAD_LIMIT" not in os.environ:
+       Work.SetConcurrencyLimit(1)
+
+   from newton import ModelBuilder
+
+   builder = ModelBuilder()
+   result = builder.add_usd(
+       source="rigid_body_with_many_mesh_colliders.usda",
+   )
+
+.. seealso::
+
+   `threadLimits.h`_ (API reference) and `threadLimits.cpp`_ (implementation)
+   document the precedence rules between the environment variable and the API.
+
+   .. _threadLimits.h: https://openusd.org/dev/api/thread_limits_8h.html
+   .. _threadLimits.cpp: https://github.com/PixarAnimationStudios/OpenUSD/blob/release/pxr/base/work/threadLimits.cpp
