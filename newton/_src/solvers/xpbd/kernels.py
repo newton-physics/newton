@@ -17,14 +17,14 @@ import warp as wp
 
 from ...core.spatial import velocity_at_point
 from ...geometry import ParticleFlags
-from ...sim import JointType
-from ...utils import (
+from ...math import (
     vec_abs,
     vec_leaky_max,
     vec_leaky_min,
     vec_max,
     vec_min,
 )
+from ...sim import JointType
 
 
 @wp.kernel

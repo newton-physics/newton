@@ -81,39 +81,12 @@ __all__ += [
 ]
 
 # ==================================================================================
-# math utils
-# TODO: move math utils to Warp?
+# world utils
 # ==================================================================================
-from ._src.math import (  # noqa: E402
-    boltzmann,
-    leaky_max,
-    leaky_min,
-    smooth_max,
-    smooth_min,
-    vec_abs,
-    vec_allclose,
-    vec_inside_limits,
-    vec_leaky_max,
-    vec_leaky_min,
-    vec_max,
-    vec_min,
-)
 from ._src.utils import compute_world_offsets  # noqa: E402
 
 __all__ += [
-    "boltzmann",
     "compute_world_offsets",
-    "leaky_max",
-    "leaky_min",
-    "smooth_max",
-    "smooth_min",
-    "vec_abs",
-    "vec_allclose",
-    "vec_inside_limits",
-    "vec_leaky_max",
-    "vec_leaky_min",
-    "vec_max",
-    "vec_min",
 ]
 
 # ==================================================================================
