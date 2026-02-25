@@ -55,6 +55,7 @@ from ..geometry import (
     transform_inertia,
 )
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.types import Heightfield
 from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_mesh
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
@@ -5206,7 +5207,7 @@ class ModelBuilder:
     def add_shape_heightfield(
         self,
         xform: Transform | None = None,
-        heightfield: Any | None = None,  # Heightfield type, using Any to avoid circular import
+        heightfield: Heightfield | None = None,
         scale: Vec3 | None = None,
         cfg: ShapeConfig | None = None,
         label: str | None = None,

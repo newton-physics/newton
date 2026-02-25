@@ -56,8 +56,6 @@ newton
    :signatures: long
 
    AxisType
-   BroadPhaseInstance
-   BroadPhaseMode
    eval_fk
    eval_ik
    eval_jacobian

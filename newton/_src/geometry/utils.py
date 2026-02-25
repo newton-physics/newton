@@ -656,7 +656,7 @@ def remesh_mesh(
         mesh.vertices = vertices
         mesh.indices = indices.flatten()
         if recompute_inertia:
-            mesh.mass, mesh.com, mesh.I, _ = compute_inertia_mesh(1.0, vertices, indices, is_solid=mesh.is_solid)
+            mesh.mass, mesh.com, mesh.inertia, _ = compute_inertia_mesh(1.0, vertices, indices, is_solid=mesh.is_solid)
     else:
         return mesh.copy(vertices=vertices, indices=indices, recompute_inertia=recompute_inertia)
     return mesh

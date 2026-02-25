@@ -353,8 +353,6 @@ def _estimate_rigid_contact_max(model: Model) -> int:
 
 
 BROAD_PHASE_MODES = ("nxn", "sap", "explicit")
-BroadPhaseMode = Literal["nxn", "sap", "explicit"]
-BroadPhaseInstance = BroadPhaseAllPairs | BroadPhaseSAP | BroadPhaseExplicit
 
 
 def _normalize_broad_phase_mode(mode: str) -> str:
@@ -364,7 +362,7 @@ def _normalize_broad_phase_mode(mode: str) -> str:
     return mode_str
 
 
-def _infer_broad_phase_mode_from_instance(broad_phase: BroadPhaseInstance) -> str:
+def _infer_broad_phase_mode_from_instance(broad_phase: BroadPhaseAllPairs | BroadPhaseSAP | BroadPhaseExplicit) -> str:
     if isinstance(broad_phase, BroadPhaseAllPairs):
         return "nxn"
     if isinstance(broad_phase, BroadPhaseSAP):
@@ -400,7 +398,11 @@ class CollisionPipeline:
         soft_contact_max: int | None = None,
         soft_contact_margin: float = 0.01,
         requires_grad: bool | None = None,
-        broad_phase: BroadPhaseMode | BroadPhaseInstance | None = None,
+        broad_phase: Literal["nxn", "sap", "explicit"]
+        | BroadPhaseAllPairs
+        | BroadPhaseSAP
+        | BroadPhaseExplicit
+        | None = None,
         narrow_phase: NarrowPhase | None = None,
         sdf_hydroelastic_config: NarrowPhase.HydroelasticSDF.Config | None = None,
     ):
@@ -408,30 +410,30 @@ class CollisionPipeline:
         Initialize the CollisionPipeline (expert API).
 
         Args:
-            model (Model): The simulation model.
-            reduce_contacts (bool, optional): Whether to reduce contacts for mesh-mesh collisions. Defaults to True.
-            rigid_contact_max (int | None, optional): Maximum number of rigid contacts to allocate.
+            model: The simulation model.
+            reduce_contacts: Whether to reduce contacts for mesh-mesh collisions. Defaults to True.
+            rigid_contact_max: Maximum number of rigid contacts to allocate.
                 Resolution order:
                 - If provided, use this value.
                 - Else if ``model.rigid_contact_max > 0``, use the model value.
                 - Else estimate automatically from model shape and pair metadata.
-            soft_contact_max (int | None, optional): Maximum number of soft contacts to allocate.
+            soft_contact_max: Maximum number of soft contacts to allocate.
                 If None, computed as shape_count * particle_count.
-            soft_contact_margin (float, optional): Margin for soft contact generation. Defaults to 0.01.
-            requires_grad (bool | None, optional): Whether to enable gradient computation. If None, uses model.requires_grad.
-            broad_phase (BroadPhaseMode | BroadPhaseAllPairs | BroadPhaseSAP | BroadPhaseExplicit | None, optional):
+            soft_contact_margin: Margin for soft contact generation. Defaults to 0.01.
+            requires_grad: Whether to enable gradient computation. If None, uses model.requires_grad.
+            broad_phase:
                 Either a broad phase mode string ("explicit", "nxn", "sap") or
                 a prebuilt broad phase instance for expert usage.
-            narrow_phase (NarrowPhase | None, optional): Optional prebuilt narrow phase instance. Must be
+            narrow_phase: Optional prebuilt narrow phase instance. Must be
                 provided together with a broad phase instance for expert usage.
-            shape_pairs_filtered (wp.array | None, optional): Precomputed shape pairs for EXPLICIT mode.
+            shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
                 When broad_phase is "explicit", uses model.shape_contact_pairs if not provided. For
                 "nxn"/"sap" modes, ignored.
-            sdf_hydroelastic_config (NarrowPhase.HydroelasticSDF.Config | None, optional): Configuration for
+            sdf_hydroelastic_config: Configuration for
                 hydroelastic collision handling. Defaults to None.
         """
         mode_from_broad_phase: str | None = None
-        broad_phase_instance: BroadPhaseInstance | None = None
+        broad_phase_instance: BroadPhaseAllPairs | BroadPhaseSAP | BroadPhaseExplicit | None = None
         if broad_phase is not None:
             if isinstance(broad_phase, str):
                 mode_from_broad_phase = _normalize_broad_phase_mode(broad_phase)
@@ -620,10 +622,10 @@ class CollisionPipeline:
 
     def contacts(self) -> Contacts:
         """
-        Allocate and return a new :class:`Contacts` object for this pipeline.
+        Allocate and return a new :class:`newton.Contacts` object for this pipeline.
 
         Returns:
-            Contacts: A newly allocated contacts buffer sized for this pipeline.
+            A newly allocated contacts buffer sized for this pipeline.
         """
         contacts = Contacts(
             self.rigid_contact_max,

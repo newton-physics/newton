@@ -590,7 +590,7 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "maxhullvert": x.maxhullvert,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
-                "I": serialize_ndarray(np.array(x.I), format_type, cache),
+                "inertia": serialize_ndarray(np.array(x.inertia), format_type, cache),
             }
             if cache is not None:
                 mesh_key = _mesh_key_from_vertices(x.vertices, fallback_obj=x)
@@ -985,7 +985,11 @@ def depointer_as_key(data: dict, format_type: str = "json", cache: ArrayCache | 
                 mesh.has_inertia = mesh_data["has_inertia"]
                 mesh.mass = mesh_data["mass"]
                 mesh.com = wp.vec3(*mesh_data["com"])
-                mesh.I = wp.mat33(deserialize_ndarray(mesh_data["I"], format_type, cache))
+                # Accept legacy recordings that stored mesh inertia as "I".
+                inertia_data = mesh_data.get("inertia")
+                if inertia_data is None:
+                    inertia_data = mesh_data["I"]
+                mesh.inertia = wp.mat33(deserialize_ndarray(inertia_data, format_type, cache))
                 # Optimization: single dict lookup
                 cache_index = x.get("cache_index")
                 if cache is not None and cache_index is not None:
