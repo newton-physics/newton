@@ -40,6 +40,7 @@ import newton.examples
 import newton.usd
 import newton.utils
 from newton import Model, ModelBuilder, State, eval_fk
+from newton.math import transform_twist
 from newton.solvers import SolverFeatherstone, SolverVBD
 
 
@@ -100,8 +101,7 @@ def compute_body_jacobian(
 
         @wp.kernel
         def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
-            # TODO verify transform twist
-            mv = wp.transform_twist(offset, body_qd[body_id])
+            mv = transform_twist(offset, body_qd[body_id])
             if wp.static(include_rotation):
                 for i in range(6):
                     body_out[i] = mv[i]
@@ -392,7 +392,7 @@ class Example:
         @wp.kernel
         def compute_body_out(body_qd: wp.array(dtype=wp.spatial_vector), body_out: wp.array(dtype=float)):
             # TODO verify transform twist
-            mv = wp.transform_twist(wp.static(self.endeffector_offset), body_qd[wp.static(self.endeffector_id)])
+            mv = transform_twist(wp.static(self.endeffector_offset), body_qd[wp.static(self.endeffector_id)])
             for i in range(6):
                 body_out[i] = mv[i]
 

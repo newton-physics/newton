@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .spatial import (
+from ..math import (
     quat_between_axes,
 )
 from .types import (

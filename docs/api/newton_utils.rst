@@ -30,8 +30,6 @@ newton.utils
    load_texture
    normalize_texture
    plot_graph
-   quat_between_axes
-   quat_between_vectors_robust
    remesh_mesh
    run_benchmark
    solidify_mesh

@@ -27,9 +27,9 @@ import newton.usd as usd
 from newton import JointType
 from newton._src.geometry.flags import ShapeFlags
 from newton._src.geometry.utils import transform_points
+from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, get_test_devices
-from newton.utils import quat_between_axes
 
 devices = get_test_devices()
 

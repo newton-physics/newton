@@ -67,20 +67,6 @@ __all__ += [
 ]
 
 # ==================================================================================
-# spatial math
-# TODO: move these to Warp?
-# ==================================================================================
-from ._src.core.spatial import (  # noqa: E402
-    quat_between_axes,
-    quat_between_vectors_robust,
-)
-
-__all__ += [
-    "quat_between_axes",
-    "quat_between_vectors_robust",
-]
-
-# ==================================================================================
 # world utils
 # ==================================================================================
 from ._src.utils import compute_world_offsets  # noqa: E402

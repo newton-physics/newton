@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ..core.spatial import quat_decompose, transform_twist
+from ..math import quat_decompose, transform_twist
 from .joints import JointType
 from .model import Model
 from .state import State

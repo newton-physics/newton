@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from ...core.spatial import quat_decompose
+from ...math import quat_decompose
 from ...sim import (
     Control,
     JointType,
