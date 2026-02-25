@@ -258,6 +258,31 @@ class TestImportMjcfBasic(unittest.TestCase):
         # So [0.7071068, 0, 0, 0.7071068] becomes [0, 0, 0.7071068, 0.7071068]
         np.testing.assert_allclose(body_quat, [0, 0, 0.7071068, 0.7071068], atol=1e-6)
 
+    def test_site_euler_sequence_matches_mujoco(self):
+        """Non-default compiler eulerseq should match MuJoCo site orientation."""
+        import mujoco
+
+        mjcf_content = """<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="test">
+    <compiler angle="radian" eulerseq="zyx"/>
+    <worldbody>
+        <body name="test_body">
+            <site name="test_site" euler="0.3 -1.2 0.7" size="0.01"/>
+        </body>
+    </worldbody>
+</mujoco>"""
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf_content)
+
+        site_idx = next(i for i, flags in enumerate(builder.shape_flags) if flags & ShapeFlags.SITE)
+        newton_xyzw = np.array(builder.shape_transform[site_idx][3:7], dtype=np.float64)
+
+        native_wxyz = np.array(mujoco.MjModel.from_xml_string(mjcf_content).site_quat[0], dtype=np.float64)
+        native_xyzw = np.array([native_wxyz[1], native_wxyz[2], native_wxyz[3], native_wxyz[0]], dtype=np.float64)
+
+        np.testing.assert_allclose(newton_xyzw, native_xyzw, rtol=1e-6, atol=1e-6)
+
     def test_root_body_with_custom_xform(self):
         """Test 1: Root body with custom xform parameter (with rotation) → verify transform is properly applied."""
         # Add a 45-degree rotation around Z to the body
