@@ -258,7 +258,9 @@ class SolverBase:
                 device=model.device,
             )
 
-    def step(self, state_in: State, state_out: State, control: Control, contacts: Contacts, dt: float) -> State | None:
+    def step(
+        self, state_in: State, state_out: State, control: Control | None, contacts: Contacts | None, dt: float
+    ) -> State | None:
         """
         Simulate the model for a given time step using the given control input.
 

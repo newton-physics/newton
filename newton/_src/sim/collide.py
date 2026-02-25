@@ -27,6 +27,7 @@ from ..geometry.collision_core import compute_tight_aabb_from_support
 from ..geometry.contact_data import ContactData
 from ..geometry.kernels import create_soft_contacts
 from ..geometry.narrow_phase import NarrowPhase
+from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.support_function import (
     GenericShapeData,
     SupportMapDataProvider,
@@ -403,7 +404,7 @@ class CollisionPipeline:
         | BroadPhaseExplicit
         | None = None,
         narrow_phase: NarrowPhase | None = None,
-        sdf_hydroelastic_config: NarrowPhase.HydroelasticSDF.Config | None = None,
+        sdf_hydroelastic_config: HydroelasticSDF.Config | None = None,
     ):
         """
         Initialize the CollisionPipeline (expert API).
@@ -548,7 +549,7 @@ class CollisionPipeline:
                 raise ValueError(f"Unsupported broad phase mode: {self.broad_phase_mode}")
 
             # Initialize SDF hydroelastic (returns None if no hydroelastic shape pairs in the model)
-            hydroelastic_sdf = NarrowPhase.HydroelasticSDF._from_model(
+            hydroelastic_sdf = HydroelasticSDF._from_model(
                 model,
                 config=sdf_hydroelastic_config,
                 writer_func=write_contact,

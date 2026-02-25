@@ -59,7 +59,7 @@ from ..geometry.contact_reduction_global import (
 )
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
-from ..geometry.sdf_hydroelastic import HydroelasticSDF as _HydroelasticSDF
+from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_utils import SDFData
 from ..geometry.support_function import (
     SupportMapDataProvider,
@@ -1460,8 +1460,6 @@ def verify_narrow_phase_buffers(
 
 
 class NarrowPhase:
-    HydroelasticSDF = _HydroelasticSDF
-
     def __init__(
         self,
         *,
@@ -1473,7 +1471,7 @@ class NarrowPhase:
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         shape_voxel_resolution: wp.array(dtype=wp.vec3i) | None = None,
         contact_writer_warp_func: Any | None = None,
-        hydroelastic_sdf: NarrowPhase.HydroelasticSDF | None = None,
+        hydroelastic_sdf: HydroelasticSDF | None = None,
         has_meshes: bool = True,
         has_heightfields: bool = False,
     ):
