@@ -21,8 +21,7 @@ from typing import Any
 
 import warp as wp
 
-from newton._src.core.types import MAXVAL
-
+from ..core.types import MAXVAL, Devicelike
 from ..geometry.collision_core import (
     ENABLE_TILE_BVH_QUERY,
     check_infinite_plane_bsphere_overlap,
@@ -60,7 +59,7 @@ from ..geometry.contact_reduction_global import (
 )
 from ..geometry.flags import ShapeFlags
 from ..geometry.sdf_contact import create_narrow_phase_process_mesh_mesh_contacts_kernel
-from ..geometry.sdf_hydroelastic import HydroelasticSDF as _HydroelasticSDF
+from ..geometry.sdf_hydroelastic import HydroelasticSDF
 from ..geometry.sdf_utils import SDFData
 from ..geometry.support_function import (
     SupportMapDataProvider,
@@ -1461,30 +1460,18 @@ def verify_narrow_phase_buffers(
 
 
 class NarrowPhase:
-    class HydroelasticSDF(_HydroelasticSDF):
-        """NarrowPhase-scoped hydroelastic API wrapper.
-
-        This wrapper keeps the discoverable API path ``NarrowPhase.HydroelasticSDF``
-        without aliasing the exact same class object that is already documented in
-        ``newton.geometry``. Using a distinct subclass avoids duplicate Sphinx object
-        descriptions under ``-W`` docs builds.
-        """
-
-        class Config(_HydroelasticSDF.Config):
-            """Hydroelastic configuration namespace for NarrowPhase usage."""
-
     def __init__(
         self,
         *,
         max_candidate_pairs: int,
         max_triangle_pairs: int = 1000000,
         reduce_contacts: bool = True,
-        device=None,
+        device: Devicelike | None = None,
         shape_aabb_lower: wp.array(dtype=wp.vec3) | None = None,
         shape_aabb_upper: wp.array(dtype=wp.vec3) | None = None,
         shape_voxel_resolution: wp.array(dtype=wp.vec3i) | None = None,
         contact_writer_warp_func: Any | None = None,
-        hydroelastic_sdf: _HydroelasticSDF | None = None,
+        hydroelastic_sdf: HydroelasticSDF | None = None,
         has_meshes: bool = True,
         has_heightfields: bool = False,
     ):
