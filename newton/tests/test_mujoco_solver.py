@@ -7295,6 +7295,62 @@ class TestActuatorLengthRangeRuntime(unittest.TestCase):
         np.testing.assert_allclose(lr1, jnt_range * 3.0, atol=1e-5)
 
 
+class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
+    """Verify per-world dampratio resolution and actuator_acc0 after mass randomization."""
+
+    MJCF = """<?xml version="1.0" ?>
+    <mujoco>
+        <worldbody>
+            <body name="base">
+                <joint name="j1" type="hinge" axis="0 0 1"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1.0"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <position name="pos_dampratio" joint="j1" kp="100" dampratio="1.0"/>
+        </actuator>
+    </mujoco>
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        robot_builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(robot_builder)
+        robot_builder.add_mjcf(cls.MJCF, ctrl_direct=True)
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.replicate(robot_builder, 2)
+        cls.model = builder.finalize()
+        cls.solver = SolverMuJoCo(cls.model)
+
+    def test_per_world_acc0_and_dampratio(self):
+        masses = self.model.body_mass.numpy()
+        inertias = self.model.body_inertia.numpy()
+        bodies_per_world = self.model.body_count // self.model.world_count
+
+        for world in range(self.model.world_count):
+            scale = 1.0 + world
+            start = world * bodies_per_world
+            end = start + bodies_per_world
+            masses[start:end] *= scale
+            inertias[start:end] *= scale
+
+        self.model.body_mass.assign(masses)
+        self.model.body_inertia.assign(inertias)
+
+        self.solver.notify_model_changed(
+            SolverNotifyFlags.BODY_INERTIAL_PROPERTIES | SolverNotifyFlags.ACTUATOR_PROPERTIES
+        )
+
+        acc0 = self.solver.mjw_model.actuator_acc0.numpy()
+        biasprm = self.solver.mjw_model.actuator_biasprm.numpy()
+
+        self.assertNotAlmostEqual(float(acc0[0, 0]), float(acc0[1, 0]), places=6)
+        self.assertLess(float(biasprm[0, 0, 2]), 0.0)
+        self.assertLess(float(biasprm[1, 0, 2]), 0.0)
+        self.assertNotAlmostEqual(float(biasprm[0, 0, 2]), float(biasprm[1, 0, 2]), places=6)
+
+
 class TestActuatorInheritrange(unittest.TestCase):
     """Verify inheritrange on position actuators copies joint range to ctrlrange."""
 
