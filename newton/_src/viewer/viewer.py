@@ -483,7 +483,7 @@ class ViewerBase(ABC):
             starts = wp.array([], dtype=wp.vec3, device=self.device)
             ends = wp.array([], dtype=wp.vec3, device=self.device)
 
-        # Use red color for contact normals
+        # Use green color for contact normals
         colors = (0.0, 1.0, 0.0)
 
         self.log_lines("/contacts", starts, ends, colors)
