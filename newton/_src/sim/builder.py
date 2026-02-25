@@ -1851,10 +1851,11 @@ class ModelBuilder:
         Args:
             source (str): The filename of the URDF file to parse, or the URDF XML string content.
             xform (Transform): The transform to apply to the root body. If None, the transform is set to identity.
-            override_root_xform (bool): If ``True``, ``xform`` is used as the absolute root transform.
-                In URDF this is equivalent to the default behavior since the root body has no
-                intrinsic world-space transform. Provided for API consistency with the USD and
-                MJCF importers. Defaults to ``False``.
+            override_root_xform (bool): If ``True``, ``xform`` is applied as the full parent
+                transform (including rotation) when a ``base_joint`` is specified, which may
+                rotate the joint's axis. By default (``False``), the rotation component of
+                ``xform`` is split into the child transform (inverted) so the base joint's
+                axis is not rotated. Defaults to ``False``.
             floating (bool or None): Controls the base joint type for the root body.
 
                 - ``None`` (default): Uses format-specific default (creates a FIXED joint for URDF).
