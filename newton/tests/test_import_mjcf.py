@@ -3030,8 +3030,8 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             actual = geom_solmix[shape_idx].tolist()
             self.assertAlmostEqual(actual, expected, places=4)
 
-    def test_geom_gap_parsing(self):
-        """Test that gap attribute is parsed into shape_gap from MJCF."""
+    def test_shape_gap_from_mjcf(self):
+        """Test that MJCF gap attribute is parsed into shape_gap."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
@@ -3067,6 +3067,58 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         for shape_idx, expected in expected_values.items():
             actual = float(shape_gap[shape_idx])
             self.assertAlmostEqual(actual, expected, places=4)
+
+    def test_margin_gap_combined_conversion(self):
+        """Test MuJoCo->Newton conversion when both margin and gap are set.
+
+        Verifies that newton_margin = mj_margin - mj_gap and
+        newton_gap = mj_gap when both attributes are present on the same geom.
+        """
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="body1">
+            <freejoint/>
+            <geom name="both" type="box" size="0.1 0.1 0.1" margin="0.5" gap="0.2"/>
+        </body>
+        <body name="body2">
+            <freejoint/>
+            <geom name="margin_only" type="sphere" size="0.05" margin="0.3"/>
+        </body>
+        <body name="body3">
+            <freejoint/>
+            <geom name="gap_only" type="capsule" size="0.05 0.1" gap="0.15"/>
+        </body>
+        <body name="body4">
+            <freejoint/>
+            <geom name="neither" type="sphere" size="0.05"/>
+        </body>
+    </worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
+        self.assertEqual(model.shape_count, 4)
+
+        # geom "both": margin=0.5, gap=0.2 -> newton_margin=0.3, newton_gap=0.2
+        self.assertAlmostEqual(float(shape_margin[0]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[0]), 0.2, places=5)
+
+        # geom "margin_only": margin=0.3, gap absent -> newton_margin=0.3, gap=default
+        self.assertAlmostEqual(float(shape_margin[1]), 0.3, places=5)
+        self.assertAlmostEqual(float(shape_gap[1]), builder.rigid_gap, places=5)
+
+        # geom "gap_only": margin absent, gap=0.15 -> margin=default(0.0), gap=0.15
+        self.assertAlmostEqual(float(shape_margin[2]), 0.0, places=5)
+        self.assertAlmostEqual(float(shape_gap[2]), 0.15, places=5)
+
+        # geom "neither": both absent -> defaults
+        self.assertAlmostEqual(float(shape_margin[3]), 0.0, places=5)
+        self.assertAlmostEqual(float(shape_gap[3]), builder.rigid_gap, places=5)
 
     def test_default_inheritance(self):
         """Test nested default class inheritanc."""
@@ -6106,7 +6158,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         cls.model = cls.builder.finalize()
 
     def test_shape_defaults(self):
-        """SHAPE: condim, priority, solmix, gap, solimp."""
+        """SHAPE: condim, priority, solmix, solimp (custom attrs), gap (shape_gap)."""
         m = self.model.mujoco
         wb = "worldbody/b_default"
         idx = self.builder.shape_label.index

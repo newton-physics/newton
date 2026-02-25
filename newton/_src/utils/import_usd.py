@@ -1882,13 +1882,22 @@ def parse_usd(
                     gap_val = builder.default_shape_cfg.gap
                 gap_cfg = gap_val
 
-                # MuJoCo -> Newton conversion: if margin came from MuJoCo schema,
-                # convert: newton_margin = mj_margin - mj_gap
-                mjc_margin_attr = prim.GetAttribute("mjc:margin")
-                if mjc_margin_attr and mjc_margin_attr.IsAuthored():
-                    mjc_gap_attr = prim.GetAttribute("mjc:gap")
-                    mjc_gap = float(mjc_gap_attr.Get()) if mjc_gap_attr and mjc_gap_attr.IsAuthored() else 0.0
-                    margin_val = margin_val - mjc_gap
+                # MuJoCo -> Newton conversion: check which resolver provided the
+                # margin (respecting priority order).  Only convert when the
+                # winning resolver is the MjC schema.
+                for r in R.resolvers:
+                    v = r.get_value(prim, PrimType.SHAPE, "margin")
+                    if v is not None:
+                        if r.name == "mjc":
+                            margin_val = margin_val - gap_cfg
+                            if margin_val < 0.0:
+                                warnings.warn(
+                                    f"Prim '{prim.GetPath()}': MuJoCo gap ({gap_cfg}) exceeds margin, "
+                                    f"resulting Newton margin is negative ({margin_val}). "
+                                    f"This may indicate an invalid MuJoCo model.",
+                                    stacklevel=2,
+                                )
+                        break
 
                 shape_params = {
                     "body": body_id,

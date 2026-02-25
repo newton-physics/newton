@@ -2630,10 +2630,10 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 )
 
     def test_geom_margin_from_shape_margin(self):
-        """Verify shape_margin to geom_margin conversion and runtime updates.
+        """Verify geom_margin = shape_margin + shape_gap conversion and runtime updates.
 
-        Confirms that shape_margin [m] values are propagated to geom_margin [m]
-        during solver initialization and after runtime updates via
+        Confirms that geom_margin [m] equals shape_margin + shape_gap during
+        solver initialization and after runtime updates via
         notify_model_changed across multiple worlds.
         """
         num_worlds = 2
