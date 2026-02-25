@@ -1202,26 +1202,15 @@ class SolverMuJoCo(SolverBase):
         # we preserve sentinel values and resolve deterministically in _init_actuators
         # using actuator_target_label.
         def resolve_actuator_transmission_index(_: str, context: dict[str, Any]) -> wp.vec2i:
-            """Resolve the transmission target index for a USD actuator prim.
+            """Return sentinel to defer actuator target resolution to _init_actuators.
 
-            Reads the ``mjc:target`` relationship from the actuator prim and returns
-            the resolved target index packed into a ``wp.vec2i``.
-
-            Args:
-                _: The attribute name (unused).
-                context: A dictionary containing at least a ``"prim"`` key with the USD prim
-                    for the actuator being processed.
-
-            Returns:
-                A ``wp.vec2i`` where the first element is the target index and
-                the second element is unused (set to 0). Returns ``(-1, -1)`` if
-                target resolution is deferred.
+            DOF indices from ``joint_dof_label`` during USD import may not include
+            internally-created joints (free joints for floating bases), causing an
+            offset between import-time and finalized DOF indices. Deferring
+            resolution to ``_init_actuators`` (via ``actuator_target_label``) uses
+            the finalized model where all DOFs are present.
             """
-            prim = context["prim"]
-            _trntype, target_idx, _target_path = resolve_actuator_target(prim)
-            if target_idx < 0:
-                return wp.vec2i(wp.int32(-1), wp.int32(-1))
-            return wp.vec2i(wp.int32(target_idx), wp.int32(0))
+            return wp.vec2i(wp.int32(-1), wp.int32(-1))
 
         def resolve_actuator_transmission_type(_: str, context: dict[str, Any]) -> int:
             """Resolve transmission type for a USD actuator prim from its target path."""
@@ -1301,6 +1290,7 @@ class SolverMuJoCo(SolverBase):
                 usd_value_transformer=resolve_actuator_transmission_type,
             )
         )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="actuator_dyntype",
@@ -1311,6 +1301,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="dyntype",
                 mjcf_value_transformer=parse_dyntype,
+                usd_attribute_name="mjc:dynType",
+                usd_value_transformer=parse_dyntype,
             )
         )
         builder.add_custom_attribute(
@@ -1323,6 +1315,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="gaintype",
                 mjcf_value_transformer=parse_gaintype,
+                usd_attribute_name="mjc:gainType",
+                usd_value_transformer=parse_gaintype,
             )
         )
         builder.add_custom_attribute(
@@ -1335,6 +1329,8 @@ class SolverMuJoCo(SolverBase):
                 namespace="mujoco",
                 mjcf_attribute_name="biastype",
                 mjcf_value_transformer=parse_biastype,
+                usd_attribute_name="mjc:biasType",
+                usd_value_transformer=parse_biastype,
             )
         )
 
@@ -1441,6 +1437,18 @@ class SolverMuJoCo(SolverBase):
                 mjcf_value_transformer=parse_presence,
                 usd_attribute_name="*",
                 usd_value_transformer=make_usd_has_range_transformer("mjc:forceRange"),
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="actuator_inheritrange",
+                frequency="mujoco:actuator",
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mujoco",
+                mjcf_attribute_name="inheritrange",
+                usd_attribute_name="mjc:inheritRange",
             )
         )
         builder.add_custom_attribute(
@@ -2649,6 +2657,9 @@ class SolverMuJoCo(SolverBase):
             if hasattr(mujoco_attrs, "actuator_biastype"):
                 biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
                 general_args["biastype"] = biastype
+            if hasattr(mujoco_attrs, "actuator_inheritrange"):
+                inheritrange = float(mujoco_attrs.actuator_inheritrange.numpy()[mujoco_act_idx])
+                general_args["inheritrange"] = inheritrange
 
             # Detect position/velocity actuator shortcuts. Use set_to_position/
             # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
@@ -2660,10 +2671,13 @@ class SolverMuJoCo(SolverBase):
                 kp = general_args["gainprm"][0]
                 bp = general_args.get("biasprm", [0, 0, 0])
                 # Position shortcut: biasprm = [0, -kp, -kv]
+                # A positive biasprm[2] indicates a dampratio placeholder
                 if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
                     shortcut = "position"
                     shortcut_args["kp"] = kp
-                    kv = -bp[2] if bp[2] != 0 else 0.0
+                    if bp[2] > 0 and dampratio == 0.0:
+                        dampratio = bp[2]
+                    kv = -bp[2] if bp[2] < 0 else 0.0
                     if kv > 0:
                         shortcut_args["kv"] = kv
                     if dampratio > 0:
@@ -2692,8 +2706,12 @@ class SolverMuJoCo(SolverBase):
             act = spec.add_actuator(target=target_name, **general_args)
             if shortcut == "position":
                 act.set_to_position(**shortcut_args)
+                if "inheritrange" in general_args:
+                    act.inheritrange = general_args["inheritrange"]
             elif shortcut == "velocity":
                 act.set_to_velocity(**shortcut_args)
+                if "inheritrange" in general_args:
+                    act.inheritrange = general_args["inheritrange"]
             elif dampratio > 0:
                 if wp.config.verbose:
                     print(
