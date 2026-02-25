@@ -6406,6 +6406,94 @@ class TestActuatorShortcutTypeDefaults(unittest.TestCase):
         np.testing.assert_array_equal(compiled, [1, 1, 0, 1])
 
 
+class TestActuatorDefaultKpKv(unittest.TestCase):
+    """Regression: position/velocity actuators must default kp=1/kv=1.
+
+    MuJoCo defaults kp=1 for position and kv=1 for velocity actuators.
+    Newton previously defaulted both to 0, producing zero biasprm and
+    effectively disabling position/velocity feedback when the MJCF (or
+    class defaults) omitted the kp/kv attribute.
+    """
+
+    def test_position_actuator_default_kp(self):
+        """Position actuator without explicit kp must use kp=1."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="b">
+            <joint name="j" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="act" joint="j"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        biasprm = model.mujoco.actuator_biasprm.numpy()[0]
+        gainprm = model.mujoco.actuator_gainprm.numpy()[0]
+        self.assertAlmostEqual(gainprm[0], 1.0, places=5, msg="default kp must be 1")
+        self.assertAlmostEqual(biasprm[1], -1.0, places=5, msg="default biasprm[1] must be -kp=-1")
+
+    def test_velocity_actuator_default_kv(self):
+        """Velocity actuator without explicit kv must use kv=1."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <worldbody>
+        <body name="b">
+            <joint name="j" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <velocity name="act" joint="j"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        biasprm = model.mujoco.actuator_biasprm.numpy()[0]
+        gainprm = model.mujoco.actuator_gainprm.numpy()[0]
+        self.assertAlmostEqual(gainprm[0], 1.0, places=5, msg="default kv must be 1")
+        self.assertAlmostEqual(biasprm[2], -1.0, places=5, msg="default biasprm[2] must be -kv=-1")
+
+    def test_position_actuator_class_without_kp(self):
+        """Position actuator using a class that omits kp must still default to kp=1."""
+        mjcf = """<?xml version="1.0" ?>
+<mujoco>
+    <default>
+        <default class="no_kp">
+            <position ctrlrange="-1 1" forcerange="-5 5"/>
+        </default>
+    </default>
+    <worldbody>
+        <body name="b">
+            <joint name="j" type="hinge" axis="0 1 0"/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+        </body>
+    </worldbody>
+    <actuator>
+        <position name="act" joint="j" class="no_kp"/>
+    </actuator>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        builder.add_mjcf(mjcf, ctrl_direct=True)
+        model = builder.finalize()
+
+        biasprm = model.mujoco.actuator_biasprm.numpy()[0]
+        self.assertAlmostEqual(biasprm[1], -1.0, places=5, msg="class without kp must still default to -1")
+
+
 class TestMjcfIncludeOptionMerge(unittest.TestCase):
     """Tests for <option> attribute merging across multiple elements after include expansion."""
 
