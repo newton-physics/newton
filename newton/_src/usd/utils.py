@@ -81,9 +81,9 @@ def get_attributes_in_namespace(prim: Usd.Prim, namespace: str) -> dict[str, Any
         A dictionary of attributes in the namespace mapping from attribute name to value.
     """
     out: dict[str, Any] = {}
-    for attr in prim.GetAuthoredPropertiesInNamespace(namespace):
-        if attr.IsValid() and attr.HasAuthoredValue():
-            out[attr.GetName()] = attr.Get()
+    for prop in prim.GetAuthoredPropertiesInNamespace(namespace):
+        if isinstance(prop, Usd.Attribute) and prop.IsValid() and prop.HasAuthoredValue():
+            out[prop.GetName()] = prop.Get()
     return out
 
 
