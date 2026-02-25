@@ -25,12 +25,12 @@ import numpy as np
 import warp as wp
 
 from ...core.types import MAXVAL, nparray, override, vec5, vec10
-from ...geometry import GeoType, Mesh, ShapeFlags
+from ...geometry import GeoType, ShapeFlags
 from ...sim import (
-    ActuatorMode,
     Contacts,
     Control,
     EqType,
+    JointTargetMode,
     JointType,
     Model,
     ModelBuilder,
@@ -164,9 +164,9 @@ class SolverMuJoCo(SolverBase):
         For :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode, determines which target array to read from:
 
         - :attr:`POSITION`: Maps from :attr:`~newton.Control.joint_target_pos`, syncs gains from
-          :attr:`~newton.Control.joint_target_ke`. For :attr:`~newton.ActuatorMode.POSITION`-only actuators,
+          :attr:`~newton.Control.joint_target_ke`. For :attr:`~newton.JointTargetMode.POSITION`-only actuators,
           also syncs damping from :attr:`~newton.Control.joint_target_kd`. For
-          :attr:`~newton.ActuatorMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
+          :attr:`~newton.JointTargetMode.POSITION_VELOCITY` mode, kd is handled by the separate velocity actuator.
         - :attr:`VELOCITY`: Maps from :attr:`~newton.Control.joint_target_vel`, syncs gains from :attr:`~newton.Control.joint_target_kd`
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         """
@@ -2527,7 +2527,7 @@ class SolverMuJoCo(SolverBase):
         dampratio_arr = mujoco_attrs.actuator_dampratio.numpy() if hasattr(mujoco_attrs, "actuator_dampratio") else None
 
         for mujoco_act_idx in range(mujoco_actuator_count):
-            # Skip JOINT_TARGET actuators - they're already added via joint_act_mode path
+            # Skip JOINT_TARGET actuators - they're already added via joint_target_mode path
             if ctrl_source_arr is not None:
                 ctrl_source = int(ctrl_source_arr[mujoco_act_idx])
                 if ctrl_source == SolverMuJoCo.CtrlSource.JOINT_TARGET:
@@ -2721,8 +2721,6 @@ class SolverMuJoCo(SolverBase):
         self,
         model: Model,
         *,
-        mjw_model: MjWarpModel | None = None,
-        mjw_data: MjWarpData | None = None,
         separate_worlds: bool | None = None,
         njmax: int | None = None,
         nconmax: int | None = None,
@@ -2745,8 +2743,6 @@ class SolverMuJoCo(SolverBase):
         magnetic: tuple | None = None,
         use_mujoco_cpu: bool = False,
         disable_contacts: bool = False,
-        default_actuator_gear: float | None = None,
-        actuator_gears: dict[str, float] | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         ls_parallel: bool = False,
@@ -2763,8 +2759,6 @@ class SolverMuJoCo(SolverBase):
 
         Args:
             model (Model): the model to be simulated.
-            mjw_model (MjWarpModel | None): Optional pre-existing MuJoCo Warp model. If provided with `mjw_data`, conversion from Newton model is skipped.
-            mjw_data (MjWarpData | None): Optional pre-existing MuJoCo Warp data. If provided with `mjw_model`, conversion from Newton model is skipped.
             separate_worlds (bool | None): If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax (int | None): Maximum number of constraints per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
             nconmax (int | None): Number of contact points per world. If None, a default value is estimated from the initial state. Note that the larger of the user-provided value or the default value is used.
@@ -2787,9 +2781,6 @@ class SolverMuJoCo(SolverBase):
             magnetic (tuple | None): Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu (bool): If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             disable_contacts (bool): If True, disable contact computation in MuJoCo.
-            register_collision_groups (bool): If True, register collision groups from the Newton model in MuJoCo.
-            default_actuator_gear (float | None): Default gear ratio for all actuators. Can be overridden by `actuator_gears`.
-            actuator_gears (dict[str, float] | None): Dictionary mapping joint names to specific gear ratios, overriding the `default_actuator_gear`.
             update_data_interval (int): Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf (str | None): Optional path to save the generated MJCF model file.
             ls_parallel (bool): If True, enable parallel line search in MuJoCo. Defaults to False.
@@ -2876,46 +2867,39 @@ class SolverMuJoCo(SolverBase):
         disableflags = 0
         if disable_contacts:
             disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
-        if mjw_model is not None and mjw_data is not None:
-            self.mjw_model = mjw_model
-            self.mjw_data = mjw_data
-            self.use_mujoco_cpu = False
-        else:
-            self.use_mujoco_cpu = use_mujoco_cpu
-            if separate_worlds is None:
-                separate_worlds = not use_mujoco_cpu and model.world_count > 1
-            with wp.ScopedTimer("convert_model_to_mujoco", active=False):
-                self._convert_to_mjc(
-                    model,
-                    disableflags=disableflags,
-                    disable_contacts=disable_contacts,
-                    separate_worlds=separate_worlds,
-                    njmax=njmax,
-                    nconmax=nconmax,
-                    iterations=iterations,
-                    ls_iterations=ls_iterations,
-                    ccd_iterations=ccd_iterations,
-                    sdf_iterations=sdf_iterations,
-                    sdf_initpoints=sdf_initpoints,
-                    cone=cone,
-                    jacobian=jacobian,
-                    impratio=impratio,
-                    tolerance=tolerance,
-                    ls_tolerance=ls_tolerance,
-                    ccd_tolerance=ccd_tolerance,
-                    density=density,
-                    viscosity=viscosity,
-                    wind=wind,
-                    magnetic=magnetic,
-                    solver=solver,
-                    integrator=integrator,
-                    default_actuator_gear=default_actuator_gear,
-                    actuator_gears=actuator_gears,
-                    target_filename=save_to_mjcf,
-                    ls_parallel=ls_parallel,
-                    include_sites=include_sites,
-                    skip_visual_only_geoms=skip_visual_only_geoms,
-                )
+        self.use_mujoco_cpu = use_mujoco_cpu
+        if separate_worlds is None:
+            separate_worlds = not use_mujoco_cpu and model.world_count > 1
+        with wp.ScopedTimer("convert_model_to_mujoco", active=False):
+            self._convert_to_mjc(
+                model,
+                disableflags=disableflags,
+                disable_contacts=disable_contacts,
+                separate_worlds=separate_worlds,
+                njmax=njmax,
+                nconmax=nconmax,
+                iterations=iterations,
+                ls_iterations=ls_iterations,
+                ccd_iterations=ccd_iterations,
+                sdf_iterations=sdf_iterations,
+                sdf_initpoints=sdf_initpoints,
+                cone=cone,
+                jacobian=jacobian,
+                impratio=impratio,
+                tolerance=tolerance,
+                ls_tolerance=ls_tolerance,
+                ccd_tolerance=ccd_tolerance,
+                density=density,
+                viscosity=viscosity,
+                wind=wind,
+                magnetic=magnetic,
+                solver=solver,
+                integrator=integrator,
+                target_filename=save_to_mjcf,
+                ls_parallel=ls_parallel,
+                include_sites=include_sites,
+                skip_visual_only_geoms=skip_visual_only_geoms,
+            )
         self.update_data_interval = update_data_interval
         self._step = 0
 
@@ -2994,12 +2978,12 @@ class SolverMuJoCo(SolverBase):
                 contacts.rigid_contact_point0,
                 contacts.rigid_contact_point1,
                 contacts.rigid_contact_normal,
-                contacts.rigid_contact_thickness0,
-                contacts.rigid_contact_thickness1,
+                contacts.rigid_contact_margin0,
+                contacts.rigid_contact_margin1,
                 contacts.rigid_contact_stiffness,
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
-                model.shape_thickness,
+                model.shape_margin,
                 bodies_per_world,
                 self.newton_shape_to_mjc_geom,
                 # Mujoco warp contacts
@@ -3502,13 +3486,8 @@ class SolverMuJoCo(SolverBase):
         cone: int | str | None = None,
         jacobian: int | str | None = None,
         target_filename: str | None = None,
-        default_actuator_args: dict | None = None,
-        default_actuator_gear: float | None = None,
-        actuator_gears: dict[str, float] | None = None,
-        actuated_axes: list[int] | None = None,
         skip_visual_only_geoms: bool = True,
         include_sites: bool = True,
-        mesh_maxhullvert: int | None = None,
         ls_parallel: bool = False,
     ) -> tuple[MjWarpModel, MjWarpData, MjModel, MjData]:
         """
@@ -3543,22 +3522,14 @@ class SolverMuJoCo(SolverBase):
             cone: Friction cone type ("pyramidal" or "elliptic"). If None, uses model custom attribute or Newton's default ("pyramidal").
             jacobian: Jacobian computation method ("dense", "sparse", or "auto"). If None, uses model custom attribute or MuJoCo default ("auto").
             target_filename: Optional path to save generated MJCF file.
-            default_actuator_args: Default actuator parameters.
-            default_actuator_gear: Default actuator gear ratio.
-            actuator_gears: Per-actuator gear ratios by name.
-            actuated_axes: List of DOF indices to actuate.
             skip_visual_only_geoms: If True, skip geoms that are visual-only.
             include_sites: If True, include sites in the model.
-            mesh_maxhullvert: Maximum vertices for convex hull meshes.
             ls_parallel: If True, enable parallel line search.
 
         Returns:
             tuple[MjWarpModel, MjWarpData, MjModel, MjData]: Model and data objects for
                 ``mujoco_warp`` and MuJoCo.
         """
-        if mesh_maxhullvert is None:
-            mesh_maxhullvert = Mesh.MAX_HULL_VERTICES
-
         if not model.joint_count:
             raise ValueError("The model must have at least one joint to be able to convert it to MuJoCo.")
 
@@ -3591,12 +3562,6 @@ class SolverMuJoCo(SolverBase):
             "gaintype": mujoco.mjtGain.mjGAIN_FIXED,
             "biastype": mujoco.mjtBias.mjBIAS_AFFINE,
         }
-        if default_actuator_args is not None:
-            actuator_args.update(default_actuator_args)
-        if default_actuator_gear is not None:
-            actuator_args["gear"][0] = default_actuator_gear
-        if actuator_gears is None:
-            actuator_gears = {}
 
         # Convert string enum values to integers using the static parser methods
         # (these methods handle both string and int inputs)
@@ -3770,7 +3735,7 @@ class SolverMuJoCo(SolverBase):
         joint_armature = model.joint_armature.numpy()
         joint_effort_limit = model.joint_effort_limit.numpy()
         # Per-DOF actuator arrays
-        joint_act_mode = model.joint_act_mode.numpy()
+        joint_target_mode = model.joint_target_mode.numpy()
         joint_target_ke = model.joint_target_ke.numpy()
         joint_target_kd = model.joint_target_kd.numpy()
         # MoJoCo doesn't have velocity limit
@@ -3793,7 +3758,7 @@ class SolverMuJoCo(SolverBase):
         shape_kd = model.shape_material_kd.numpy()
         shape_mu_torsional = model.shape_material_mu_torsional.numpy()
         shape_mu_rolling = model.shape_material_mu_rolling.numpy()
-        shape_thickness = model.shape_thickness.numpy()
+        shape_margin = model.shape_margin.numpy()
 
         # retrieve MuJoCo-specific attributes
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -4090,8 +4055,7 @@ class SolverMuJoCo(SolverBase):
                     )
                 elif stype == GeoType.MESH or stype == GeoType.CONVEX_MESH:
                     mesh_src = model.shape_source[shape]
-                    # use mesh-specific maxhullvert or fall back to the default
-                    maxhullvert = getattr(mesh_src, "maxhullvert", mesh_maxhullvert)
+                    maxhullvert = mesh_src.maxhullvert
                     # apply scaling
                     size = shape_size[shape]
                     vertices = mesh_src.vertices * size
@@ -4155,7 +4119,7 @@ class SolverMuJoCo(SolverBase):
                 if shape_geom_gap is not None:
                     geom_params["gap"] = shape_geom_gap[shape]
 
-                geom_params["margin"] = float(shape_thickness[shape])
+                geom_params["margin"] = float(shape_margin[shape])
 
                 body.add_geom(**geom_params)
                 # store the geom name instead of assuming index
@@ -4290,25 +4254,21 @@ class SolverMuJoCo(SolverBase):
                 # Add actuators for the ball joint using per-DOF arrays
                 for i in range(3):
                     ai = qd_start + i
-                    mode = joint_act_mode[ai]
+                    mode = joint_target_mode[ai]
 
-                    if (actuated_axes is None or ai in actuated_axes) and mode != int(ActuatorMode.NONE):
+                    if mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
                         effort_limit = joint_effort_limit[ai]
-                        gear = actuator_gears.get(name)
                         args = {}
                         args.update(actuator_args)
                         args["gear"] = [0.0] * 6
-                        if gear is not None:
-                            args["gear"][i] = gear
-                        else:
-                            args["gear"][i] = 1.0
+                        args["gear"][i] = 1.0
                         args["forcerange"] = [-effort_limit, effort_limit]
 
                         template_dof = ai
                         # Add position actuator if mode includes position
-                        if mode == ActuatorMode.POSITION:
+                        if mode == JointTargetMode.POSITION:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=name, **args)
@@ -4316,7 +4276,7 @@ class SolverMuJoCo(SolverBase):
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             actuator_count += 1
-                        elif mode == ActuatorMode.POSITION_VELOCITY:
+                        elif mode == JointTargetMode.POSITION_VELOCITY:
                             args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=name, **args)
@@ -4326,7 +4286,7 @@ class SolverMuJoCo(SolverBase):
                             actuator_count += 1
 
                         # Add velocity actuator if mode includes velocity
-                        if mode in (ActuatorMode.VELOCITY, ActuatorMode.POSITION_VELOCITY):
+                        if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
                             args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
                             args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
                             spec.add_actuator(target=name, **args)
@@ -4377,10 +4337,9 @@ class SolverMuJoCo(SolverBase):
                     if joint_dof_solimp is not None:
                         joint_params["solimp_friction"] = joint_dof_solimp[ai]
                     # Use actfrcrange to clamp total actuator force (P+D sum) on this joint
-                    if actuated_axes is None or ai in actuated_axes:
-                        effort_limit = joint_effort_limit[ai]
-                        joint_params["actfrclimited"] = True
-                        joint_params["actfrcrange"] = (-effort_limit, effort_limit)
+                    effort_limit = joint_effort_limit[ai]
+                    joint_params["actfrclimited"] = True
+                    joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
                     if joint_springref is not None:
                         joint_params["springref"] = joint_springref[ai]
@@ -4403,42 +4362,35 @@ class SolverMuJoCo(SolverBase):
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
 
-                    mode = joint_act_mode[ai]
-                    if (actuated_axes is None or ai in actuated_axes) and mode != int(ActuatorMode.NONE):
+                    mode = joint_target_mode[ai]
+                    if mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
-                        gear = actuator_gears.get(axname)
-                        if gear is not None:
-                            args = {}
-                            args.update(actuator_args)
-                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
-                        else:
-                            args = actuator_args
 
                         template_dof = ai
                         # Add position actuator if mode includes position
-                        if mode == ActuatorMode.POSITION:
-                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                            args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **args)
+                        if mode == JointTargetMode.POSITION:
+                            actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            actuator_args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
+                            spec.add_actuator(target=axname, **actuator_args)
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             actuator_count += 1
-                        elif mode == ActuatorMode.POSITION_VELOCITY:
-                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                            args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **args)
+                        elif mode == JointTargetMode.POSITION_VELOCITY:
+                            actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            actuator_args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
+                            spec.add_actuator(target=axname, **actuator_args)
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             actuator_count += 1
 
                         # Add velocity actuator if mode includes velocity
-                        if mode in (ActuatorMode.VELOCITY, ActuatorMode.POSITION_VELOCITY):
-                            args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                            args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **args)
+                        if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
+                            actuator_args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            actuator_args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
+                            spec.add_actuator(target=axname, **actuator_args)
                             axis_to_actuator[ai, 1] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
@@ -4483,10 +4435,9 @@ class SolverMuJoCo(SolverBase):
                     if joint_dof_solimp is not None:
                         joint_params["solimp_friction"] = joint_dof_solimp[ai]
                     # Use actfrcrange to clamp total actuator force (P+D sum) on this joint
-                    if actuated_axes is None or ai in actuated_axes:
-                        effort_limit = joint_effort_limit[ai]
-                        joint_params["actfrclimited"] = True
-                        joint_params["actfrcrange"] = (-effort_limit, effort_limit)
+                    effort_limit = joint_effort_limit[ai]
+                    joint_params["actfrclimited"] = True
+                    joint_params["actfrcrange"] = (-effort_limit, effort_limit)
 
                     if joint_springref is not None:
                         joint_params["springref"] = np.rad2deg(joint_springref[ai])
@@ -4509,42 +4460,35 @@ class SolverMuJoCo(SolverBase):
                     dof_to_mjc_joint[ai] = num_mjc_joints
                     num_mjc_joints += 1
 
-                    mode = joint_act_mode[ai]
-                    if (actuated_axes is None or ai in actuated_axes) and mode != int(ActuatorMode.NONE):
+                    mode = joint_target_mode[ai]
+                    if mode != int(JointTargetMode.NONE):
                         kp = joint_target_ke[ai]
                         kd = joint_target_kd[ai]
-                        gear = actuator_gears.get(axname)
-                        if gear is not None:
-                            args = {}
-                            args.update(actuator_args)
-                            args["gear"] = [gear, 0.0, 0.0, 0.0, 0.0, 0.0]
-                        else:
-                            args = actuator_args
 
                         template_dof = ai
                         # Add position actuator if mode includes position
-                        if mode == ActuatorMode.POSITION:
-                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                            args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **args)
+                        if mode == JointTargetMode.POSITION:
+                            actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            actuator_args["biasprm"] = [0, -kp, -kd, 0, 0, 0, 0, 0, 0, 0]
+                            spec.add_actuator(target=axname, **actuator_args)
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             actuator_count += 1
-                        elif mode == ActuatorMode.POSITION_VELOCITY:
-                            args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                            args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **args)
+                        elif mode == JointTargetMode.POSITION_VELOCITY:
+                            actuator_args["gainprm"] = [kp, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            actuator_args["biasprm"] = [0, -kp, 0, 0, 0, 0, 0, 0, 0, 0]
+                            spec.add_actuator(target=axname, **actuator_args)
                             axis_to_actuator[ai, 0] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(template_dof)  # positive = position
                             actuator_count += 1
 
                         # Add velocity actuator if mode includes velocity
-                        if mode in (ActuatorMode.VELOCITY, ActuatorMode.POSITION_VELOCITY):
-                            args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                            args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
-                            spec.add_actuator(target=axname, **args)
+                        if mode in (JointTargetMode.VELOCITY, JointTargetMode.POSITION_VELOCITY):
+                            actuator_args["gainprm"] = [kd, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                            actuator_args["biasprm"] = [0, 0, -kd, 0, 0, 0, 0, 0, 0, 0]
+                            spec.add_actuator(target=axname, **actuator_args)
                             axis_to_actuator[ai, 1] = actuator_count
                             mjc_actuator_ctrl_source_list.append(0)  # JOINT_TARGET
                             mjc_actuator_to_newton_idx_list.append(-(template_dof + 2))  # negative = velocity
@@ -5305,7 +5249,7 @@ class SolverMuJoCo(SolverBase):
                     self.mjc_actuator_to_newton_idx,
                     self.model.joint_target_ke,
                     self.model.joint_target_kd,
-                    self.model.joint_act_mode,
+                    self.model.joint_target_mode,
                     dofs_per_world,
                 ],
                 outputs=[
@@ -5500,7 +5444,7 @@ class SolverMuJoCo(SolverBase):
                 shape_geom_solimp,
                 shape_geom_solmix,
                 shape_geom_gap,
-                self.model.shape_thickness,
+                self.model.shape_margin,
             ],
             outputs=[
                 self.mjw_model.geom_friction,

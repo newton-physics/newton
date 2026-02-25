@@ -16,7 +16,7 @@
 """Implicit MPM model."""
 
 import math
-from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -25,7 +25,10 @@ import newton
 
 from .rasterized_collisions import Collider
 
-__all__ = ["ImplicitMPMModel", "ImplicitMPMOptions"]
+__all__ = ["ImplicitMPMModel"]
+
+if TYPE_CHECKING:
+    from .solver_implicit_mpm import SolverImplicitMPM
 
 _INFINITY = wp.constant(1.0e12)
 """Value above which quantities are considered infinite"""
@@ -42,49 +45,6 @@ _DEFAULT_FRICTION = 0.5
 """Default friction coefficient for colliders"""
 _DEFAULT_ADHESION = 0.0
 """Default adhesion coefficient for colliders (Pa)"""
-
-
-@dataclass
-class ImplicitMPMOptions:
-    """Implicit MPM solver options."""
-
-    # numerics
-    max_iterations: int = 250
-    """Maximum number of iterations for the rheology solver."""
-    tolerance: float = 1.0e-5
-    """Tolerance for the rheology solver."""
-    strain_basis: str = "P0"
-    """Strain basis functions. May be one of P0, Q1"""
-    solver: str = "gauss-seidel"
-    """Solver to use for the rheology solver. May be one of gauss-seidel, jacobi."""
-    warmstart_mode: str = "auto"
-    """Warmstart mode to use for the rheology solver. May be one of none, auto, particles, grid."""
-    collider_velocity_mode: str = "instantaneous"
-    """Collider velocity computation mode. May be one of instantaneous, finite_difference."""
-
-    # grid
-    voxel_size: float = 0.1
-    """Size of the grid voxels."""
-    grid_type: str = "sparse"
-    """Type of grid to use. May be one of sparse, dense, fixed."""
-    grid_padding: int = 0
-    """Number of empty cells to add around particles when allocating the grid."""
-    max_active_cell_count: int = -1
-    """Maximum number of active cells to use for active subsets of dense grids. -1 means unlimited."""
-    transfer_scheme: str = "apic"
-    """Transfer scheme to use for particle-grid transfers. May be one of apic, pic."""
-
-    # material / background
-    critical_fraction: float = 0.0
-    """Fraction for particles under which the yield surface collapses."""
-    air_drag: float = 1.0
-    """Numerical drag for the background air."""
-
-    # experimental
-    collider_normal_from_sdf_gradient: bool = False
-    """Compute collider normals from sdf gradient rather than closest point"""
-    collider_basis: str = "Q1"
-    """Collider basis function string. Examples: P0 (piecewise constant), Q1 (trilinear), S2 (quadratic serendipity), pic8 (particle-based with max 8 points per cell)"""
 
 
 def _particle_parameter(
@@ -237,7 +197,7 @@ def _get_body_collision_shapes(model: newton.Model, body_index: int):
 
 def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
     """Returns the collision materials from the model for a list of shapes"""
-    thicknesses = model.shape_thickness.numpy()[shape_ids]
+    thicknesses = model.shape_margin.numpy()[shape_ids]
     friction = model.shape_material_mu.numpy()[shape_ids]
 
     return thicknesses, friction
@@ -279,7 +239,7 @@ class ImplicitMPMModel:
     """Wrapper augmenting a ``newton.Model`` with implicit MPM data and setup.
 
     Holds particle material parameters, collider parameters, and convenience
-    arrays derived from the wrapped ``model`` and ``ImplicitMPMOptions``. The
+    arrays derived from the wrapped ``model`` and ``SolverImplicitMPM.Config``.
     instance is consumed by ``SolverImplicitMPM`` during time stepping.
 
     Args:
@@ -287,11 +247,11 @@ class ImplicitMPMModel:
         options: Options controlling particle and collider defaults.
     """
 
-    def __init__(self, model: newton.Model, options: ImplicitMPMOptions):
+    def __init__(self, model: newton.Model, options: "SolverImplicitMPM.Config"):
         self.model = model
         self._options = options
 
-        # Global options from ImplicitMPMOptions
+        # Global options from SolverImplicitMPM.Config
         self.voxel_size = float(options.voxel_size)
         """Size of the grid voxels"""
 
@@ -515,13 +475,13 @@ class ImplicitMPMModel:
 
         for collider_id, body_id in enumerate(collider_body_ids):
             if body_id is not None:
-                for material_id, shape_thickness, shape_friction in zip(
+                for material_id, shape_margin, shape_friction in zip(
                     collider_material_ids[collider_id],
                     *_get_shape_collision_materials(model, body_shapes[body_id]),
                     strict=True,
                 ):
                     # use material from shapes as default
-                    assign_material(material_id, thickness=shape_thickness, friction=shape_friction)
+                    assign_material(material_id, thickness=shape_margin, friction=shape_friction)
                     # override with user-provided material
                     assign_collider_material(material_id, collider_id)
             else:

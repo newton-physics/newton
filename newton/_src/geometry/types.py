@@ -95,6 +95,12 @@ class Mesh:
     and utility methods for simulation. Meshes are typically used for collision detection,
     visualization, and inertia computation in physics simulation.
 
+    Attributes:
+        mass [kg]: Mesh mass in local coordinates, computed with density 1.0 when
+            ``compute_inertia`` is ``True``.
+        com [m]: Mesh center of mass in local coordinates.
+        inertia [kg*m^2]: Mesh inertia tensor about :attr:`com` in local coordinates.
+
     Example:
         Load a mesh from an OBJ file using OpenMesh and create a Newton Mesh:
 
@@ -173,9 +179,9 @@ class Mesh:
         self.sdf = sdf
 
         if compute_inertia:
-            self.mass, self.com, self.I, _ = compute_inertia_mesh(1.0, vertices, indices, is_solid=is_solid)
+            self.mass, self.com, self.inertia, _ = compute_inertia_mesh(1.0, vertices, indices, is_solid=is_solid)
         else:
-            self.I = wp.mat33(np.eye(3))
+            self.inertia = wp.mat33(np.eye(3))
             self.mass = 1.0
             self.com = wp.vec3()
 
@@ -650,7 +656,7 @@ class Mesh:
             metallic=self._metallic,
         )
         if not recompute_inertia:
-            m.I = self.I
+            m.inertia = self.inertia
             m.mass = self.mass
             m.com = self.com
             m.has_inertia = self.has_inertia
@@ -833,7 +839,7 @@ class Mesh:
             hull_mesh.has_inertia = self.has_inertia
             hull_mesh.mass = self.mass
             hull_mesh.com = self.com
-            hull_mesh.I = self.I
+            hull_mesh.inertia = self.inertia
             return hull_mesh
 
     @override
@@ -960,7 +966,7 @@ class Heightfield:
         self._cached_hash = None
 
         # Heightfields are always static
-        self.I = wp.mat33()
+        self.inertia = wp.mat33()
         self.mass = 0.0
         self.com = wp.vec3()
 

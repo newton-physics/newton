@@ -252,62 +252,61 @@ class TestModelMesh(unittest.TestCase):
                 f"New body1 shape {parent_shape} should filter with child body2 shape {shape2_initial}",
             )
 
-    def test_shape_thickness_exceeds_contact_margin_warning(self):
-        """Test that a warning is raised when shape thickness > contact_margin."""
+    def test_shape_gap_negative_warning(self):
+        """Test that a warning is raised when shape gap < 0."""
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0)
 
-        # Create a shape with thickness > contact_margin (should trigger warning)
+        # Create a shape with negative gap (should trigger warning)
         cfg = ModelBuilder.ShapeConfig()
-        cfg.thickness = 0.01
-        cfg.contact_margin = 0.005  # Less than thickness
+        cfg.margin = 0.01
+        cfg.gap = -0.005  # Negative gap
         builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg, label="bad_sphere")
 
-        # Should warn about thickness > contact_margin
+        # Should warn about gap < 0
         with self.assertWarns(UserWarning) as cm:
             builder.finalize()
 
         warning_msg = str(cm.warning)
-        self.assertIn("thickness > contact_margin", warning_msg)
+        self.assertIn("gap < 0", warning_msg)
         self.assertIn("bad_sphere", warning_msg)
         self.assertIn("missed collisions", warning_msg)
 
-    def test_shape_thickness_within_contact_margin_no_warning(self):
-        """Test that no warning is raised when shape thickness <= contact_margin."""
+    def test_shape_gap_non_negative_no_warning(self):
+        """Test that no warning is raised when shape gap >= 0."""
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0)
 
-        # Create a shape with thickness <= contact_margin (should not trigger warning)
+        # Create a shape with non-negative gap (should not trigger warning)
         cfg = ModelBuilder.ShapeConfig()
-        cfg.thickness = 0.005
-        cfg.contact_margin = 0.01  # Greater than thickness
+        cfg.margin = 0.005
+        cfg.gap = 0.01
         builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg)
 
         # Should NOT warn
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             builder.finalize()
-            # Filter for our specific warning about thickness
-            thickness_warnings = [warning for warning in w if "thickness > contact_margin" in str(warning.message)]
-            self.assertEqual(len(thickness_warnings), 0, "Unexpected warning about thickness > contact_margin")
+            gap_warnings = [warning for warning in w if "gap < 0" in str(warning.message)]
+            self.assertEqual(len(gap_warnings), 0, "Unexpected warning about gap < 0")
 
-    def test_shape_thickness_warning_multiple_shapes(self):
-        """Test that the warning correctly reports multiple shapes with thickness > contact_margin."""
+    def test_shape_gap_warning_multiple_shapes(self):
+        """Test that the warning correctly reports multiple shapes with gap < 0."""
         builder = ModelBuilder()
         body = builder.add_body(mass=1.0)
 
-        # Create multiple shapes with thickness > contact_margin
+        # Create multiple shapes with negative gap
         cfg_bad = ModelBuilder.ShapeConfig()
-        cfg_bad.thickness = 0.02
-        cfg_bad.contact_margin = 0.01
+        cfg_bad.margin = 0.02
+        cfg_bad.gap = -0.01
 
         builder.add_shape_sphere(body=body, radius=0.5, cfg=cfg_bad, label="sphere1")
         builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5, cfg=cfg_bad, label="box1")
 
         # One good shape that should not be in the warning
         cfg_good = ModelBuilder.ShapeConfig()
-        cfg_good.thickness = 0.005
-        cfg_good.contact_margin = 0.01
+        cfg_good.margin = 0.005
+        cfg_good.gap = 0.01
         builder.add_shape_capsule(body=body, radius=0.2, half_height=0.5, cfg=cfg_good, label="good_capsule")
 
         with self.assertWarns(UserWarning) as cm:

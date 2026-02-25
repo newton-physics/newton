@@ -406,7 +406,7 @@ class Example:
         for body_idx in range(2, 14):
             gravcomp_body.values[body_idx] = 1.0
 
-        shape_cfg = newton.ModelBuilder.ShapeConfig(thickness=1e-3, density=1000.0)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(margin=1e-3, density=1000.0)
         shape_cfg.ke = 5.0e4
         shape_cfg.kd = 5.0e2
         shape_cfg.kf = 1.0e3
@@ -466,7 +466,7 @@ class Example:
         rng: np.random.Generator,
     ):
         density = rng.uniform(density_range[0], density_range[1])
-        shape_cfg = newton.ModelBuilder.ShapeConfig(density=density, thickness=1e-3)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(density=density, margin=1e-3)
 
         def get_random_pos():
             random_x = rng.uniform(x_range[0], x_range[1])
