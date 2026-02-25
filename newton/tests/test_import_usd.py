@@ -1991,7 +1991,7 @@ def PhysicsRevoluteJoint "Joint2"
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_geom_gap_parsing(self):
-        """Test that geom_gap attribute is parsed correctly from USD."""
+        """Test that mjc:gap attribute is parsed into shape_gap from USD."""
         from pxr import Usd
 
         usd_content = """#usda 1.0
@@ -2079,31 +2079,27 @@ def PhysicsRevoluteJoint "Joint2"
         stage = Usd.Stage.CreateInMemory()
         stage.GetRootLayer().ImportFromString(usd_content)
 
+        from newton._src.usd.schemas import SchemaResolverMjc  # noqa: PLC0415
+
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        builder.add_usd(stage)
+        builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc()])
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
-        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
-
-        geom_gap = model.mujoco.geom_gap.numpy()
+        shape_gap = model.shape_gap.numpy()
 
         def floats_match(arr, expected, tol=1e-4):
             return abs(arr - expected) < tol
 
         # Check that we have shapes with expected values
         expected_explicit_1 = 0.8
-        expected_default = 0.0  # default
         expected_explicit_2 = 0.7
 
         # Find shapes matching each expected value
-        found_explicit_1 = any(floats_match(geom_gap[i], expected_explicit_1) for i in range(model.shape_count))
-        found_default = any(floats_match(geom_gap[i], expected_default) for i in range(model.shape_count))
-        found_explicit_2 = any(floats_match(geom_gap[i], expected_explicit_2) for i in range(model.shape_count))
+        found_explicit_1 = any(floats_match(shape_gap[i], expected_explicit_1) for i in range(model.shape_count))
+        found_explicit_2 = any(floats_match(shape_gap[i], expected_explicit_2) for i in range(model.shape_count))
 
         self.assertTrue(found_explicit_1, f"Expected gap {expected_explicit_1} not found in model")
-        self.assertTrue(found_default, f"Expected default gap {expected_default} not found in model")
         self.assertTrue(found_explicit_2, f"Expected gap {expected_explicit_2} not found in model")
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

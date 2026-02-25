@@ -287,7 +287,8 @@ class SchemaResolverMjc(SchemaResolver):
         PrimType.SHAPE: {
             # Mesh
             "max_hull_vertices": SchemaAttribute("mjc:maxhullvert", -1),
-            # Collisions: newton margin == mjc margin, newton gap == mjc gap
+            # Collisions: mjc margin = newton margin + newton gap, mjc gap = newton gap
+            # Conversion to Newton convention is handled in import_usd.py
             "margin": SchemaAttribute("mjc:margin", 0.0),
             "gap": SchemaAttribute("mjc:gap", 0.0),
         },

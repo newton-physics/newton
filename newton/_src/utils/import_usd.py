@@ -1882,6 +1882,14 @@ def parse_usd(
                     gap_val = builder.default_shape_cfg.gap
                 gap_cfg = gap_val
 
+                # MuJoCo -> Newton conversion: if margin came from MuJoCo schema,
+                # convert: newton_margin = mj_margin - mj_gap
+                mjc_margin_attr = prim.GetAttribute("mjc:margin")
+                if mjc_margin_attr and mjc_margin_attr.IsAuthored():
+                    mjc_gap_attr = prim.GetAttribute("mjc:gap")
+                    mjc_gap = float(mjc_gap_attr.Get()) if mjc_gap_attr and mjc_gap_attr.IsAuthored() else 0.0
+                    margin_val = margin_val - mjc_gap
+
                 shape_params = {
                     "body": body_id,
                     "xform": shape_xform,

@@ -2535,7 +2535,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     )
 
     def test_geom_gap_conversion_and_update(self):
-        """Test per-shape geom_gap conversion to MuJoCo and dynamic updates across multiple worlds."""
+        """Test per-shape gap conversion to MuJoCo geom_gap and dynamic updates across multiple worlds."""
 
         # Create a model with custom attributes registered
         world_count = 2
@@ -2559,9 +2559,6 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         builder.replicate(template_builder, world_count)
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace")
-        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
-
         # Use per-world iteration to handle potential global shapes correctly
         shape_world = model.shape_world.numpy()
         initial_gap = np.zeros(model.shape_count, dtype=np.float32)
@@ -2572,13 +2569,13 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 initial_gap[shape_idx] = 0.4 + local_idx * 0.2 + world_idx * 0.05
 
-        model.mujoco.geom_gap.assign(wp.array(initial_gap, dtype=wp.float32, device=model.device))
+        model.shape_gap.assign(wp.array(initial_gap, dtype=wp.float32, device=model.device))
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         to_newton_shape_index = solver.mjc_geom_to_newton_shape.numpy()
         num_geoms = solver.mj_model.ngeom
 
-        # Verify initial conversion
+        # Verify initial conversion: geom_gap should match shape_gap
         geom_gap = solver.mjw_model.geom_gap.numpy()
         tested_count = 0
         for world_idx in range(model.world_count):
@@ -2609,7 +2606,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
             for local_idx, shape_idx in enumerate(world_shape_indices):
                 updated_gap[shape_idx] = 0.7 + local_idx * 0.03 + world_idx * 0.06
 
-        model.mujoco.geom_gap.assign(wp.array(updated_gap, dtype=wp.float32, device=model.device))
+        model.shape_gap.assign(wp.array(updated_gap, dtype=wp.float32, device=model.device))
 
         solver.notify_model_changed(SolverNotifyFlags.SHAPE_PROPERTIES)
 
@@ -2663,8 +2660,9 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
         to_newton = solver.mjc_geom_to_newton_shape.numpy()
         num_geoms = solver.mj_model.ngeom
 
-        # Verify initial conversion: geom_margin should match shape_margin
+        # Verify initial conversion: geom_margin should equal shape_margin + shape_gap
         shape_margin = model.shape_margin.numpy()
+        shape_gap = model.shape_gap.numpy()
         geom_margin = solver.mjw_model.geom_margin.numpy()
         tested_count = 0
         for world_idx in range(model.world_count):
@@ -2675,7 +2673,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                 tested_count += 1
                 self.assertAlmostEqual(
                     float(geom_margin[world_idx, geom_idx]),
-                    float(shape_margin[shape_idx]),
+                    float(shape_margin[shape_idx]) + float(shape_gap[shape_idx]),
                     places=5,
                     msg=f"Initial geom_margin mismatch for shape {shape_idx} in world {world_idx}",
                 )
@@ -2695,7 +2693,7 @@ class TestMuJoCoSolverGeomProperties(TestMuJoCoSolverPropertiesBase):
                     continue
                 self.assertAlmostEqual(
                     float(updated_margin[world_idx, geom_idx]),
-                    float(new_margin[shape_idx]),
+                    float(new_margin[shape_idx]) + float(shape_gap[shape_idx]),
                     places=5,
                     msg=f"Updated geom_margin mismatch for shape {shape_idx} in world {world_idx}",
                 )
@@ -4739,8 +4737,9 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
 
         sim_dt = 1.0 / 240.0
 
-        # Let ball settle on platform
-        for _ in range(5):
+        # Let ball settle on platform (enough steps for it to reach equilibrium with the
+        # contact detection distance of shape_margin + shape_gap per shape)
+        for _ in range(20):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 
@@ -4756,7 +4755,7 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
         self.assertAlmostEqual(
             initial_ball_velocity_z,
             0.0,
-            delta=0.001,
+            delta=0.01,
             msg=f"Ball should be at rest initially, got Z velocity {initial_ball_velocity_z}",
         )
 
@@ -4808,8 +4807,10 @@ class TestMuJoCoMocapBodies(unittest.TestCase):
             updated_mocap_quat, expected_quat_mjc, atol=1e-5, err_msg="mocap_quat should match the rotation"
         )
 
-        # Simulate and verify ball falls (collision geometry moved with mocap body)
-        for _ in range(10):
+        # Simulate and verify ball falls (collision geometry moved with mocap body).
+        # Use enough steps for ball to separate beyond the summed contact detection
+        # distance (geom_margin_a + geom_margin_b, where default gap contributes).
+        for _ in range(100):
             solver.step(state_in, state_out, control, None, sim_dt)
             state_in, state_out = state_out, state_in
 

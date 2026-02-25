@@ -3031,7 +3031,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
             self.assertAlmostEqual(actual, expected, places=4)
 
     def test_geom_gap_parsing(self):
-        """Test that geom_gap attribute is parsed correctly from MJCF."""
+        """Test that gap attribute is parsed into shape_gap from MJCF."""
         mjcf = """<?xml version="1.0" ?>
 <mujoco>
     <worldbody>
@@ -3055,21 +3055,17 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
 
-        self.assertTrue(hasattr(model, "mujoco"), "Model should have mujoco namespace for custom attributes")
-        self.assertTrue(hasattr(model.mujoco, "geom_gap"), "Model should have geom_gap attribute")
-
-        geom_gap = model.mujoco.geom_gap.numpy()
+        shape_gap = model.shape_gap.numpy()
         self.assertEqual(model.shape_count, 3, "Should have 3 shapes")
 
-        # Expected values: shape 0 has explicit solimp=0.5, shape 1 has solimp=default=1.0, shape 2 has explicit solimp=0.8
         expected_values = {
             0: 0.1,
-            1: 0.0,  # default
+            1: builder.rigid_gap,  # default gap when not specified
             2: 0.2,
         }
 
         for shape_idx, expected in expected_values.items():
-            actual = geom_gap[shape_idx].tolist()
+            actual = float(shape_gap[shape_idx])
             self.assertAlmostEqual(actual, expected, places=4)
 
     def test_default_inheritance(self):
@@ -6119,14 +6115,14 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(m.condim.numpy()[g_def], 4)
         self.assertEqual(m.geom_priority.numpy()[g_def], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_def]), 2.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_def]), 0.01, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_def]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_def], [0.8, 0.9, 0.01, 0.4, 1.0], atol=1e-4)
 
         g_cls = idx(f"{wb}/b_class/g_class")
         self.assertEqual(m.condim.numpy()[g_cls], 6)
         self.assertEqual(m.geom_priority.numpy()[g_cls], 5)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_cls]), 5.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_cls]), 0.01, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_cls]), 0.01, places=5)
         np.testing.assert_allclose(m.geom_solimp.numpy()[g_cls], [0.7, 0.85, 0.005, 0.3, 1.5], atol=1e-4)
 
         g_ovr = idx(f"{wb}/b_class/b_override/g_override")
@@ -6136,7 +6132,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertEqual(m.condim.numpy()[g_child], 6)
         self.assertEqual(m.geom_priority.numpy()[g_child], 99)
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
-        self.assertAlmostEqual(float(m.geom_gap.numpy()[g_child]), 0.05, places=5)
+        self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_child]), 0.05, places=5)
 
     def test_body_defaults(self):
         """BODY: gravcomp."""
