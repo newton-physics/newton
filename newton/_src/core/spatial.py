@@ -64,10 +64,26 @@ def quat_between_vectors_robust(from_vec: wp.vec3, to_vec: wp.vec3, eps: float =
 
 @wp.func
 def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3) -> wp.vec3:
-    """Evaluate point velocity for Newton's spatial-vector layout.
+    """Evaluate the linear velocity of an offset point on a rigid body.
 
-    Newton stores spatial vectors as ``(linear, angular)`` while Warp's
-    ``wp.velocity_at_point()`` expects ``(angular, linear)``.
+    In Newton, spatial twist vectors are stored as ``qd = (v, \\omega)``
+    where ``v`` is linear velocity and ``\\omega`` is angular velocity.
+    Warp's :func:`wp.velocity_at_point` uses ``(\\omega, v)`` ordering, so
+    this wrapper converts the layout before calling Warp.
+
+    The kinematic relation is:
+
+    .. math::
+       v_p = v + \\omega \\times r
+
+    where ``r`` is the point position relative to the twist origin.
+
+    Args:
+        qd: Spatial twist in Newton layout ``(linear, angular)``.
+        r: Point offset from the frame origin [m].
+
+    Returns:
+        wp.vec3: Linear velocity of the offset point [m/s].
     """
     qd_wp = wp.spatial_vector(wp.spatial_bottom(qd), wp.spatial_top(qd))
     return wp.velocity_at_point(qd_wp, r)
@@ -75,10 +91,24 @@ def velocity_at_point(qd: wp.spatial_vector, r: wp.vec3) -> wp.vec3:
 
 @wp.func
 def transform_twist(t: wp.transform, x: wp.spatial_vector) -> wp.spatial_vector:
-    """Transform a twist while preserving Newton's spatial-vector layout.
+    """Transform a spatial twist between coordinate frames.
 
-    Newton uses ``(linear, angular)`` ordering; Warp uses
-    ``(angular, linear)`` for its spatial math helpers.
+    This applies Warp's twist transform while preserving Newton's spatial
+    layout. Newton stores twists as ``x = (v, \\omega)`` (linear, angular),
+    while Warp's low-level helper expects ``(\\omega, v)``.
+
+    For rigid transform ``t = (R, p)`` from source to destination:
+
+    .. math::
+       \\omega' = R\\omega,\\quad v' = Rv + p \\times \\omega'
+
+    Args:
+        t: Rigid transform from source frame to destination frame.
+        x: Spatial twist in Newton layout ``(linear, angular)``.
+
+    Returns:
+        wp.spatial_vector: Transformed twist in Newton layout
+        ``(linear, angular)``.
     """
     x_wp = wp.spatial_vector(wp.spatial_bottom(x), wp.spatial_top(x))
     y_wp = wp.transform_twist(t, x_wp)
@@ -87,10 +117,24 @@ def transform_twist(t: wp.transform, x: wp.spatial_vector) -> wp.spatial_vector:
 
 @wp.func
 def transform_wrench(t: wp.transform, x: wp.spatial_vector) -> wp.spatial_vector:
-    """Transform a wrench while preserving Newton's spatial-vector layout.
+    """Transform a spatial wrench between coordinate frames.
 
-    Newton uses ``(force, torque)`` ordering; Warp uses
-    ``(torque, force)`` for spatial wrenches.
+    This applies Warp's wrench transform while preserving Newton's spatial
+    layout. Newton stores wrenches as ``x = (f, \\tau)`` (force, torque),
+    while Warp expects ``(\\tau, f)``.
+
+    For rigid transform ``t = (R, p)`` from source to destination:
+
+    .. math::
+       f' = Rf,\\quad \\tau' = R\\tau + p \\times f'
+
+    Args:
+        t: Rigid transform from source frame to destination frame.
+        x: Spatial wrench in Newton layout ``(force, torque)``.
+
+    Returns:
+        wp.spatial_vector: Transformed wrench in Newton layout
+        ``(force, torque)``.
     """
     x_wp = wp.spatial_vector(wp.spatial_bottom(x), wp.spatial_top(x))
     y_wp = wp.transform_wrench(t, x_wp)
@@ -99,7 +143,14 @@ def transform_wrench(t: wp.transform, x: wp.spatial_vector) -> wp.spatial_vector
 
 @wp.func
 def _wrap_angle_pm_pi(theta: float) -> float:
-    """Wrap an angle to the interval [-pi, pi)."""
+    """Wrap an angle to the principal interval ``[-pi, pi)``.
+
+    Args:
+        theta: Input angle [rad].
+
+    Returns:
+        float: Wrapped angle [rad] in ``[-pi, pi)``.
+    """
     two_pi = 2.0 * wp.pi
     wrapped = wp.mod(theta + wp.pi, two_pi)
     if wrapped < 0.0:
@@ -109,11 +160,22 @@ def _wrap_angle_pm_pi(theta: float) -> float:
 
 @wp.func
 def quat_decompose(q: wp.quat) -> wp.vec3:
-    """Decompose quaternion to XYZ angles using Warp's Euler routine.
+    """Decompose a quaternion into wrapped XYZ Euler coordinates.
 
-    Warp's conversion can return equivalent angles outside the principal branch
-    (for example, by adding 2*pi on one component). Newton expects wrapped
-    coordinates for stable joint-coordinate reconstruction.
+    This wrapper calls :func:`wp.quat_to_euler` with the Newton convention
+    ``(i, j, k) = (2, 1, 0)``, then wraps each angle to the principal branch.
+    Wrapping avoids equivalent representations that differ by :math:`2\\pi`,
+    which improves stability when reconstructing joint coordinates.
+
+    .. math::
+       e = \\operatorname{quat\\_to\\_euler}(q, 2, 1, 0),\\quad
+       e_i \\leftarrow \\operatorname{wrap}_{[-\\pi,\\pi)}(e_i)
+
+    Args:
+        q: Input quaternion in Warp layout ``(x, y, z, w)``.
+
+    Returns:
+        wp.vec3: Wrapped Euler coordinates ``(x, y, z)`` [rad].
     """
     angles = wp.quat_to_euler(q, 2, 1, 0)
     return wp.vec3(
@@ -128,6 +190,10 @@ def quat_velocity(q_now: wp.quat, q_prev: wp.quat, dt: float) -> wp.vec3:
     """Approximate angular velocity from successive world quaternions (world frame).
 
     Uses right-trivialized mapping via dq = q_now * conj(q_prev).
+
+    .. math::
+       \\Delta q = q_{now} q_{prev}^{-1},\\quad
+       \\omega \\approx \\hat{u}(\\Delta q)\\,\\frac{\\theta(\\Delta q)}{\\Delta t}
 
     Args:
         q_now: Current orientation in world frame.
